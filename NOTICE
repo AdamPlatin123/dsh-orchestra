@@ -1,0 +1,21 @@
+dsh-orchestra
+Copyright 2026 AdamPlatin123
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this software except in compliance with the License.
+A copy of the License is in the LICENSE file at the root of this repository
+and at http://www.apache.org/licenses/LICENSE-2.0.
+
+Third-party notices
+-------------------
+This repository currently contains design documents and spike code only.
+Per docs/specs/2026-10-27-dsh-orchestra-design-r4.md §12.2, when code is copied
+or vendored from third-party projects, its LICENSE and attribution are listed
+here, and modifications are stated:
+
+  (none yet)
+
+Projects referenced for design only (no code copied, no notice required):
+grok-build (Apache-2.0), dsh-TUI (MIT), DS-Bot (Apache-2.0).
+GPL/AGPL sources (dsh-apollo, MaiBot, Koishi webui, grok-prompts) are design
+references only; no code from them is copied.

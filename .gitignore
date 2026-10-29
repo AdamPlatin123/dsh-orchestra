@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*
+
+# M0 fixture hygiene: only sanitized fixtures are committed (spec §13.2)
+fixtures/raw/
+spikes/**/out/
+spikes/**/tmp/
+spikes/**/*.jsonl
+spikes/**/*.zst
