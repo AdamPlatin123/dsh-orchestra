@@ -313,3 +313,16 @@ DS-Bot 的三个故障正好是三种闭眼（docs/research/2026-10-30-ds-bot-no
 - 直接 `node x.test.ts` 或 `--test-isolation=none` 时没有标记。这时进程内调 start() 又不覆盖 home，仍会跑真实 profile。打算加一条仓库测试：test/ 下每个进程内 start() 都必须固定 home，并传 IN_PROCESS_STOP。
 - process.exit 和 reallyExit 仍可写。这是失败即关闭：替换掉它们，进程停不下来，但锁也不放。是否钉回原值，交给 process-powers 表决定。
 - no-timers-in-lock 规则把 working.ts 也框住了。哪天组装根需要定时器，就把定时器放进独立模块，规则只留在 lock.ts。
+
+### 7.8 第 3 步落地后学到的
+
+第 3 步（e451d4c）做了三个实现代理、四个复核角度，修了两轮，测试从 508 个涨到 899 个，跑了约 7 小时。值得记下的事实有这些：
+
+- **眼图要有模板。** 示波器上的眼图带一个禁入区，叫模板（eye mask）。规格只管模板，模板外不算缺陷。复核每多一轮，就多找出一层面：先是策略表能被改，再是 RegExp 能被 `compile()` 原地改写，再往下就是 Array.prototype、Function.prototype 这些内置原型。这里要有一条停止线（候选 P9）：**每道防线写明它防什么、不防什么。** 我们的围栏防的是自己代码的失误和不可信的数据，不防故意作恶的模块（7.1 早就这么写过）。内置原型保持可写，作为写明的残留。实测锁住 RegExp.prototype 的任何一格，V8 会关掉整个进程的正则快路径：split 慢约 35 倍，replace 慢约 5 倍。导出的表和正则就地冻结，便宜，照做；内置原型不锁。
+- **7.6 的「不锁 exit」翻案了。** 当时的理由是锁了 `process.exit()` 会抛错。现在 boot 在围栏前先拿到原始的 reallyExit，每一种类型化退出、崩溃和停止，都在有界刷新之后经它结束；代码里不再有人调 process.exit。所以 exit 改为锁死，reallyExit 由 boot 独占。7.7 留下的「exit 仍可写」这个口子关了。
+- **原生 API 的选项对象也顺着原型读。** DatabaseSync 有 11 个选项，没给的全从 Object.prototype 读，包括 `allowExtension` 和 `defensive`。所以每个交给 Node 的选项对象，都要无原型、冻结，并把每个字段写满。这和 2b 的 undici、2c 的 `listen({port})` 是同一个形状，已经出现第三次，以后看到 Node 的选项对象就默认这么处理。
+- **SQLite 自己建文件。** 它按名字打开数据库，自己建 -wal、-shm。打开前后各判一次这些文件的位置，挡掉链接；两次判之间的窗口写成残留。「清除秘密」只把列置空不够，旧页面还留在 WAL 里能读到，所以要开 secure_delete，并在清除后跑一次 checkpoint(TRUNCATE)。
+- **链只盖摘要时，盖不到的字段要另想办法绑。** 计划的公式 `hash = sha256(prevHash || digest)` 不覆盖时间戳，而 apply 拿时间戳写投影。解法是把这批的时间戳写进 commit 记录的 body，这样链就盖到了，公式本身不用改。
+- **确定性要从 journal 推出来。** timerId 里的 seq 原来按「第几次挂钟」算，重启就乱了；现在改成 journal 里已有的同类 clock 记录数。
+
+还开着的（3b 在修）：进程结束的路径里，前几步没有保护，有一步抛错，退出码就永远提交不了；两个 spawn 闸门共用一个 hub 时，deadline 的 id 会撞；测试 fixture 里没有 package.json，Node 会去 stat 真实 home 下的 package.json。
