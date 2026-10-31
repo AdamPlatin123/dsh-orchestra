@@ -246,10 +246,10 @@ DS-Bot 的三个故障正好是三种闭眼（docs/research/2026-10-30-ds-bot-no
 
 ### 7.3 放进 M0 计划
 
-**第 2b 步（现在）**：补上 7.2 的各条。删掉锁的周期心跳：现在每 10 s 一次 writeAtomic，一天约 8,640 次，而没有任何分支读它，正是补5 说的探头负载。daemon.json 每次启动最多写 2 次：拿锁时写一次，procguard 给出 createTime 后补一次。I12 的测法缩短成默认就跑的版本：冻 3 s 而不是 120 s，因为删掉心跳后已经没有时间阈值，冻多久效果都一样。第二个实例要显示活性时，就按需连一次锁管道看有没有响应；这个读数永远不能成为接管的理由。r4 D3 的「心跳锁」改为「身份锁」，等你点头。约 0.5 d。
+**第 2b 步（现在）**：补上 7.2 的各条。删掉锁的周期心跳：现在每 10 s 一次 writeAtomic，一天约 8,640 次，而没有任何分支读它，正是补5 说的探头负载。daemon.json 每次启动最多写 2 次：拿锁时写一次，procguard 给出 createTime 后补一次。I12 的测法缩短成默认就跑的版本：冻 3 s 而不是 120 s，因为删掉心跳后已经没有时间阈值，冻多久效果都一样。第二个实例要显示活性时，就按需连一次锁管道看有没有响应；这个读数永远不能成为接管的理由。r4 D3 的「心跳锁」改为「身份锁」，等你点头。约 0.5 d。（落地后：持有者冻结最长 60 s，第二个实例在它解冻前就以 23 退出，再由测试经句柄停掉持有者，不再有时间余量；按需活性读数没做，因为 lock.ts 只准用 createServer。）
 
 **第 3 步开工前**：
-- **fs 能力在 boot 里造好再递下去。** 只有 `node-io.ts` 一个文件 import `node:fs`，它只导出 `makeReadGate`、`makeWriteFence` 两个工厂，真 io 封在闭包里；boot 通过 BootPorts 把工厂递下去。围栏装好后，`node-io.ts` 不可解析，原因记为 minted-before-fence。WriteFence 的 rm、rename、unlink、mkdtemp 现在直接调 fs，传一个哑 io 就能删真文件，所以要一次全部改走 `#io`，之后才删两条构造规则。测法：用 `.constructor`、`Reflect.construct` 或直接 new，配上自选的根和自造的 io，对哨兵文件做出的真实副作用为 0。约 0.75 d，能省回约 0.25 d。
+- **fs 能力在 boot 里造好再递下去。** 只有 `node-io.ts` 一个文件 import `node:fs`，它只导出 `makeReadGate`、`makeWriteFence` 两个工厂，真 io 封在闭包里；boot 通过 BootPorts 把工厂递下去。围栏装好后，`node-io.ts` 不可解析，原因记为 minted-before-fence。WriteFence 的 rm、unlink、mkdtemp 现在直接调 fs（close 和 rename 在 2b 已改走 io），传一个哑 io 就能删真文件，所以要一次全部改走 `#io`，之后才删两条构造规则。测法：用 `.constructor`、`Reflect.construct` 或直接 new，配上自选的根和自造的 io，对哨兵文件做出的真实副作用为 0。约 0.75 d，能省回约 0.25 d。
 - **process 能力清单。** `runtime/process-powers.ts` 覆盖钉死版本上 process 的全部自有属性，每项归入 keep、lock、mint 三类之一，只在有 IPC 时才出现的那几项标为可选。这张表同时就是 P8 的键集。由它生成的静态规则只匹配成员访问（`process.x`、`process['x']`、解构），不匹配裸名字，免得 `ChildProcess.kill`、`timer.unref` 被误报。约 0.25 d。
 - **删陪跑规则。** 整条删掉 5 条网络禁令：只有两行能 import `net`/`http`，都已有 only 限制，网络全局在运行时也已锁死。`eval: true` 保留，但范围收窄到能 import `worker_threads` 的模块，那里它是唯一的防线。fs 名字禁令合成一张表，只管 `src/fs/*`，`write-fence.ts` 准用 ftruncate，留给第 3 步截断 journal。另加一个由 BUILTIN_ROWS 推导的覆盖测试，用 workers.ts 的 `eval:true` 当坏样本校准。约 0.1 d。
 - **环境时钟并进第 3 步的 Clock 规则。** 把 `Date()`、无参 `new Date`、无参的 `Intl.DateTimeFormat().format()`、`performance.timeOrigin`、`process.uptime`、`AbortSignal.timeout` 补进「只许出现在 clock.ts」。`node:timers` 移出默认放行，只给 clock.ts。不做 Rng 端口：配对码和 CSRF 必须用密码学随机。
@@ -286,7 +286,7 @@ DS-Bot 的三个故障正好是三种闭眼（docs/research/2026-10-30-ds-bot-no
   - 第一档（安全，必做，约 1.25 d）：第 2b 步，加上第 3 步开工前那几条。
   - 第二档（人这一端，约 2.3 d）：可以只做核心的四条（show 回执、通道状态条、按身份选中、固定词表），约 1 d，其余留到 M1。
   - 第三档（门脚本，约 1.5 d）：可以先只做修复见证，约 0.5 d。
-- **ui-only 网页还做不做。** 仍待你定，计划里编号 D-17。fork 第二轮评审推荐 M0 不出 ui-only 页面：Low、unknown、数据目录不过、journal 断链时只打印原因，按各自的退出码退出。r4 原写法是 ui-only 提供 Tuning 页。不管怎么定，第 3 步都保留 'ui-only' 这个错误码。
+- **ui-only 网页还做不做。** 仍待你定，计划里编号 D-17。fork 第二轮评审推荐 M0 不出 ui-only 页面：Low、unknown、数据目录不过、journal 断链时只打印原因，统一以 22（uiOnly）退出。r4 原写法是 ui-only 提供 Tuning 页。不管怎么定，第 3 步都保留 'ui-only' 这个错误码。
 - **r4 措辞**：D3「心跳锁」改为「身份锁」；L589 缺 registerHooks 时改为退出。
 - **两个 agent 定义加不加。**
 
