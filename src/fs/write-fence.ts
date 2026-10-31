@@ -57,6 +57,11 @@ export type WriteFenceConfig = {
   orchestraHome: string;
   /** Every harness root in both forms (see rootDenyList); each is canonicalized once more here. */
   harnessRoots: readonly string[];
+  /**
+   * Test profile: the canonical test dir. ORCHESTRA_HOME must lie strictly inside it both as written
+   * and canonically, or the fence is not built; every target must already lie in both forms of home.
+   */
+  confine?: string;
   realpath?: RealpathFn;
   io?: WriteIo;
 };
@@ -97,6 +102,13 @@ export class WriteFence {
     this.#io = cfg.io ?? NODE_IO;
     this.home = mustCheck(cfg.orchestraHome, 'ORCHESTRA_HOME');
     this.homeReal = canonicalize(this.home, this.#realpath);
+    if (cfg.confine !== undefined) {
+      const dir = mustCheck(cfg.confine, 'test dir');
+      const strictly = (p: string) => isWithin(p, dir) && pathKey(p) !== pathKey(dir);
+      if (pathKey(canonicalize(dir, this.#realpath)) !== pathKey(dir) || !strictly(this.home) || !strictly(this.homeReal)) {
+        throw new Error(`write fence: ORCHESTRA_HOME ${this.home} (canonical ${this.homeReal}) leaves the test dir ${dir}`);
+      }
+    }
     const seen = new Set<string>();
     const roots: string[] = [];
     for (const r of cfg.harnessRoots) {
@@ -396,8 +408,4 @@ function removeDirQuietly(p: string): void {
   } catch {
     // Not empty any more: something else wrote into it, and it is not ours to clear.
   }
-}
-
-export function createWriteFence(cfg: WriteFenceConfig): WriteFence {
-  return new WriteFence(cfg);
 }

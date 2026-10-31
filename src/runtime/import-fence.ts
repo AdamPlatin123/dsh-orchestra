@@ -12,13 +12,15 @@ const CODE_EXTENSIONS: readonly string[] = ['.ts', '.js'];
 const NETWORK_GLOBALS: readonly string[] = ['fetch', 'WebSocket', 'EventSource'];
 
 export type FenceStatus = {
-  /** False when module.registerHooks is missing; boot then refuses to load main.ts. */
+  /** False when module.registerHooks is missing; planStartup() then gives ui-only. */
   resolveHook: boolean;
   builtinGetter: true;
   nativeStubs: true;
   /** process.loadEnvFile and process.report: file reads and writes outside both fs gates. */
   ioStubs: true;
   networkGlobals: true;
+  /** process.kill and process._kill: no module needs them, and they would bypass the identity-checked brake. */
+  killStubs: true;
 };
 
 export type ImportDenyReason =
@@ -142,10 +144,13 @@ export function installImportFence(
   lock(p, 'loadEnvFile', disabled('process.loadEnvFile'));
   // Frozen in strict mode: setting directory, filename or a reportOn* flag throws instead of arming a write.
   lock(p, 'report', Object.freeze({ writeReport: disabled('process.report.writeReport'), getReport: disabled('process.report.getReport') }));
+  // Children are stopped through their own ChildProcess handle (src/os/) and, from step 6, through
+  // procguard's pid + createTime kill-tree. A raw signal by pid skips both checks (invariant 7).
+  for (const name of ['kill', '_kill']) lock(p, name, disabled(`process.${name}`));
   // boot.ts keeps the one network capability it hands on before this runs; nobody else gets one.
   for (const name of NETWORK_GLOBALS) lock(global as Fenced, name, disabled(name));
 
-  const status: FenceStatus = Object.freeze({ resolveHook, builtinGetter: true, nativeStubs: true, ioStubs: true, networkGlobals: true });
+  const status: FenceStatus = Object.freeze({ resolveHook, builtinGetter: true, nativeStubs: true, ioStubs: true, networkGlobals: true, killStubs: true });
   lock(p, INSTALLED, status);
   return status;
 }

@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as os from 'node:os';
 import { resolveEnv } from '../../src/runtime/env.ts';
+import { isWithin } from '../../src/fs/paths.ts';
 
 const HOME = 'X:\\fake\\home';
 
@@ -82,4 +83,15 @@ test('typedHarnessRoots: every known root with its kind, same order as knownHarn
 test('ORCHESTRA_HOME overrides the data dir; empty values are ignored', () => {
   assert.equal(resolveEnv({ home: HOME, env: { ORCHESTRA_HOME: 'W:\\orch\\' } }).orchestraHome, 'W:\\orch');
   assert.equal(resolveEnv({ home: HOME, env: { ORCHESTRA_HOME: '  ' } }).orchestraHome, 'X:\\fake\\home\\.orchestra');
+});
+
+test('a launcher glob prefix is the deepest literal directory, cut at a segment boundary', () => {
+  const custom = resolveEnv({ home: HOME, env: {}, launcherGlobs: ['~/.rec/claude/acc*/x', 'Q:/*/config', 'W:/tools/launch/accounts'] });
+  assert.deepEqual(custom.launcherGlobPrefixes, ['X:\\fake\\home\\.rec\\claude', 'Q:\\', 'W:\\tools\\launch\\accounts']);
+  // The prefix denies a sibling account directory the glob would also match.
+  assert.ok(isWithin('X:\\fake\\home\\.rec\\claude\\acc-new', custom.launcherGlobPrefixes[0]!));
+  assert.ok(!isWithin('X:\\fake\\home\\.rec\\claude\\acc-new', 'X:\\fake\\home\\.rec\\claude\\acc'));
+  // The default glob keeps its prefix.
+  assert.deepEqual(resolveEnv({ home: HOME, env: {} }).launcherGlobPrefixes, ['X:\\fake\\home\\.rec\\claude\\accounts']);
+  assert.deepEqual(resolveEnv({ home: HOME, env: {}, launcherGlobs: ['~/.rec/claude/accounts/a*b/config'] }).launcherGlobPrefixes, ['X:\\fake\\home\\.rec\\claude\\accounts']);
 });

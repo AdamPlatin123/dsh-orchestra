@@ -1,6 +1,7 @@
 // The static-scan rules (plan step 1, invariants 2, 4, 6, 14, 15 of plan §6). Text based and
 // strict: comments count too, so production code keeps banned words out of its comments as well.
 import * as nodeModule from 'node:module';
+import * as path from 'node:path';
 import { builtinId, decideBuiltin, onlyNames } from '../../src/runtime/builtin-policy.ts';
 
 export type Finding = { index: number; text: string };
@@ -132,6 +133,98 @@ const relativeCodeOnly: Rule = {
     .map((r) => ({ index: r.index, text: r.spec })),
 };
 
+// Plan §6 invariant 7: a raw signal by pid skips the identity checks of the brake. The import fence
+// disables process.kill and process._kill for every module at runtime and hands the original to
+// none: children stop through their own ChildProcess handle, and procguard (step 6) kills by pid +
+// createTime. So the scan bans process.kill everywhere too (import-fence.ts names it to lock it),
+// and the handle form `.kill(` only outside src/os/, which holds the handles. An alias such as
+// `const p = process; p.kill(pid)` inside src/os/ passes the text scan and meets the runtime stub.
+const OS_DIR = (f: string) => f.startsWith('src/os/');
+const KILL_FENCE = 'src/runtime/import-fence.ts';
+const processKill = ban('ban:process.kill', except(code, KILL_FENCE),
+  /\bprocess\s*\.\s*_?kill\b/,
+  /\[\s*['"`]_?kill['"`]\s*\]/,
+  /\bReflect\s*\.\s*get\s*\([^)]*['"`]_?kill['"`]/,
+  /\{[^}]*\b_?kill\b[^}]*\}\s*=\s*(?:globalThis\s*\.\s*)?process\b/);
+const handleKill = ban('kill-only-in-os', (f) => code(f) && !OS_DIR(f) && f !== KILL_FENCE, /\.\s*_?kill\s*\(/);
+
+/**
+ * Where each gate may be built with configuration of the caller's choosing: the startup composition
+ * roots (main.ts, runtime/working.ts) and the module that defines it; a ReadGate also inside
+ * launcherRootFs, and only there within harness-roots.ts. Scripts and tests are outside this rule.
+ * Elsewhere even a value import of a class is flagged, so an alias cannot stand in for `new`.
+ */
+export const GATE_SITES: Readonly<Record<string, { module: RegExp; files: readonly string[] }>> = {
+  ReadGate: { module: /(^|\/)fs\/read-gate\.ts$/, files: ['src/main.ts', 'src/runtime/working.ts', 'src/fs/read-gate.ts', 'src/fs/harness-roots.ts'] },
+  WriteFence: { module: /(^|\/)fs\/write-fence\.ts$/, files: ['src/main.ts', 'src/runtime/working.ts', 'src/fs/write-fence.ts'] },
+  SpawnGate: { module: /(^|\/)os\/spawn\.ts$/, files: ['src/main.ts', 'src/runtime/working.ts', 'src/os/spawn.ts'] },
+};
+/** In this file the class may be built only inside this exported function. */
+const SCOPED_SITES: readonly { file: string; cls: string; fn: string }[] = [{ file: 'src/fs/harness-roots.ts', cls: 'ReadGate', fn: 'launcherRootFs' }];
+
+/** [start, end) of `export function <name>` up to the first `}` at column 0 after it, or null. */
+function functionSpan(text: string, name: string): [number, number] | null {
+  const start = text.search(new RegExp(`^export function ${name}\\b`, 'm'));
+  if (start < 0) return null;
+  const close = /^\}/m.exec(text.slice(start));
+  return [start, close === null ? text.length : start + close.index + 1];
+}
+
+const gateConstruction: Rule = {
+  id: 'gate-construction-only-in-roots',
+  applies: (f) => /^(src|shared)\//.test(f),
+  find(text, file) {
+    const out: Finding[] = [];
+    for (const [cls, site] of Object.entries(GATE_SITES)) {
+      const inFile = site.files.includes(file);
+      const scoped = SCOPED_SITES.find((s) => s.file === file && s.cls === cls);
+      const span = scoped === undefined ? null : functionSpan(text, scoped.fn);
+      const allowedAt = (index: number) => inFile && (scoped === undefined || (span !== null && index >= span[0] && index < span[1]));
+      if (!inFile) {
+        for (const r of valueImports(text)) {
+          if (r.names?.includes(cls)) out.push({ index: r.index, text: `value import of ${cls}` });
+          else if (r.names === null && r.form !== 'side-effect' && site.module.test(r.spec)) out.push({ index: r.index, text: `${r.form} import of ${r.spec}` });
+        }
+      }
+      const res = [
+        new RegExp(`\\bnew\\s+(?:[\\w$]+\\s*\\.\\s*)*${cls}\\b`, 'g'),
+        new RegExp(`\\bextends\\s+(?:[\\w$]+\\s*\\.\\s*)*${cls}\\b`, 'g'),
+        new RegExp(`\\bcreate${cls}\\b`, 'g'),
+        new RegExp(`\\bReflect\\s*\\.\\s*construct\\s*\\(\\s*(?:[\\w$]+\\s*\\.\\s*)*${cls}\\b`, 'g'),
+      ];
+      for (const re of res) for (const m of text.matchAll(re)) if (!allowedAt(m.index)) out.push({ index: m.index, text: m[0] });
+    }
+    return out;
+  },
+};
+
+const resolvesTo = (file: string, spec: string, target: string) =>
+  /^\.\.?\//.test(spec) && path.posix.normalize(path.posix.join(path.posix.dirname(file), spec)) === target;
+
+// runWorking builds both fs gates from whatever context it is handed and then clears tmp\: only
+// main.ts, after planStartup() said working, may load it. Type-only imports load nothing.
+const workingImport: Rule = {
+  id: 'working-wiring-only-from-main',
+  applies: (f) => /^(src|shared)\//.test(f) && f !== 'src/main.ts' && f !== 'src/runtime/working.ts',
+  find: (text, file) => valueImports(text).filter((r) => resolvesTo(file, r.spec, 'src/runtime/working.ts'))
+    .map((r) => ({ index: r.index, text: `${r.form} import of ${r.spec}` })),
+};
+
+// launcherRootFs builds a ReadGate from a caller-made env and an injectable io: the composition
+// roots only. A namespace import of harness-roots.ts would reach it as a property, so it counts too.
+const LAUNCHER_ROOTS = ['src/main.ts', 'src/runtime/working.ts', 'src/fs/harness-roots.ts'];
+const launcherRootFsUse: Rule = {
+  id: 'launcher-root-fs-only-in-roots',
+  applies: (f) => /^(src|shared)\//.test(f) && !LAUNCHER_ROOTS.includes(f),
+  find(text, file) {
+    const out = matches(/\blauncherRootFs\b/)(text);
+    for (const r of valueImports(text)) {
+      if (r.names === null && r.form !== 'side-effect' && resolvesTo(file, r.spec, 'src/fs/harness-roots.ts')) out.push({ index: r.index, text: `${r.form} import of ${r.spec}` });
+    }
+    return out;
+  },
+};
+
 const readGateFlag: Rule = {
   id: 'read-gate-open-flag-r',
   applies: (f) => f === 'src/fs/read-gate.ts',
@@ -196,6 +289,14 @@ export const RULES: readonly Rule[] = [
   ban('fs-open-only-in-gates', (f) => /^src\/fs\/[^/]+$/.test(f) && f !== 'src/fs/write-fence.ts' && f !== 'src/fs/read-gate.ts',
     /\b(?:open|openSync|opendir|opendirSync|readdir|readdirSync|readFile|readFileSync|createReadStream|read|readSync)\s*\(/),
   readGateFlag,
+  processKill,
+  handleKill,
+  gateConstruction,
+  workingImport,
+  launcherRootFsUse,
+  // Any instance leads back to its class through .constructor; nothing in daemon code needs it.
+  // The quoted name alone also covers Reflect.get(x, 'constructor') and friends.
+  ban('ban:.constructor', code, /\.\s*constructor\b/, /['"`]constructor['"`]/),
 ];
 
 function lineOf(text: string, index: number): number {

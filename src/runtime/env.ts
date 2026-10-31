@@ -24,7 +24,7 @@ export type ResolvedEnv = {
   orchestraHome: string;
   /** Claude root candidates in discovery order; glob entries are patterns, not resolved directories. */
   claudeRootCandidates: string[];
-  /** The literal prefix of each launcher glob, before its first `*`. */
+  /** The deepest literal directory of each launcher glob: the segments before the one holding its first `*`. */
   launcherGlobPrefixes: string[];
   dshHome: string;
   codexHome: string;
@@ -49,10 +49,17 @@ function norm(p: string): string {
   return r.length > 3 ? r.replace(/[\\/]+$/, '') : r;
 }
 
+/**
+ * The deepest literal directory of a glob: everything before the separator that precedes its first
+ * `*`. Cutting at the `*` itself would turn `...\claude\acc*\x` into the prefix `...\claude\acc`,
+ * which misses `...\claude\acc-new`.
+ */
 function globPrefix(pattern: string): string {
   const star = pattern.indexOf('*');
-  const literal = star < 0 ? pattern : pattern.slice(0, star);
-  return norm(literal);
+  if (star < 0) return norm(pattern);
+  const sep = pattern.lastIndexOf('\\', star);
+  const dir = sep < 0 ? '' : pattern.slice(0, sep);
+  return /^[A-Za-z]:$/.test(dir) ? `${dir}\\` : norm(dir);
 }
 
 function dedupe(paths: readonly string[]): string[] {

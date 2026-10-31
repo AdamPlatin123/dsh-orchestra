@@ -448,7 +448,3 @@ export class ReadGate {
     return this.#io.readdirSync(decision.real).filter((e) => e.isDirectory() || e.isSymbolicLink()).map((e) => e.name).sort();
   }
 }
-
-export function createReadGate(cfg: ReadGateConfig): ReadGate {
-  return new ReadGate(cfg);
-}

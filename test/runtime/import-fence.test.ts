@@ -83,14 +83,14 @@ test('installImportFence without registerHooks still replaces the getter and stu
   };
   const fakeGlobal: Record<string, unknown> = { fetch: () => 'raw', WebSocket: function WebSocket() {} };
   const status = installImportFence(fake, {}, REPO, fakeGlobal);
-  assert.deepEqual(status, { resolveHook: false, builtinGetter: true, nativeStubs: true, ioStubs: true, networkGlobals: true });
+  assert.deepEqual(status, { resolveHook: false, builtinGetter: true, nativeStubs: true, ioStubs: true, networkGlobals: true, killStubs: true });
   assert.equal(installImportFence(fake, {}, REPO, fakeGlobal), status);
   const get = fake.getBuiltinModule as (id: string) => unknown;
   assert.deepEqual(get('path'), { id: 'node:path' });
   assert.throws(() => get('node:fs'), { code: 'ERR_ORCHESTRA_IMPORT_FENCE', reason: 'getter' });
   assert.throws(() => get('child_process'), { code: 'ERR_ORCHESTRA_IMPORT_FENCE' });
   assert.deepEqual(calls, ['node:path']);
-  for (const name of ['binding', '_linkedBinding', 'dlopen', 'loadEnvFile']) {
+  for (const name of ['binding', '_linkedBinding', 'dlopen', 'loadEnvFile', 'kill', '_kill']) {
     assert.throws(() => (fake[name] as () => unknown)(), { code: 'ERR_ORCHESTRA_IMPORT_FENCE', reason: 'disabled' }, name);
   }
   const report = fake.report as Record<string, unknown>;
@@ -368,7 +368,7 @@ export async function start(_f: unknown, _fence: unknown, ports: { fetch: typeof
   });
 });
 
-test('boot() without a resolve hook refuses to load the entry: typed outcome, exit 2, nothing imported', (t) => {
+test('boot() without a resolve hook still loads the entry and hands it the fence status; main plans ui-only from it', (t) => {
   const runner = [
     `import { boot } from ${JSON.stringify(src('boot.ts'))};`,
     `import { detectFeatures } from ${JSON.stringify(src('runtime/features.ts'))};`,
@@ -376,15 +376,57 @@ test('boot() without a resolve hook refuses to load the entry: typed outcome, ex
     "const outcome = await boot(new URL('./entry.ts', import.meta.url), { detectFeatures, installImportFence: () => installImportFence(process, {}) });",
     'console.log(JSON.stringify(outcome));',
   ].join('\n');
-  const r = runEntry(t, { 'entry.ts': "console.log('LOADED');\nexport async function start(): Promise<void> { console.log('STARTED'); }\n" }, runner);
-  assert.equal(r.status, 2, r.stderr);
-  assert.doesNotMatch(r.stdout, /LOADED|STARTED/);
-  assert.match(r.stderr, /cannot start, import fence has no resolve hook/);
+  const r = runEntry(t, { 'entry.ts': "export async function start(_f: unknown, fence: { resolveHook: boolean }): Promise<unknown> { return { code: 3, sawHook: fence.resolveHook }; }\n" }, runner);
+  assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(lastJson(r.stdout), {
-    started: false,
-    reason: 'no-resolve-hook',
-    fence: { resolveHook: false, builtinGetter: true, nativeStubs: true, ioStubs: true, networkGlobals: true },
+    started: true,
+    fence: { resolveHook: false, builtinGetter: true, nativeStubs: true, ioStubs: true, networkGlobals: true, killStubs: true },
+    result: { code: 3, sawHook: false },
   });
+});
+
+test('boot(): process.kill and process._kill are dead and cannot be put back', (t) => {
+  const r = runEntry(t, {
+    'entry.ts': `
+const out: Record<string, string> = {};
+const attempt = (name: string, fn: () => unknown) => {
+  try { fn(); out[name] = 'reached'; } catch (e) { out[name] = (e as { reason?: string; name?: string }).reason ?? (e as Error).name; }
+};
+export async function start(): Promise<void> {
+  attempt('kill', () => process.kill(process.pid, 0));
+  attempt('_kill', () => (process as unknown as { _kill(p: number, s: number): unknown })._kill(process.pid, 0));
+  attempt('computed', () => (process as unknown as Record<string, (p: number, s: number) => unknown>)['ki' + 'll']!(process.pid, 0));
+  attempt('reassign', () => { (process as unknown as Record<string, unknown>).kill = () => 1; });
+  console.log(JSON.stringify(out));
+}
+`,
+  });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(lastJson(r.stdout), { kill: 'disabled', _kill: 'disabled', computed: 'disabled', reassign: 'TypeError' });
+});
+
+test('boot(): a child is still stopped through its own ChildProcess handle while process.kill is dead', (t) => {
+  // The runner imports child_process before boot() installs the fence, as src/os/spawn.ts would be
+  // allowed to; ChildProcess.kill goes through the handle, not process.kill.
+  const runner = [
+    "import { spawn } from 'node:child_process';",
+    `import { boot } from ${JSON.stringify(src('boot.ts'))};`,
+    "globalThis.spawnForTest = spawn;",
+    "await boot(new URL('./entry.ts', import.meta.url));",
+  ].join('\n');
+  const r = runEntry(t, {
+    'entry.ts': `
+export async function start(): Promise<void> {
+  const spawn = (globalThis as unknown as { spawnForTest: (exe: string, argv: string[], o: object) => { pid?: number; kill(): boolean; once(e: string, f: (c: number | null, s: string | null) => void): void } }).spawnForTest;
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
+  const exited = new Promise<string>((resolve) => child.once('exit', (c, s) => resolve(String(s ?? c))));
+  const sent = child.kill();
+  console.log(JSON.stringify({ sent, exit: await exited, killStub: (() => { try { process.kill(child.pid ?? 0, 0); return 'reached'; } catch (e) { return (e as { reason?: string }).reason; } })() }));
+}
+`,
+  }, runner);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(lastJson(r.stdout), { sent: true, exit: 'SIGTERM', killStub: 'disabled' });
 });
 
 test('workers.ts: the bootstrap fences the worker before its module loads', (t) => {

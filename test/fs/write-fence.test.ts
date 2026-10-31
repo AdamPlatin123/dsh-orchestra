@@ -453,3 +453,25 @@ test('a bad ORCHESTRA_HOME or harness root fails construction', () => {
   assert.throws(() => new WriteFence({ orchestraHome: 'relative', harnessRoots: [] }), /ORCHESTRA_HOME rejected \(not-absolute\)/);
   assert.throws(() => new WriteFence({ orchestraHome: 'C:\\o', harnessRoots: ['\\\\srv\\share'] }), /harness root rejected \(unc\)/);
 });
+
+test('confine (test profile): the fence is not built when ORCHESTRA_HOME leads out of the test dir', (t) => {
+  const base = withTmp(t);
+  fs.mkdirSync(path.join(base, 'orchestra-test-x'));
+  const testDir = fs.realpathSync.native(path.join(base, 'orchestra-test-x'));
+  const sibling = path.join(base, 'sibling');
+  put(path.join(sibling, 'keep.txt'), 'keep');
+  const before = treeDigest(sibling);
+  const home = path.join(testDir, 'orchestra');
+  const ok = new WriteFence({ orchestraHome: home, harnessRoots: [], confine: testDir });
+  ok.mkdirp(path.join(home, 'run'));
+  assert.ok(fs.statSync(path.join(home, 'run')).isDirectory());
+  assert.throws(() => new WriteFence({ orchestraHome: testDir, harnessRoots: [], confine: testDir }), /leaves the test dir/, 'home = the test dir itself');
+  assert.throws(() => new WriteFence({ orchestraHome: path.join(base, 'orchestra'), harnessRoots: [], confine: testDir }), /leaves the test dir/);
+  const linkedHome = path.join(testDir, 'linked');
+  junction(base, linkedHome, sibling);
+  assert.throws(() => new WriteFence({ orchestraHome: linkedHome, harnessRoots: [], confine: testDir }), /leaves the test dir/);
+  const linkedDir = path.join(base, 'dir-link');
+  junction(base, linkedDir, testDir);
+  assert.throws(() => new WriteFence({ orchestraHome: path.join(linkedDir, 'orchestra'), harnessRoots: [], confine: linkedDir }), /leaves the test dir/, 'the test dir must be canonical');
+  assert.equal(treeDigest(sibling), before);
+});
