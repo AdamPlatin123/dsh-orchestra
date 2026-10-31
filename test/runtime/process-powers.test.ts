@@ -9,7 +9,7 @@ import type { Features } from '../../src/runtime/features.ts';
 import { EXIT } from '../../src/runtime/exit.ts';
 import { BASE_LOCKS, GLOBAL_POWERS, PLAIN_GLOBALS, POWERS_NODE, PROCESS_POWERS, isFenced, keepsOwnValue, powerLabel } from '../../src/runtime/process-powers.ts';
 import { describeNote, startupNotes } from '../../src/runtime/startup.ts';
-import { put, withTmp } from '../helpers/tmp.ts';
+import { put, withModuleTmp, withTmp } from '../helpers/tmp.ts';
 
 // Step 2c, process-powers table (zen note 7.1 P8 and 7.3): every own key of process and globalThis
 // is in the table, the fence applies it, and the key-set golden catches any key the table does not
@@ -30,8 +30,7 @@ type ChildOpts = { fenced?: boolean; recordPins?: boolean; arg?: unknown; execAr
  * with the real fence, or with one that installs nothing (`fenced` false).
  */
 function prepareChild(t: TestContext, files: Record<string, string>, opts: ChildOpts): { dir: string; args: string[] } {
-  const dir = withTmp(t);
-  fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}');
+  const dir = withModuleTmp(t);
   for (const [name, text] of Object.entries(files)) put(path.join(dir, name), text);
   const fenced = opts.fenced ?? true;
   fs.writeFileSync(path.join(dir, 'runner.mjs'), [
@@ -110,15 +109,24 @@ test('the table lists each key once, every lock and mint entry has a stub, and o
 /** The lock list the brief requires at least, plus the locks the step-2c measurements added. */
 const MUST_LOCK = [
   '_debugProcess', '_debugEnd', '_getActiveHandles', '_getActiveRequests', 'kill', '_kill', 'execve', 'abort', 'chdir',
-  'binding', '_linkedBinding', 'dlopen', 'loadEnvFile', 'report', 'getBuiltinModule', 'umask', 'setUncaughtExceptionCaptureCallback',
+  'binding', '_linkedBinding', 'dlopen', 'loadEnvFile', 'report', 'getBuiltinModule', 'umask',
 ];
+/**
+ * Step 3b, finding F1: setUncaughtExceptionCaptureCallback was a lock entry; boot.ts now mints it and
+ * makes its crash handler the capture callback before the fence. Once the fence is in, its slot holds the
+ * same dead stub a lock's does, so the child below judges it with the locks.
+ */
+const MINTED_DEAD = ['setUncaughtExceptionCaptureCallback'];
 
-test('the table locks at least the required process keys and exit, mints reallyExit to boot.ts alone, pins _fatalException, and mints only fetch among the globals', () => {
+test('the table locks at least the required process keys and exit, mints reallyExit and the capture callback setter to boot.ts alone, pins _fatalException, and mints only fetch among the globals', () => {
   const cls = (key: string) => PROCESS_POWERS.find((e) => e.key === key)?.class;
   for (const key of MUST_LOCK) assert.equal(cls(key), 'lock', key);
   assert.equal(cls('exit'), 'lock');
   assert.equal(cls('_fatalException'), 'keep');
-  assert.deepEqual(PROCESS_POWERS.filter((e) => e.class === 'mint').map((e) => (e.class === 'mint' ? [e.key, e.mintedBy, [...e.heldBy]] : [])), [['reallyExit', 'src/boot.ts', []]]);
+  assert.deepEqual(PROCESS_POWERS.filter((e) => e.class === 'mint').map((e) => (e.class === 'mint' ? [e.key, e.mintedBy, [...e.heldBy]] : [])), [
+    ['setUncaughtExceptionCaptureCallback', 'src/boot.ts', []],
+    ['reallyExit', 'src/boot.ts', []],
+  ]);
   assert.deepEqual(GLOBAL_POWERS.filter((e) => e.class === 'mint').map((e) => e.key), ['fetch']);
   assert.deepEqual(GLOBAL_POWERS.filter((e) => e.class === 'lock' && e.optional === undefined).map((e) => e.key).sort(),
     ['EventSource', 'Symbol(undici.globalDispatcher.1)', 'Symbol(undici.globalDispatcher.2)', 'Symbol(undici.globalOrigin.1)', 'WebSocket']);
@@ -219,7 +227,7 @@ test('key-set golden, mutation run: an injected global and process key, a delete
 // The locks and pins, one child through boot.
 
 const LOCKS_ENTRY = `
-const MUST_LOCK = ${JSON.stringify(MUST_LOCK)};
+const MUST_LOCK = ${JSON.stringify([...MUST_LOCK, ...MINTED_DEAD])};
 const GLOBALS = ['fetch', 'WebSocket', 'EventSource'];
 const PINNED = ['_fatalException'];
 const EXITS = ['exit', 'reallyExit'];
@@ -265,7 +273,7 @@ test('boot(): every required process key, exit and reallyExit are locked to thei
   const r = lastJson<Record<string, unknown>>(runChild(t, { 'entry.ts': LOCKS_ENTRY }, { recordPins: true }));
   const dead = (call?: string) => ({ ro: true, stub: 'disabledByFence', ...(call !== undefined ? { call } : {}), assign: 'TypeError' });
   const want: Record<string, unknown> = { fence: { resolveHook: true, locks: BASE_LOCKS } };
-  for (const k of MUST_LOCK) want[k] = dead('disabled');
+  for (const k of [...MUST_LOCK, ...MINTED_DEAD]) want[k] = dead('disabled');
   want.abort = dead();
   want._debugProcess = dead();
   want.getBuiltinModule = { ro: true, stub: '', call: 'getter', assign: 'TypeError' };
@@ -291,7 +299,8 @@ export async function start(): Promise<unknown> {
     if (kind === 'exit') p.exit = () => {};
     if (kind === 'reallyExit') p.reallyExit = () => {};
     if (kind === 'fatalException') p._fatalException = () => true;
-    if (kind === 'capture') (p.setUncaughtExceptionCaptureCallback as (f: () => void) => void)(() => {});
+    // runEntry set boot's capture callback before the fence, and Node takes one at a time: clear it first.
+    if (kind === 'capture') { const set = p.setUncaughtExceptionCaptureCallback as (f: (() => void) | null) => void; set(null); set(() => {}); }
     attempt = 'reached';
   } catch (e) { attempt = why(e); }
   process.stdout.write('ATTEMPT ' + attempt + '\\n');

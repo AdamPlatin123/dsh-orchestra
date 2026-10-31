@@ -42,6 +42,18 @@ export function withTmp(t: TestContext): string {
   return dir;
 }
 
+/**
+ * withTmp for fixtures Node loads as code (a runner, an entry, a worker module): a package.json at the
+ * root ends Node's package-scope lookup there, so loading a file from the fixture never looks for one
+ * up the tree (the temp dir's parents, the real home). Its "type" makes every .ts and .js file in the
+ * fixture an ES module, as the entries are written.
+ */
+export function withModuleTmp(t: TestContext): string {
+  const dir = withTmp(t);
+  fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}');
+  return dir;
+}
+
 export function put(file: string, content: string | Uint8Array = 'x'): string {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, content);

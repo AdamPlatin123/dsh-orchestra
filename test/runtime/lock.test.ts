@@ -17,7 +17,7 @@ import { whoamiEnglish, whoamiSpy } from '../helpers/fake-spawn.ts';
 import { BOOT, startOrchestrad, waitForLine } from '../helpers/orchestrad.ts';
 import type { Exit, Orchestrad } from '../helpers/orchestrad.ts';
 import { FENCE_OK, captureConsole, minimalEnv, spyGate, startInProcess, testPorts } from '../helpers/start.ts';
-import { treeDigest, withTmp } from '../helpers/tmp.ts';
+import { treeDigest, withModuleTmp, withTmp } from '../helpers/tmp.ts';
 
 const HOLDER = fileURLToPath(new URL('../helpers/lock-holder.ts', import.meta.url));
 const WORKING = /^orchestrad: working \(test profile/;
@@ -91,9 +91,8 @@ function exitWithin(o: Orchestrad, ms: number): Promise<Exit | null> {
  * released the lock and let the process live on.
  */
 function signalRunner(t: TestContext, control: boolean): { runner: string; dir: string } {
-  const files = withTmp(t);
+  const files = withModuleTmp(t);
   const mainUrl = new URL('../../src/main.ts', import.meta.url).href;
-  fs.writeFileSync(path.join(files, 'package.json'), '{"type":"module"}');
   fs.writeFileSync(path.join(files, 'emit.ts'), "process.stdout.write('EMITTING\\n');\nprocess.emit('SIGINT' as never);\nsetInterval(() => {}, 1000);\n");
   fs.writeFileSync(path.join(files, 'old-stop.ts'), [
     `import { start as realStart } from ${JSON.stringify(mainUrl)};`,

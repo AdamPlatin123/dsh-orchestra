@@ -35,7 +35,7 @@ import { realIo } from '../helpers/read-io.ts';
 import { openPaths } from '../helpers/frozen-walk.ts';
 import { findImports } from '../helpers/scan-rules.ts';
 import { FENCE_OK, captureConsole, minimalEnv, startInProcess, testPorts } from '../helpers/start.ts';
-import { put, treeDigest, withTmp } from '../helpers/tmp.ts';
+import { put, treeDigest, withModuleTmp, withTmp } from '../helpers/tmp.ts';
 import { realWriteIo } from '../helpers/write-io.ts';
 
 // Step 2c: node:fs and node:child_process are minted. boot.ts imports src/fs/node-io.ts and
@@ -67,8 +67,7 @@ type Child = { status: number | null; stdout: string; stderr: string; dir: strin
  * as its one argument. BOOT_RUNNER goes through boot() and the real fence; BARE_RUNNER does not.
  */
 function runChild(t: TestContext, files: Record<string, string>, runner: string, arg: unknown): Child {
-  const dir = withTmp(t);
-  fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}');
+  const dir = withModuleTmp(t);
   for (const [name, text] of Object.entries(files)) put(path.join(dir, name), text);
   fs.writeFileSync(path.join(dir, 'runner.mjs'), runner);
   const r = spawnSync(process.execPath, [path.join(dir, 'runner.mjs'), JSON.stringify(arg)], { encoding: 'utf8', timeout: 90_000, windowsHide: true });
@@ -903,7 +902,7 @@ test('calibration: the export walk reports an open array, object, RegExp, class 
  * use) would hide that the other module left it open whenever it is loaded without the first.
  */
 async function walkEachModule(t: TestContext, files: readonly string[]): Promise<{ walked: string[]; open: string[]; failed: string[] }> {
-  const dir = withTmp(t);
+  const dir = withModuleTmp(t);
   const walker = path.join(dir, 'walk.mjs');
   fs.writeFileSync(walker, [
     `import { walkModule } from ${JSON.stringify(pathToFileURL(path.join(REPO_DIR, 'test', 'helpers', 'frozen-walk.ts')).href)};`,

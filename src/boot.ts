@@ -5,7 +5,7 @@ import type { WriteFence } from './fs/write-fence.ts';
 import type { SpawnGateSpec } from './os/node-proc.ts';
 import type { SpawnGate } from './os/spawn.ts';
 import type { DbOpener, DbOpenerSpec } from './store/db.ts';
-import type { ClockHub } from './runtime/clock.ts';
+import type { ClockHub, ExitTimer } from './runtime/clock.ts';
 import type { Features } from './runtime/features.ts';
 import type { FenceStatus } from './runtime/import-fence.ts';
 // Minted before the fence: the static imports below are evaluated before this module's body, so
@@ -15,11 +15,12 @@ import type { FenceStatus } from './runtime/import-fence.ts';
 // the first opener, so a ui-only process never loads it (the import its builtin-policy row allows
 // stays its own: no other module may import node:sqlite, and nobody can import node-sqlite.ts). The clock
 // hub is made here too (runtime/clock.ts, the one module that reads the time or arms a timer): it
-// reaches main.ts and working.ts only as BootPorts.clock, never as a default.
+// reaches main.ts and working.ts only as BootPorts.clock, never as a default. clock.ts's exit timer is
+// taken here too, and kept: it reaches no other module (makeEndProcess).
 import { makeReadGate, makeWriteFence, realpath } from './fs/node-io.ts';
 import { makeSpawnGate } from './os/node-proc.ts';
 import { makeDbOpener } from './store/node-sqlite.ts';
-import { makeRealClock } from './runtime/clock.ts';
+import { makeRealClock, takeExitTimer } from './runtime/clock.ts';
 import { EXIT } from './runtime/exit.ts';
 import { detectFeatures } from './runtime/features.ts';
 import { deadDispatcher, installImportFence } from './runtime/import-fence.ts';
@@ -85,56 +86,118 @@ type MainModule = { start(f: Features, fence: FenceStatus, ports: BootPorts): Pr
  */
 const reallyExit: (code: number) => void = process.reallyExit;
 
+/**
+ * process.setUncaughtExceptionCaptureCallback, taken the same way: a mint boot.ts keeps (process-powers.ts),
+ * through which runEntry makes its crash handler the capture callback. Node then hands every uncaught
+ * error and unhandled rejection to that callback instead of emitting 'uncaughtException', so no listener
+ * a module adds, removes or throws from decides a crash's code (measured on 24.22: with a plain listener,
+ * removeAllListeners() before a throw ended with 1, and a second listener that throws with 7). The slot
+ * holds a stub for everyone else once the fence is in, so nobody can clear or replace the callback. It
+ * is set before the fence: Node's setter writes a field of the process report object, whose fence stub
+ * is frozen (measured: the call then throws). Called as a plain function: Node's reads no `this`.
+ */
+const setCrashCapture: (fn: ((e: unknown) => void) | null) => void = process.setUncaughtExceptionCaptureCallback;
+
+/**
+ * The flush deadline's timer, taken the same way: clock.ts hands it out once, and boot.ts takes it while
+ * it evaluates, before any entry module runs. A native one-shot timer outside the hub every module's
+ * Clocks share, so no module can pre-arm its timerId, cancel it or postpone it through a Clock; it reads
+ * no clock, so a time source some module replaced or froze cannot hold it either; and its Timeout is made
+ * now, with its own fields and methods taken now, so writing Timeout.prototype later does not reach it
+ * (clock.ts takeExitTimer, which names what stays a residual).
+ */
+const exitTimer: ExitTimer = takeExitTimer();
+
 /** How long the console may take to drain before the process ends anyway. */
 export const EXIT_FLUSH_MS = 2000;
 
-/** Ends the process: `line` (if any) to stderr, the console flushed, then exactly `code`. The first call wins. */
-export type EndProcess = (code: number, line?: string) => void;
+/**
+ * Where a call of EndProcess comes from: a typed outcome or a stop ('end'), runEntry's crash handler, the
+ * capture callback Node hands every uncaught error to ('crash'), or runEntry's 'uncaughtExceptionMonitor'
+ * listener, which Node runs before that callback and before any monitor a module adds later ('monitor').
+ */
+export type EndCause = 'end' | 'crash' | 'monitor';
+
+/**
+ * Ends the process: `line` (if any) to stderr, the console flushed, then exactly `code`. The first 'end'
+ * or 'crash' call commits its code, and nothing changes it after. Once it is committed, a later 'end' is
+ * a no-op, and a 'crash' or 'monitor' call ends the process at once with the committed code; before
+ * that, a 'monitor' call does nothing (the crash handler that follows commits the crash).
+ */
+export type EndProcess = (code: number, line?: string, cause?: EndCause) => void;
 
 /**
  * The one way orchestrad ends (a typed outcome, a crash, a stop). It writes `line`, waits for stdout
- * and stderr to drain, but at most EXIT_FLUSH_MS on a deadline timer of the boot hub, so a write whose
- * callback never comes (a replaced process.stdout.write, say) cannot keep the process alive; then it
- * hands `code` to the reallyExit it took. Node's exit() would emit 'exit' first and end with
+ * and stderr to drain, but at most EXIT_FLUSH_MS on boot's own exit timer, so a write whose callback
+ * never comes (a replaced process.stdout.write, say) cannot keep the process alive; then it hands
+ * `code` to the reallyExit it took. Node's exit() would emit 'exit' first and end with
  * process.exitCode as its listeners left it (measured: a listener setting exitCode = 0 turned a typed
  * refusal into 0); reallyExit takes the code it is given and runs no listener. The fence locks exit()
  * and reallyExit on process for everyone else (process-powers.ts), so no module can end the process
- * with a code of its own while the console drains. Later calls are no-ops, so a crash on the way out
- * cannot change the code already committed.
+ * with a code of its own while the console drains.
+ *
+ * A crash during the drain ends the process at once with the committed code: a crashed process is in a
+ * state nobody knows, and Node's crash path may run more code after boot's own (a monitor a module added
+ * that throws ends the process with 7, Node's code for a crash handler that threw), so boot ends before
+ * any of it runs. The first call fixes its code and arms the exit timer before anything else; a write
+ * that throws counts as drained (the global process replaced by a module without a console ends the
+ * process at once), and any other throw ends the process at once with that code: a half-done end would
+ * leave the code committed with nothing to end it. Each stream counts once, however often its write
+ * calls back, and the line is issued first, so a stdout that calls back twice cannot end the process
+ * before the line is out; process.exitCode is set last, so a setter that throws cannot drop it either.
  */
-export function makeEndProcess(hub: ClockHub): EndProcess {
-  let ending = false;
-  return (code, line) => {
-    if (ending) return;
-    ending = true;
-    process.exitCode = code;
-    const end = () => reallyExit(code);
-    const clock = hub.port(end);
-    clock.schedule({ timerId: 'deadline:exit:0', class: 'deadline', clock: 'mono', due: clock.nowMono() + EXIT_FLUSH_MS });
-    let left = 2;
-    const drained = () => {
-      left--;
-      if (left === 0) end();
-    };
-    try {
-      process.stdout.write('', drained);
-    } catch {
-      drained();
+export function makeEndProcess(): EndProcess {
+  let committed: number | null = null;
+  return (code, line, cause = 'end') => {
+    if (committed !== null) {
+      if (cause !== 'end') reallyExit(committed);
+      return;
     }
+    if (cause === 'monitor') return;
+    committed = code;
+    const end = () => reallyExit(code);
     try {
-      process.stderr.write(line ?? '', drained);
+      exitTimer(EXIT_FLUSH_MS, end);
+      let left = 2;
+      const drainedOnce = () => {
+        let done = false;
+        return () => {
+          if (done) return;
+          done = true;
+          left--;
+          if (left === 0) end();
+        };
+      };
+      const errDrained = drainedOnce();
+      const outDrained = drainedOnce();
+      try {
+        process.stderr.write(line ?? '', errDrained);
+      } catch {
+        errDrained();
+      }
+      try {
+        process.stdout.write('', outDrained);
+      } catch {
+        outDrained();
+      }
+      try {
+        // For whoever reads it during the drain; reallyExit takes `code` itself, so a setter that throws
+        // (a replaced global process) changes nothing and the drain goes on.
+        process.exitCode = code;
+      } catch {
+        // The code is committed above.
+      }
     } catch {
-      drained();
+      end();
     }
   };
 }
 
-/** The boot hub and the end built on it; runEntry makes one pair for the whole process. */
+/** The boot hub and the end; runEntry makes one pair for the whole process. */
 export type BootBase = { hub: ClockHub; end: EndProcess };
 
 function bootBase(): BootBase {
-  const hub = makeRealClock();
-  return { hub, end: makeEndProcess(hub) };
+  return { hub: makeRealClock(), end: makeEndProcess() };
 }
 
 export type BootDeps = { detectFeatures(): Features; installImportFence(): FenceStatus };
@@ -189,14 +252,31 @@ export function crashLine(e: unknown): string {
  * the 20-29 that orchestrad's typed outcomes use (exit.ts). A typed outcome's code (refused, ui-only,
  * exit, lock-held, start-failed; a working outcome returns null and keeps running) is committed the
  * same way: through makeEndProcess, so neither a timer that flips process.exitCode, nor an 'exit'
- * listener that does, nor a console write that never calls back can change or hold it.
+ * listener that does, nor a console write that never calls back can change or hold it. `base` is a
+ * parameter for the tests' controls, as in boot().
+ *
+ * Crashes reach boot through the capture callback (setCrashCapture above), not a listener: Node then
+ * never emits 'uncaughtException', so no listener added, removed or thrown from decides the code. Node
+ * still emits 'uncaughtExceptionMonitor' first; boot's monitor listener is the first one, added before
+ * any entry module runs, and once a code is committed it ends the process right there, before a later
+ * monitor can throw. Residuals of the threat model (zen note 7.1), all banned in our code by the static
+ * scan (process-exit-only-in-boot): a module that removes boot's monitor or puts its own in front of it,
+ * and then adds one that throws, ends a crash with 7; one that replaces process.emit decides what the
+ * monitors see.
  */
-export async function runEntry(entry: URL, deps: BootDeps = DEFAULT_DEPS): Promise<void> {
-  const base = bootBase();
+export async function runEntry(entry: URL, deps: BootDeps = DEFAULT_DEPS, base: BootBase = bootBase()): Promise<void> {
   // Exit once the line is out: whatever the crash left open (the lock, a timer) must not keep a
   // process in an unknown state alive.
-  const crash = (e: unknown) => base.end(EXIT.crashed, `${crashLine(e)}\n`);
-  process.on('uncaughtException', crash);
+  const crash = (e: unknown) => base.end(EXIT.crashed, `${crashLine(e)}\n`, 'crash');
+  process.on('uncaughtExceptionMonitor', () => base.end(EXIT.crashed, undefined, 'monitor'));
+  try {
+    setCrashCapture(crash);
+  } catch (e) {
+    // Another capture callback, or the fence already in (its frozen report stub): boot does not own
+    // the crash path, so nothing starts (fail closed).
+    crash(e);
+    return;
+  }
   try {
     const outcome = await boot(entry, deps, base);
     const code = outcome.started ? exitCodeOf(outcome.result) : outcome.code;

@@ -3,10 +3,11 @@ import { ownFields } from './own.ts';
 import { frozen, frozenClass } from '../../shared/frozen.js';
 
 // The one Clock port (plan step 3, I01, invariant 21). Every read of the time and every timer in
-// orchestrad goes through a Clock; the static scan keeps Date.now, performance.now, setTimeout and the
-// other environment clocks in this file (clock-only-in-clock-ts). Time is an input: a timer that
-// causes a transition is written to the journal as a clock record, so replay reads the record and
-// never the clock.
+// orchestrad goes through a Clock, but for boot.ts's flush deadline (takeExitTimer below: it ends the
+// process and feeds nothing to the journal); the static scan keeps Date.now, performance.now,
+// setTimeout and the other environment clocks in this file (clock-only-in-clock-ts). Time is an input:
+// a timer that causes a transition is written to the journal as a clock record, so replay reads the
+// record and never the clock.
 //
 // A Clock has exactly four methods, nowMono(), nowWall(), schedule({timerId, class, clock, due}) and
 // cancel(timerId); later steps code against that signature. Where a fired timer goes is fixed when
@@ -25,6 +26,20 @@ import { frozen, frozenClass } from '../../shared/frozen.js';
 // Times are integer milliseconds: nowMono counts from this process's start and compares only within
 // one boot (the journal carries bootId beside it); nowWall is Unix epoch milliseconds, for calendar
 // values only (a reminder's due time), never for durations (invariant 20).
+
+// The time sources and the native timer, taken while this module evaluates. boot.ts loads it before its
+// fence and before any entry module, so these are Node's own: globalThis.performance, performance.now
+// and Date.now are plain writable slots (process-powers.ts keeps them), and a module that replaces or
+// freezes one later changes what it reads itself, never what a Clock reads or when a timer fires.
+// performance.now checks its receiver, so it is bound here, once; every call after is a plain call.
+// The node:timers bindings are live (syncBuiltinESMExports() rewrites them), so they are copied too.
+const monoNow: () => number = performance.now.bind(performance);
+const wallNow: () => number = Date.now;
+const armNative = setTimeout;
+const disarmNative = clearTimeout;
+// Reflect.apply is a plain writable global too; the exit timer calls the Timeout methods it took through
+// this copy (takeExitTimer).
+const applyNative = Reflect.apply;
 
 /** Timer classes. A timerId starts with its class: `${class}:${entityId}:${seq}`. */
 export const TIMER_CLASSES = frozen(['silence', 'reminder', 'snooze', 'unregistered', 'deadline', 'poll'] as const);
@@ -85,7 +100,7 @@ export interface ClockHub {
   port(onFire: FireHandler | null): Clock;
 }
 
-export type ClockErrorReason = 'bad-spec' | 'bad-timer-id' | 'class-mismatch' | 'bad-due' | 'duplicate-timer' | 'read-only' | 'not-recorded' | 'mono-backwards' | 'runaway';
+export type ClockErrorReason = 'bad-spec' | 'bad-timer-id' | 'class-mismatch' | 'bad-due' | 'duplicate-timer' | 'read-only' | 'not-recorded' | 'mono-backwards' | 'runaway' | 'taken';
 
 export class ClockError extends Error {
   readonly code = 'ERR_ORCHESTRA_CLOCK';
@@ -173,6 +188,14 @@ function processingOrder(a: Entry, b: Entry): number {
 /** The timer table every Clock of a hub shares; a timerId is pending on at most one of them. */
 class Table {
   readonly #ports: PortState[] = [];
+  readonly #seqs = new Map<string, number>();
+
+  /** The next number of the sequence `name` on this table: 1, 2, 3... (tableSeq). */
+  next(name: string): number {
+    const n = (this.#seqs.get(name) ?? 0) + 1;
+    this.#seqs.set(name, n);
+    return n;
+  }
 
   addPort(onFire: FireHandler | null): PortState {
     const port: PortState = { onFire, timers: new Map() };
@@ -230,6 +253,23 @@ function fireTick(table: Table, now: Reading): void {
   }
 }
 
+/** The table of every Clock this module made; a Clock carries nothing beyond its four methods, so tableSeq looks it up here. */
+const TABLE_OF = new WeakMap<Clock, Table>();
+
+/**
+ * The next number of the sequence `name` on the timer table `clock` shares with every Clock of its hub:
+ * 1, 2, 3... A caller that names its timers by a count (SpawnGate's run deadlines) numbers them here, so
+ * two callers on one hub never arm the same timerId, whatever object handed each of them the hub (a
+ * wrapper or a Proxy whose port() mints from one table counts that table once). The same calls on a
+ * fresh VirtualClock give the same numbers. A Clock this module did not make has no table and is refused.
+ */
+export function tableSeq(clock: Clock, name: string): number {
+  const table = typeof clock === 'object' && clock !== null ? TABLE_OF.get(clock) : undefined;
+  if (table === undefined) throw new ClockError('bad-spec', 'a sequence is numbered on the table of a Clock that runtime/clock.ts made');
+  if (typeof name !== 'string' || name.length === 0) throw new ClockError('bad-spec', 'a sequence has a name');
+  return table.next(name);
+}
+
 /** A frozen Clock without a prototype over `table` and the time source `read`: the four methods and nothing else. */
 function makePort(table: Table, read: () => Reading, onFire: FireHandler | null, changed: () => void): Clock {
   if (onFire !== null && typeof onFire !== 'function') throw new ClockError('bad-spec', 'onFire is a function or null');
@@ -246,7 +286,9 @@ function makePort(table: Table, read: () => Reading, onFire: FireHandler | null,
       if (state.timers.delete(id)) changed();
     },
   });
-  return Object.freeze(clock);
+  Object.freeze(clock);
+  TABLE_OF.set(clock, table);
+  return clock;
 }
 
 /** setTimeout's largest delay; a later timer is armed in segments of at most this. */
@@ -263,24 +305,24 @@ export function armDelay(next: { mono: number | null; wall: number | null }): nu
 }
 
 /**
- * The real hub: performance.now() and Date.now() in whole milliseconds, and one native timer for the
- * earliest timer of the table, armed only while a timer is pending and cleared when none is (so a
- * started orchestrad holds no timer until a later step schedules one). It stays ref'd: a pending
- * deadline must fire even when nothing else keeps the loop alive. Only boot.ts makes it (static scan,
- * clock-factories-only-in-roots).
+ * The real hub: performance.now() and Date.now() in whole milliseconds (the ones this module took while
+ * it evaluated), and one native timer for the earliest timer of the table, armed only while a timer is
+ * pending and cleared when none is (so a started orchestrad holds no timer until a later step schedules
+ * one). It stays ref'd: a pending deadline must fire even when nothing else keeps the loop alive. Only
+ * boot.ts makes it (static scan, clock-factories-only-in-roots).
  */
 export function makeRealClock(): ClockHub {
   const table = new Table();
-  const read = (): Reading => ({ mono: Math.floor(performance.now()), wall: Date.now() });
+  const read = (): Reading => ({ mono: Math.floor(monoNow()), wall: wallNow() });
   let native: ReturnType<typeof setTimeout> | null = null;
   const rearm = () => {
     if (native !== null) {
-      clearTimeout(native);
+      disarmNative(native);
       native = null;
     }
     const delay = armDelay(table.earliest(read()));
     if (delay === null) return;
-    native = setTimeout(wake, delay);
+    native = armNative(wake, delay);
   };
   function wake(): void {
     native = null;
@@ -292,6 +334,56 @@ export function makeRealClock(): ClockHub {
   }
   const hub = Object.assign(Object.create(null) as ClockHub, { port: (onFire: FireHandler | null) => makePort(table, read, onFire, rearm) });
   return Object.freeze(hub);
+}
+
+/** Runs `fire` once, `ms` milliseconds from now; it runs once, and nothing can cancel or move it. */
+export type ExitTimer = (ms: number, fire: () => void) => void;
+
+let exitTimerTaken = false;
+
+/** The Timeout members the exit timer uses: the fields Node's constructor gives it, and the methods that arm it. */
+type NativeTimeout = { _idleTimeout: number; ref(): unknown; unref(): unknown; refresh(): unknown };
+
+/**
+ * The timer of boot.ts's flush deadline (makeEndProcess), outside every hub. A deadline on the hub boot
+ * hands down could be pre-armed by any module holding one of its Clocks (a timerId is pending once per
+ * hub, so boot's own schedule would be refused), and its due time is a reading of the hub's clock; this
+ * timer has no timerId and reads no clock. Handed out once: boot.ts takes it while it evaluates, before
+ * any entry module runs, and every later call is refused (the static scan names it in boot.ts alone,
+ * clock-factories-only-in-roots).
+ *
+ * The Timeout is made here, at that moment, unref'd and waiting 2^31 - 1 ms (and as long again each time
+ * that passes unarmed), and it never leaves this module. Node's constructor gives it its own fields
+ * then, and its ref and refresh are taken from Timeout.prototype then; arming sets its own delay and
+ * calls those copies. A Timeout made at end time would take its fields through Timeout.prototype, which
+ * any module reaches from a setTimeout() of its own (a plain global): an accessor planted there would
+ * catch the delay or the callback and hold or drop the deadline (measured on 24.22). So a module that
+ * writes Timeout.prototype after boot.ts evaluated reaches neither the fields nor the methods of this
+ * one. What stays a residual (zen note 7.1, like net.Socket through process.stdout): Node internals a
+ * module can write some other way, which the threat model leaves to the code review.
+ */
+export function takeExitTimer(): ExitTimer {
+  if (exitTimerTaken) throw new ClockError('taken', 'the exit timer is handed out once, to boot.ts');
+  exitTimerTaken = true;
+  let fire: (() => void) | null = null;
+  const timeout = armNative(() => {
+    if (fire !== null) fire();
+    else applyNative(refresh, timeout, []);
+  }, MAX_ARM_MS) as unknown as NativeTimeout;
+  const proto = Object.getPrototypeOf(timeout) as NativeTimeout;
+  const ref = proto.ref;
+  const refresh = proto.refresh;
+  applyNative(proto.unref, timeout, []);
+  return Object.freeze((ms: number, given: () => void) => {
+    if (!Number.isSafeInteger(ms) || ms < 0 || ms > MAX_ARM_MS) throw new ClockError('bad-due', 'an exit timer runs a whole number of milliseconds up to 2^31 - 1');
+    if (typeof given !== 'function') throw new ClockError('bad-spec', 'an exit timer fires a function');
+    if (fire !== null) throw new ClockError('taken', 'the exit timer is armed once');
+    fire = given;
+    // setTimeout's own floor: a delay under 1 ms is 1.
+    timeout._idleTimeout = Math.max(1, ms);
+    applyNative(refresh, timeout, []);
+    applyNative(ref, timeout, []);
+  });
 }
 
 const MAX_TICKS_PER_MOVE = 100_000;

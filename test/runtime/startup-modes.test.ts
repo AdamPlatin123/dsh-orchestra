@@ -21,7 +21,7 @@ import { fakeSpawn, whoamiChinese, whoamiEnglish, whoamiSpy } from '../helpers/f
 import type { FakeSpawn } from '../helpers/fake-spawn.ts';
 import { findImports } from '../helpers/scan-rules.ts';
 import { FENCE_NO_HOOK, FENCE_OK, captureConsole, minimalEnv, runWorkingInProcess, spyGate, startInProcess, testPorts } from '../helpers/start.ts';
-import { junction, put, treeDigest, withTmp } from '../helpers/tmp.ts';
+import { junction, put, treeDigest, withModuleTmp, withTmp } from '../helpers/tmp.ts';
 
 const REPO = fileURLToPath(new URL('../../', import.meta.url));
 /** The clock hub runWorking() gets in these tests, as boot hands main.ts the real one. */
@@ -377,7 +377,7 @@ console.log(JSON.stringify({ mode: o.mode, lines, seen: [...seen] }));
 `;
 
 function record(t: TestContext, params: { argv: string[]; home: string; env: Record<string, string | undefined>; inTest?: { fakeHome: string } }): { mode: string; lines: string[]; seen: string[] } {
-  const dir = withTmp(t);
+  const dir = withModuleTmp(t);
   const runner = path.join(dir, 'recorder.mjs');
   fs.writeFileSync(runner, RECORDER);
   const r = spawnSync(process.execPath, [runner, SRC_URL, JSON.stringify(params)], { encoding: 'utf8', timeout: 60_000, windowsHide: true });

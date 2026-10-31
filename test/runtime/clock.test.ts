@@ -1,14 +1,18 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import type { Clock, ClockRecord, Fired, TimerSpec } from '../../src/runtime/clock.ts';
 import {
   CLASS_RANK, ClockError, MAX_ARM_MS, TIMER_CLASSES, TIMER_ENTITY_RE, TRANSITION_CLASSES, VirtualClock, WALL_CHECK_MS, armDelay, clockRecord,
-  compareTimers, makeRealClock, parseTimerId, timerId,
+  compareTimers, makeRealClock, parseTimerId, tableSeq, timerId,
 } from '../../src/runtime/clock.ts';
 import { ID_RE } from '../../shared/protocol.js';
+import { withModuleTmp } from '../helpers/tmp.ts';
 
 // Plan step 3, I01: one Clock port, deterministic timerIds, a fixed total order inside a tick, and a
-// virtual clock that tests and replay drive. Every test here but the last two runs on the virtual
+// virtual clock that tests and replay drive. Every test here but the last three runs on the virtual
 // clock: nothing waits on real time.
 
 const T0 = Date.parse('2026-10-31T08:00:00Z');
@@ -270,6 +274,30 @@ test('cancel() touches only the calling Clock\'s own pending timer; a timerId is
   assert.deepEqual(seen, ['a deadline:spawn-1:0']);
 });
 
+// Step 3b's review, finding F2: a caller that numbers its timers (SpawnGate's run deadlines) numbered
+// them per hub object, and a wrapper or a Proxy over one hub is another object over the same table, so
+// two such callers armed the same timerId. tableSeq numbers on the table itself.
+test('tableSeq numbers a sequence on the timer table a Clock shares: every Clock of a hub and of a wrapper over it counts once, another hub starts over, a foreign Clock is refused', () => {
+  const vc = new VirtualClock(START);
+  const wrapper = Object.freeze({ port: (f: ((x: Fired) => void) | null) => vc.port(f) });
+  const a = vc.port(() => {});
+  const b = wrapper.port(() => {});
+  const c = wrapper.port(null);
+  assert.deepEqual([tableSeq(a, 'runs'), tableSeq(b, 'runs'), tableSeq(c, 'runs'), tableSeq(a, 'runs')], [1, 2, 3, 4]);
+  assert.equal(tableSeq(b, 'other'), 1, 'each name is its own sequence');
+  const fresh = new VirtualClock(START);
+  assert.equal(tableSeq(fresh.port(null), 'runs'), 1, 'a fresh hub starts at 1: the same calls give the same numbers');
+  const real = makeRealClock();
+  const proxy = new Proxy(real, {});
+  assert.deepEqual([tableSeq(real.port(null), 'runs'), tableSeq(proxy.port(null), 'runs'), tableSeq(real.port(null), 'runs')], [1, 2, 3]);
+  const foreign: Clock = Object.freeze({ nowMono: () => 0, nowWall: () => 0, schedule: () => {}, cancel: () => {} });
+  for (const [i, bad] of [foreign, Object.create(a) as Clock, null, undefined, 'clock'].entries()) {
+    assert.throws(() => tableSeq(bad as Clock, 'runs'), reason('bad-spec'), `refusal ${i}`);
+  }
+  assert.throws(() => tableSeq(a, ''), reason('bad-spec'));
+  assert.equal(tableSeq(a, 'runs'), 5, 'a refused call takes no number');
+});
+
 test('timerId() makes the plan\'s format and refuses anything else; the entity grammar is shared/protocol.js\'s ID_RE', () => {
   assert.equal(timerId('reminder', 'r-7', 0), 'reminder:r-7:0');
   assert.deepEqual(parseTimerId('snooze:it-41:12'), { class: 'snooze', entityId: 'it-41', seq: 12 });
@@ -378,4 +406,60 @@ test('the real clock: whole-millisecond readings, mono never goes back, overdue 
   assert.equal(timeouts(), before + 1, 'the wall timer is still pending');
   c.cancel('reminder:far:0');
   assert.equal(timeouts(), before, 'nothing pending, nothing armed');
+});
+
+// Finding N2 of step 3: the real hub read performance.now() and Date.now() from the globals on every
+// call, so a module that replaced or froze one stopped every deadline on the hub (boot's flush deadline
+// among them). clock.ts takes them, and node:timers' functions, while it evaluates. Measured in a plain
+// child (no fence, so it can also rewrite the node:timers exports clock.ts imported, which
+// syncBuiltinESMExports() pushes into every live binding): clock.ts is loaded, then every source is
+// replaced with one that throws, and only then is a hub made, read, armed and cancelled, and the exit
+// timer taken (twice) and armed.
+test('the real hub reads the time sources clock.ts took while it evaluated: performance, Date.now and the node:timers exports replaced afterwards change no reading and no timer', (t) => {
+  const dir = withModuleTmp(t);
+  const script = path.join(dir, 'replaced.mjs');
+  fs.writeFileSync(script, [
+    "import { syncBuiltinESMExports } from 'node:module';",
+    `const { makeRealClock, takeExitTimer } = await import(${JSON.stringify(new URL('../../src/runtime/clock.ts', import.meta.url).href)});`,
+    'const before = { mono: performance.now(), wall: Date.now() };',
+    "const gone = (what) => () => { throw new Error(what + ' replaced'); };",
+    "Object.defineProperty(globalThis, 'performance', { value: { now: gone('performance.now') }, configurable: true, writable: true });",
+    "Date.now = gone('Date.now');",
+    "const timers = process.getBuiltinModule('node:timers');",
+    "timers.setTimeout = gone('setTimeout of node:timers');",
+    "timers.clearTimeout = gone('clearTimeout of node:timers');",
+    'syncBuiltinESMExports();',
+    'const out = { before, mono: null, wall: null, fired: [], firedMono: null, second: null, refused: [], exitTimer: null, error: null };',
+    'const report = () => process.stdout.write(JSON.stringify(out));',
+    'try {',
+    '  const c = makeRealClock().port((f) => { out.fired.push(f.timerId); out.firedMono = f.firedMono; });',
+    '  out.mono = c.nowMono();',
+    '  out.wall = c.nowWall();',
+    "  c.schedule({ timerId: 'deadline:gone:0', class: 'deadline', clock: 'mono', due: out.mono + 10 });",
+    "  c.cancel('deadline:gone:0');",
+    "  c.schedule({ timerId: 'poll:p:0', class: 'poll', clock: 'mono', due: out.mono + 30 });",
+    '  const exitTimer = takeExitTimer();',
+    "  try { takeExitTimer(); out.second = 'handed out'; } catch (e) { out.second = e.reason; }",
+    "  for (const [ms, fire] of [[-1, () => {}], [1.5, () => {}], [2 ** 31, () => {}], [10, 'not a function']]) {",
+    "    try { exitTimer(ms, fire); out.refused.push('armed'); } catch (e) { out.refused.push(e.reason ?? e.code); }",
+    '  }',
+    "  exitTimer(150, () => { out.exitTimer = 'fired'; report(); });",
+    '} catch (e) {',
+    '  out.error = e.message;',
+    '  report();',
+    '}',
+  ].join('\n'));
+  const r = spawnSync(process.execPath, [script], { encoding: 'utf8', timeout: 30_000, windowsHide: true });
+  assert.equal(r.status, 0, `${r.signal ?? ''} ${r.stderr}`);
+  const out = JSON.parse(r.stdout) as {
+    before: { mono: number; wall: number }; mono: number; wall: number; fired: string[]; firedMono: number; second: string; refused: string[]; exitTimer: string; error: string | null;
+  };
+  assert.equal(out.error, null);
+  assert.ok(Number.isSafeInteger(out.mono) && out.mono >= Math.floor(out.before.mono), 'mono continues the performance.now clock.ts took');
+  assert.ok(Number.isSafeInteger(out.wall) && Math.abs(out.wall - out.before.wall) < 5000, 'wall is the Date.now clock.ts took');
+  assert.deepEqual(out.fired, ['poll:p:0'], 'the poll fired and the cancelled deadline did not');
+  assert.ok(out.firedMono >= out.mono + 30, 'the timer fired at a later reading of the same clock');
+  assert.equal(out.second, 'taken', 'the exit timer is handed out once');
+  assert.deepEqual(out.refused, ['bad-due', 'bad-due', 'bad-due', 'bad-spec'], 'whole milliseconds up to 2^31 - 1, and a function to fire');
+  assert.equal(out.exitTimer, 'fired');
 });

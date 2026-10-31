@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import type { RealpathFn } from '../fs/paths.ts';
 import type { Clock, ClockHub, Fired } from '../runtime/clock.ts';
 import { checkPath, pathKey } from '../fs/paths.ts';
+import { tableSeq } from '../runtime/clock.ts';
 import { envGet, ownFields } from '../runtime/own.ts';
 import { frozenClass } from '../../shared/frozen.js';
 
@@ -314,6 +315,16 @@ export type RunResult =
 
 const sameArgv = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 
+/**
+ * run() deadlines are numbered on the timer table of the gate's Clock (clock.ts tableSeq), across every
+ * gate whose Clock shares it: a timerId is pending at most once per table, and boot's hub carries
+ * main.ts's integrity gate and working.ts's gate at once, so gates numbering their own runs would both
+ * arm `deadline:spawn-1:0` and the second schedule would be refused. Counting on the table, not on the
+ * hub object a caller passed, keeps that true for a wrapper or a Proxy over one hub too. The same runs
+ * on a fresh virtual clock get the same timerIds every time.
+ */
+const RUN_SEQ = 'spawn-run';
+
 function mustPath(p: string, what: string): string {
   const c = checkPath(p);
   if (!c.ok) throw new Error(`spawn gate: ${what} rejected (${c.reason}): ${String(p)}`);
@@ -376,7 +387,6 @@ export class SpawnGate {
   readonly #clock: Clock;
   /** run() deadlines by timerId; the Clock fires into #expire, which looks the run up here. */
   readonly #deadlines = new Map<string, () => void>();
-  #runs = 0;
 
   constructor(config: SpawnGateConfig) {
     // Own fields only: an optional field the caller left out reads undefined, never Object.prototype's.
@@ -514,8 +524,11 @@ export class SpawnGate {
 
   /**
    * Runs to completion and collects the output; past the time or size limit the child is killed. The
-   * time limit is a deadline timer of the gate's Clock (`deadline:spawn-<n>:0`, n counting this gate's
-   * runs), so a virtual clock drives it in tests exactly as the real one does in orchestrad.
+   * time limit is a deadline timer of the gate's Clock (`deadline:spawn-<n>:0`, n counting the runs on
+   * its timer table, RUN_SEQ), so a virtual clock drives it in tests exactly as the real one does in
+   * orchestrad. The deadline is armed before the child starts: a schedule the Clock refuses (its timerId
+   * already pending, armed by some other code on the same table) or a Clock that clock.ts did not make
+   * ends the run as spawn-failed with no child started, never with one left running without a deadline.
    */
   run(req: SpawnRequest, given: RunLimits): Promise<RunResult> {
     const { timeoutMs, maxBytes } = ownFields(given, ['timeoutMs', 'maxBytes'] as const);
@@ -524,23 +537,33 @@ export class SpawnGate {
     const limits: RunLimits = { timeoutMs: timeoutMs!, maxBytes: maxBytes! };
     const d = this.#decide(req);
     if (!d.allow) return Promise.resolve({ ok: false, reason: 'refused', decision: d });
-    let child: ChildLike;
+    let id: string;
     try {
-      child = this.#spawn(d, 'ignore');
+      id = `deadline:spawn-${tableSeq(this.#clock, RUN_SEQ)}:0`;
+      this.#clock.schedule({ timerId: id, class: 'deadline', clock: 'mono', due: this.#clock.nowMono() + limits.timeoutMs });
     } catch (e) {
       return Promise.resolve({ ok: false, reason: 'spawn-failed', detail: errCode(e) });
     }
-    const id = `deadline:spawn-${++this.#runs}:0`;
+    // A Clock fires only from a later tick, never inside schedule(), so collect() hands over its
+    // onTimeout before the deadline can come.
+    let onTimeout: (() => void) | null = null;
+    this.#deadlines.set(id, () => onTimeout?.());
     const deadline: Deadline = {
-      arm: (onTimeout) => {
-        this.#deadlines.set(id, onTimeout);
-        this.#clock.schedule({ timerId: id, class: 'deadline', clock: 'mono', due: this.#clock.nowMono() + limits.timeoutMs });
+      arm: (f) => {
+        onTimeout = f;
       },
       disarm: () => {
         this.#deadlines.delete(id);
         this.#clock.cancel(id);
       },
     };
+    let child: ChildLike;
+    try {
+      child = this.#spawn(d, 'ignore');
+    } catch (e) {
+      deadline.disarm();
+      return Promise.resolve({ ok: false, reason: 'spawn-failed', detail: errCode(e) });
+    }
     return collect(child, limits, deadline);
   }
 
@@ -556,6 +579,7 @@ export class SpawnGate {
 // own paths call only its private members, so a subclass cannot steer them either.
 frozenClass(SpawnGate);
 
+/** A run's deadline, already scheduled by run(): arm() hands it what to do when it fires, disarm() cancels it. */
 type Deadline = { arm(onTimeout: () => void): void; disarm(): void };
 
 function collect(child: ChildLike, limits: RunLimits, deadline: Deadline): Promise<RunResult> {

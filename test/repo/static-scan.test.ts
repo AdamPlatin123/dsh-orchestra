@@ -81,6 +81,8 @@ const CASES: readonly Case[] = [
   pos('process-power-member', 'src/model/x.ts', 'process.abort();'),
   pos('process-power-member', 'src/model/x.ts', 'process.umask(0o222);'),
   pos('process-power-member', 'src/model/x.ts', 'process.setUncaughtExceptionCaptureCallback(() => {});'),
+  pos('process-power-member', 'src/main.ts', 'process.setUncaughtExceptionCaptureCallback(null);'),
+  neg('process-power-member', 'src/boot.ts', 'const setCrashCapture: (fn: ((e: unknown) => void) | null) => void = process.setUncaughtExceptionCaptureCallback;'),
   // Member access only: the same names as methods of other objects pass, and kept keys pass.
   neg('process-power-member', 'src/os/spawn.ts', 'child.kill();'),
   neg('process-power-member', 'src/model/x.ts', 'controller.abort();'),
@@ -114,6 +116,26 @@ const CASES: readonly Case[] = [
   neg('process-exit-only-in-boot', 'src/model/x.ts', 'if (process.exitCode >= 20) note();'),
   neg('process-exit-only-in-boot', 'src/os/spawn.ts', "child.once('exit', onExit);"),
   neg('process-exit-only-in-boot', 'src/runtime/working.ts', "process.on('SIGINT', stop);"),
+  // Step 3b, finding F1: the crash path's listeners decide a crash's code (a throwing monitor ends with
+  // 7, an unhandledRejection listener keeps a rejection from crashing), and removing listeners takes
+  // boot's monitor with it: all boot.ts's alone. Removing a signal handler stays allowed (main.ts).
+  pos('process-exit-only-in-boot', 'src/model/x.ts', "process.on('uncaughtException', (e) => log(e));"),
+  pos('process-exit-only-in-boot', 'src/runtime/working.ts', "process.prependListener('uncaughtExceptionMonitor', () => { throw new Error('x'); });"),
+  pos('process-exit-only-in-boot', 'shared/x.js', 'process.once("unhandledRejection", swallow);'),
+  pos('process-exit-only-in-boot', 'src/model/x.ts', "process?.addListener(`uncaughtException`, f);"),
+  pos('process-exit-only-in-boot', 'src/model/x.ts', "process['prependOnceListener']('unhandledRejection', f);"),
+  pos('process-exit-only-in-boot', 'src/main.ts', "process.off('uncaughtExceptionMonitor', boots);"),
+  pos('process-exit-only-in-boot', 'src/model/x.ts', "process.removeListener('exit', f);"),
+  pos('process-exit-only-in-boot', 'src/model/x.ts', 'process.removeAllListeners();'),
+  pos('process-exit-only-in-boot', 'src/runtime/working.ts', "process.removeAllListeners('SIGINT');"),
+  pos('process-exit-only-in-boot', 'src/model/x.ts', "process['removeAllListeners']('uncaughtExceptionMonitor');"),
+  pos('process-exit-only-in-boot', 'src/model/x.ts', 'const { removeAllListeners } = process;'),
+  neg('process-exit-only-in-boot', 'src/boot.ts', "process.on('uncaughtExceptionMonitor', () => base.end(EXIT.crashed, undefined, 'monitor'));"),
+  neg('process-exit-only-in-boot', 'src/main.ts', 'for (const s of STOP_SIGNALS) process.off(s, handler);'),
+  neg('process-exit-only-in-boot', 'src/main.ts', "process.off('SIGINT', handler);"),
+  neg('process-exit-only-in-boot', 'src/os/spawn.ts', "child.removeAllListeners('exit');"),
+  neg('process-exit-only-in-boot', 'src/model/x.ts', "emitter.on('uncaughtException', f);"),
+  neg('process-exit-only-in-boot', 'src/model/x.ts', "process.on('uncaughtExceptionSeen', f);"),
   // shared/frozen.js names compile to give each frozen RegExp its own stub; nobody else names it.
   pos('ban:RegExp-compile', 'src/server/x.ts', "CSRF_RE.compile('^.*$');"),
   pos('ban:RegExp-compile', 'src/model/x.ts', "RegExp.prototype.compile.call(ID_RE, '.*');"),
@@ -490,6 +512,12 @@ const CASES: readonly Case[] = [
   pos('clock-factories-only-in-roots', 'src/model/x.ts', "const c = await import('../runtime/clock.ts');"),
   neg('clock-factories-only-in-roots', 'src/boot.ts', "import { makeRealClock } from './runtime/clock.ts';\nconst ports = { clock: makeRealClock() };"),
   neg('clock-factories-only-in-roots', 'src/boot.ts', "import * as clockModule from './runtime/clock.ts';"),
+  // Finding N2 of step 3: boot.ts's flush deadline runs on the exit timer only it holds.
+  pos('clock-factories-only-in-roots', 'src/main.ts', "import { takeExitTimer } from './runtime/clock.ts';"),
+  pos('clock-factories-only-in-roots', 'src/runtime/working.ts', 'const deadline = takeExitTimer();'),
+  pos('clock-factories-only-in-roots', 'src/model/x.ts', "const { takeExitTimer: t } = await import('../runtime/clock.ts');"),
+  neg('clock-factories-only-in-roots', 'src/boot.ts', "import { makeRealClock, takeExitTimer } from './runtime/clock.ts';\nconst exitTimer: ExitTimer = takeExitTimer();"),
+  neg('clock-factories-only-in-roots', 'src/main.ts', "import type { ExitTimer } from './runtime/clock.ts';"),
   neg('clock-factories-only-in-roots', 'src/runtime/clock.ts', 'export class VirtualClock implements ClockHub {'),
   neg('clock-factories-only-in-roots', 'src/os/spawn.ts', "import type { Clock, ClockHub, Fired } from '../runtime/clock.ts';"),
   neg('clock-factories-only-in-roots', 'src/model/x.ts', "import { clockRecord, timerId } from '../runtime/clock.ts';"),
@@ -557,9 +585,13 @@ test('process-power-member flags every lock and mint key of process in each memb
     for (const text of [`thing.${key}(x);`, `const ${key}ed = 1;`, `const x = { ${key}: 1 };`]) assert.ok(!hit(text), `flagged: ${text}`);
   }
   for (const { key } of PROCESS_POWERS.filter((e) => e.class === 'keep' && !e.key.startsWith('Symbol('))) assert.ok(!hit(`process.${key};`), `kept key flagged: ${key}`);
-  // A process mint entry is named only where it is minted and held (reallyExit: boot.ts, held by nobody else).
+  // A process mint entry is named only where it is minted and held (reallyExit and, since step 3b's
+  // finding F1, setUncaughtExceptionCaptureCallback: boot.ts, held by nobody else).
   const minted = PROCESS_POWERS.filter((e) => e.class === 'mint');
-  assert.deepEqual(minted.map((e) => [e.key, e.class === 'mint' ? e.mintedBy : '', e.class === 'mint' ? [...e.heldBy] : []]), [['reallyExit', 'src/boot.ts', []]]);
+  assert.deepEqual(minted.map((e) => [e.key, e.class === 'mint' ? e.mintedBy : '', e.class === 'mint' ? [...e.heldBy] : []]), [
+    ['setUncaughtExceptionCaptureCallback', 'src/boot.ts', []],
+    ['reallyExit', 'src/boot.ts', []],
+  ]);
   const hitIn = (file: string, text: string) => scan(file, text).filter((h) => h.rule === 'process-power-member').length > 0;
   for (const e of minted) {
     if (e.class !== 'mint') continue;

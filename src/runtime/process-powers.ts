@@ -11,7 +11,8 @@
 //         returns (measured: a replaced _fatalException keeps a crashed process alive).
 //   lock  the slot gets a stub for good (non-writable, non-configurable); nobody gets the original.
 //   mint  boot.ts takes the original before the fence locks the slot like a lock entry, and hands it
-//         to the modules named in `heldBy` (for reallyExit none: boot.ts keeps it for itself).
+//         to the modules named in `heldBy` (for reallyExit and setUncaughtExceptionCaptureCallback
+//         none: boot.ts keeps them for itself).
 //
 // `worker: 'pin'` on a lock or mint entry: on a worker thread (installWorkerFence) the slot is pinned
 // with Node's own value instead. process.exit and reallyExit end only that thread there, and Node's
@@ -76,8 +77,14 @@ export const PROCESS_POWERS: readonly Power[] = frozen([
   // node:http and the first fetch load that module.
   lock('chdir', 'moves the working directory every relative path and child process starts from', { primedBy: 'node:worker_threads' }),
   lock('umask', 'measured: under a mask of 0o222 every file created is read-only, and a rename over it or a write open of it fails with EPERM (writeAtomic, append)'),
-  // node:domain and node:repl replace it when loaded; the builtin table refuses both.
-  lock('setUncaughtExceptionCaptureCallback', 'measured: a capture callback swallows every uncaught error, so boot.ts never sees the crash and the process lives on'),
+  // node:domain and node:repl replace it when loaded; the builtin table refuses both. boot.ts takes it
+  // before the fence and makes its own crash handler the capture callback (runEntry), so Node hands it
+  // every uncaught error and no 'uncaughtException' listener decides a crash's code; nobody else can
+  // clear or replace that callback.
+  {
+    class: 'mint', key: 'setUncaughtExceptionCaptureCallback', stub: 'throws', shape: 'function', mintedBy: 'src/boot.ts', heldBy: [],
+    why: 'measured: a capture callback swallows every uncaught error, so boot.ts would never see the crash and the process would live on; boot.ts sets its own through it, before the fence',
+  },
   lock('_debugProcess', 'opens the inspector of another Node process of this user (node:inspector by another name)'),
   lock('_debugEnd', 'closes it again'),
   lock('_getActiveHandles', 'hands out the live handles, the lock pipe server among them, which anyone could close'),

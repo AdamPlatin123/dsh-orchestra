@@ -8,6 +8,7 @@ import {
   CSC_FLAGS, HANDLE_KEYS, PROCGUARD_BUILD_EXE, PROCGUARD_SOURCE, PidLog, SpawnGate, SpawnRefusedError, TOAST_FLAGS, WHOAMI_ARGV, resolveSystemRoot,
 } from '../../src/os/spawn.ts';
 import { makeWriteFence, realpath } from '../../src/fs/node-io.ts';
+import type { Clock, FireHandler } from '../../src/runtime/clock.ts';
 import { VirtualClock, makeRealClock } from '../../src/runtime/clock.ts';
 import type { FakeBehavior } from '../helpers/fake-spawn.ts';
 import { fakeSpawn } from '../helpers/fake-spawn.ts';
@@ -400,7 +401,7 @@ test('run(): the time limit is a deadline timer of the gate\'s own Clock, so a v
   const g = r.gate({ backend: spy.backend, clock: vc });
   const req = { exe: r.whoami, argv: WHOAMI_ARGV };
   const hung = g.run(req, { timeoutMs: 10_000, maxBytes: 1024 });
-  assert.deepEqual(vc.pending(), ['deadline:spawn-1:0'], 'one deadline, named by the gate\'s run count');
+  assert.deepEqual(vc.pending(), ['deadline:spawn-1:0'], 'one deadline, named by the run count of the gate\'s timer table');
   let settled = false;
   void hung.then(() => { settled = true; });
   vc.advanceBy(9_999);
@@ -422,6 +423,95 @@ test('run(): the time limit is a deadline timer of the gate\'s own Clock, so a v
     assert.throws(() => g.run(req, limits), /spawn gate: run limits need/, JSON.stringify(limits));
   }
   assert.equal(spy.calls.length, 2, 'refused limits started no child');
+});
+
+// Found re-verifying step 3: run() named its deadline `deadline:spawn-<n>:0` with n counting that gate's
+// runs, and a timerId is pending once per hub, so two gates on one hub (main.ts's integrity gate and
+// working.ts's, both on boot's hub) armed the same id when their runs overlapped: the second schedule
+// was refused and that run() rejected with its child left running. n now counts the runs on the hub's
+// timer table.
+test('run(): two gates on one hub number their deadlines on the hub, so overlapping runs both complete and a timeout on one leaves the other alone', async (t) => {
+  const r = rig(t);
+  const vc = new VirtualClock({ mono: 0, wall: Date.parse('2026-10-31T00:00:00Z') });
+  const behaveA: { current: FakeBehavior } = { current: { hang: true } };
+  const behaveB: { current: FakeBehavior } = { current: { stdout: 'b', exitCode: 0 } };
+  const spyA = fakeSpawn(() => behaveA.current);
+  const spyB = fakeSpawn(() => behaveB.current);
+  const a = r.gate({ backend: spyA.backend, clock: vc });
+  const b = r.gate({ backend: spyB.backend, clock: vc });
+  const req = { exe: r.whoami, argv: WHOAMI_ARGV };
+
+  // A hangs and times out while B is still running; B then finishes on its own.
+  const hungA = a.run(req, { timeoutMs: 100, maxBytes: 1024 });
+  const doneB = b.run(req, { timeoutMs: 100_000, maxBytes: 1024 });
+  assert.deepEqual(vc.pending(), ['deadline:spawn-1:0', 'deadline:spawn-2:0'], 'one deadline per run, numbered on the hub');
+  vc.advanceBy(100);
+  assert.deepEqual([spyA.kills, spyB.kills], [1, 0], 'A\'s deadline killed A\'s child only');
+  assert.deepEqual(await hungA, { ok: false, reason: 'timeout', timeoutMs: 100 });
+  const okB = await doneB;
+  assert.ok(okB.ok, JSON.stringify(okB));
+  assert.equal(okB.stdout.toString(), 'b');
+  assert.deepEqual(vc.pending(), [], 'B\'s deadline was disarmed when its child closed');
+
+  // The other way round, and the numbering goes on: B hangs and times out while A finishes.
+  behaveA.current = { stdout: 'a', exitCode: 0 };
+  behaveB.current = { hang: true };
+  const hungB = b.run(req, { timeoutMs: 50, maxBytes: 1024 });
+  const doneA = a.run(req, { timeoutMs: 100_000, maxBytes: 1024 });
+  assert.deepEqual(vc.pending(), ['deadline:spawn-3:0', 'deadline:spawn-4:0']);
+  vc.advanceBy(50);
+  assert.deepEqual([spyA.kills, spyB.kills], [1, 1], 'B\'s deadline killed B\'s child only');
+  assert.deepEqual(await hungB, { ok: false, reason: 'timeout', timeoutMs: 50 });
+  const okA = await doneA;
+  assert.ok(okA.ok, JSON.stringify(okA));
+  assert.equal(okA.stdout.toString(), 'a');
+  assert.deepEqual(vc.pending(), []);
+  vc.advanceBy(200_000);
+  assert.deepEqual([spyA.kills, spyB.kills], [1, 1], 'a disarmed deadline kills nothing later');
+});
+
+// Step 3b's review, finding F2: the run number was keyed on the hub object each gate was handed, so a
+// wrapper (or a Proxy) over one hub made a second count over the same timer table: both gates armed
+// `deadline:spawn-1:0`, the second schedule was refused after its child had started, and that child ran
+// on with no deadline. The number is now the table's (clock.ts tableSeq), and the deadline is armed
+// before the child starts, so a schedule the Clock refuses starts nothing.
+test('run(): a gate handed a wrapper over another gate\'s hub numbers on the same table; a refused deadline, or a Clock clock.ts did not make, starts no child', async (t) => {
+  const r = rig(t);
+  const vc = new VirtualClock({ mono: 0, wall: Date.parse('2026-10-31T00:00:00Z') });
+  const spyA = fakeSpawn(() => ({ hang: true }));
+  const spyB = fakeSpawn(() => ({ hang: true }));
+  const a = r.gate({ backend: spyA.backend, clock: vc });
+  const b = r.gate({ backend: spyB.backend, clock: Object.freeze({ port: (f: FireHandler | null) => vc.port(f) }) });
+  const req = { exe: r.whoami, argv: WHOAMI_ARGV };
+  const hungA = a.run(req, { timeoutMs: 100, maxBytes: 1024 });
+  const hungB = b.run(req, { timeoutMs: 200, maxBytes: 1024 });
+  assert.equal(spyB.calls.length, 1);
+  assert.deepEqual(vc.pending(), ['deadline:spawn-1:0', 'deadline:spawn-2:0'], 'one table, one count');
+  vc.advanceBy(100);
+  assert.deepEqual([spyA.kills, spyB.kills], [1, 0], 'A\'s deadline killed A\'s child only');
+  assert.deepEqual(await hungA, { ok: false, reason: 'timeout', timeoutMs: 100 });
+  vc.advanceBy(100);
+  assert.deepEqual([spyA.kills, spyB.kills], [1, 1], 'B\'s child had a deadline of its own');
+  assert.deepEqual(await hungB, { ok: false, reason: 'timeout', timeoutMs: 200 });
+  assert.deepEqual(vc.pending(), []);
+
+  // Some other code on the same table already holds the next run's timerId: run() refuses before it spawns.
+  vc.port(() => {}).schedule({ timerId: 'deadline:spawn-3:0', class: 'deadline', clock: 'mono', due: vc.mono + 10 });
+  assert.deepEqual(await a.run(req, { timeoutMs: 100, maxBytes: 1024 }), { ok: false, reason: 'spawn-failed', detail: 'ERR_ORCHESTRA_CLOCK' });
+  assert.equal(spyA.calls.length, 1, 'no child started without its deadline');
+  assert.deepEqual(vc.pending(), ['deadline:spawn-3:0'], 'the other code\'s timer is left alone');
+  vc.advanceBy(10);
+  assert.equal(spyA.kills, 1);
+
+  // A backend that throws once the deadline is armed: the run is spawn-failed and its deadline cancelled.
+  const throwing = r.gate({ backend: () => { throw Object.assign(new Error('spawn EACCES'), { code: 'EACCES' }); }, clock: vc });
+  assert.deepEqual(await throwing.run(req, { timeoutMs: 100, maxBytes: 1024 }), { ok: false, reason: 'spawn-failed', detail: 'EACCES' });
+  assert.deepEqual(vc.pending(), [], 'the deadline of a run that started nothing is not left pending');
+
+  // A hub whose port() hands out a Clock that clock.ts did not make has no table to number on.
+  const foreign = r.gate({ backend: spyB.backend, clock: { port: (): Clock => Object.freeze({ nowMono: () => 0, nowWall: () => 0, schedule: () => {}, cancel: () => {} }) } });
+  assert.deepEqual(await foreign.run(req, { timeoutMs: 100, maxBytes: 1024 }), { ok: false, reason: 'spawn-failed', detail: 'ERR_ORCHESTRA_CLOCK' });
+  assert.equal(spyB.calls.length, 1, 'no child started without a deadline it could number');
 });
 
 // Finding F5: Node reports a spawn failure of a long-lived child (its exe gone or blocked after the

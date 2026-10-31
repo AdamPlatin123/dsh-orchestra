@@ -173,15 +173,25 @@ const processPowerMember: Rule = {
 // whenever the process ends by itself. Neither changes a code boot commits (it passes the code to
 // reallyExit), but either decides the code of a process that ends any other way, so both stay in
 // boot.ts. An alias of process (`const p = process; p.exitCode = 0`) is a residual of a text scan.
+// Step 3b, finding F1: the crash path decides the code too. boot.ts's crash handler is the capture
+// callback (runEntry) and its monitor listener comes first, but an 'uncaughtExceptionMonitor' listener
+// that throws ends a crash with 7, an 'unhandledRejection' listener keeps a rejection from crashing at
+// all, and an 'uncaughtException' listener does nothing but mislead. So adding or removing a listener
+// of any of these five events stays in boot.ts, and process.removeAllListeners (which takes boot's
+// monitor with it, whatever event it names) is banned outside it; process.off of a signal stays allowed.
 const ASSIGN = '\\s*(?:(?:\\*\\*|<<|>>>?|&&|\\|\\||\\?\\?|[-+*/%&|^])?=(?!=)|\\+\\+|--)';
-const EXIT_EVENT_METHODS = '(?:on|once|addListener|prependListener|prependOnceListener)';
+const EXIT_EVENT_METHODS = '(?:on|once|addListener|prependListener|prependOnceListener|off|removeListener)';
+const EXIT_EVENTS = '(?:exit|beforeExit|uncaughtException|uncaughtExceptionMonitor|unhandledRejection)';
 const processExitLevers = ban('process-exit-only-in-boot', except(code, 'src/boot.ts'),
   new RegExp(`\\bprocess\\s*(?:\\?\\.|\\.)\\s*exitCode${ASSIGN}`),
   new RegExp(`\\bprocess\\s*(?:\\?\\.\\s*)?\\[\\s*(['"\`])exitCode\\1\\s*\\]${ASSIGN}`),
   /(?:\+\+|--)\s*process\s*(?:\.\s*exitCode\b|\[\s*(['"`])exitCode\1\s*\])/,
   /\b(?:Reflect\s*\.\s*(?:set|defineProperty)|Object\s*\.\s*defineProperty)\s*\(\s*(?:globalThis\s*\.\s*)?process\s*,\s*(['"`])exitCode\1/,
-  new RegExp(`\\bprocess\\s*(?:\\?\\.|\\.)\\s*${EXIT_EVENT_METHODS}\\s*\\(\\s*(['"\`])(?:exit|beforeExit)\\1`),
-  new RegExp(`\\bprocess\\s*(?:\\?\\.\\s*)?\\[\\s*(['"\`])${EXIT_EVENT_METHODS}\\1\\s*\\]\\s*\\(\\s*(['"\`])(?:exit|beforeExit)\\2`));
+  new RegExp(`\\bprocess\\s*(?:\\?\\.|\\.)\\s*${EXIT_EVENT_METHODS}\\s*\\(\\s*(['"\`])${EXIT_EVENTS}\\1`),
+  new RegExp(`\\bprocess\\s*(?:\\?\\.\\s*)?\\[\\s*(['"\`])${EXIT_EVENT_METHODS}\\1\\s*\\]\\s*\\(\\s*(['"\`])${EXIT_EVENTS}\\2`),
+  /\bprocess\s*(?:\?\.|\.)\s*removeAllListeners\b/,
+  /\bprocess\s*(?:\?\.\s*)?\[\s*(['"`])removeAllListeners\1\s*\]/,
+  /\{[^{}]*(?<![\w$])removeAllListeners(?![\w$])[^{}]*\}\s*=\s*(?:globalThis\s*\.\s*)?process\b/);
 
 // Object.freeze does not hold a RegExp against Annex B's compile(), which swaps the pattern before it
 // fails on the frozen lastIndex (measured on 24.22). shared/frozen.js gives every RegExp it freezes an
@@ -513,15 +523,18 @@ const clockOnly: Rule = { id: clockMembers.id, applies: clockMembers.applies, fi
 // The real clock hub is made in boot.ts alone and handed down (BootPorts.clock); a module that made its
 // own would read the time past the Clock its composition root handed it, and a VirtualClock in daemon
 // code would be a second time base. So makeRealClock is named only in boot.ts and clock.ts, and
-// VirtualClock only in clock.ts (tests use both). A namespace or dynamic import of clock.ts would reach
-// either as a property, so it counts too, except in boot.ts; type-only imports load nothing.
+// VirtualClock only in clock.ts (tests use both). takeExitTimer, the native timer of boot.ts's flush
+// deadline, likewise: clock.ts hands it out once and boot.ts takes it first, so any other caller is
+// refused at run time, and the name outside boot.ts is a mistake the scan shows at build time. A
+// namespace or dynamic import of clock.ts would reach any of them as a property, so it counts too,
+// except in boot.ts; type-only imports load nothing.
 const clockFactories: Rule = {
   id: 'clock-factories-only-in-roots',
   applies: (f) => code(f) && f !== CLOCK_FILE,
   find(text, file) {
     const out = matches(/\bVirtualClock\b/)(text);
     if (file === 'src/boot.ts') return out;
-    out.push(...matches(/\bmakeRealClock\b/)(text));
+    out.push(...matches(/\b(?:makeRealClock|takeExitTimer)\b/)(text));
     for (const r of valueImports(text)) {
       if (r.names === null && r.form !== 'side-effect' && resolvesTo(file, r.spec, CLOCK_FILE)) out.push({ index: r.index, text: `${r.form} import of ${r.spec}` });
     }

@@ -11,7 +11,7 @@ import { EXIT } from '../../src/runtime/exit.ts';
 import { ImportFenceError, decideImport, installImportFence } from '../../src/runtime/import-fence.ts';
 import { BASE_LOCKS } from '../../src/runtime/process-powers.ts';
 import { BOOTSTRAP_HREF, WorkerStartError, checkWorkerTarget, startWorker } from '../../src/runtime/workers.ts';
-import { withTmp } from '../helpers/tmp.ts';
+import { withModuleTmp } from '../helpers/tmp.ts';
 
 const src = (rel: string) => new URL(`../../src/${rel}`, import.meta.url).href;
 const REPO = new URL('../../', import.meta.url);
@@ -41,8 +41,7 @@ const BARE_RUNNER = `const m = await import(new URL('./entry.ts', import.meta.ur
  * runs entry.ts in a child process, through boot() unless `fenced` is false (or a runner is given).
  */
 function runEntry(t: TestContext, files: Record<string, string>, fenced: boolean | string = true): Run {
-  const dir = withTmp(t);
-  fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}');
+  const dir = withModuleTmp(t);
   for (const [name, text] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
     fs.writeFileSync(path.join(dir, name), text);
@@ -558,7 +557,7 @@ type Idle = { pid: number; stderr(): string; stop(): Promise<void> };
  * handler is in place.
  */
 async function idleNode(t: TestContext): Promise<Idle> {
-  const file = path.join(withTmp(t), 'idle.mjs');
+  const file = path.join(withModuleTmp(t), 'idle.mjs');
   fs.writeFileSync(file, "process.stderr.write('ready\\n');\nsetInterval(() => {}, 1000);\n");
   const child = spawn(process.execPath, ['--inspect-port=0', file], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
   if (typeof child.pid !== 'number') throw new Error('spawn gave no pid');
