@@ -2,15 +2,32 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { performance } from 'node:perf_hooks';
+import { setTimeout as sleep } from 'node:timers/promises';
 import type { TestContext } from 'node:test';
 import { decideBuiltin, moduleKeyFromUrl, rowsFor } from '../../src/runtime/builtin-policy.ts';
+import { EXIT } from '../../src/runtime/exit.ts';
 import { ImportFenceError, decideImport, installImportFence } from '../../src/runtime/import-fence.ts';
 import { BOOTSTRAP_URL, WorkerStartError, checkWorkerTarget, startWorker } from '../../src/runtime/workers.ts';
 import { withTmp } from '../helpers/tmp.ts';
 
 const src = (rel: string) => new URL(`../../src/${rel}`, import.meta.url).href;
 const REPO = new URL('../../', import.meta.url);
+const DISPATCHER_SLOTS = [Symbol.for('undici.globalDispatcher.1'), Symbol.for('undici.globalDispatcher.2')];
+const DEBUG_POWERS = ['_debugProcess', '_debugEnd', '_getActiveHandles', '_getActiveRequests'];
+const ORIGIN_SLOT = Symbol.for('undici.globalOrigin.1');
+const FULL_STATUS = { builtinGetter: true, nativeStubs: true, ioStubs: true, networkGlobals: true, killStubs: true, debugStubs: true, dispatcherStubs: true, originLock: true };
+
+/** Polls `cond` every 20 ms; true once it holds, false after `ms`. */
+async function until(cond: () => boolean, ms: number): Promise<boolean> {
+  const t0 = performance.now();
+  while (!cond()) {
+    if (performance.now() - t0 > ms) return false;
+    await sleep(20);
+  }
+  return true;
+}
 
 type Run = { status: number | null; stdout: string; stderr: string; dir: string };
 
@@ -24,7 +41,10 @@ const BARE_RUNNER = `const m = await import(new URL('./entry.ts', import.meta.ur
 function runEntry(t: TestContext, files: Record<string, string>, fenced: boolean | string = true): Run {
   const dir = withTmp(t);
   fs.writeFileSync(path.join(dir, 'package.json'), '{"type":"module"}');
-  for (const [name, text] of Object.entries(files)) fs.writeFileSync(path.join(dir, name), text);
+  for (const [name, text] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(dir, name)), { recursive: true });
+    fs.writeFileSync(path.join(dir, name), text);
+  }
   const runner = typeof fenced === 'string' ? fenced : fenced ? BOOT_RUNNER : BARE_RUNNER;
   fs.writeFileSync(path.join(dir, 'runner.mjs'), runner);
   const r = spawnSync(process.execPath, [path.join(dir, 'runner.mjs')], { encoding: 'utf8', timeout: 60_000 });
@@ -80,19 +100,35 @@ test('installImportFence without registerHooks still replaces the getter and stu
     dlopen: () => 'raw',
     loadEnvFile: () => 'raw',
     report: { writeReport: () => 'raw', directory: '' },
+    _debugProcess: () => 'raw',
+    _debugEnd: () => 'raw',
+    _getActiveHandles: () => ['raw'],
+    _getActiveRequests: () => ['raw'],
   };
-  const fakeGlobal: Record<string, unknown> = { fetch: () => 'raw', WebSocket: function WebSocket() {} };
+  const fakeGlobal: Record<PropertyKey, unknown> = { fetch: () => 'raw', WebSocket: function WebSocket() {} };
   const status = installImportFence(fake, {}, REPO, fakeGlobal);
-  assert.deepEqual(status, { resolveHook: false, builtinGetter: true, nativeStubs: true, ioStubs: true, networkGlobals: true, killStubs: true });
+  assert.deepEqual(status, { resolveHook: false, ...FULL_STATUS });
   assert.equal(installImportFence(fake, {}, REPO, fakeGlobal), status);
   const get = fake.getBuiltinModule as (id: string) => unknown;
   assert.deepEqual(get('path'), { id: 'node:path' });
   assert.throws(() => get('node:fs'), { code: 'ERR_ORCHESTRA_IMPORT_FENCE', reason: 'getter' });
   assert.throws(() => get('child_process'), { code: 'ERR_ORCHESTRA_IMPORT_FENCE' });
   assert.deepEqual(calls, ['node:path']);
-  for (const name of ['binding', '_linkedBinding', 'dlopen', 'loadEnvFile', 'kill', '_kill']) {
+  for (const name of ['binding', '_linkedBinding', 'dlopen', 'loadEnvFile', 'kill', '_kill', ...DEBUG_POWERS]) {
     assert.throws(() => (fake[name] as () => unknown)(), { code: 'ERR_ORCHESTRA_IMPORT_FENCE', reason: 'disabled' }, name);
   }
+  for (const slot of DISPATCHER_SLOTS) {
+    const stub = fakeGlobal[slot] as Record<string, () => unknown>;
+    assert.ok(Object.isFrozen(stub), String(slot));
+    for (const m of ['dispatch', 'request', 'stream', 'connect']) assert.throws(() => stub[m]!(), { code: 'ERR_ORCHESTRA_IMPORT_FENCE', reason: 'disabled' }, `${String(slot)}.${m}`);
+    assert.throws(() => {
+      fakeGlobal[slot] = {};
+    }, TypeError, String(slot));
+  }
+  assert.deepEqual(Object.getOwnPropertyDescriptor(fakeGlobal, ORIGIN_SLOT), { value: undefined, writable: false, enumerable: false, configurable: false });
+  assert.throws(() => {
+    fakeGlobal[ORIGIN_SLOT] = new URL('http://127.0.0.1:9/');
+  }, TypeError);
   const report = fake.report as Record<string, unknown>;
   assert.throws(() => (report.writeReport as () => unknown)(), { code: 'ERR_ORCHESTRA_IMPORT_FENCE' });
   assert.throws(() => {
@@ -107,6 +143,18 @@ test('installImportFence without registerHooks still replaces the getter and stu
   assert.throws(() => {
     fake.getBuiltinModule = () => 'restored';
   }, TypeError);
+});
+
+test('a dispatcher slot undici already filled (writable, not configurable) is locked to the same stub', () => {
+  const agent = { request: () => 'raw' };
+  const fakeGlobal: Record<PropertyKey, unknown> = {};
+  Object.defineProperty(fakeGlobal, DISPATCHER_SLOTS[0]!, { value: agent, writable: true, enumerable: false, configurable: false });
+  installImportFence({}, {}, REPO, fakeGlobal);
+  const stub = fakeGlobal[DISPATCHER_SLOTS[0]!] as Record<string, () => unknown>;
+  assert.notEqual(stub, agent);
+  assert.equal(stub, fakeGlobal[DISPATCHER_SLOTS[1]!]);
+  assert.throws(() => stub.request!(), { code: 'ERR_ORCHESTRA_IMPORT_FENCE', reason: 'disabled' });
+  assert.deepEqual(Object.getOwnPropertyDescriptor(fakeGlobal, DISPATCHER_SLOTS[0]!), { value: stub, writable: false, enumerable: false, configurable: false });
 });
 
 test('decideImport: builtins by policy; otherwise .ts/.js file: URLs only, no attributes, and src stays inside src/shared', () => {
@@ -368,21 +416,29 @@ export async function start(_f: unknown, _fence: unknown, ports: { fetch: typeof
   });
 });
 
-test('boot() without a resolve hook still loads the entry and hands it the fence status; main plans ui-only from it', (t) => {
-  const runner = [
-    `import { boot } from ${JSON.stringify(src('boot.ts'))};`,
+test('boot() without a resolve hook prints the fence status, exits with the missing-features code and never imports the entry', (t) => {
+  const entry = { 'entry.ts': "console.log('LOADED');\nexport async function start(): Promise<unknown> { console.log('STARTED'); return { code: 0 }; }\n" };
+  const runner = (deps: string) => [
+    `import { runEntry } from ${JSON.stringify(src('boot.ts'))};`,
     `import { detectFeatures } from ${JSON.stringify(src('runtime/features.ts'))};`,
     `import { installImportFence } from ${JSON.stringify(src('runtime/import-fence.ts'))};`,
-    "const outcome = await boot(new URL('./entry.ts', import.meta.url), { detectFeatures, installImportFence: () => installImportFence(process, {}) });",
-    'console.log(JSON.stringify(outcome));',
+    `await runEntry(new URL('./entry.ts', import.meta.url)${deps});`,
   ].join('\n');
-  const r = runEntry(t, { 'entry.ts': "export async function start(_f: unknown, fence: { resolveHook: boolean }): Promise<unknown> { return { code: 3, sawHook: fence.resolveHook }; }\n" }, runner);
-  assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(lastJson(r.stdout), {
-    started: true,
-    fence: { resolveHook: false, builtinGetter: true, nativeStubs: true, ioStubs: true, networkGlobals: true, killStubs: true },
-    result: { code: 3, sawHook: false },
-  });
+  const marks = (out: string) => out.split(/\r?\n/).filter((l) => l === 'LOADED' || l === 'STARTED');
+
+  const r = runEntry(t, entry, runner(', { detectFeatures, installImportFence: () => installImportFence(process, {}) }'));
+  assert.equal(r.status, EXIT.missingFeatures, r.stderr);
+  assert.deepEqual(marks(r.stdout), [], 'the entry was neither loaded nor started');
+  const lines = r.stderr.split(/\r?\n/).filter((l) => l.startsWith('orchestrad: '));
+  assert.equal(lines.length, 1, r.stderr);
+  const prefix = 'orchestrad: cannot start, missing: module.registerHooks (the import fence has no resolve hook): ';
+  assert.ok(lines[0]!.startsWith(prefix), lines[0]);
+  assert.deepEqual(JSON.parse(lines[0]!.slice(prefix.length)), { resolveHook: false, ...FULL_STATUS });
+
+  // Control: the same entry under the real fence loads and starts once.
+  const control = runEntry(t, entry, runner(''));
+  assert.equal(control.status, 0, control.stderr);
+  assert.deepEqual(marks(control.stdout), ['LOADED', 'STARTED']);
 });
 
 test('boot(): process.kill and process._kill are dead and cannot be put back', (t) => {
@@ -429,6 +485,263 @@ export async function start(): Promise<void> {
   assert.deepEqual(lastJson(r.stdout), { sent: true, exit: 'SIGTERM', killStub: 'disabled' });
 });
 
+type Idle = { pid: number; stderr(): string; stop(): Promise<void> };
+
+/**
+ * A throwaway node child that only idles, stopped through its handle. --inspect-port=0 gives its
+ * inspector a free port should anyone open it; "ready" means its own code runs, so its debug
+ * handler is in place.
+ */
+async function idleNode(t: TestContext): Promise<Idle> {
+  const file = path.join(withTmp(t), 'idle.mjs');
+  fs.writeFileSync(file, "process.stderr.write('ready\\n');\nsetInterval(() => {}, 1000);\n");
+  const child = spawn(process.execPath, ['--inspect-port=0', file], { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
+  if (typeof child.pid !== 'number') throw new Error('spawn gave no pid');
+  let err = '';
+  child.stderr!.on('data', (c: Buffer) => {
+    err += c.toString('utf8');
+  });
+  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  const stop = async () => {
+    if (child.exitCode === null && child.signalCode === null) child.kill();
+    await exited;
+  };
+  t.after(stop);
+  assert.ok(await until(() => err.includes('ready'), 15_000), `the idle child never got ready: ${err}`);
+  return { pid: child.pid, stderr: () => err, stop };
+}
+
+test('PoC boot(): process._debugProcess cannot open the inspector of another node process; unfenced it does', async (t) => {
+  const LISTENING = /Debugger listening/;
+  const entry = (pid: number) => ({
+    'entry.ts': `
+const out: Record<string, string> = {};
+const attempt = (name: string, fn: () => unknown) => {
+  try { fn(); out[name] = 'reached'; } catch (e) { out[name] = (e as { code?: string }).code ?? (e as Error).name; }
+};
+export async function start(): Promise<void> {
+  const p = process as unknown as { _debugProcess(pid: number): void; _debugEnd(): void };
+  attempt('debugProcess', () => p._debugProcess(${pid}));
+  attempt('debugEnd', () => p._debugEnd());
+  console.log(JSON.stringify(out));
+}
+`,
+  });
+
+  // Control first: unfenced, the call opens the target's inspector; it also says how long that takes to show.
+  const bad = await idleNode(t);
+  const control = runEntry(t, entry(bad.pid), false);
+  const shownFrom = performance.now();
+  assert.equal(control.status, 0, control.stderr);
+  assert.deepEqual(lastJson(control.stdout), { debugProcess: 'reached', debugEnd: 'reached' });
+  assert.ok(await until(() => LISTENING.test(bad.stderr()), 15_000), `control: no inspector opened; target stderr: ${bad.stderr()}`);
+  const shownAfter = performance.now() - shownFrom;
+  await bad.stop();
+
+  const target = await idleNode(t);
+  const fenced = runEntry(t, entry(target.pid));
+  assert.equal(fenced.status, 0, fenced.stderr);
+  assert.deepEqual(lastJson(fenced.stdout), { debugProcess: 'ERR_ORCHESTRA_IMPORT_FENCE', debugEnd: 'ERR_ORCHESTRA_IMPORT_FENCE' });
+  const wait = Math.max(1500, 3 * shownAfter);
+  t.diagnostic(`control inspector showed ${shownAfter.toFixed(0)} ms after its runner ended; watching the fenced target for ${wait.toFixed(0)} ms`);
+  await sleep(wait);
+  assert.doesNotMatch(target.stderr(), LISTENING);
+  await target.stop();
+});
+
+test('PoC boot(): process._getActiveHandles cannot hand out the lock pipe\'s server; unfenced, closing it frees the lock', (t) => {
+  const key = `C:\\orchestra-handles-test-${process.pid}-${Date.now()}`;
+  // The runner takes the single-writer lock before boot(), as orchestrad does, and checks after the
+  // entry ran whether a second listen on the pipe still gets "held".
+  const runner = (fenced: boolean) => [
+    `import { boot } from ${JSON.stringify(src('boot.ts'))};`,
+    `import { acquireLock, lockPipeName } from ${JSON.stringify(src('runtime/lock.ts'))};`,
+    `const pipe = lockPipeName(${JSON.stringify(`${key}-${fenced ? 'fenced' : 'control'}`)});`,
+    'const held = await acquireLock(pipe);',
+    "if (!held.ok) throw new Error('lock not taken: ' + held.reason);",
+    "const entry = new URL('./entry.ts', import.meta.url);",
+    fenced ? 'const result = (await boot(entry)).result;' : 'const result = await (await import(entry.href)).start();',
+    'const again = await acquireLock(pipe);',
+    "console.log(JSON.stringify({ result, second: again.ok ? 'acquired' : again.reason }));",
+    'if (again.ok) await again.lock.release();',
+    'await held.lock.release();',
+  ].join('\n');
+  const entry = {
+    'entry.ts': `
+type Handle = { constructor: { name: string }; close?(cb: () => void): void };
+const code = (e: unknown) => (e as { code?: string }).code ?? (e as Error).name;
+function requests(): string {
+  try { return typeof (process as unknown as { _getActiveRequests(): unknown })._getActiveRequests(); } catch (e) { return code(e); }
+}
+export async function start(): Promise<unknown> {
+  let handles: Handle[];
+  try { handles = (process as unknown as { _getActiveHandles(): Handle[] })._getActiveHandles(); } catch (e) { return { handles: code(e), requests: requests() }; }
+  const servers = handles.filter((h) => h.constructor.name === 'Server');
+  for (const s of servers) await new Promise<void>((resolve) => s.close!(() => resolve()));
+  return { handles: \`\${servers.length} server closed\`, requests: requests() };
+}
+`,
+  };
+  const fenced = runEntry(t, entry, runner(true));
+  assert.equal(fenced.status, 0, fenced.stderr);
+  assert.deepEqual(lastJson(fenced.stdout), { result: { handles: 'ERR_ORCHESTRA_IMPORT_FENCE', requests: 'ERR_ORCHESTRA_IMPORT_FENCE' }, second: 'held' });
+
+  const control = runEntry(t, entry, runner(false));
+  assert.equal(control.status, 0, control.stderr);
+  assert.deepEqual(lastJson(control.stdout), { result: { handles: '1 server closed', requests: 'object' }, second: 'acquired' }, 'unfenced, any module drops the lock');
+});
+
+test('PoC boot(): the undici dispatcher slots hold a frozen stub that cannot send or be replaced; node:http and data: fetch still work', (t) => {
+  // A fake repo root around the temp dir gives <tmp>\src\server\http.ts the node:http row, so a
+  // module may import node:http after the fence went in, as src/server/http.ts will.
+  const runner = [
+    "import * as nodeModule from 'node:module';",
+    "import { pathToFileURL } from 'node:url';",
+    `import { boot } from ${JSON.stringify(src('boot.ts'))};`,
+    `import { detectFeatures } from ${JSON.stringify(src('runtime/features.ts'))};`,
+    `import { installImportFence } from ${JSON.stringify(src('runtime/import-fence.ts'))};`,
+    "const root = new URL('./', import.meta.url);",
+    "await boot(new URL('./entry.ts', root), { detectFeatures, installImportFence: () => installImportFence(process, nodeModule, root) });",
+  ].join('\n');
+  const files = {
+    'src/server/http.ts': "import { createServer } from 'node:http';\nexport const kind = typeof createServer;\n",
+    'entry.ts': `
+const SLOTS = [Symbol.for('undici.globalDispatcher.1'), Symbol.for('undici.globalDispatcher.2')];
+type Slot = { request(o: object): unknown };
+const g = globalThis as unknown as Record<symbol, Slot>;
+const out: Record<string, unknown> = {};
+const attempt = (name: string, fn: () => unknown) => {
+  try { fn(); out[name] = 'reached'; } catch (e) { out[name] = (e as { reason?: string }).reason ?? (e as Error).name; }
+};
+export async function start(_f: unknown, _fence: unknown, ports: { fetch: typeof fetch }): Promise<void> {
+  const stubs = SLOTS.map((s) => g[s]);
+  // Before node:http loads, so that without the stubs this reads an empty slot and sends nothing.
+  for (const [i, s] of SLOTS.entries()) attempt('request' + (i + 1), () => g[s]!.request({ origin: 'http://127.0.0.1:9', path: '/', method: 'GET' }));
+  const http = await import('./src/server/http.ts');
+  out.httpImport = http.kind;
+  out.port = await (await ports.fetch('data:,live')).text();
+  out.sameStubs = SLOTS.every((s, i) => g[s] === stubs[i]) && stubs[0] === stubs[1];
+  out.frozen = Object.isFrozen(stubs[0]);
+  for (const [i, s] of SLOTS.entries()) {
+    const n = i + 1;
+    attempt('assign' + n, () => { g[s] = { request: () => 'mine' }; });
+    attempt('redefine' + n, () => Object.defineProperty(globalThis, s, { value: {} }));
+    attempt('delete' + n, () => { delete g[s]; });
+  }
+  console.log(JSON.stringify(out));
+}
+`,
+  };
+  // Unfenced, both slots appear with the first import of node:http, send HTTP without fetch, and a
+  // Proxy put there sees the path of a request made through the fetch boot captured.
+  const controlEntry = `
+const SLOTS = [Symbol.for('undici.globalDispatcher.1'), Symbol.for('undici.globalDispatcher.2')];
+type Dispatcher = { request(o: object): Promise<{ statusCode: number; body: { text(): Promise<string> } }>; dispatch(o: { path: string }, h: unknown): unknown };
+const g = globalThis as unknown as Record<symbol, Dispatcher>;
+export async function start(_f: unknown, _fence: unknown, ports: { fetch: typeof fetch }): Promise<void> {
+  const out: Record<string, unknown> = { absent: SLOTS.map((s) => s in globalThis) };
+  const http = await import('node:http');
+  out.present = SLOTS.map((s) => s in globalThis);
+  const server = http.createServer((q, s) => { s.end('got ' + q.url); });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+  const origin = 'http://127.0.0.1:' + (server.address() as { port: number }).port;
+  const res = await g[SLOTS[0]!]!.request({ origin, path: '/no-fetch', method: 'GET' });
+  out.request = [res.statusCode, await res.body.text()];
+  const seen: string[] = [];
+  for (const s of SLOTS) {
+    const real = g[s]!;
+    g[s] = new Proxy(real, {
+      get(target, k) {
+        const v = Reflect.get(target, k) as unknown;
+        if (k === 'dispatch') return (o: { path: string }, h: unknown) => { seen.push(o.path); return real.dispatch(o, h); };
+        return typeof v === 'function' ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    });
+  }
+  out.fetched = await (await ports.fetch(origin + '/secret-path')).text();
+  out.seen = seen;
+  server.close();
+  console.log(JSON.stringify(out));
+}
+`;
+  const r = runEntry(t, files, runner);
+  assert.equal(r.status, 0, r.stderr);
+  const dead = { request1: 'disabled', assign1: 'TypeError', redefine1: 'TypeError', delete1: 'TypeError', request2: 'disabled', assign2: 'TypeError', redefine2: 'TypeError', delete2: 'TypeError' };
+  assert.deepEqual(lastJson(r.stdout), { httpImport: 'function', port: 'live', sameStubs: true, frozen: true, ...dead });
+
+  const control = runEntry(t, { 'entry.ts': controlEntry }, `const m = await import(new URL('./entry.ts', import.meta.url).href);\nawait m.start(undefined, undefined, { fetch: globalThis.fetch });\n`);
+  assert.equal(control.status, 0, control.stderr);
+  assert.deepEqual(lastJson(control.stdout), {
+    absent: [false, false], present: [true, true], request: [200, 'got /no-fetch'], fetched: 'got /secret-path', seen: ['/secret-path'],
+  });
+});
+
+test('PoC boot(): a module-defined Object.prototype.dispatcher never sees a request made through ports.fetch; unfenced it sees all of them', (t) => {
+  // Nothing reaches the network: the module's dispatcher throws, and so does the dead one ports.fetch binds.
+  const entry = `
+const seen: string[] = [];
+type Opts = { method: string; origin: string; path: string; headers: unknown };
+type Port = { fetch(u: string, i?: object): Promise<Response> };
+export async function start(_f: unknown, _fence: unknown, ports: Port): Promise<void> {
+  Object.defineProperty(Object.prototype, 'dispatcher', {
+    value: { dispatch(o: Opts) { seen.push(o.method + ' ' + o.origin + o.path + ' ' + JSON.stringify(o.headers)); throw new Error('intercepted by module'); }, isMockActive: false },
+    configurable: true, writable: true,
+  });
+  const url = 'http://127.0.0.1:65000/secret-path?token=abc';
+  const out: Record<string, unknown> = {};
+  const why = async (name: string, f: () => Promise<Response>) => {
+    try { await f(); out[name] = 'resolved'; } catch (e) { const c = (e as { cause?: { reason?: string; message?: string } }).cause; out[name] = c?.reason ?? c?.message ?? String(e); }
+  };
+  await why('noInit', () => ports.fetch(url));
+  await why('emptyInit', () => ports.fetch(url, {}));
+  await why('auth', () => ports.fetch(url, { headers: { authorization: 'Bearer t0k' } }));
+  out.data = await (await ports.fetch('data:,live')).text();
+  delete (Object.prototype as Record<string, unknown>).dispatcher;
+  out.seen = seen;
+  console.log(JSON.stringify(out));
+}
+`;
+  const r = runEntry(t, { 'entry.ts': entry });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(lastJson(r.stdout), { noInit: 'disabled', emptyInit: 'disabled', auth: 'disabled', data: 'live', seen: [] });
+
+  const control = runEntry(t, { 'entry.ts': entry }, `const m = await import(new URL('./entry.ts', import.meta.url).href);
+await m.start(undefined, undefined, { fetch: globalThis.fetch });
+`);
+  assert.equal(control.status, 0, control.stderr);
+  const c = lastJson(control.stdout) as { noInit: string; seen: string[] };
+  assert.equal(c.noInit, 'intercepted by module');
+  assert.equal(c.seen.length, 3, 'with the plain fetch the module sees every request');
+  assert.ok(c.seen[2]!.startsWith('GET http://127.0.0.1:65000/secret-path?token=abc '), c.seen[2]);
+  assert.ok(c.seen[2]!.includes('"authorization":"Bearer t0k"'), c.seen[2]);
+});
+
+test('PoC boot(): the undici global origin slot stays empty, so no module picks where a relative URL goes; unfenced a module sets it', (t) => {
+  const entry = `
+const ORIGIN = Symbol.for('undici.globalOrigin.1');
+const g = globalThis as unknown as Record<symbol, unknown>;
+const name = (e: unknown) => (e as Error).name;
+export async function start(_f: unknown, _fence: unknown, ports: { fetch(u: string): Promise<Response> } | undefined): Promise<void> {
+  const out: Record<string, unknown> = { before: g[ORIGIN] === undefined };
+  try { g[ORIGIN] = new URL('http://127.0.0.1:65000/'); out.assign = 'reached'; } catch (e) { out.assign = name(e); }
+  try { out.requestUrl = new Request('/rel').url; } catch (e) { out.requestUrl = name(e); }
+  if (ports !== undefined) {
+    try { Object.defineProperty(globalThis, ORIGIN, { value: new URL('http://127.0.0.1:65000/') }); out.redefine = 'reached'; } catch (e) { out.redefine = name(e); }
+    try { await ports.fetch('/rel'); out.rel = 'resolved'; } catch (e) { out.rel = (e as Error).message; }
+  }
+  console.log(JSON.stringify(out));
+}
+`;
+  const r = runEntry(t, { 'entry.ts': entry });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(lastJson(r.stdout), { before: true, assign: 'TypeError', requestUrl: 'TypeError', redefine: 'TypeError', rel: 'Failed to parse URL from /rel' });
+
+  // Unfenced the module only builds a Request, so nothing is sent anywhere.
+  const control = runEntry(t, { 'entry.ts': entry }, false);
+  assert.equal(control.status, 0, control.stderr);
+  assert.deepEqual(lastJson(control.stdout), { before: true, assign: 'reached', requestUrl: 'http://127.0.0.1:65000/rel' });
+});
+
 test('workers.ts: the bootstrap fences the worker before its module loads', (t) => {
   const r = runEntry(t, {
     'entry.ts': `
@@ -443,7 +756,7 @@ const run = (name: string) => new Promise<Outcome>((resolve) => {
 });
 export async function start(): Promise<void> {
   const result: Record<string, Outcome> = {};
-  for (const n of ['worker-fs.ts', 'worker-ok.ts', 'worker-getter.ts', 'worker-norun.ts']) result[n] = await run(n);
+  for (const n of ['worker-fs.ts', 'worker-ok.ts', 'worker-getter.ts', 'worker-norun.ts', 'worker-powers.ts']) result[n] = await run(n);
   console.log(JSON.stringify(result));
 }
 `,
@@ -454,9 +767,20 @@ export async function start(): Promise<void> {
 }
 `,
     'worker-norun.ts': 'export const nothing = 1;\n',
+    'worker-powers.ts': `export function run(ctx: { post(m: unknown): void }): void {
+  const out: Record<string, string> = {};
+  const p = process as unknown as Record<string, (...a: unknown[]) => unknown>;
+  for (const name of ['_debugProcess', '_debugEnd', '_getActiveHandles', '_getActiveRequests']) {
+    try { p[name]!(); out[name] = 'reached'; } catch (e) { out[name] = (e as { reason?: string }).reason ?? (e as Error).name; }
+  }
+  try { (globalThis as unknown as Record<symbol, { request(o: object): unknown }>)[Symbol.for('undici.globalDispatcher.1')]!.request({}); out.dispatcher = 'reached'; } catch (e) { out.dispatcher = (e as { reason?: string }).reason ?? (e as Error).name; }
+  ctx.post(out);
+}
+`,
   });
   assert.equal(r.status, 0, r.stderr);
   const res = lastJson(r.stdout) as Record<string, { messages: unknown[]; error: string | null; exit: number }>;
+  assert.deepEqual(res['worker-powers.ts']!.messages, [{ _debugProcess: 'disabled', _debugEnd: 'disabled', _getActiveHandles: 'disabled', _getActiveRequests: 'disabled', dispatcher: 'disabled' }]);
   assert.deepEqual(res['worker-fs.ts']!.messages, []);
   assert.match(res['worker-fs.ts']!.error ?? '', /ERR_ORCHESTRA_IMPORT_FENCE.*node:fs denied \(not-allowed-for-module\)/);
   assert.equal(res['worker-fs.ts']!.exit, 1);

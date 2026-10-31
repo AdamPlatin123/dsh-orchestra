@@ -246,6 +246,19 @@ export const RULES: readonly Rule[] = [
   ban('ban:_linkedBinding', except(prod, 'src/runtime/import-fence.ts'), /\b_linkedBinding\b/),
   ban('ban:dlopen', except(prod, 'src/runtime/import-fence.ts'), /\bdlopen\b/),
   ban('ban:loadEnvFile', except(prod, 'src/runtime/import-fence.ts'), /\bloadEnvFile\b/),
+  // The debugger and handle enumerators and undici's dispatcher slots: the import fence stubs them
+  // at runtime (DEBUG_POWERS, UNDICI_DISPATCHERS) and names them only to do so.
+  ban('ban:_debugProcess', except(prod, 'src/runtime/import-fence.ts'), /\b_debugProcess\b/),
+  ban('ban:_debugEnd', except(prod, 'src/runtime/import-fence.ts'), /\b_debugEnd\b/),
+  ban('ban:_getActiveHandles', except(prod, 'src/runtime/import-fence.ts'), /\b_getActiveHandles\b/),
+  ban('ban:_getActiveRequests', except(prod, 'src/runtime/import-fence.ts'), /\b_getActiveRequests\b/),
+  ban('ban:undici.globalDispatcher', except(prod, 'src/runtime/import-fence.ts'), /\bundici\.globalDispatcher\b/),
+  ban('ban:undici.globalOrigin', except(prod, 'src/runtime/import-fence.ts'), /\bundici\.globalOrigin\b/),
+  // The lock is identity, not heartbeat: daemon.json is written once per start and nothing in the
+  // lock or its wiring runs on a timer, ref'd or unref'd (process.getActiveResourcesInfo() would not
+  // even show an unref'd one).
+  ban('no-timers-in-lock', (f) => f === 'src/runtime/lock.ts' || f === 'src/runtime/working.ts',
+    /\bset(?:Interval|Timeout|Immediate)\b/, /['"`](?:node:)?timers(?:\/promises)?['"`]/),
   ban('ban:process.report', except(prod, 'src/runtime/import-fence.ts'),
     /\bwriteReport\b/, /\bprocess\s*\.\s*report\b/, /\[\s*['"`]report['"`]\s*\]/),
   ban('ban:import-attributes', prod, /\bwith\s*\{\s*type\b/, /\bassert\s*\{\s*type\b/, /\b(?:with|assert)\s*:\s*\{/),

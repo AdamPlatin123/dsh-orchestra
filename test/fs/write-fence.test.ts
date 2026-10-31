@@ -29,12 +29,18 @@ function fixture(t: TestContext, orchestraHome?: (home: string) => string): Fixt
   return { base, home, orch, fence: make(), make };
 }
 
+type Staged = { io: WriteIo; ran(): boolean; closed(): boolean; renames: Array<[string, string]> };
+
 /**
  * Real fs underneath; `before` runs once, just before the fence's first open or mkdir (after its
- * check), and `after` once, just after that open returned. This is how a racing process is staged.
+ * check), `after` once, just after that open returned, and `afterClose` once, just after the first
+ * close (in writeAtomic: between the temp file's close and the re-checks before its rename). Every
+ * rename is recorded. This is how a racing process is staged.
  */
-function staged(stage: { before?: () => void; after?: () => void }): { io: WriteIo; ran(): boolean } {
+function staged(stage: { before?: () => void; after?: () => void; afterClose?: () => void }): Staged {
   let ran = false;
+  let closed = false;
+  const renames: Array<[string, string]> = [];
   return {
     io: {
       openSync: (p, flags) => {
@@ -50,8 +56,21 @@ function staged(stage: { before?: () => void; after?: () => void }): { io: Write
         ran = true;
         fs.mkdirSync(p);
       },
+      closeSync: (fd) => {
+        fs.closeSync(fd);
+        if (!closed) {
+          closed = true;
+          stage.afterClose?.();
+        }
+      },
+      renameSync: (from, to) => {
+        renames.push([from, to]);
+        fs.renameSync(from, to);
+      },
     },
     ran: () => ran,
+    closed: () => closed,
+    renames,
   };
 }
 
@@ -369,6 +388,49 @@ test('race: writeAtomic whose directory turns into a junction after check() writ
   assert.deepEqual(fs.readdirSync(`${swap}-old`), []);
 });
 
+test('race: writeAtomic whose directory turns into a junction between the temp file\'s close and its rename never renames', (t) => {
+  const probe = probeJunction();
+  if (!probe.ok) return t.skip(probe.why);
+  const { claude, orch, swap, swapToClaude, make } = swapFixture(t);
+  // Control: unstaged, the same io sees one close and one rename onto the target.
+  const plain = staged({});
+  make(plain.io).writeAtomic(path.join(orch, 'plain.json'), 'x');
+  assert.ok(plain.closed());
+  assert.deepEqual(plain.renames.map(([, to]) => to), [path.join(orch, 'plain.json')]);
+  put(path.join(claude, 'projects', 'state.json'), 'theirs');
+  const before = treeDigest(claude);
+  const s = staged({ afterClose: swapToClaude(path.join(claude, 'projects')) });
+  assert.throws(() => make(s.io).writeAtomic(path.join(swap, 'state.json'), 'payload'), changed('harness-root'));
+  assert.ok(s.closed(), 'the swap was staged after the close');
+  assert.deepEqual(s.renames, [], 'the rename never ran');
+  assert.equal(treeDigest(claude), before, 'the fake harness root is byte-identical');
+  assert.equal(fs.readFileSync(path.join(claude, 'projects', 'state.json'), 'utf8'), 'theirs');
+});
+
+test('race: writeAtomic whose target turns into a junction into the harness root before the rename is refused and never renames', (t) => {
+  const probe = probeJunction();
+  if (!probe.ok) return t.skip(probe.why);
+  const { base, claude, swap, make } = swapFixture(t);
+  const target = put(path.join(swap, 'state.json'), 'mine');
+  const before = treeDigest(claude);
+  // Only the target entry changes: the temp file beside it still checks out.
+  const s = staged({
+    afterClose: () => {
+      fs.renameSync(target, `${target}.old`);
+      junction(base, target, path.join(claude, 'projects'));
+    },
+  });
+  assert.throws(() => make(s.io).writeAtomic(target, 'payload'), (e: unknown) => {
+    assert.ok(e instanceof WriteFenceError, String(e));
+    assert.equal(e.decision.reason, 'harness-root');
+    return true;
+  });
+  assert.deepEqual(s.renames, [], 'the rename never ran');
+  assert.equal(treeDigest(claude), before);
+  assert.equal(fs.readFileSync(`${target}.old`, 'utf8'), 'mine');
+  assert.deepEqual(fs.readdirSync(swap).filter((n) => n.endsWith('.tmp')), [], 'the temp file was removed');
+});
+
 test('race: append through a swapped directory touches neither an existing nor a new harness file', (t) => {
   const probe = probeJunction();
   if (!probe.ok) return t.skip(probe.why);
@@ -404,6 +466,83 @@ test('race: mkdirp whose parent turns into a junction removes the directory it m
   assert.ok(s.ran());
   assert.equal(fs.existsSync(path.join(claude, 'run')), false);
   assert.equal(treeDigest(claude), before);
+});
+
+/** Real fs, except that the first mkdir of `level` runs `stage` first (a racing process making it). */
+function mkdirRace(level: string, stage: () => void): { io: WriteIo; ran(): boolean } {
+  let ran = false;
+  return {
+    io: {
+      openSync: (p, flags) => fs.openSync(p, flags),
+      mkdirSync: (p) => {
+        if (!ran && p === level) {
+          ran = true;
+          stage();
+        }
+        fs.mkdirSync(p);
+      },
+      closeSync: (fd) => fs.closeSync(fd),
+      renameSync: (from, to) => fs.renameSync(from, to),
+    },
+    ran: () => ran,
+  };
+}
+
+test('race: mkdirp whose level appears as a junction into the harness root just before its mkdir (EEXIST) is refused, not taken as made', (t) => {
+  const probe = probeJunction();
+  if (!probe.ok) return t.skip(probe.why);
+  const { base, home, orch, make } = fixture(t);
+  fs.mkdirSync(orch);
+  const claude = path.join(home, '.claude');
+  const before = treeDigest(claude);
+  const run = path.join(orch, 'run');
+  const s = mkdirRace(run, () => junction(base, run, claude));
+  assert.throws(() => make(s.io).mkdirp(run), changed('harness-root'));
+  assert.ok(s.ran(), 'the junction was staged before the mkdir');
+  assert.equal(treeDigest(claude), before);
+  assert.ok(fs.lstatSync(run).isSymbolicLink(), 'a link this call did not make is not removed');
+  // A link that stays inside ORCHESTRA_HOME is refused too: the level must be a plain directory.
+  const tmp = path.join(orch, 'tmp');
+  fs.mkdirSync(path.join(orch, 'elsewhere'));
+  const s2 = mkdirRace(tmp, () => junction(base, tmp, path.join(orch, 'elsewhere')));
+  assert.throws(() => make(s2.io).mkdirp(tmp), changed('link'));
+  // Control: a plain directory made meanwhile is fine, and is not reported as made by this call.
+  const runtime = path.join(orch, 'runtime');
+  const s3 = mkdirRace(runtime, () => fs.mkdirSync(runtime));
+  assert.deepEqual(make(s3.io).mkdirp(runtime), []);
+  assert.ok(s3.ran());
+});
+
+/** Files under `dir` (links not followed) whose content is exactly `content`. */
+function filesWith(dir: string, content: string): string[] {
+  const out: string[] = [];
+  for (const name of fs.readdirSync(dir)) {
+    const p = path.join(dir, name);
+    const st = fs.lstatSync(p);
+    if (st.isDirectory() && !st.isSymbolicLink()) out.push(...filesWith(p, content));
+    else if (st.isFile() && fs.readFileSync(p, 'utf8') === content) out.push(p);
+  }
+  return out;
+}
+
+test('race: writeAtomic whose directory, temp file included, is moved into the harness root and junctioned there between close and rename lands nothing in the root', (t) => {
+  const probe = probeJunction();
+  if (!probe.ok) return t.skip(probe.why);
+  const { base, claude, swap, make } = swapFixture(t);
+  const moved = path.join(claude, 'projects', 'moved');
+  let moveRan = false;
+  const s = staged({
+    afterClose: () => {
+      fs.renameSync(swap, moved);
+      junction(base, swap, moved);
+      moveRan = true;
+    },
+  });
+  assert.throws(() => make(s.io).writeAtomic(path.join(swap, 'state.json'), 'payload'), changed('harness-root'));
+  assert.ok(moveRan, 'the move and the junction were staged after the close');
+  assert.deepEqual(s.renames, [], 'the rename never ran');
+  assert.deepEqual(filesWith(claude, 'payload'), [], 'no payload file under the harness root');
+  assert.equal(fs.existsSync(path.join(moved, 'state.json')), false);
 });
 
 test('race: a file replaced right after the open is refused by identity, and neither file is written', (t) => {

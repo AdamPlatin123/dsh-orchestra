@@ -7,8 +7,9 @@ import { EXIT } from './exit.ts';
 import { describeIntegrity } from './integrity.ts';
 
 // planStartup(): one decision from three inputs, in the plan's order (step 2, plan §6 invariants 9
-// and 10). Elevated beats everything; a missing core feature exits; any doubt about integrity, the
-// import fence or the data dir gives ui-only; only a clean result works.
+// and 10). Elevated beats everything; a missing core feature exits (the resolve hook of the import
+// fence is one: boot refuses without it before main.ts loads); any doubt about integrity or the data
+// dir gives ui-only; only a clean result works.
 
 export { EXIT };
 
@@ -19,7 +20,6 @@ export type StartupNote =
 export type UiOnlyReason =
   | { id: 'integrity-low'; rid: number }
   | { id: 'integrity-unknown'; integrity: Extract<Integrity, { level: 'unknown' }> }
-  | { id: 'no-resolve-hook' }
   | { id: 'data-dir'; check: Extract<DataDirCheck, { ok: false }> };
 
 export type StartupPlan =
@@ -38,24 +38,25 @@ export function startupNotes(f: Features): StartupNote[] {
 
 export type ExitPlan = Extract<StartupPlan, { mode: 'exit' }>;
 
+const CORE_FEATURES: readonly string[] = ['module.registerHooks', 'node:sqlite', 'typescript type stripping'];
+
 /**
  * The two exits, which need neither the data dir nor the harness roots: start() asks this before it
  * resolves or lists anything, so an elevated process reads nothing below the user's home.
+ * `features.registerHooks` must already say whether the resolve hook is in place (main.ts passes
+ * features AND fence status): boot never gets this far without it, and a direct caller exits too.
  */
 export function planExit(features: Features, integrity: Integrity): ExitPlan | null {
   const notes = startupNotes(features);
   if (integrity.level === 'high-or-above') return { mode: 'exit', code: EXIT.elevated, reason: 'elevated', integrity, notes };
-  if (!features.sqlite || !features.typeStripping) {
-    const missing = missingFeatures(features).filter((m) => m === 'node:sqlite' || m === 'typescript type stripping');
+  if (!features.registerHooks || !features.sqlite || !features.typeStripping) {
+    const missing = missingFeatures(features).filter((m) => CORE_FEATURES.includes(m));
     return { mode: 'exit', code: EXIT.missingFeatures, reason: 'missing-features', missing, notes };
   }
   return null;
 }
 
-/**
- * `features.registerHooks` must already say whether the resolve hook is in place (boot passes
- * features AND fence status). ui-only lists every reason that applies, in a fixed order.
- */
+/** ui-only lists every reason that applies, in a fixed order. */
 export function planStartup(features: Features, integrity: Integrity, dataDir: DataDirCheck): StartupPlan {
   const exit = planExit(features, integrity);
   if (exit !== null) return exit;
@@ -63,7 +64,6 @@ export function planStartup(features: Features, integrity: Integrity, dataDir: D
   const reasons: UiOnlyReason[] = [];
   if (integrity.level === 'low') reasons.push({ id: 'integrity-low', rid: integrity.rid });
   if (integrity.level === 'unknown') reasons.push({ id: 'integrity-unknown', integrity });
-  if (!features.registerHooks) reasons.push({ id: 'no-resolve-hook' });
   if (!dataDir.ok) reasons.push({ id: 'data-dir', check: dataDir });
   if (reasons.length > 0) return { mode: 'ui-only', reasons, notes };
   return { mode: 'working', dataDir, notes };
@@ -75,8 +75,6 @@ function describeReason(r: UiOnlyReason): string {
       return `low integrity (S-1-16-${r.rid})`;
     case 'integrity-unknown':
       return `integrity ${describeIntegrity(r.integrity)}`;
-    case 'no-resolve-hook':
-      return 'module.registerHooks missing, the import fence has no resolve hook';
     case 'data-dir':
       return `data dir: ${describeDataDir(r.check)}`;
   }

@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { crashLine, exitCodeOf } from '../../src/boot.ts';
 import { EXIT } from '../../src/runtime/startup.ts';
-import { BOOT, runOrchestrad, startOrchestrad, waitForLine } from '../helpers/orchestrad.ts';
+import { BOOT, isBoot, runOrchestrad, startOrchestrad, waitForLine } from '../helpers/orchestrad.ts';
 import { withTmp } from '../helpers/tmp.ts';
 
 // boot.ts is only ever run here with --test-profile or with arguments it must refuse: the real
@@ -33,7 +33,20 @@ test('boot.ts in the test profile reaches working, prints the banner and the pai
   await child.stop();
 });
 
-test('boot.ts refuses an unknown argument with exit 5 before running anything', (t) => {
+test('the helpers never start boot.ts without arguments, however the script is spelled', (t) => {
+  const dir = withTmp(t);
+  assert.equal(isBoot(BOOT), true);
+  assert.equal(isBoot(BOOT.toUpperCase()), true);
+  assert.equal(isBoot(path.join(path.dirname(BOOT), 'runtime', '..', 'boot.ts')), true);
+  assert.equal(isBoot(path.join(dir, 'boot.ts')), false);
+  assert.equal(isBoot(path.join(path.dirname(BOOT), 'main.ts')), false);
+  for (const script of [undefined, BOOT, BOOT.toUpperCase()]) {
+    assert.throws(() => startOrchestrad(t, [], script === undefined ? {} : { script }), /orchestrad without arguments is the real profile/, String(script));
+  }
+  assert.throws(() => runOrchestrad([]), /orchestrad without arguments is the real profile/);
+});
+
+test('boot.ts refuses an unknown argument with the bad-arguments code before running anything', (t) => {
   const dir = withTmp(t);
   const r = runOrchestrad(['--port', '8080'], { cwd: dir });
   assert.equal(r.status, EXIT.badArgs, r.stderr);
@@ -50,7 +63,7 @@ test('boot.ts refuses a --test-dir outside the temp directory', (t) => {
 
 // The entry is swapped for a temp module through runEntry, the function boot.ts's own entry block
 // calls; the real import fence is installed in the child exactly as in production.
-test('a start() that throws, or a later uncaught error, exits with EXIT.crashed and one scrubbed line, never 1', (t) => {
+test('a start() that throws, or a later uncaught error, exits with EXIT.crashed and one scrubbed line, never Node\'s own 1', (t) => {
   const dir = withTmp(t);
   const runner = path.join(dir, 'runner.mjs');
   fs.writeFileSync(runner, `import { runEntry } from ${JSON.stringify(pathToFileURL(BOOT).href)};\nawait runEntry(new URL(process.argv[2]));\n`);
@@ -73,10 +86,24 @@ test('a start() that throws, or a later uncaught error, exits with EXIT.crashed 
   const rejected = run(entry('rejects.ts', "  void Promise.reject(new Error('stray'));\n  return { mode: 'working' };"));
   assert.equal(rejected.status, EXIT.crashed, rejected.stderr);
 
-  // Control: exit 1 comes only from a typed elevated outcome, with no crash line.
-  const elevated = run(entry('elevated.ts', "  return { mode: 'exit', code: 1 };"));
+  // Control: the elevated code comes only from a typed outcome, with no crash line.
+  const elevated = run(entry('elevated.ts', `  return { mode: 'exit', code: ${EXIT.elevated} };`));
   assert.equal(elevated.status, EXIT.elevated, elevated.stderr);
   assert.deepEqual(crashLines(elevated.stderr), []);
+  assert.equal(new Set(Object.values(EXIT)).size, Object.keys(EXIT).length, 'one code per meaning');
+});
+
+// nodejs.org/api/process.html#exit-codes: what Node exits with by itself (above 128: a signal).
+const NODE_OWN_CODES = [1, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14];
+
+test('every typed exit code lies in 20-29, one per meaning, and none is a code Node exits with by itself', () => {
+  const { ok, ...typed } = EXIT;
+  assert.equal(ok, 0);
+  assert.deepEqual(typed, { elevated: 20, missingFeatures: 21, uiOnly: 22, lockHeld: 23, badArgs: 24, startFailed: 25, crashed: 26 });
+  for (const [name, code] of Object.entries(typed)) {
+    assert.ok(code >= 20 && code <= 29, `${name} = ${code}`);
+    assert.ok(!NODE_OWN_CODES.includes(code), `${name} = ${code} is one of Node's own`);
+  }
   assert.equal(new Set(Object.values(EXIT)).size, Object.keys(EXIT).length, 'one code per meaning');
 });
 

@@ -4,7 +4,7 @@ import type { HarnessRoot } from '../fs/harness-roots.ts';
 import type { RealpathFn } from '../fs/paths.ts';
 import type { PidLog } from '../os/spawn.ts';
 import type { DataDirInput } from './data-dir.ts';
-import type { DaemonInfo, Timers } from './lock.ts';
+import type { DaemonInfo, HeldLock } from './lock.ts';
 import type { ConsolePort, Log } from './log.ts';
 import type { StartupNote } from './startup.ts';
 import type { PairingOutput, Profile } from './test-profile.ts';
@@ -13,7 +13,7 @@ import { pathKey } from '../fs/paths.ts';
 import { ReadGate } from '../fs/read-gate.ts';
 import { WriteFence } from '../fs/write-fence.ts';
 import { checkDataDir, describeDataDir, prepareDataDir } from './data-dir.ts';
-import { acquireLock, heldMessage, lockPipeName, parseDaemonInfo, startHeartbeat } from './lock.ts';
+import { acquireLock, encodeDaemonInfo, heldMessage, lockPipeName, parseDaemonInfo } from './lock.ts';
 import { EXIT, describeNote } from './startup.ts';
 import { TestRoots, decidePairingOutput, testReadDirs } from './test-profile.ts';
 
@@ -23,6 +23,19 @@ const win = path.win32;
 // gates only here, in main.ts and in launcherRootFs, and importing this module only from main.ts).
 // main.ts imports it only after planStartup() says working, so a ui-only process never loads the
 // write fence, the lock or anything that opens storage.
+
+/** How a working orchestrad stops. */
+export type StopPort = {
+  /** Arranges for `stop` to run on Ctrl+C and friends; returns the undo. */
+  onSignal(stop: () => void): () => void;
+  /**
+   * Ends this orchestrad: the only way its lock is given up, so no process keeps running without
+   * it while a second instance takes over. stop() calls it last, after the log and pid sinks are
+   * detached. main.ts exits the process and leaves the pipe to the kernel, so no code of the
+   * process runs once the lock is gone; an in-process caller (a test) releases the lock instead.
+   */
+  end(lock: HeldLock): Promise<void>;
+};
 
 export type WorkingContext = {
   profile: Profile;
@@ -38,9 +51,7 @@ export type WorkingContext = {
   pid: number;
   now(): number;
   tty(): { stdin: boolean; stdout: boolean };
-  onStopSignal(stop: () => void): () => void;
-  timers?: Timers;
-  heartbeatMs?: number;
+  stopping: StopPort;
 };
 
 export type WorkingOutcome =
@@ -53,8 +64,9 @@ export type WorkingOutcome =
     pipe: string;
     pairing: PairingOutput;
     testRoots: TestRoots | null;
+    /** Ends this orchestrad through ctx.stopping.end (in main.ts: the process exits). */
     stop(): Promise<void>;
-    /** Settles once stop() has released the lock, whoever called it. */
+    /** Settles once stop() has given up the lock, whoever called it (in main.ts: never, the process is gone). */
     stopped: Promise<void>;
   };
 
@@ -117,7 +129,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
       // No readable daemon.json: the hint says so.
     }
     log.warn('lock-held', { pipe, holderPid: holder?.pid ?? null });
-    ctx.console.err(heldMessage(home, holder, ctx.now()));
+    ctx.console.err(heldMessage(home, holder));
     return { mode: 'lock-held', code: EXIT.lockHeld, pipe, holder };
   }
   const lock = got.lock;
@@ -141,15 +153,14 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
     if (failures === 1) log.warn('pid-sink-failed', { error });
   });
 
-  const startedAt = new Date(ctx.now()).toISOString();
-  const heartbeat = startHeartbeat({
-    info: { v: 1, pid: ctx.pid, createTime: null, profile: ctx.profile.kind, startedAt },
-    write: (text) => fence.writeAtomic(daemonJson, text),
-    now: ctx.now,
-    intervalMs: ctx.heartbeatMs,
-    timers: ctx.timers,
-    onError: (e) => log.error('heartbeat-failed', { error: e }),
-  });
+  // Written once, now that the lock is held; nothing rewrites it while this process runs.
+  const bootId = crypto.randomUUID();
+  try {
+    fence.writeAtomic(daemonJson, encodeDaemonInfo({ v: 1, pid: ctx.pid, profile: ctx.profile.kind, bootId, startedAt: new Date(ctx.now()).toISOString() }));
+  } catch (e) {
+    // Only a second instance's hint reads it: a failed write costs that hint, not the start.
+    log.error('daemon-json-failed', { error: e });
+  }
 
   const testRoots = ctx.profile.kind === 'test' ? new TestRoots(ctx.profile.rootPids) : null;
   if (testRoots !== null && ctx.profile.kind === 'test' && ctx.profile.rootPids.length > 0) {
@@ -176,19 +187,21 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
     resolveStopped = r;
   });
   let uninstall: () => void = () => {};
-  let stopping: Promise<void> | null = null;
-  const stop = (): Promise<void> => (stopping ??= (async () => {
+  let ending: Promise<void> | null = null;
+  const stop = (): Promise<void> => (ending ??= (async () => {
     uninstall();
-    heartbeat.stop();
-    await lock.release();
     log.info('stopped', { pidSinkFailures: ctx.pidLog.failures() });
+    // Nothing reaches ORCHESTRA_HOME from here on, then the process ends with the lock.
+    log.detach();
+    ctx.pidLog.detach();
+    await ctx.stopping.end(lock);
     resolveStopped();
   })());
-  uninstall = ctx.onStopSignal(() => {
+  uninstall = ctx.stopping.onSignal(() => {
     void stop();
   });
 
-  log.info('working', { profile: ctx.profile.kind, pipe });
+  log.info('working', { profile: ctx.profile.kind, pipe, bootId });
   // Last line of the startup: everything above is on disk and on the console before it.
   ctx.console.out(`orchestrad: working (${ctx.profile.kind} profile, pid ${ctx.pid}, data ${home})`);
   return { mode: 'working', profile: ctx.profile.kind, home, pipe, pairing, testRoots, stop, stopped };

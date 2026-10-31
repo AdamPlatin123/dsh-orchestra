@@ -15,8 +15,11 @@ type Placement =
   | { allow: false; op: WriteOp; path: string; reason: 'home-root' }
   | { allow: false; op: WriteOp; path: string; reason: 'outside-home' };
 
-/** Why a target that passed check() was refused once it had been opened or created. */
-export type ChangedDetail = Extract<Placement, { allow: false }>['reason'] | 'canonicalize-failed' | 'identity';
+/**
+ * Why a target that passed check() was refused once it had been opened or created; `link`: a level
+ * mkdirp was about to create turned up as a junction or other link.
+ */
+export type ChangedDetail = Extract<Placement, { allow: false }>['reason'] | 'canonicalize-failed' | 'identity' | 'link';
 
 export type WriteDecision =
   | Placement
@@ -37,10 +40,15 @@ export class WriteFenceError extends Error {
   }
 }
 
-/** The calls that open or create a target by path; injectable so tests can stage a swap between check and act. */
+/**
+ * The calls that open, create, close or rename a target; injectable so tests can stage a swap between
+ * check and act, and between the close of a temp file and its rename.
+ */
 export type WriteIo = {
   openSync(p: string, flags: 'wx' | 'ax' | number): number;
   mkdirSync(p: string): void;
+  closeSync(fd: number): void;
+  renameSync(from: string, to: string): void;
 };
 
 const NODE_IO: WriteIo = {
@@ -48,6 +56,8 @@ const NODE_IO: WriteIo = {
   mkdirSync: (p) => {
     fs.mkdirSync(p);
   },
+  closeSync: (fd) => fs.closeSync(fd),
+  renameSync: (from, to) => fs.renameSync(from, to),
 };
 
 // Opens an existing file for appending and never creates one; a new file is made with 'ax' instead.
@@ -172,7 +182,7 @@ export class WriteFence {
   }
 
   /** Canonicalizes the now existing `p` again: its canonical form, or why it is no longer fine. */
-  #placeAgain(op: WriteOp, p: string): { ok: true; real: string } | { ok: false; detail: Exclude<ChangedDetail, 'identity'> } {
+  #placeAgain(op: WriteOp, p: string): { ok: true; real: string } | { ok: false; detail: Exclude<ChangedDetail, 'identity' | 'link'> } {
     let real: string;
     try {
       real = canonicalize(p, this.#realpath);
@@ -241,11 +251,11 @@ export class WriteFence {
         writeAll(fd, data);
         fs.fsyncSync(fd);
       } finally {
-        fs.closeSync(fd);
+        this.#io.closeSync(fd);
       }
       this.#verifyPath('write', tmp, id);
       this.#require(p, 'write');
-      fs.renameSync(tmp, p);
+      this.#io.renameSync(tmp, p);
       renamed = true;
     } finally {
       if (!renamed) removeQuietly(tmp);
@@ -275,14 +285,16 @@ export class WriteFence {
       if (opts.fsync === true) fs.fsyncSync(fd);
       done = true;
     } finally {
-      fs.closeSync(fd);
+      this.#io.closeSync(fd);
       if (!done && created) removeQuietly(p);
     }
   }
 
   /**
    * Creates each missing level separately, so no directory outside ORCHESTRA_HOME is ever made.
-   * Each new level is judged again once it exists and removed if it landed anywhere else.
+   * Each new level is judged again once it exists and removed if it landed anywhere else. A level
+   * that appeared meanwhile (EEXIST) is judged the same way and must be a plain directory; it is
+   * never removed, since this call did not make it.
    */
   mkdirp(dir: string): string[] {
     const p = this.#require(dir, 'mkdir');
@@ -300,7 +312,8 @@ export class WriteFence {
       try {
         this.#io.mkdirSync(level);
       } catch (e) {
-        if (code(e) !== 'EEXIST' || !fs.lstatSync(level).isDirectory()) throw e;
+        if (code(e) !== 'EEXIST') throw e;
+        this.#judgeExisting(level, e);
         continue;
       }
       const again = this.#placeAgain('mkdir', level);
@@ -311,6 +324,16 @@ export class WriteFence {
       created.push(level);
     }
     return created;
+  }
+
+  /** A level mkdirp found already there: still placed inside ORCHESTRA_HOME, not a link, a directory. */
+  #judgeExisting(level: string, eexist: unknown): void {
+    const again = this.#placeAgain('mkdir', level);
+    const changed = (detail: ChangedDetail) => new WriteFenceError({ allow: false, op: 'mkdir', path: level, reason: 'changed-during-open', detail });
+    if (!again.ok) throw changed(again.detail);
+    const st = fs.lstatSync(level);
+    if (st.isSymbolicLink()) throw changed('link');
+    if (!st.isDirectory()) throw eexist;
   }
 
   /** A fresh directory `<parent>\<prefix>XXXXXX`, checked before and after creation. */

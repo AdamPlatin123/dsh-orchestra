@@ -123,6 +123,11 @@ export class Log {
     for (const e of this.#ring) this.#emit(e);
   }
 
+  /** Later entries stay in the ring only; working mode calls this before it gives up the lock. */
+  detach(): void {
+    this.#sink = null;
+  }
+
   #add(level: LogLevel, event: string, fields: Record<string, unknown> | undefined): void {
     const scrubbed = fields === undefined ? {} : scrubValue(fields);
     const entry: LogEntry = {

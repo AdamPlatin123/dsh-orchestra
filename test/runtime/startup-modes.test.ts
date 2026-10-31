@@ -18,7 +18,7 @@ import { EXIT, planMessage, planStartup } from '../../src/runtime/startup.ts';
 import { fakeSpawn, whoamiChinese, whoamiEnglish, whoamiSpy } from '../helpers/fake-spawn.ts';
 import type { FakeSpawn } from '../helpers/fake-spawn.ts';
 import { findImports } from '../helpers/scan-rules.ts';
-import { FENCE_NO_HOOK, FENCE_OK, captureConsole, minimalEnv } from '../helpers/start.ts';
+import { FENCE_NO_HOOK, FENCE_OK, captureConsole, minimalEnv, IN_PROCESS_STOP } from '../helpers/start.ts';
 import { junction, put, treeDigest, withTmp } from '../helpers/tmp.ts';
 
 const REPO = fileURLToPath(new URL('../../', import.meta.url));
@@ -38,16 +38,21 @@ const modeOf = (f: Features, i: Integrity, d: DataDirCheck) => {
 };
 
 test('planStartup decides in the plan\'s order', () => {
+  const elevated = `exit ${EXIT.elevated}`;
+  const missing = `exit ${EXIT.missingFeatures}`;
   assert.equal(modeOf(FULL, MEDIUM, DIR_OK), 'working');
-  assert.equal(modeOf(FULL, HIGH, DIR_OK), 'exit 1');
-  assert.equal(modeOf({ ...FULL, sqlite: false }, HIGH, DIR_BAD), 'exit 1', 'elevated beats everything');
-  assert.equal(modeOf({ ...FULL, sqlite: false }, MEDIUM, DIR_OK), 'exit 2');
-  assert.equal(modeOf({ ...FULL, typeStripping: false }, LOW, DIR_BAD), 'exit 2', 'a missing core feature beats ui-only');
+  assert.equal(modeOf(FULL, HIGH, DIR_OK), elevated);
+  assert.equal(modeOf({ ...FULL, sqlite: false }, HIGH, DIR_BAD), elevated, 'elevated beats everything');
+  assert.equal(modeOf({ ...FULL, sqlite: false }, MEDIUM, DIR_OK), missing);
+  assert.equal(modeOf({ ...FULL, typeStripping: false }, LOW, DIR_BAD), missing, 'a missing core feature beats ui-only');
+  assert.equal(modeOf({ ...FULL, registerHooks: false }, MEDIUM, DIR_OK), missing, 'no resolve hook is a missing core feature, never ui-only');
+  assert.equal(modeOf({ ...FULL, registerHooks: false }, UNKNOWN, DIR_BAD), missing);
   assert.equal(modeOf(FULL, LOW, DIR_OK), 'ui-only integrity-low');
   assert.equal(modeOf(FULL, UNKNOWN, DIR_OK), 'ui-only integrity-unknown');
-  assert.equal(modeOf({ ...FULL, registerHooks: false }, MEDIUM, DIR_OK), 'ui-only no-resolve-hook');
   assert.equal(modeOf(FULL, MEDIUM, DIR_BAD), 'ui-only data-dir');
-  assert.equal(modeOf({ ...FULL, registerHooks: false }, UNKNOWN, DIR_BAD), 'ui-only integrity-unknown,no-resolve-hook,data-dir');
+  assert.equal(modeOf(FULL, UNKNOWN, DIR_BAD), 'ui-only integrity-unknown,data-dir');
+  const p = planStartup({ ...FULL, registerHooks: false, sqlite: false }, MEDIUM, DIR_OK);
+  assert.deepEqual(p.mode === 'exit' && p.reason === 'missing-features' ? p.missing : null, ['module.registerHooks', 'node:sqlite']);
 });
 
 test('planStartup: no zstd works with the DSH source off; an old Node only warns; both notes ride along in every mode', () => {
@@ -75,7 +80,7 @@ async function startTest(t: TestContext, opts: { features?: Partial<Features>; f
     env: minimalEnv(),
     console: con.port,
     spawnBackend: spy.backend,
-    onStopSignal: () => () => {},
+    stopping: IN_PROCESS_STOP,
     ...opts.deps,
   });
   if (o.mode === 'working') t.after(() => o.stop());
@@ -113,7 +118,7 @@ test('running High while whoami fails gives ui-only, never working', async (t) =
   assert.equal(r2.o.mode, 'ui-only');
 });
 
-test('High -> exit 1 before anything is created', async (t) => {
+test('High -> the elevated exit before anything is created', async (t) => {
   const r = await startTest(t, { spy: whoamiSpy(whoamiEnglish('High Mandatory Level')) });
   assert.equal(r.o.mode, 'exit');
   assert.equal((r.o as { code: number }).code, EXIT.elevated);
@@ -121,7 +126,7 @@ test('High -> exit 1 before anything is created', async (t) => {
   assert.match(r.con.err.join('\n'), /refusing to run elevated/);
 });
 
-test('High -> exit 1 before ORCHESTRA_HOME or any harness root is even resolved; Medium does resolve them (control)', async (t) => {
+test('High -> the elevated exit before ORCHESTRA_HOME or any harness root is even resolved; Medium does resolve them (control)', async (t) => {
   const below = (calls: readonly string[], dir: string) => {
     const d = fs.realpathSync.native(dir).toLowerCase();
     return calls.filter((p) => p.toLowerCase().startsWith(`${d}\\`));
@@ -160,7 +165,7 @@ async function startJunctioned(t: TestContext, link: 'orchestra' | 'roots'): Pro
     env: minimalEnv({ TEMP: temp, TMP: temp }),
     console: con.port,
     spawnBackend: whoamiSpy(whoamiEnglish('Medium Mandatory Level')).backend,
-    onStopSignal: () => () => {},
+    stopping: IN_PROCESS_STOP,
   });
   if (o.mode === 'working') t.after(() => o.stop());
   return { o, sibling, before, con };
@@ -193,7 +198,7 @@ test('runWorking checks the data dir itself: a junctioned home or the user home 
   const con = captureConsole();
   const common = {
     roots: [], notes: [], log: new Log(), pidLog: new PidLog(), console: con.port, pid: process.pid, now: Date.now,
-    tty: () => ({ stdin: false, stdout: false }), onStopSignal: () => () => {}, realpath: (p: string) => fs.realpathSync.native(p),
+    tty: () => ({ stdin: false, stdout: false }), stopping: IN_PROCESS_STOP, realpath: (p: string) => fs.realpathSync.native(p),
   };
   const o = await runWorking({ ...common, profile, home, userHome: path.join(base, 'user-home') });
   if (o.mode === 'working') await o.stop();
@@ -226,28 +231,68 @@ test('runWorking checks again once the data dir exists: a home that resolves els
   const con = captureConsole();
   const ctx = {
     profile, home, userHome: path.join(base, 'user-home'), roots: [], notes: [], log: new Log(), pidLog: new PidLog(), console: con.port, pid: process.pid,
-    now: Date.now, tty: () => ({ stdin: false, stdout: false }), onStopSignal: () => () => {},
+    now: Date.now, tty: () => ({ stdin: false, stdout: false }), stopping: IN_PROCESS_STOP,
   };
   const o = await runWorking({ ...ctx, realpath: moved });
   if (o.mode === 'working') await o.stop();
   assert.equal(o.mode === 'start-failed' && o.stage, 'data-dir', JSON.stringify(o));
   assert.match(o.mode === 'start-failed' ? o.detail : '', /changed while it was prepared: orchestra-home/);
-  assert.equal(fs.existsSync(path.join(home, 'run', 'daemon.json')), false, 'no heartbeat was written');
+  assert.equal(fs.existsSync(path.join(home, 'run', 'daemon.json')), false, 'no daemon.json was written');
   const again = await runWorking({ ...ctx, log: new Log(), pidLog: new PidLog(), realpath: (p: string) => fs.realpathSync.native(p) });
   assert.equal(again.mode, 'working', 'the failed attempt released the lock pipe');
   if (again.mode === 'working') await again.stop();
 });
 
-test('no resolve hook -> ui-only', async (t) => {
-  const r = await startTest(t, { fence: FENCE_NO_HOOK });
-  assert.equal(r.o.mode, 'ui-only');
-  assert.match(r.con.err.join('\n'), /import fence has no resolve hook/);
-  assert.equal(fs.existsSync(r.home), false);
-  const r2 = await startTest(t, { features: { registerHooks: false } });
-  assert.equal(r2.o.mode, 'ui-only');
+test('stop() detaches the log and pid sinks before it ends: what is logged once the lock is going stays in memory, never in ORCHESTRA_HOME', async (t) => {
+  const { runWorking } = await import('../../src/runtime/working.ts');
+  const base = withTmp(t);
+  fs.mkdirSync(path.join(base, 'orchestra-test-x'));
+  const testDir = fs.realpathSync.native(path.join(base, 'orchestra-test-x'));
+  const home = path.join(testDir, 'orchestra');
+  const profile: TestProfile = { kind: 'test', testDir, orchestraHome: home, rootsDir: path.join(testDir, 'roots'), rootsDirGiven: false, rootPids: [] };
+  const log = new Log();
+  const pidLog = new PidLog();
+  const run = path.join(home, 'run');
+  const onDisk: string[] = [];
+  const o = await runWorking({
+    profile, home, userHome: path.join(base, 'user-home'), roots: [], notes: [], log, pidLog, console: captureConsole().port, pid: process.pid, now: Date.now,
+    tty: () => ({ stdin: false, stdout: false }), realpath: (p: string) => fs.realpathSync.native(p),
+    stopping: {
+      onSignal: () => () => {},
+      end: async (lock) => {
+        // Stands in for a module that logs, or spawns, while the process ends.
+        log.info('late-entry');
+        pidLog.record({ at: new Date().toISOString(), rule: 'whoami', exe: 'late.exe', pid: 1 });
+        for (const f of ['orchestrad.log', 'pids.jsonl']) onDisk.push(fs.existsSync(path.join(run, f)) ? fs.readFileSync(path.join(run, f), 'utf8') : '');
+        await lock.release();
+      },
+    },
+  });
+  assert.equal(o.mode, 'working', JSON.stringify(o));
+  if (o.mode !== 'working') return;
+  await o.stop();
+  assert.equal(onDisk.length, 2, 'end() ran');
+  assert.match(onDisk[0]!, /"event":"stopped"/, 'the stop itself is on disk');
+  assert.doesNotMatch(onDisk[0]!, /late-entry/);
+  assert.doesNotMatch(onDisk[1]!, /late\.exe/);
+  assert.ok(log.entries().some((e) => e.event === 'late-entry'), 'the entry was kept in memory');
+  assert.equal(pidLog.unwritten(), 1);
 });
 
-test('no node:sqlite -> exit 2; no %SystemRoot% -> unknown integrity, ui-only, nothing spawned', async (t) => {
+test('no resolve hook, start() called directly (boot refuses earlier) -> the missing-features exit before the data dir is resolved', async (t) => {
+  for (const opts of [{ fence: FENCE_NO_HOOK }, { features: { registerHooks: false } }]) {
+    const r = await startTest(t, opts);
+    assert.equal(r.o.mode, 'exit', r.con.all().join('\n'));
+    if (r.o.mode !== 'exit') return;
+    assert.equal(r.o.code, EXIT.missingFeatures);
+    assert.deepEqual(r.o.plan.mode === 'exit' && r.o.plan.reason === 'missing-features' ? r.o.plan.missing : null, ['module.registerHooks']);
+    assert.match(r.con.err.join('\n'), /cannot start, missing: module\.registerHooks/);
+    onlyWhoami(r.spy);
+    assert.equal(fs.existsSync(r.home), false);
+  }
+});
+
+test('no node:sqlite -> the missing-features exit; no %SystemRoot% -> unknown integrity, ui-only, nothing spawned', async (t) => {
   const r = await startTest(t, { features: { sqlite: false } });
   assert.equal(r.o.mode, 'exit');
   assert.equal((r.o as { code: number }).code, EXIT.missingFeatures);
@@ -315,13 +360,14 @@ const lines = [];
 const o = await main.start(detectFeatures(), fence, { fetch: fetchPort }, {
   argv: params.argv, home: params.home, env: params.env,
   console: { out: (l) => lines.push(l), err: (l) => lines.push(l) },
-  onStopSignal: () => () => {}, tty: () => ({ stdin: false, stdout: false }),
+  stopping: { onSignal: () => () => {}, end: (lock) => lock.release() }, tty: () => ({ stdin: false, stdout: false }),
+  ...(params.inTest ? { inTestRealProfile: params.inTest } : {}),
 });
 if (o.mode === 'working') await o.stop();
 console.log(JSON.stringify({ mode: o.mode, lines, seen: [...seen] }));
 `;
 
-function record(t: TestContext, params: { argv: string[]; home: string; env: Record<string, string | undefined> }): { mode: string; lines: string[]; seen: string[] } {
+function record(t: TestContext, params: { argv: string[]; home: string; env: Record<string, string | undefined>; inTest?: { fakeHome: string } }): { mode: string; lines: string[]; seen: string[] } {
   const dir = withTmp(t);
   const runner = path.join(dir, 'recorder.mjs');
   fs.writeFileSync(runner, RECORDER);
@@ -337,7 +383,8 @@ test('measured: a ui-only start (real profile, fake home as ORCHESTRA_HOME, real
   const base = withTmp(t);
   const home = path.join(base, 'home');
   fs.mkdirSync(home);
-  const res = record(t, { argv: [], home, env: minimalEnv({ ORCHESTRA_HOME: home }) });
+  // The child inherits NODE_TEST_CONTEXT, so the real profile runs only through the checked opt-in.
+  const res = record(t, { argv: [], home, env: minimalEnv({ ORCHESTRA_HOME: home }), inTest: { fakeHome: home } });
   assert.equal(res.mode, 'ui-only', res.lines.join('\n'));
   for (const m of [...NEVER_IN_UI_ONLY, 'node:net', 'node:sqlite', 'node:worker_threads']) assert.ok(!res.seen.includes(m), `${m} was loaded in ui-only`);
   assert.ok(!res.seen.some((m) => /^src\/(store|sources|server|brakes|detectors)\//.test(m)));

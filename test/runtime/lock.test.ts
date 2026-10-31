@@ -1,67 +1,59 @@
 import { test } from 'node:test';
+import type { TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
+import nodeFs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import * as net from 'node:net';
 import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { fileURLToPath } from 'node:url';
-import type { TestContext } from 'node:test';
-import { acquireLock, encodeDaemonInfo, heldMessage, lockPipeName, parseDaemonInfo, startHeartbeat } from '../../src/runtime/lock.ts';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { start } from '../../src/main.ts';
+import { detectFeatures } from '../../src/runtime/features.ts';
+import { acquireLock, encodeDaemonInfo, heldMessage, lockPipeName, parseDaemonInfo } from '../../src/runtime/lock.ts';
 import type { DaemonInfo } from '../../src/runtime/lock.ts';
 import { EXIT } from '../../src/runtime/startup.ts';
-import { runOrchestrad, startOrchestrad, waitForLine } from '../helpers/orchestrad.ts';
-import type { Orchestrad } from '../helpers/orchestrad.ts';
+import { whoamiEnglish, whoamiSpy } from '../helpers/fake-spawn.ts';
+import { BOOT, startOrchestrad, waitForLine } from '../helpers/orchestrad.ts';
+import type { Exit, Orchestrad } from '../helpers/orchestrad.ts';
+import { FENCE_OK, captureConsole, minimalEnv, IN_PROCESS_STOP } from '../helpers/start.ts';
 import { treeDigest, withTmp } from '../helpers/tmp.ts';
 
 const HOLDER = fileURLToPath(new URL('../helpers/lock-holder.ts', import.meta.url));
 const WORKING = /^orchestrad: working \(test profile/;
 const HINT = /another orchestrad holds the lock/;
+/**
+ * Far longer than any second start: the test stops the holder through its handle once the second
+ * instance has exited, so the holder never thaws and no timing margin is involved.
+ */
+const FREEZE_MS = 60_000;
 
 const homeOf = (dir: string) => path.join(fs.realpathSync.native(dir), 'orchestra');
-const holder = (t: TestContext, dir: string, mode: 'stale' | 'freeze', ms?: number) =>
-  startOrchestrad(t, [dir, mode, ...(ms === undefined ? [] : [String(ms)])], { script: HOLDER });
 
-function hintAge(line: string, pid: number): number {
-  const m = new RegExp(`pid ${pid}, heartbeat (\\d+) s ago`).exec(line);
-  assert.ok(m, line);
-  return Number(m[1]);
-}
-
-/** A second orchestrad against a held lock: exit 4, exactly one hint, nothing under ORCHESTRA_HOME changed. */
-function secondInstanceBouncesOff(dir: string, h: Orchestrad, minAge: number): void {
+test('a holder whose event loop is frozen (Atomics.wait) is never replaced; the one hint names its pid and start time', async (t) => {
+  const dir = withTmp(t);
+  const h = startOrchestrad(t, [dir, String(FREEZE_MS)], { script: HOLDER });
+  await waitForLine(h, /^held$/);
   const home = homeOf(dir);
+  const info = parseDaemonInfo(fs.readFileSync(path.join(home, 'run', 'daemon.json'), 'utf8'));
+  assert.ok(info !== null && info.pid === h.pid, JSON.stringify(info));
   const before = treeDigest(home);
   const journal = fs.readFileSync(path.join(home, 'journal.jsonl'));
-  const r = runOrchestrad(['--test-profile', '--test-dir', dir]);
-  assert.equal(r.status, EXIT.lockHeld, `${r.stdout}\n${r.stderr}`);
-  const hints = `${r.stdout}\n${r.stderr}`.split(/\r?\n/).filter((l) => HINT.test(l));
+
+  const second = startOrchestrad(t, ['--test-profile', '--test-dir', dir]);
+  const exit = await second.exited;
+  assert.ok(!h.lines().some((l) => /^thawed/.test(l)), 'the second instance ran its whole start while the holder was frozen');
+
+  assert.equal(exit.code, EXIT.lockHeld, `${second.lines().join('\n')}\n${second.errLines().join('\n')}`);
+  const hints = [...second.lines(), ...second.errLines()].filter((l) => HINT.test(l));
   assert.equal(hints.length, 1, 'exactly one console hint');
-  assert.ok(hintAge(hints[0]!, h.pid) >= minAge, hints[0]);
+  assert.ok(hints[0]!.includes(`(pid ${h.pid}, started ${info.startedAt})`), hints[0]);
   assert.match(hints[0]!, /will not take over/);
-  assert.ok(!/orchestrad: working/.test(r.stdout), 'the second instance never worked');
+  assert.ok(!second.lines().some((l) => /orchestrad: working/.test(l)), 'the second instance never worked');
   assert.equal(treeDigest(home), before, 'no takeover: ORCHESTRA_HOME is byte-for-byte unchanged');
   assert.deepEqual(fs.readFileSync(path.join(home, 'journal.jsonl')), journal, 'the journal did not fork');
   assert.equal(h.child.exitCode, null, 'the holder still runs');
-}
-
-test('a live holder whose heartbeat is 120 s old is never replaced (fast variant)', async (t) => {
-  const dir = withTmp(t);
-  const h = holder(t, dir, 'stale');
-  await waitForLine(h, /^held$/);
-  secondInstanceBouncesOff(dir, h, 120);
-  await h.stop();
-});
-
-test('a holder frozen for 120 s (Atomics.wait) is never replaced (real freeze)', {
-  skip: process.env.ORCHESTRA_LOCK_FREEZE_TEST === '1' ? false : 'takes over two minutes; run once by hand with ORCHESTRA_LOCK_FREEZE_TEST=1',
-  timeout: 240_000,
-}, async (t) => {
-  const dir = withTmp(t);
-  const h = holder(t, dir, 'freeze', 150_000);
-  await waitForLine(h, /^held$/);
-  await sleep(120_000);
-  secondInstanceBouncesOff(dir, h, 120);
   await h.stop();
 });
 
@@ -80,6 +72,69 @@ test('two instances started together: exactly one works, the other exits with th
   assert.equal(loser.errLines().filter((l) => HINT.test(l)).length, 1);
   await a.stop();
   await b.stop();
+});
+
+/** The exit of `o` if it comes within `ms`, else null (the child keeps running). */
+function exitWithin(o: Orchestrad, ms: number): Promise<Exit | null> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(null), ms);
+    void o.exited.then((e) => {
+      clearTimeout(timer);
+      resolve(e);
+    });
+  });
+}
+
+/**
+ * A runner that boots orchestrad in the test profile through boot.ts's own path and, once it works,
+ * loads a module through the import fence that emits SIGINT and keeps a timer alive (F1 of the step 2b
+ * review). `entry` is src/main.ts, or a wrapper that gives start() the stopping of step 2b, which
+ * released the lock and let the process live on.
+ */
+function signalRunner(t: TestContext, control: boolean): { runner: string; dir: string } {
+  const files = withTmp(t);
+  const mainUrl = new URL('../../src/main.ts', import.meta.url).href;
+  fs.writeFileSync(path.join(files, 'package.json'), '{"type":"module"}');
+  fs.writeFileSync(path.join(files, 'emit.ts'), "process.stdout.write('EMITTING\\n');\nprocess.emit('SIGINT' as never);\nsetInterval(() => {}, 1000);\n");
+  fs.writeFileSync(path.join(files, 'old-stop.ts'), [
+    `import { start as realStart } from ${JSON.stringify(mainUrl)};`,
+    'type Lock = { release(): Promise<void> };',
+    'const onSignal = (stop: () => void) => { process.on(\'SIGINT\', stop); return () => { process.off(\'SIGINT\', stop); }; };',
+    'export function start(f: never, fence: never, ports: never): Promise<unknown> {',
+    '  return realStart(f, fence, ports, { stopping: { onSignal, end: (lock: Lock) => lock.release() } } as never);',
+    '}',
+  ].join('\n'));
+  const entry = control ? pathToFileURL(path.join(files, 'old-stop.ts')).href : mainUrl;
+  const runner = path.join(files, 'runner.mjs');
+  fs.writeFileSync(runner, [
+    `import { boot } from ${JSON.stringify(pathToFileURL(BOOT).href)};`,
+    `const o = await boot(new URL(${JSON.stringify(entry)}));`,
+    "if (o.started && o.result.mode === 'working') await import(new URL('./emit.ts', import.meta.url).href);",
+  ].join('\n'));
+  return { runner, dir: withTmp(t) };
+}
+
+test('a module that emits SIGINT and keeps a timer ends the holder with the lock; no process lives on without it (control: the step-2b stop let a second instance work beside it)', async (t) => {
+  const fixed = signalRunner(t, false);
+  const args = (dir: string) => ['--test-profile', '--test-dir', dir];
+  const a = startOrchestrad(t, args(fixed.dir), { script: fixed.runner });
+  await waitForLine(a, /^EMITTING$/);
+  const ended = await exitWithin(a, 15_000);
+  assert.deepEqual(ended, { code: EXIT.ok, signal: null }, `the holder kept running after its lock was asked to go; stdout: ${a.lines().join(' | ')}`);
+  const log = fs.readFileSync(path.join(homeOf(fixed.dir), 'run', 'orchestrad.log'), 'utf8');
+  assert.equal(log.split('\n').filter((l) => l.includes('"event":"stopped"')).length, 1, log);
+  const c = startOrchestrad(t, args(fixed.dir));
+  await waitForLine(c, WORKING);
+  await c.stop();
+
+  const old = signalRunner(t, true);
+  const bad = startOrchestrad(t, args(old.dir), { script: old.runner });
+  await waitForLine(bad, /^EMITTING$/);
+  const second = startOrchestrad(t, args(old.dir));
+  await waitForLine(second, WORKING);
+  assert.equal(bad.child.exitCode, null, 'control: the first holder still runs, without its lock, while a second one works');
+  await second.stop();
+  await bad.stop();
 });
 
 test('after the holder is killed the lock is free again within 1 s', async (t) => {
@@ -131,42 +186,70 @@ test('the pipe name is a function of realpath(ORCHESTRA_HOME), case-insensitive'
   assert.match(lockPipeName('C:\\a'), /^\\\\\.\\pipe\\orchestra-[0-9a-f]{16}-lock$/);
 });
 
-test('daemon.json round-trips; anything malformed reads as unknown; the hint says so', () => {
-  const info: DaemonInfo = { v: 1, pid: 77, createTime: null, profile: 'real', startedAt: '2026-10-31T08:00:00.000Z', heartbeatAt: '2026-10-31T08:00:10.000Z' };
+test('daemon.json round-trips; anything malformed reads as unknown; the hint names pid and start time', () => {
+  const info: DaemonInfo = { v: 1, pid: 77, profile: 'real', bootId: '0e0f3a52-7b1c-4d2e-9f00-1234567890ab', startedAt: '2026-10-31T08:00:00.000Z' };
   assert.deepEqual(parseDaemonInfo(encodeDaemonInfo(info)), info);
-  for (const bad of ['', 'null', '{"v":2}', JSON.stringify({ ...info, pid: -1 }), JSON.stringify({ ...info, heartbeatAt: 'yesterday' }), JSON.stringify({ ...info, profile: 'x' })]) {
+  const { bootId: _dropped, ...noBootId } = info;
+  for (const bad of [
+    '', 'null', '{"v":2}', JSON.stringify({ ...info, pid: -1 }), JSON.stringify({ ...info, startedAt: 'yesterday' }), JSON.stringify({ ...info, profile: 'x' }),
+    JSON.stringify({ ...info, bootId: 'abc' }), JSON.stringify(noBootId),
+  ]) {
     assert.equal(parseDaemonInfo(bad), null, bad);
   }
-  const now = Date.parse('2026-10-31T08:02:10.000Z');
-  assert.match(heldMessage('C:\\h', info, now), /\(pid 77, heartbeat 120 s ago\)/);
-  assert.match(heldMessage('C:\\h', null, now), /holder unknown: daemon.json is missing or unreadable/);
+  assert.match(heldMessage('C:\\h', info), /\(pid 77, started 2026-10-31T08:00:00\.000Z\)/);
+  assert.match(heldMessage('C:\\h', null), /holder unknown: daemon.json is missing or unreadable/);
 });
 
-test('the heartbeat writes at once and every interval, survives a failing write, and stops', () => {
-  const ticks: (() => void)[] = [];
-  let cleared = 0;
+/**
+ * Wraps node:fs's rename and open for the rest of the test (syncBuiltinESMExports carries the
+ * wrappers into every `import * as fs` namespace, write-fence.ts's among them) and records every
+ * write that lands on a file named daemon.json: a rename onto it, or an open of it.
+ */
+function recordDaemonJsonWrites(t: { after(fn: () => void): void }): string[] {
   const writes: string[] = [];
-  let fail = false;
-  const errors: unknown[] = [];
-  let now = Date.parse('2026-10-31T08:00:00.000Z');
-  const hb = startHeartbeat({
-    info: { v: 1, pid: 5, createTime: null, profile: 'test', startedAt: '2026-10-31T08:00:00.000Z' },
-    write: (text) => {
-      if (fail) throw new Error('fence said no');
-      writes.push(text);
-    },
-    now: () => now,
-    timers: { setInterval: (fn) => ticks.push(fn), clearInterval: () => cleared++ },
-    onError: (e) => errors.push(e),
+  const realRename = nodeFs.renameSync;
+  const realOpen = nodeFs.openSync;
+  const isDaemonJson = (p: unknown) => path.basename(String(p)).toLowerCase() === 'daemon.json';
+  nodeFs.renameSync = ((from: fs.PathLike, to: fs.PathLike) => {
+    if (isDaemonJson(to)) writes.push(`rename ${String(to)}`);
+    return realRename(from, to);
+  }) as typeof nodeFs.renameSync;
+  nodeFs.openSync = ((p: fs.PathLike, ...rest: unknown[]) => {
+    if (isDaemonJson(p)) writes.push(`open ${String(p)}`);
+    return (realOpen as (p: fs.PathLike, ...r: unknown[]) => number)(p, ...rest);
+  }) as typeof nodeFs.openSync;
+  syncBuiltinESMExports();
+  t.after(() => {
+    nodeFs.renameSync = realRename;
+    nodeFs.openSync = realOpen;
+    syncBuiltinESMExports();
   });
-  assert.equal(writes.length, 1);
-  now += 10_000;
-  ticks[0]!();
-  assert.equal(parseDaemonInfo(writes[1]!)!.heartbeatAt, '2026-10-31T08:00:10.000Z');
-  fail = true;
-  ticks[0]!();
-  assert.equal(errors.length, 1);
-  hb.stop();
-  hb.stop();
-  assert.equal(cleared, 1);
+  return writes;
+}
+
+const timeouts = () => process.getActiveResourcesInfo().filter((r) => r === 'Timeout').length;
+
+test('one start writes daemon.json once, arms no timer, and nothing rewrites it while it works', async (t) => {
+  const dir = withTmp(t);
+  const writes = recordDaemonJsonWrites(t);
+  const timersBefore = timeouts();
+  const con = captureConsole();
+  const o = await start(detectFeatures(), FENCE_OK, { fetch: globalThis.fetch }, {
+    argv: ['--test-profile', '--test-dir', dir],
+    home: path.join(dir, 'user-home'),
+    env: minimalEnv(),
+    console: con.port,
+    spawnBackend: whoamiSpy(whoamiEnglish('Medium Mandatory Level')).backend,
+    stopping: IN_PROCESS_STOP,
+  });
+  assert.equal(o.mode, 'working', con.all().join('\n'));
+  if (o.mode !== 'working') return;
+  t.after(() => o.stop());
+  assert.equal(timeouts(), timersBefore, 'start() left a timer running');
+  assert.equal(writes.length, 1, writes.join('\n'));
+  assert.match(writes[0]!, /^rename .+\\run\\daemon\.json$/i);
+  const info = parseDaemonInfo(fs.readFileSync(path.join(homeOf(dir), 'run', 'daemon.json'), 'utf8'));
+  assert.ok(info !== null && info.pid === process.pid && info.profile === 'test', JSON.stringify(info));
+  await o.stop();
+  assert.equal(writes.length, 1, 'stopping wrote nothing either');
 });

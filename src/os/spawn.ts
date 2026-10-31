@@ -109,6 +109,12 @@ export class PidLog {
     this.#flush();
   }
 
+  /** Later lines stay in memory only; working mode calls this before it gives up the lock. */
+  detach(): void {
+    this.#sink = null;
+    this.#onFailure = null;
+  }
+
   entries(): readonly PidEntry[] {
     return [...this.#all];
   }

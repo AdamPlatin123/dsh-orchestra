@@ -14,6 +14,10 @@ export const TEST_DIR_PREFIX = 'orchestra-test-';
 export const FAKE_AGENT_MARKER = '--orchestra-fake-agent';
 export const FROZEN_DIR = 'orchestra-frozen';
 export const TEST_ROOT_KINDS = ['claude', 'dsh', 'codex'] as const;
+/** node:test sets it for every test file and hands it on to their children. */
+export const TEST_RUNNER_MARKER = 'NODE_TEST_CONTEXT';
+/** Variables that move a harness root; a real profile run under the test runner may carry none. */
+const ROOT_VARS: readonly string[] = ['CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'DSH_HOME', 'CODEX_HOME'];
 
 export type RealProfile = { kind: 'real' };
 export type TestProfile = {
@@ -28,11 +32,18 @@ export type TestProfile = {
 };
 export type Profile = RealProfile | TestProfile;
 
+/** The typed opt-in for a real profile under the test runner: the fake home the caller pinned. */
+export type InTestRealProfile = { fakeHome: string };
+
+export type InTestRefusal = 'home-mismatch' | 'outside-test-dir' | 'root-variable' | 'orchestra-home-outside' | 'unresolvable';
+
 export type ProfileRefusal =
   | { reason: 'unknown-argument'; arg: string }
   | { reason: 'missing-value'; flag: string }
   | { reason: 'duplicate-flag'; flag: string }
   | { reason: 'test-flag-without-test-profile'; flag: string }
+  | { reason: 'real-profile-under-test-runner' }
+  | { reason: 'in-test-real-profile-refused'; detail: InTestRefusal; path: string }
   | { reason: 'test-dir-required' }
   | { reason: 'test-dir-bad-path'; path: string; detail: PathRejectReason }
   | { reason: 'test-dir-not-found'; path: string; detail: string }
@@ -49,7 +60,12 @@ export type ProfileParse = { ok: true; profile: Profile } | { ok: false; refusal
 
 export type ProfileDeps = {
   env: Readonly<Record<string, string | undefined>>;
+  /** This process's own environment, which no caller can swap out: the test runner marker counts in either. */
+  processEnv: Readonly<Record<string, string | undefined>>;
   realpath?: RealpathFn;
+  /** The home the real profile would use; an in-test opt-in must name exactly this one. */
+  home?: string;
+  inTestRealProfile?: InTestRealProfile;
 };
 
 function envGet(env: Readonly<Record<string, string | undefined>>, name: string): string | undefined {
@@ -79,6 +95,11 @@ const PID = /^[1-9]\d{0,9}$/;
  * Parses orchestrad's own arguments. Anything unrecognized, repeated or out of place refuses the
  * start: the real profile accepts none; the test profile exactly
  * `--test-profile --test-dir <dir> [--test-root-pid <pid>]... [--roots-dir <dir>]`, in any order.
+ * The real profile also refuses when either environment (the injected one or the process's own)
+ * carries TEST_RUNNER_MARKER, whatever its value: a test that starts orchestrad without arguments, or
+ * calls start() with an environment that lacks the marker, would otherwise run it against the real
+ * home. This is decided here, before whoami runs and before any path is resolved; only a checked
+ * InTestRealProfile opt-in lets it through (checkInTestRealProfile).
  */
 export function parseProfileArgs(argv: readonly string[], deps: ProfileDeps): ProfileParse {
   const refuse = (refusal: ProfileRefusal): ProfileParse => ({ ok: false, refusal });
@@ -113,7 +134,13 @@ export function parseProfileArgs(argv: readonly string[], deps: ProfileDeps): Pr
     }
   }
   if (!testProfile) {
-    return seenTestFlags.length > 0 ? refuse({ reason: 'test-flag-without-test-profile', flag: seenTestFlags[0]! }) : { ok: true, profile: { kind: 'real' } };
+    if (seenTestFlags.length > 0) return refuse({ reason: 'test-flag-without-test-profile', flag: seenTestFlags[0]! });
+    if (envGet(deps.env, TEST_RUNNER_MARKER) !== undefined || envGet(deps.processEnv, TEST_RUNNER_MARKER) !== undefined) {
+      if (deps.inTestRealProfile === undefined) return refuse({ reason: 'real-profile-under-test-runner' });
+      const bad = checkInTestRealProfile(deps.inTestRealProfile, deps);
+      if (bad !== null) return refuse(bad);
+    }
+    return { ok: true, profile: { kind: 'real' } };
   }
   if (testDir === null) return refuse({ reason: 'test-dir-required' });
   const realpath = deps.realpath ?? nativeRealpath;
@@ -168,6 +195,51 @@ export function parseProfileArgs(argv: readonly string[], deps: ProfileDeps): Pr
   };
 }
 
+/**
+ * A real profile under the test runner may run only against a fake home: `home` must be the opt-in's
+ * fake home, lie canonically strictly inside an orchestra-test-* dir directly in the process's temp
+ * dir, and the environment may neither move a harness root nor put ORCHESTRA_HOME outside that dir.
+ */
+export function checkInTestRealProfile(opt: InTestRealProfile, deps: ProfileDeps): Extract<ProfileRefusal, { reason: 'in-test-real-profile-refused' }> | null {
+  const refuse = (detail: InTestRefusal, p: string) => ({ reason: 'in-test-real-profile-refused' as const, detail, path: p });
+  const realpath = deps.realpath ?? nativeRealpath;
+  const fake = checkPath(opt.fakeHome);
+  const home = deps.home === undefined ? null : checkPath(deps.home);
+  if (!fake.ok) return refuse('unresolvable', String(opt.fakeHome));
+  if (home === null || !home.ok || pathKey(home.path) !== pathKey(fake.path)) return refuse('home-mismatch', String(deps.home));
+  for (const name of ROOT_VARS) {
+    const v = envGet(deps.env, name);
+    if (v !== undefined && v.trim() !== '') return refuse('root-variable', name);
+  }
+  let fakeReal: string;
+  let tmpReal: string;
+  try {
+    fakeReal = realpath(fake.path);
+    const tmp = checkPath(windowsTmpdir(deps.processEnv));
+    if (!tmp.ok) return refuse('unresolvable', tmp.reason);
+    tmpReal = realpath(tmp.path);
+  } catch (e) {
+    return refuse('unresolvable', errCode(e));
+  }
+  const rel = isWithin(fakeReal, tmpReal) ? win.relative(tmpReal, fakeReal).split(win.sep).filter((x) => x !== '') : [];
+  const name = rel[0] ?? '';
+  if (rel.length < 2 || !name.toLowerCase().startsWith(TEST_DIR_PREFIX) || name.length === TEST_DIR_PREFIX.length) return refuse('outside-test-dir', fakeReal);
+  const testDir = win.join(tmpReal, name);
+  const orch = envGet(deps.env, 'ORCHESTRA_HOME');
+  if (orch !== undefined && orch.trim() !== '') {
+    const o = checkPath(orch);
+    let inside = false;
+    try {
+      const oReal = o.ok ? canonicalize(o.path, realpath) : null;
+      inside = oReal !== null && isWithin(oReal, testDir) && pathKey(oReal) !== pathKey(testDir);
+    } catch {
+      inside = false;
+    }
+    if (!inside) return refuse('orchestra-home-outside', orch);
+  }
+  return null;
+}
+
 export function describeRefusal(r: ProfileRefusal): string {
   switch (r.reason) {
     case 'unknown-argument':
@@ -178,6 +250,10 @@ export function describeRefusal(r: ProfileRefusal): string {
       return `${r.flag} given twice`;
     case 'test-flag-without-test-profile':
       return `${r.flag} only works with --test-profile`;
+    case 'real-profile-under-test-runner':
+      return `the real profile does not start under the test runner (${TEST_RUNNER_MARKER} is set); tests start orchestrad with --test-profile`;
+    case 'in-test-real-profile-refused':
+      return `the in-test real profile was refused (${r.detail}): ${r.path}`;
     case 'test-dir-required':
       return '--test-profile needs --test-dir <dir>';
     case 'test-dir-bad-path':

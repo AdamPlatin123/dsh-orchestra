@@ -7,11 +7,10 @@ import type { DataDirCheck } from './runtime/data-dir.ts';
 import type { Features } from './runtime/features.ts';
 import type { FenceStatus } from './runtime/import-fence.ts';
 import type { Integrity } from './runtime/integrity.ts';
-import type { Timers } from './runtime/lock.ts';
 import type { ConsolePort } from './runtime/log.ts';
 import type { StartupPlan } from './runtime/startup.ts';
-import type { Profile, ProfileRefusal } from './runtime/test-profile.ts';
-import type { WorkingOutcome } from './runtime/working.ts';
+import type { InTestRealProfile, Profile, ProfileRefusal } from './runtime/test-profile.ts';
+import type { StopPort, WorkingOutcome } from './runtime/working.ts';
 import { computeHarnessRoots, launcherRootFs } from './fs/harness-roots.ts';
 import { nativeRealpath } from './fs/paths.ts';
 import { PidLog, SpawnGate, resolveSystemRoot } from './os/spawn.ts';
@@ -22,10 +21,12 @@ import { Log } from './runtime/log.ts';
 import { EXIT, describeNote, planExit, planMessage, planStartup } from './runtime/startup.ts';
 import { describeRefusal, parseProfileArgs, testProfileRoots } from './runtime/test-profile.ts';
 
-// start(): arguments -> integrity -> (elevated or missing features: exit before reading anything)
-// -> data dir check -> planStartup -> (working only) lock, data dir, heartbeat. Everything this
-// module imports statically only reads, or spawns whoami through the gate; the working wiring is
-// imported once the plan says working (plan §6 invariant 10).
+// start(): arguments (the real profile refuses under the test runner, read from this process's own
+// environment as well as the injected one) -> integrity -> (elevated or
+// missing features: exit before reading anything) -> data dir check -> planStartup -> (working only)
+// lock, data dir, daemon.json. Everything this module imports statically only reads, or spawns
+// whoami through the gate; the working wiring is imported once the plan says working (plan §6
+// invariant 10).
 
 export type StartDeps = {
   argv: readonly string[];
@@ -36,12 +37,15 @@ export type StartDeps = {
   tty(): { stdin: boolean; stdout: boolean };
   console: ConsolePort;
   now(): number;
-  /** Arranges for `stop` to run on Ctrl+C and friends; returns the undo. */
-  onStopSignal(stop: () => void): () => void;
+  /** Signals and the end of the process; tests inject one that releases the lock instead of exiting. */
+  stopping: StopPort;
   realpath: RealpathFn;
   spawnBackend?: SpawnBackend;
-  timers?: Timers;
-  heartbeatMs?: number;
+  /**
+   * The only way a real profile runs under the test runner: in-process tests that pin `home` to a
+   * fake home inside an orchestra-test-* dir in the temp dir (checked by parseProfileArgs).
+   */
+  inTestRealProfile?: InTestRealProfile;
 };
 
 export type StartOutcome =
@@ -57,6 +61,21 @@ function installStopSignals(stop: () => void): () => void {
   for (const s of STOP_SIGNALS) process.on(s, handler);
   return () => {
     for (const s of STOP_SIGNALS) process.off(s, handler);
+  };
+}
+
+/**
+ * Stopping ends the process, whoever asked (a signal, or anything that emits one): the lock is never
+ * released by hand, the kernel frees the pipe once the process is gone, so no code of this process
+ * runs without it. The console is flushed first, while the lock is still held.
+ */
+function processStopping(): StopPort {
+  const exit = process.exit;
+  return {
+    onSignal: installStopSignals,
+    end: () => new Promise<void>(() => {
+      process.stdout.write('', () => process.stderr.write('', () => exit.call(process, EXIT.ok)));
+    }),
   };
 }
 
@@ -76,7 +95,7 @@ export function defaultStartDeps(): StartDeps {
       },
     },
     now: Date.now,
-    onStopSignal: installStopSignals,
+    stopping: processStopping(),
     realpath: nativeRealpath,
   };
 }
@@ -118,10 +137,13 @@ function locate(profile: Profile, d: StartDeps, log: Log): Located {
 }
 
 export async function start(f: Features, fence: FenceStatus, _ports: BootPorts, overrides: Partial<StartDeps> = {}): Promise<StartOutcome> {
-  const d: StartDeps = { ...defaultStartDeps(), ...overrides };
+  const defaults = defaultStartDeps();
+  const d: StartDeps = { ...defaults, ...overrides };
   const log = new Log({ now: d.now });
 
-  const parsed = parseProfileArgs(d.argv, { env: d.env, realpath: d.realpath });
+  // defaults.env is this process's own environment, which no override replaces.
+  const inTest = d.inTestRealProfile !== undefined ? { inTestRealProfile: d.inTestRealProfile } : {};
+  const parsed = parseProfileArgs(d.argv, { env: d.env, processEnv: defaults.env, home: d.home, realpath: d.realpath, ...inTest });
   if (!parsed.ok) {
     d.console.err(`orchestrad: refusing to start: ${describeRefusal(parsed.refusal)}`);
     return { mode: 'refused', code: EXIT.badArgs, refusal: parsed.refusal };
@@ -132,7 +154,7 @@ export async function start(f: Features, fence: FenceStatus, _ports: BootPorts, 
   const pidLog = new PidLog();
   const integrity = await measureIntegrity(d, pidLog);
   log.info('integrity', { level: integrity.level, detail: describeIntegrity(integrity) });
-  // Without the resolve hook nothing past this point may rely on the import fence.
+  // boot refuses without the resolve hook; a direct caller without one gets the missing-features exit.
   const features: Features = { ...f, registerHooks: f.registerHooks && fence.resolveHook };
   const exit = planExit(features, integrity);
   if (exit !== null) {
@@ -167,8 +189,6 @@ export async function start(f: Features, fence: FenceStatus, _ports: BootPorts, 
     pid: d.pid,
     now: d.now,
     tty: d.tty,
-    onStopSignal: d.onStopSignal,
-    timers: d.timers,
-    heartbeatMs: d.heartbeatMs,
+    stopping: d.stopping,
   });
 }

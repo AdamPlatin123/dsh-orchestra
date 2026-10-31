@@ -8,20 +8,26 @@ import type { TestProfile } from '../../src/runtime/test-profile.ts';
 import { ReadGate } from '../../src/fs/read-gate.ts';
 import { resolveEnv } from '../../src/runtime/env.ts';
 import {
-  FAKE_AGENT_MARKER, TestRoots, checkBrakeRoot, decidePairingOutput, isFakeAgent, parseProfileArgs, testProfileRoots, testReadDirs, windowsTmpdir,
+  FAKE_AGENT_MARKER, TestRoots, checkBrakeRoot, decidePairingOutput, describeRefusal, isFakeAgent, parseProfileArgs, testProfileRoots, testReadDirs, windowsTmpdir,
 } from '../../src/runtime/test-profile.ts';
 import { start } from '../../src/main.ts';
+import { EXIT } from '../../src/runtime/exit.ts';
 import { detectFeatures } from '../../src/runtime/features.ts';
 import { put, shortNameOf, tmpDir, rmTree, withTmp } from '../helpers/tmp.ts';
 import { whoamiSpy, whoamiEnglish } from '../helpers/fake-spawn.ts';
-import { FENCE_OK, captureConsole, minimalEnv } from '../helpers/start.ts';
+import { runRealProfileUnderTestRunner } from '../helpers/orchestrad.ts';
+import { FENCE_OK, captureConsole, minimalEnv, IN_PROCESS_STOP } from '../helpers/start.ts';
 
 const env = process.env;
-const parse = (argv: string[], e: NodeJS.ProcessEnv | Record<string, string | undefined> = env) => parseProfileArgs(argv, { env: e });
-const reason = (argv: string[], e?: Record<string, string | undefined>) => {
-  const r = parse(argv, e);
+/** As start() calls it: this process's own environment (it carries NODE_TEST_CONTEXT) unless `processEnv` is given. */
+const parse = (argv: string[], e: NodeJS.ProcessEnv | Record<string, string | undefined> = env, processEnv: Record<string, string | undefined> = process.env) =>
+  parseProfileArgs(argv, { env: e, processEnv });
+const reason = (argv: string[], e?: Record<string, string | undefined>, processEnv?: Record<string, string | undefined>) => {
+  const r = parse(argv, e, processEnv);
   return r.ok ? `ok:${r.profile.kind}` : r.refusal.reason;
 };
+/** A process outside the test runner. */
+const NO_RUNNER: Record<string, string | undefined> = {};
 
 test('windowsTmpdir() mirrors os.tmpdir()', () => {
   assert.equal(windowsTmpdir(process.env), os.tmpdir());
@@ -32,7 +38,7 @@ test('windowsTmpdir() mirrors os.tmpdir()', () => {
 
 test('the real profile takes no arguments; stray, repeated or misplaced flags refuse the start', (t) => {
   const dir = withTmp(t);
-  assert.equal(reason([]), 'ok:real');
+  assert.equal(reason([], minimalEnv(), NO_RUNNER), 'ok:real');
   assert.equal(reason(['--port', '1']), 'unknown-argument');
   assert.equal(reason(['--test-dir', dir]), 'test-flag-without-test-profile');
   assert.equal(reason(['--test-root-pid', '12']), 'test-flag-without-test-profile');
@@ -45,6 +51,109 @@ test('the real profile takes no arguments; stray, repeated or misplaced flags re
     assert.equal(reason(['--test-profile', '--test-dir', dir, '--test-root-pid', bad]), 'bad-root-pid', bad);
   }
   assert.equal(reason(['--test-profile', '--test-dir', dir, '--test-root-pid', '7', '--test-root-pid', '7']), 'duplicate-root-pid');
+});
+
+test('the real profile refuses whenever NODE_TEST_CONTEXT is in its environment; the test profile does not care', (t) => {
+  assert.equal(process.env.NODE_TEST_CONTEXT !== undefined, true, 'this file runs under node --test');
+  assert.equal(reason([]), 'real-profile-under-test-runner', 'the environment node:test gave this process');
+  for (const [name, value] of [['NODE_TEST_CONTEXT', 'child-v8'], ['node_test_context', 'child'], ['NODE_TEST_CONTEXT', '']]) {
+    assert.equal(reason([], minimalEnv({ [name!]: value! }), NO_RUNNER), 'real-profile-under-test-runner', `${name}=${value}`);
+  }
+  assert.equal(reason([], minimalEnv({ NODE_TEST_CONTEXTX: 'child' }), NO_RUNNER), 'ok:real');
+  assert.equal(reason([], minimalEnv()), 'real-profile-under-test-runner', 'the injected env lacks the marker, this process has it');
+  assert.equal(reason([], minimalEnv(), { NODE_TEST_CONTEXT: 'child-v8' }), 'real-profile-under-test-runner');
+  const dir = withTmp(t);
+  assert.equal(reason(['--test-profile', '--test-dir', dir]), 'ok:test');
+  const r = parse([]);
+  assert.match(r.ok ? '' : describeRefusal(r.refusal), /does not start under the test runner \(NODE_TEST_CONTEXT is set\)/);
+});
+
+test('in-process real profile under the test runner (fake home): refused before whoami, before any realpath, before any root lookup', async (t) => {
+  const base = withTmp(t);
+  const home = path.join(base, 'home');
+  fs.mkdirSync(home);
+  put(path.join(home, '.rec', 'claude', 'accounts', '1', 'config', 'x.json'), '{}');
+  const realpaths: string[] = [];
+  const spy = whoamiSpy(whoamiEnglish('Medium Mandatory Level'));
+  const con = captureConsole();
+  const o = await start(detectFeatures(), FENCE_OK, { fetch: globalThis.fetch }, {
+    argv: [], home, env: minimalEnv({ NODE_TEST_CONTEXT: 'child-v8' }), console: con.port, spawnBackend: spy.backend,
+    realpath: (p) => {
+      realpaths.push(p);
+      return fs.realpathSync.native(p);
+    },
+    tty: () => ({ stdin: false, stdout: false }), stopping: IN_PROCESS_STOP,
+  });
+  if (o.mode === 'working') t.after(() => o.stop());
+  assert.equal(o.mode, 'refused', con.all().join('\n'));
+  assert.equal((o as { code: number }).code, EXIT.badArgs);
+  assert.deepEqual(o.mode === 'refused' ? o.refusal : null, { reason: 'real-profile-under-test-runner' });
+  assert.equal(spy.calls.length, 0, 'whoami never ran');
+  assert.deepEqual(realpaths, [], 'no path was resolved');
+  assert.deepEqual(fs.readdirSync(home), ['.rec'], 'nothing was created in the fake home');
+  assert.deepEqual(con.err, ['orchestrad: refusing to start: the real profile does not start under the test runner (NODE_TEST_CONTEXT is set); tests start orchestrad with --test-profile']);
+  assert.deepEqual(con.out, []);
+});
+
+// The finding behind this test (F3) had no home override; this one pins a fake home all the same: were
+// the refusal missing (a mutation run), the real profile would otherwise reach the real home.
+test('in-process real profile with an environment that lacks the marker: refused from this process\'s own environment, before whoami and any realpath', async (t) => {
+  assert.ok(process.env.NODE_TEST_CONTEXT !== undefined, 'this file runs under node --test');
+  const home = path.join(withTmp(t), 'home');
+  fs.mkdirSync(home);
+  const realpaths: string[] = [];
+  const spy = whoamiSpy(whoamiEnglish('Medium Mandatory Level'));
+  const con = captureConsole();
+  const o = await start(detectFeatures(), FENCE_OK, { fetch: globalThis.fetch }, {
+    argv: [], home, env: minimalEnv(), console: con.port, spawnBackend: spy.backend,
+    realpath: (p) => {
+      realpaths.push(p);
+      return fs.realpathSync.native(p);
+    },
+    tty: () => ({ stdin: false, stdout: false }), stopping: IN_PROCESS_STOP,
+  });
+  if (o.mode === 'working') t.after(() => o.stop());
+  assert.equal(o.mode, 'refused', con.all().join('\n'));
+  assert.deepEqual(o.mode === 'refused' ? o.refusal : null, { reason: 'real-profile-under-test-runner' });
+  assert.equal(spy.calls.length, 0, 'whoami never ran');
+  assert.deepEqual(realpaths, [], 'no path was resolved');
+  assert.deepEqual(fs.readdirSync(home), [], 'nothing was created in the fake home');
+});
+
+test('the in-test real profile opt-in holds only for a fake home inside an orchestra-test-* dir, with no root variable and ORCHESTRA_HOME inside that dir', (t) => {
+  const base = withTmp(t);
+  const home = path.join(base, 'home');
+  fs.mkdirSync(home);
+  const other = withTmp(t);
+  const optIn = (fakeHome: string, homeGiven: string, e: Record<string, string | undefined> = minimalEnv()) => {
+    const r = parseProfileArgs([], { env: e, processEnv: process.env, home: homeGiven, inTestRealProfile: { fakeHome } });
+    return r.ok ? `ok:${r.profile.kind}` : r.refusal.reason === 'in-test-real-profile-refused' ? r.refusal.detail : r.refusal.reason;
+  };
+  assert.equal(optIn(home, home), 'ok:real');
+  assert.equal(optIn(home, home, minimalEnv({ ORCHESTRA_HOME: path.join(base, 'orch') })), 'ok:real');
+  assert.equal(optIn(home, path.join(base, 'other-home')), 'home-mismatch');
+  assert.equal(optIn(base, base), 'outside-test-dir', 'the orchestra-test-* dir itself is not inside it');
+  assert.equal(optIn(path.join(home, '..', '..'), path.join(home, '..', '..')), 'outside-test-dir', 'the temp dir itself');
+  for (const name of ['CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'DSH_HOME', 'CODEX_HOME']) {
+    assert.equal(optIn(home, home, minimalEnv({ [name]: path.join(base, 'roots', name) })), 'root-variable', name);
+  }
+  assert.equal(optIn(home, home, minimalEnv({ ORCHESTRA_HOME: path.join(other, 'orch') })), 'orchestra-home-outside');
+  assert.equal(optIn(home, home, minimalEnv({ ORCHESTRA_HOME: base })), 'orchestra-home-outside');
+  assert.equal(optIn(path.join(base, 'missing'), path.join(base, 'missing')), 'unresolvable');
+  const r = parseProfileArgs([], { env: minimalEnv(), processEnv: process.env, home: base, inTestRealProfile: { fakeHome: base } });
+  assert.match(r.ok ? '' : describeRefusal(r.refusal), /in-test real profile was refused \(outside-test-dir\)/);
+});
+
+test('boot.ts with no arguments, started from a test (fake home): refused, and no <fake home>\\.orchestra', async (t) => {
+  const home = path.join(withTmp(t), 'home');
+  fs.mkdirSync(home);
+  const r = await runRealProfileUnderTestRunner(home);
+  assert.equal(r.stoppedByTest, false, `it ran instead of refusing; stdout: ${r.stdout}`);
+  assert.equal(r.status, EXIT.badArgs, r.stderr);
+  assert.match(r.stderr, /^orchestrad: refusing to start: the real profile does not start under the test runner/m);
+  assert.equal(r.stdout, '');
+  assert.equal(fs.existsSync(path.join(home, '.orchestra')), false);
+  assert.deepEqual(fs.readdirSync(home), []);
 });
 
 test('--test-dir must exist, sit directly in the temp dir and be named orchestra-test-*', (t) => {
@@ -171,7 +280,7 @@ test('a non-TTY real profile (fake home) prints no pairing code and logs why pai
   const con = captureConsole();
   const o = await start(detectFeatures(), FENCE_OK, { fetch: globalThis.fetch }, {
     argv: [], home, env: minimalEnv(), console: con.port, spawnBackend: whoamiSpy(whoamiEnglish('Medium Mandatory Level')).backend,
-    tty: () => ({ stdin: false, stdout: false }), onStopSignal: () => () => {},
+    tty: () => ({ stdin: false, stdout: false }), stopping: IN_PROCESS_STOP, inTestRealProfile: { fakeHome: home },
   });
   assert.equal(o.mode, 'working', JSON.stringify(con.all()));
   if (o.mode !== 'working') return;
