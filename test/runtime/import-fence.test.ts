@@ -9,6 +9,7 @@ import type { TestContext } from 'node:test';
 import { decideBuiltin, moduleKeyFromUrl, rowsFor } from '../../src/runtime/builtin-policy.ts';
 import { EXIT } from '../../src/runtime/exit.ts';
 import { ImportFenceError, decideImport, installImportFence } from '../../src/runtime/import-fence.ts';
+import { BASE_LOCKS } from '../../src/runtime/process-powers.ts';
 import { BOOTSTRAP_URL, WorkerStartError, checkWorkerTarget, startWorker } from '../../src/runtime/workers.ts';
 import { withTmp } from '../helpers/tmp.ts';
 
@@ -17,7 +18,8 @@ const REPO = new URL('../../', import.meta.url);
 const DISPATCHER_SLOTS = [Symbol.for('undici.globalDispatcher.1'), Symbol.for('undici.globalDispatcher.2')];
 const DEBUG_POWERS = ['_debugProcess', '_debugEnd', '_getActiveHandles', '_getActiveRequests'];
 const ORIGIN_SLOT = Symbol.for('undici.globalOrigin.1');
-const FULL_STATUS = { builtinGetter: true, nativeStubs: true, ioStubs: true, networkGlobals: true, killStubs: true, debugStubs: true, dispatcherStubs: true, originLock: true };
+/** Every non-optional slot of the process-powers table, locked or pinned. */
+const FULL_STATUS = { locks: BASE_LOCKS };
 
 /** Polls `cond` every 20 ms; true once it holds, false after `ms`. */
 async function until(cond: () => boolean, ms: number): Promise<boolean> {
@@ -60,12 +62,19 @@ test('policy: default builtins everywhere, rows per module, the forbidden list b
   assert.equal(decideBuiltin(null, 'node:path').allow, true);
   assert.equal(decideBuiltin(null, 'fs').allow, false);
   assert.deepEqual(decideBuiltin(null, 'node:fs'), { allow: false, builtin: 'node:fs', module: null, reason: 'not-allowed-for-module' });
-  assert.equal(decideBuiltin('src/fs/read-gate.ts', 'node:fs').allow, true);
-  assert.equal(decideBuiltin('src/fs/read-gate.ts', 'fs/promises').allow, true);
+  // Since step 2c node:fs and node:child_process belong to the minted modules alone.
+  assert.equal(decideBuiltin('src/fs/node-io.ts', 'node:fs').allow, true);
+  assert.equal(decideBuiltin('src/fs/node-io.ts', 'fs/promises').allow, false, 'node:fs does not imply node:fs/promises');
+  assert.equal(decideBuiltin('src/fs/read-gate.ts', 'node:fs').allow, false);
+  assert.equal(decideBuiltin('src/fs/write-fence.ts', 'node:fs').allow, false);
+  assert.equal(decideBuiltin('src/fs/paths.ts', 'node:fs').allow, false);
   assert.equal(decideBuiltin('src/fs/read-gate.ts', 'node:os').allow, false);
-  assert.equal(decideBuiltin('src/fs/write-fence.ts', 'node:os').allow, true);
+  // write-fence.ts's node:os row was stale (it imports only node:path and node:crypto) and removed.
+  assert.equal(decideBuiltin('src/fs/write-fence.ts', 'node:os').allow, false);
+  assert.equal(decideBuiltin('src/main.ts', 'node:os').allow, true);
   assert.equal(decideBuiltin('src/fs/sub/x.ts', 'node:fs').allow, false);
-  assert.equal(decideBuiltin('src/os/spawn.ts', 'child_process').allow, true);
+  assert.equal(decideBuiltin('src/os/node-proc.ts', 'child_process').allow, true);
+  assert.equal(decideBuiltin('src/os/spawn.ts', 'child_process').allow, false);
   assert.equal(decideBuiltin('src/model/inbox.ts', 'node:child_process').allow, false);
   assert.equal(decideBuiltin('src/store/db.ts', 'node:sqlite').allow, true);
   assert.equal(decideBuiltin('src/main.ts', 'node:module').allow, false);
@@ -73,7 +82,7 @@ test('policy: default builtins everywhere, rows per module, the forbidden list b
   for (const id of ['node:vm', 'vm', 'node:wasi', 'node:inspector', 'node:inspector/promises', 'node:repl', 'node:cluster']) {
     assert.equal((decideBuiltin('src/runtime/import-fence.ts', id) as { reason?: string }).reason, 'forbidden-everywhere', id);
   }
-  assert.equal(rowsFor('SRC/FS/READ-GATE.TS').length, 1, 'module keys compare case-insensitively');
+  assert.equal(rowsFor('SRC/FS/NODE-IO.TS').length, 1, 'module keys compare case-insensitively');
 });
 
 test('policy: module keys come from file URLs inside the repo only', () => {
@@ -113,7 +122,8 @@ test('installImportFence without registerHooks still replaces the getter and stu
   assert.deepEqual(get('path'), { id: 'node:path' });
   assert.throws(() => get('node:fs'), { code: 'ERR_ORCHESTRA_IMPORT_FENCE', reason: 'getter' });
   assert.throws(() => get('child_process'), { code: 'ERR_ORCHESTRA_IMPORT_FENCE' });
-  assert.deepEqual(calls, ['node:path']);
+  // The first call is the fence priming node:worker_threads before it locks process.chdir (process-powers.ts, primedBy).
+  assert.deepEqual(calls, ['node:worker_threads', 'node:path']);
   for (const name of ['binding', '_linkedBinding', 'dlopen', 'loadEnvFile', 'kill', '_kill', ...DEBUG_POWERS]) {
     assert.throws(() => (fake[name] as () => unknown)(), { code: 'ERR_ORCHESTRA_IMPORT_FENCE', reason: 'disabled' }, name);
   }
@@ -165,7 +175,8 @@ test('decideImport: builtins by policy; otherwise .ts/.js file: URLs only, no at
     const d = decideImport(parent, url, attrs, REPO);
     return d.allow ? 'allow' : d.reason;
   };
-  assert.equal(why(`${R}src/fs/read-gate.ts`, 'node:fs'), 'allow');
+  assert.equal(why(`${R}src/fs/node-io.ts`, 'node:fs'), 'allow');
+  assert.equal(why(`${R}src/fs/read-gate.ts`, 'node:fs'), 'not-allowed-for-module');
   assert.equal(why(fromModel, 'node:fs'), 'not-allowed-for-module');
   assert.equal(why(fromModel, 'node:vm'), 'forbidden-everywhere');
   assert.equal(why(fromModel, `${R}src/fs/paths.ts`), 'allow');
@@ -316,6 +327,31 @@ export async function start(): Promise<void> {
     'node:inspector/promises': fence,
     'node:url': 'loaded',
   });
+});
+
+// The network name bans of the static scan went in step 2c (ban:net.connect, ban:createConnection,
+// ban:http.request, ban:http.get, ban:node:https): no module without a row gets a network builtin at
+// runtime, whoever asks, and the two rows that allow node:net or node:http are held to createServer by
+// builtin-only-names (test/repo/static-scan.test.ts derives that from BUILTIN_ROWS).
+test('PoC boot(): a module without a row can import no network builtin at runtime; unfenced it imports them all', (t) => {
+  const entry = {
+    'entry.ts': `
+export async function start(): Promise<void> {
+  const out: Record<string, string> = {};
+  for (const s of ['node:net', 'net', 'node:http', 'node:https', 'node:tls', 'node:dgram', 'node:http2']) {
+    try { await import(s); out[s] = 'loaded'; } catch (e) { out[s] = (e as { reason?: string }).reason ?? String(e); }
+  }
+  console.log(JSON.stringify(out));
+}
+`,
+  };
+  const specs = ['node:net', 'net', 'node:http', 'node:https', 'node:tls', 'node:dgram', 'node:http2'];
+  const fenced = runEntry(t, entry);
+  assert.equal(fenced.status, 0, fenced.stderr);
+  assert.deepEqual(lastJson(fenced.stdout), Object.fromEntries(specs.map((s) => [s, 'not-allowed-for-module'])));
+  const control = runEntry(t, entry, false);
+  assert.equal(control.status, 0, control.stderr);
+  assert.deepEqual(lastJson(control.stdout), Object.fromEntries(specs.map((s) => [s, 'loaded'])));
 });
 
 test('PoC boot(): JSON, data: and non-code imports, loadEnvFile and process.report are refused; code imports still load', (t) => {

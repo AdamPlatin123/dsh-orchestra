@@ -1,9 +1,9 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { HarnessRootKind } from '../runtime/env.ts';
 import type { HarnessRoot } from './harness-roots.ts';
 import type { PathRejectReason, RealpathFn } from './paths.ts';
-import { canonicalize, checkPath, isWithin, nativeRealpath, pathKey, relativeTo } from './paths.ts';
+import { canonicalize, checkPath, isWithin, pathKey, relativeTo } from './paths.ts';
+import { ownFields } from '../runtime/own.ts';
 
 const win = path.win32;
 
@@ -146,7 +146,12 @@ export type FileStat = {
 /** A directory entry as listed, without following it. */
 export type DirEntry = { name: string; isDirectory(): boolean; isSymbolicLink(): boolean };
 
-/** The few fs calls the gate makes; injectable so tests can count opens and closes. */
+/**
+ * Every fs call the gate makes. Required, with no default: the real one is minted in
+ * src/fs/node-io.ts and reaches a gate only through makeReadGate, so a gate built anywhere else,
+ * however it got the class, reads nothing but what its own io makes up. Tests pass their own io to
+ * count or fault calls.
+ */
 export type ReadIo = {
   realpath: RealpathFn;
   openSync(p: string, flags: 'r'): number;
@@ -157,16 +162,14 @@ export type ReadIo = {
   readdirSync(p: string): DirEntry[];
 };
 
-// Not exported: a raw open would skip the deny rules.
-const NODE_IO: ReadIo = {
-  realpath: nativeRealpath,
-  openSync: (p, _flags) => fs.openSync(p, 'r'),
-  readSync: (fd, buf, offset, length, position) => fs.readSync(fd, buf, offset, length, position),
-  fstatSync: (fd) => fs.fstatSync(fd, { bigint: true }),
-  statSync: (p) => fs.statSync(p, { bigint: true }),
-  closeSync: (fd) => fs.closeSync(fd),
-  readdirSync: (p) => fs.readdirSync(p, { withFileTypes: true }),
-};
+const READ_IO_KEYS = ['realpath', 'openSync', 'readSync', 'fstatSync', 'statSync', 'closeSync', 'readdirSync'] as const;
+
+/** A frozen copy of the io's own functions; a missing one refuses the gate. */
+function ownIo(io: ReadIo | undefined): ReadIo {
+  const got = ownFields(io, READ_IO_KEYS);
+  for (const k of READ_IO_KEYS) if (typeof got[k] !== 'function') throw new Error(`read gate: io.${k} is required`);
+  return Object.freeze(got) as ReadIo;
+}
 
 export type ReadGateConfig = {
   roots: readonly HarnessRoot[];
@@ -177,8 +180,10 @@ export type ReadGateConfig = {
   milestone?: Milestone;
   /** Test mode: everything outside these directories is denied before any fs call. */
   testDirs?: readonly string[];
-  io?: ReadIo;
+  io: ReadIo;
 };
+
+const CONFIG_KEYS = ['roots', 'versionFiles', 'orchestraHome', 'milestone', 'testDirs', 'io'] as const;
 
 type GateRoot = { kind: GateRootKind; forms: string[] };
 
@@ -224,9 +229,11 @@ export class ReadGate {
   readonly #io: ReadIo;
   #open = 0;
 
-  constructor(cfg: ReadGateConfig) {
+  constructor(config: ReadGateConfig) {
+    // Own fields only: an optional field the caller left out reads undefined, never Object.prototype's.
+    const cfg = ownFields(config, CONFIG_KEYS);
+    this.#io = ownIo(cfg.io);
     this.milestone = cfg.milestone ?? 'M0';
-    this.#io = cfg.io ?? NODE_IO;
     const canon = (p: string, what: string): string[] => {
       const c = checkPath(p);
       if (!c.ok) throw new Error(`read gate: ${what} rejected (${c.reason}): ${p}`);
@@ -251,7 +258,7 @@ export class ReadGate {
       const c = checkPath(p);
       return this.#test === null || (c.ok && this.#test.lexical.some((d) => isWithin(c.path, d)));
     };
-    this.#roots = cfg.roots.filter((r) => inTest(r.path) && inTest(r.real))
+    this.#roots = cfg.roots!.filter((r) => inTest(r.path) && inTest(r.real))
       .map((r) => ({ kind: r.kind, forms: [...new Set([...canon(r.path, 'root'), ...canon(r.real, 'root')])] }));
     this.#own = [
       ...(cfg.versionFiles ?? []).filter(inTest).map((f) => ({ kind: 'version-file' as const, forms: canon(f, 'version file') })),
@@ -259,6 +266,7 @@ export class ReadGate {
         ? [{ kind: 'orchestra-home' as const, forms: canon(cfg.orchestraHome, 'ORCHESTRA_HOME') }]
         : []),
     ];
+    Object.freeze(this);
   }
 
   get testMode(): boolean {
@@ -448,3 +456,8 @@ export class ReadGate {
     return this.#io.readdirSync(decision.real).filter((e) => e.isDirectory() || e.isSymbolicLink()).map((e) => e.name).sort();
   }
 }
+
+// The prototype and every instance are frozen: a module holding a ReadGate (or the class) can neither
+// replace a method every holder calls nor change an instance's fields or prototype, and the gate's
+// own paths call only its private members, so a subclass cannot steer them either.
+Object.freeze(ReadGate.prototype);

@@ -5,16 +5,19 @@ import * as path from 'node:path';
 import type { TestContext } from 'node:test';
 import type { PidEntry, ProvenSystemRoot, SpawnDecision, SpawnGateConfig, SpawnRequest } from '../../src/os/spawn.ts';
 import {
-  CSC_FLAGS, PROCGUARD_BUILD_EXE, PROCGUARD_SOURCE, PidLog, SpawnGate, SpawnRefusedError, TOAST_FLAGS, WHOAMI_ARGV, resolveSystemRoot,
+  CSC_FLAGS, HANDLE_KEYS, PROCGUARD_BUILD_EXE, PROCGUARD_SOURCE, PidLog, SpawnGate, SpawnRefusedError, TOAST_FLAGS, WHOAMI_ARGV, resolveSystemRoot,
 } from '../../src/os/spawn.ts';
-import { WriteFence } from '../../src/fs/write-fence.ts';
+import { makeWriteFence, realpath } from '../../src/fs/node-io.ts';
 import type { FakeBehavior } from '../helpers/fake-spawn.ts';
 import { fakeSpawn } from '../helpers/fake-spawn.ts';
 import { junction, put, withTmp } from '../helpers/tmp.ts';
 
 // The gate's System32 is the real %SystemRoot% (resolveSystemRoot is the only way to name one), but
-// the rig's realpath is the identity and the backend a spy: no exe is looked at or run. The
-// procguard sites live in a temp data dir.
+// the rig's realpath is the identity and the backend a spy, or one that fails the test when called:
+// no exe is looked at or run. The procguard sites live in a temp data dir.
+
+/** backend, realpath and now are required; a gate that should never spawn gets this backend. */
+const NO_SPAWN = { backend: () => { throw new Error('rig: this gate must not spawn'); }, realpath: (p: string) => p, now: Date.now };
 
 const HASH = 'a'.repeat(64);
 const OTHER_HASH = 'b'.repeat(64);
@@ -26,7 +29,7 @@ type Rig = {
 };
 
 function proven(): ProvenSystemRoot {
-  const sys = resolveSystemRoot(process.env);
+  const sys = resolveSystemRoot(process.env, realpath);
   assert.ok(sys.ok, JSON.stringify(sys));
   return sys;
 }
@@ -50,7 +53,7 @@ function rig(t: TestContext): Rig {
       csc: { outAllowed: (p) => p.toLowerCase() === out.toLowerCase() },
       procguard: [{ at: 'runtime', homeReal: home, sourceHash: HASH }, { at: 'build' }],
       record: (e) => pids.push(e),
-      realpath: (p) => p,
+      ...NO_SPAWN,
       ...extra,
     }),
   };
@@ -163,14 +166,16 @@ test('a rule outside the gate\'s phase is refused; an exe that is missing or a l
   assert.equal(why(missing.decide({ exe: r.whoami, argv: WHOAMI_ARGV })), 'exe-unresolved');
   const linked = r.gate({ rules: ['whoami'], realpath: (p) => (p.toLowerCase().endsWith('whoami.exe') ? 'C:\\elsewhere\\whoami.exe' : p) });
   assert.equal(why(linked.decide({ exe: r.whoami, argv: WHOAMI_ARGV })), 'exe-reparsed');
-  // With the default realpath the real whoami.exe resolves to itself; it is looked at, not run.
-  assert.equal(why(r.gate({ rules: ['whoami'], realpath: undefined }).decide({ exe: r.whoami, argv: WHOAMI_ARGV })), 'allow:whoami');
+  // With the minted native realpath the real whoami.exe resolves to itself; it is looked at, not run.
+  assert.equal(why(r.gate({ rules: ['whoami'], realpath }).decide({ exe: r.whoami, argv: WHOAMI_ARGV })), 'allow:whoami');
+  // There is no default realpath any more: a gate without one is not built.
+  assert.throws(() => r.gate({ rules: ['whoami'], realpath: undefined }), /realpath is required/);
 });
 
 test('the gate takes only a SystemRoot that resolveSystemRoot proved: no string, no look-alike, no junctioned System32', (t) => {
   const r = rig(t);
   const record = () => {};
-  const build = (systemRoot: unknown) => () => new SpawnGate({ systemRoot: systemRoot as ProvenSystemRoot, rules: ['whoami'], record });
+  const build = (systemRoot: unknown) => () => new SpawnGate({ systemRoot: systemRoot as ProvenSystemRoot, rules: ['whoami'], record, ...NO_SPAWN });
   for (const fake of [r.sys.path, { ok: true, path: r.sys.path }, { ...r.sys }, { ok: true, path: path.join(r.dir, 'Windows') }, null, undefined]) {
     assert.throws(build(fake), /systemRoot must be the ok result of resolveSystemRoot\(\)/, JSON.stringify(fake));
   }
@@ -182,15 +187,15 @@ test('the gate takes only a SystemRoot that resolveSystemRoot proved: no string,
   const fake = path.join(r.dir, 'Fake');
   put(path.join(r.dir, 'RealSys', 'System32', 'whoami.exe'), '');
   junction(r.dir, path.join(fake, 'System32'), path.join(r.dir, 'RealSys', 'System32'));
-  const viaJunction = resolveSystemRoot({ SystemRoot: fake });
+  const viaJunction = resolveSystemRoot({ SystemRoot: fake }, realpath);
   assert.equal(viaJunction.ok, false);
   assert.throws(build(viaJunction), /resolveSystemRoot/);
-  assert.equal(new SpawnGate({ systemRoot: proven(), rules: ['whoami'], record }).decide({ exe: r.whoami, argv: [] }).allow, false);
+  assert.equal(new SpawnGate({ systemRoot: proven(), rules: ['whoami'], record, ...NO_SPAWN }).decide({ exe: r.whoami, argv: [] }).allow, false);
 });
 
 test('the gate refuses to be built with a rule it cannot check, a missing recorder or a bad procguard site', (t) => {
   const r = rig(t);
-  const base = { systemRoot: r.sys, record: () => {} };
+  const base = { systemRoot: r.sys, record: () => {}, ...NO_SPAWN };
   assert.throws(() => new SpawnGate({ ...base, rules: ['csc'] }), /csc enabled without an \/out: verdict and a procguard site/);
   assert.throws(() => new SpawnGate({ ...base, rules: ['csc'], csc: { outAllowed: () => true } }), /procguard site/);
   const site = { procguard: [{ at: 'build' as const }] };
@@ -268,9 +273,44 @@ test('start(): refused requests throw a typed error; allowed ones reach the back
   child.kill();
 });
 
+test('start() refuses a run-only rule and hands long-lived children back as a frozen, null-prototype handle with no path to the ChildProcess or its sockets', async (t) => {
+  const r = rig(t);
+  // whoami and csc are run-only: start() refuses them, so a module handed such a gate (integrity.ts
+  // gets a whoami gate) cannot reach a live ChildProcess — whose piped stdio are net.Socket objects —
+  // through start(). P8: authority is handed, not reachable.
+  const runOnly = fakeSpawn(() => ({ exitCode: 0 }));
+  const g0 = r.gate({ backend: runOnly.backend });
+  assert.throws(() => g0.start({ exe: r.whoami, argv: WHOAMI_ARGV }), (e: unknown) => e instanceof SpawnRefusedError && e.decision.reason === 'not-startable');
+  assert.throws(() => g0.start({ exe: r.csc, argv: [...CSC_FLAGS, `/out:${r.out}`, PROCGUARD_SOURCE] }), (e: unknown) => e instanceof SpawnRefusedError && e.decision.reason === 'not-startable');
+  assert.equal(runOnly.calls.length, 0, 'a run-only rule reached no backend through start()');
+
+  const spy = fakeSpawn(() => ({ stdout: 'hi', stderr: 'warn', exitCode: 7, pid: 4242 }));
+  const g = r.gate({ backend: spy.backend });
+  const h = g.start({ exe: r.pg, argv: ['--protect', '1:2'] });
+  assert.equal(Object.getPrototypeOf(h), null, 'no prototype chain to walk to a class');
+  assert.ok(Object.isFrozen(h));
+  assert.deepEqual(Object.keys(h).sort(), [...HANDLE_KEYS].sort());
+  assert.equal(h.pid, 4242);
+  // Nothing on the handle reaches the ChildProcess, its streams (net.Socket) or its class.
+  for (const k of ['stdout', 'stderr', 'stdin', 'on', 'once', 'connect', 'constructor']) {
+    assert.equal((h as unknown as Record<string, unknown>)[k], undefined, k);
+  }
+  const out: Buffer[] = [];
+  const err: Buffer[] = [];
+  h.onStdout((c) => {
+    assert.ok(Buffer.isBuffer(c));
+    out.push(c);
+  });
+  h.onStderr((c) => err.push(c));
+  const closed = await new Promise<[number | null, string | null]>((res) => h.onClose((code, signal) => res([code, signal])));
+  assert.deepEqual(closed, [7, null]);
+  assert.equal(Buffer.concat(out).toString(), 'hi');
+  assert.equal(Buffer.concat(err).toString(), 'warn');
+});
+
 test('every spawn lands in run/pids.jsonl through the write fence, including the ones made before the sink existed', async (t) => {
   const r = rig(t);
-  const fence = new WriteFence({ orchestraHome: r.home, harnessRoots: [] });
+  const fence = await makeWriteFence({ orchestraHome: r.home, harnessRoots: [] });
   fence.mkdirp(path.join(r.home, 'run'));
   const spy = fakeSpawn((c) => (c.exe.endsWith('whoami.exe') ? { stdout: 'x', pid: 11 } : { error: 'ENOENT' }));
   const pids = new PidLog();
@@ -333,7 +373,7 @@ test('run(): exit code and output, a signal, oversize output and a timeout are e
 });
 
 test('resolveSystemRoot: a top-level directory, equal to windir, resolving to itself; anything else is typed', () => {
-  const real = resolveSystemRoot(process.env);
+  const real = resolveSystemRoot(process.env, realpath);
   assert.ok(real.ok, JSON.stringify(real));
   const root = real.path;
   const id = (p: string) => p;

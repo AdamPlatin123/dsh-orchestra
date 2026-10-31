@@ -1,7 +1,8 @@
 import * as path from 'node:path';
 import type { HarnessRoot } from '../fs/harness-roots.ts';
 import type { PathRejectReason, RealpathFn } from '../fs/paths.ts';
-import { canonicalize, checkPath, isWithin, nativeRealpath, pathKey } from '../fs/paths.ts';
+import { canonicalize, checkPath, isWithin, pathKey } from '../fs/paths.ts';
+import { envGet, ownFields } from './own.ts';
 
 const win = path.win32;
 
@@ -62,17 +63,14 @@ export type ProfileDeps = {
   env: Readonly<Record<string, string | undefined>>;
   /** This process's own environment, which no caller can swap out: the test runner marker counts in either. */
   processEnv: Readonly<Record<string, string | undefined>>;
-  realpath?: RealpathFn;
+  /** Required: the realpath port main.ts got from boot (src/fs/node-io.ts), or a test's own. */
+  realpath: RealpathFn;
   /** The home the real profile would use; an in-test opt-in must name exactly this one. */
   home?: string;
   inTestRealProfile?: InTestRealProfile;
 };
 
-function envGet(env: Readonly<Record<string, string | undefined>>, name: string): string | undefined {
-  if (env[name] !== undefined) return env[name];
-  const key = Object.keys(env).find((k) => k.toLowerCase() === name.toLowerCase());
-  return key === undefined ? undefined : env[key];
-}
+const DEPS_KEYS = ['env', 'processEnv', 'realpath', 'home', 'inTestRealProfile'] as const;
 
 function errCode(e: unknown): string {
   return typeof e === 'object' && e !== null && 'code' in e ? String((e as { code: unknown }).code) : String(e);
@@ -101,7 +99,9 @@ const PID = /^[1-9]\d{0,9}$/;
  * home. This is decided here, before whoami runs and before any path is resolved; only a checked
  * InTestRealProfile opt-in lets it through (checkInTestRealProfile).
  */
-export function parseProfileArgs(argv: readonly string[], deps: ProfileDeps): ProfileParse {
+export function parseProfileArgs(argv: readonly string[], givenDeps: ProfileDeps): ProfileParse {
+  // Own fields only: an opt-in or a realpath the caller left out reads undefined, never Object.prototype's.
+  const deps = ownFields(givenDeps, DEPS_KEYS) as ProfileDeps;
   const refuse = (refusal: ProfileRefusal): ProfileParse => ({ ok: false, refusal });
   let testProfile = false;
   let testDir: string | null = null;
@@ -143,7 +143,8 @@ export function parseProfileArgs(argv: readonly string[], deps: ProfileDeps): Pr
     return { ok: true, profile: { kind: 'real' } };
   }
   if (testDir === null) return refuse({ reason: 'test-dir-required' });
-  const realpath = deps.realpath ?? nativeRealpath;
+  const realpath = deps.realpath;
+  if (typeof realpath !== 'function') throw new Error('profile: realpath is required');
 
   const given = checkPath(testDir);
   if (!given.ok) return refuse({ reason: 'test-dir-bad-path', path: testDir, detail: given.reason });
@@ -200,10 +201,12 @@ export function parseProfileArgs(argv: readonly string[], deps: ProfileDeps): Pr
  * fake home, lie canonically strictly inside an orchestra-test-* dir directly in the process's temp
  * dir, and the environment may neither move a harness root nor put ORCHESTRA_HOME outside that dir.
  */
-export function checkInTestRealProfile(opt: InTestRealProfile, deps: ProfileDeps): Extract<ProfileRefusal, { reason: 'in-test-real-profile-refused' }> | null {
+export function checkInTestRealProfile(givenOpt: InTestRealProfile, given: ProfileDeps): Extract<ProfileRefusal, { reason: 'in-test-real-profile-refused' }> | null {
   const refuse = (detail: InTestRefusal, p: string) => ({ reason: 'in-test-real-profile-refused' as const, detail, path: p });
-  const realpath = deps.realpath ?? nativeRealpath;
-  const fake = checkPath(opt.fakeHome);
+  const deps = ownFields(given, DEPS_KEYS) as ProfileDeps;
+  const opt = ownFields(givenOpt, ['fakeHome'] as const);
+  const realpath = deps.realpath;
+  const fake = checkPath(opt.fakeHome as string);
   const home = deps.home === undefined ? null : checkPath(deps.home);
   if (!fake.ok) return refuse('unresolvable', String(opt.fakeHome));
   if (home === null || !home.ok || pathKey(home.path) !== pathKey(fake.path)) return refuse('home-mismatch', String(deps.home));
@@ -211,6 +214,7 @@ export function checkInTestRealProfile(opt: InTestRealProfile, deps: ProfileDeps
     const v = envGet(deps.env, name);
     if (v !== undefined && v.trim() !== '') return refuse('root-variable', name);
   }
+  if (typeof realpath !== 'function') return refuse('unresolvable', 'no realpath');
   let fakeReal: string;
   let tmpReal: string;
   try {
@@ -280,7 +284,7 @@ export function describeRefusal(r: ProfileRefusal): string {
 }
 
 /** The test profile's harness roots: <rootsDir>\{claude,dsh,codex}, and nothing else. */
-export function testProfileRoots(p: TestProfile, realpath: RealpathFn = nativeRealpath): HarnessRoot[] {
+export function testProfileRoots(p: TestProfile, realpath: RealpathFn): HarnessRoot[] {
   return TEST_ROOT_KINDS.map((kind) => {
     const dir = win.join(p.rootsDir, kind);
     return { kind, path: dir, real: canonicalize(dir, realpath) };

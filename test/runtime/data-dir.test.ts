@@ -4,13 +4,18 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { HarnessRoot } from '../../src/fs/harness-roots.ts';
 import { computeHarnessRoots, launcherRootFs } from '../../src/fs/harness-roots.ts';
-import { WriteFence, WriteFenceError } from '../../src/fs/write-fence.ts';
+import { WriteFenceError } from '../../src/fs/write-fence.ts';
+import { makeReadGate, makeWriteFence, realpath } from '../../src/fs/node-io.ts';
 import { resolveEnv } from '../../src/runtime/env.ts';
 import { canonicalize } from '../../src/fs/paths.ts';
-import { checkDataDir, checkNewRoot, prepareDataDir } from '../../src/runtime/data-dir.ts';
+import type { DataDirInput } from '../../src/runtime/data-dir.ts';
+import { checkDataDir as checkDataDirWith, checkNewRoot as checkNewRootWith, prepareDataDir } from '../../src/runtime/data-dir.ts';
 import { junction, put, shortNameOf, treeDigest, withTmp } from '../helpers/tmp.ts';
 
-// Every home, root and link lives in a fresh temp dir; nothing here looks at the real home.
+// Every home, root and link lives in a fresh temp dir; nothing here looks at the real home. The
+// realpath port is required; these checks use the minted native one.
+const checkDataDir = (input: Omit<DataDirInput, 'realpath'>) => checkDataDirWith({ ...input, realpath });
+const checkNewRoot = (dataDir: { home: string; homeReal: string }, root: string) => checkNewRootWith(dataDir, root, realpath);
 
 function fakeHome(base: string): string {
   const home = path.join(base, 'home');
@@ -21,7 +26,7 @@ function fakeHome(base: string): string {
 
 function rootsOf(home: string, env: Record<string, string> = {}): { roots: HarnessRoot[]; orchestraHome: string } {
   const r = resolveEnv({ home, env });
-  return { roots: computeHarnessRoots(r, launcherRootFs(r)), orchestraHome: r.orchestraHome };
+  return { roots: computeHarnessRoots(r, launcherRootFs(r, { makeReadGate, realpath })), orchestraHome: r.orchestraHome };
 }
 
 const check = (orchestraHome: string, userHome: string, roots: HarnessRoot[]) => checkDataDir({ orchestraHome, userHome, roots });
@@ -99,7 +104,7 @@ test('Tuning: a root added inside ORCHESTRA_HOME, or one that contains it, is re
   assert.equal((checkNewRoot(ok, 'G:bot') as { reason: string }).reason, 'bad-path');
 });
 
-test('prepareDataDir creates run, tmp and runtime and empties tmp without entering a link', (t) => {
+test('prepareDataDir creates run, tmp and runtime and empties tmp without entering a link', async (t) => {
   const base = withTmp(t);
   const home = fakeHome(base);
   const { roots } = rootsOf(home);
@@ -108,7 +113,7 @@ test('prepareDataDir creates run, tmp and runtime and empties tmp without enteri
   put(path.join(home, '.claude', 'projects', 'p', 'keep.jsonl'), '{}\n');
   junction(base, path.join(orch, 'tmp', 'to-claude'), path.join(home, '.claude'));
   const before = treeDigest(path.join(home, '.claude'));
-  const fence = new WriteFence({ orchestraHome: orch, harnessRoots: roots.flatMap((r) => [r.path, r.real]) });
+  const fence = await makeWriteFence({ orchestraHome: orch, harnessRoots: roots.flatMap((r) => [r.path, r.real]) });
   const p = prepareDataDir(fence, orch);
   for (const d of [p.run, p.tmp, p.runtime]) assert.ok(fs.statSync(d).isDirectory());
   assert.deepEqual(fs.readdirSync(p.tmp), []);
@@ -119,7 +124,7 @@ test('prepareDataDir creates run, tmp and runtime and empties tmp without enteri
   assert.equal(again.tmpEntriesRemoved, 0);
 });
 
-test('prepareDataDir refuses a run\\ that is a junction into a harness root', (t) => {
+test('prepareDataDir refuses a run\\ that is a junction into a harness root', async (t) => {
   const base = withTmp(t);
   const home = fakeHome(base);
   const { roots } = rootsOf(home);
@@ -127,7 +132,7 @@ test('prepareDataDir refuses a run\\ that is a junction into a harness root', (t
   fs.mkdirSync(orch);
   junction(base, path.join(orch, 'run'), path.join(home, '.claude', 'projects'));
   const before = treeDigest(path.join(home, '.claude'));
-  const fence = new WriteFence({ orchestraHome: orch, harnessRoots: roots.flatMap((r) => [r.path, r.real]) });
+  const fence = await makeWriteFence({ orchestraHome: orch, harnessRoots: roots.flatMap((r) => [r.path, r.real]) });
   assert.throws(() => prepareDataDir(fence, orch), (e: unknown) => e instanceof WriteFenceError && e.decision.reason === 'harness-root');
   assert.equal(treeDigest(path.join(home, '.claude')), before);
 });
@@ -142,7 +147,7 @@ test('test profile: ORCHESTRA_HOME, a root or the test dir itself that leads out
   const userHome = path.join(base, 'home');
   const rootsIn = (dir: string): HarnessRoot[] => (['claude', 'dsh', 'codex'] as const).map((kind) => {
     const p = path.join(dir, 'roots', kind);
-    return { kind, path: p, real: canonicalize(p) };
+    return { kind, path: p, real: canonicalize(p, realpath) };
   });
   const home = path.join(testDir, 'orchestra');
   const ok = checkDataDir({ orchestraHome: home, userHome, roots: rootsIn(testDir), testDir });

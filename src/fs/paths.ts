@@ -1,4 +1,3 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 const win = path.win32;
@@ -67,9 +66,8 @@ export function isWithin(child: string, parent: string): boolean {
   return c.startsWith(p.endsWith('\\') ? p : p + '\\');
 }
 
+/** realpath of an existing path; the native one is minted in src/fs/node-io.ts and handed down by boot. */
 export type RealpathFn = (p: string) => string;
-
-export const nativeRealpath: RealpathFn = (p) => fs.realpathSync.native(p);
 
 function errCode(e: unknown): string | undefined {
   return typeof e === 'object' && e !== null && 'code' in e ? String((e as { code: unknown }).code) : undefined;
@@ -80,7 +78,7 @@ function errCode(e: unknown): string | undefined {
  * the rest. Resolves junctions, links and 8.3 short names. Errors other than "missing" propagate,
  * so callers fail closed.
  */
-export function canonicalize(p: string, realpath: RealpathFn = nativeRealpath): string {
+export function canonicalize(p: string, realpath: RealpathFn): string {
   let cur = p;
   const rest: string[] = [];
   for (;;) {

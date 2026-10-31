@@ -2,7 +2,8 @@ import * as path from 'node:path';
 import type { HarnessRoot } from '../fs/harness-roots.ts';
 import type { PathRejectReason, RealpathFn } from '../fs/paths.ts';
 import type { WriteFence } from '../fs/write-fence.ts';
-import { canonicalize, checkPath, isWithin, nativeRealpath, pathKey } from '../fs/paths.ts';
+import { canonicalize, checkPath, isWithin, pathKey } from '../fs/paths.ts';
+import { ownFields } from './own.ts';
 
 const win = path.win32;
 
@@ -33,8 +34,11 @@ export type DataDirInput = {
    * junction that leads out of it (D8 r4:492, plan §6 invariant 18).
    */
   testDir?: string;
-  realpath?: RealpathFn;
+  /** Required: the realpath port main.ts got from boot (src/fs/node-io.ts), or a test's own. */
+  realpath: RealpathFn;
 };
+
+const INPUT_KEYS = ['orchestraHome', 'userHome', 'roots', 'testDir', 'realpath'] as const;
 
 function errCode(e: unknown): string {
   return typeof e === 'object' && e !== null && 'code' in e ? String((e as { code: unknown }).code) : String(e);
@@ -81,25 +85,29 @@ function testDirEscape(testDir: string, home: string, homeForms: readonly string
  * it contains one. Each compares the path as written and its canonical form (junctions, 8.3
  * names), case-insensitively. The first one that holds is reported.
  */
-export function checkDataDir(input: DataDirInput): DataDirCheck {
-  const realpath = input.realpath ?? nativeRealpath;
-  const h = checkPath(input.orchestraHome);
+export function checkDataDir(given: DataDirInput): DataDirCheck {
+  // Own fields only: a testDir the caller left out reads undefined, never Object.prototype's.
+  const input = ownFields(given, INPUT_KEYS);
+  const realpath = input.realpath;
+  if (typeof realpath !== 'function') throw new Error('data dir check: realpath is required');
+  const roots = input.roots!;
+  const h = checkPath(input.orchestraHome as string);
   if (!h.ok) return { ok: false, reason: 'bad-path', what: 'orchestra-home', path: String(input.orchestraHome), detail: h.reason };
   const home = h.path;
   const hf = forms(home, realpath);
   if (!hf.ok) return { ok: false, reason: 'canonicalize-failed', what: 'orchestra-home', path: home, detail: hf.detail };
   if (input.testDir !== undefined) {
-    const escaped = testDirEscape(input.testDir, home, hf.forms, input.roots, realpath);
+    const escaped = testDirEscape(input.testDir, home, hf.forms, roots, realpath);
     if (escaped !== null) return escaped;
   }
   if (hf.forms.some(isDriveRoot)) return { ok: false, reason: 'drive-root', home };
-  const u = checkPath(input.userHome);
+  const u = checkPath(input.userHome as string);
   if (!u.ok) return { ok: false, reason: 'bad-path', what: 'user-home', path: String(input.userHome), detail: u.reason };
   const uf = forms(u.path, realpath);
   if (!uf.ok) return { ok: false, reason: 'canonicalize-failed', what: 'user-home', path: u.path, detail: uf.detail };
   if (anyWithin(uf.forms, hf.forms)) return { ok: false, reason: 'contains-user-home', home, userHome: u.path };
   const rootForms: { root: string; forms: string[] }[] = [];
-  for (const r of input.roots) {
+  for (const r of roots) {
     const rf = forms(r.real, realpath);
     if (!rf.ok) return { ok: false, reason: 'canonicalize-failed', what: 'harness-root', path: r.path, detail: rf.detail };
     rootForms.push({ root: r.path, forms: [...new Set([r.path, ...rf.forms])] });
@@ -116,7 +124,7 @@ export type NewRootCheck =
   | { ok: false; reason: 'root-inside-home' | 'home-inside-root'; root: string; home: string };
 
 /** A root added while running (Tuning) is refused outright when it and ORCHESTRA_HOME overlap. */
-export function checkNewRoot(dataDir: { home: string; homeReal: string }, root: string, realpath: RealpathFn = nativeRealpath): NewRootCheck {
+export function checkNewRoot(dataDir: { home: string; homeReal: string }, root: string, realpath: RealpathFn): NewRootCheck {
   const c = checkPath(root);
   if (!c.ok) return { ok: false, reason: 'bad-path', root: String(root), detail: c.reason };
   const rf = forms(c.path, realpath);

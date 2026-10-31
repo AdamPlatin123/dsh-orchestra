@@ -1,7 +1,10 @@
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { HarnessRoot } from '../fs/harness-roots.ts';
+import type { ReadGateSpec, WriteFenceSpec } from '../fs/node-io.ts';
 import type { RealpathFn } from '../fs/paths.ts';
+import type { ReadGate } from '../fs/read-gate.ts';
+import type { WriteFence } from '../fs/write-fence.ts';
 import type { PidLog } from '../os/spawn.ts';
 import type { DataDirInput } from './data-dir.ts';
 import type { DaemonInfo, HeldLock } from './lock.ts';
@@ -10,8 +13,6 @@ import type { StartupNote } from './startup.ts';
 import type { PairingOutput, Profile } from './test-profile.ts';
 import { rootDenyList } from '../fs/harness-roots.ts';
 import { pathKey } from '../fs/paths.ts';
-import { ReadGate } from '../fs/read-gate.ts';
-import { WriteFence } from '../fs/write-fence.ts';
 import { checkDataDir, describeDataDir, prepareDataDir } from './data-dir.ts';
 import { acquireLock, encodeDaemonInfo, heldMessage, lockPipeName, parseDaemonInfo } from './lock.ts';
 import { EXIT, describeNote } from './startup.ts';
@@ -19,10 +20,11 @@ import { TestRoots, decidePairingOutput, testReadDirs } from './test-profile.ts'
 
 const win = path.win32;
 
-// Working-mode wiring, the composition root for the gates (the static scan allows building the
-// gates only here, in main.ts and in launcherRootFs, and importing this module only from main.ts).
-// main.ts imports it only after planStartup() says working, so a ui-only process never loads the
-// write fence, the lock or anything that opens storage.
+// Working-mode wiring, the composition root for the gates: it makes them with the factories boot
+// minted (src/fs/node-io.ts, handed down through main.ts), so they reach the real file system; a gate
+// made any other way reaches nothing. Only main.ts imports this module (static scan), and only after
+// planStartup() says working, so a ui-only process never loads the write fence, the lock or anything
+// that opens storage.
 
 /** How a working orchestrad stops. */
 export type StopPort = {
@@ -43,6 +45,9 @@ export type WorkingContext = {
   home: string;
   userHome: string;
   realpath: RealpathFn;
+  /** The factories boot minted (BootPorts, via main.ts). */
+  makeReadGate(spec: ReadGateSpec): ReadGate;
+  makeWriteFence(spec: WriteFenceSpec): Promise<WriteFence>;
   roots: readonly HarnessRoot[];
   notes: readonly StartupNote[];
   log: Log;
@@ -98,10 +103,10 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   let fence: WriteFence;
   let gate: ReadGate;
   try {
-    fence = new WriteFence({
-      orchestraHome: home, harnessRoots: rootDenyList(ctx.roots), realpath: ctx.realpath, ...(testDir !== undefined ? { confine: testDir } : {}),
+    fence = await ctx.makeWriteFence({
+      orchestraHome: home, harnessRoots: rootDenyList(ctx.roots), ...(testDir !== undefined ? { confine: testDir } : {}),
     });
-    gate = new ReadGate({
+    gate = ctx.makeReadGate({
       roots: ctx.roots,
       orchestraHome: home,
       ...(ctx.profile.kind === 'test' ? { testDirs: testReadDirs(ctx.profile) } : {}),

@@ -2,7 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { canonicalize, checkPath, isWithin, relativeTo } from '../../src/fs/paths.ts';
+import { canonicalize as canonicalizeWith, checkPath, isWithin, relativeTo } from '../../src/fs/paths.ts';
+import { realpath } from '../../src/fs/node-io.ts';
+import type { RealpathFn } from '../../src/fs/paths.ts';
+
+/** The realpath port is required; these tests use the minted native one unless they bring their own. */
+const canonicalize = (p: string, rp: RealpathFn = realpath) => canonicalizeWith(p, rp);
 import { junction, probeJunction, put, shortNameOf, withTmp } from '../helpers/tmp.ts';
 
 test('plain drive paths pass and are normalized; .. is resolved lexically, as Win32 does', () => {

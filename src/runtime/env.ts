@@ -1,4 +1,5 @@
 import * as path from 'node:path';
+import { ownField, ownFields } from './own.ts';
 
 const win = path.win32;
 
@@ -74,18 +75,25 @@ function dedupe(paths: readonly string[]): string[] {
   return out;
 }
 
-export function resolveEnv(input: EnvInput): ResolvedEnv {
-  const home = norm(input.home);
-  const env = input.env;
-  const set = (v: string | undefined) => (v !== undefined && v.trim() !== '' ? norm(expandHome(v, home)) : undefined);
+const INPUT_KEYS = ['home', 'env', 'launcherGlobs', 'extraHarnessRoots', 'extraClaudeRoots'] as const;
 
-  const orchestraHome = set(env.ORCHESTRA_HOME) ?? win.join(home, '.orchestra');
+/**
+ * Own fields only, of the input and of the environment: a variable or list the caller did not set
+ * reads undefined, never a value some module put on Object.prototype (process.env falls through to it).
+ */
+export function resolveEnv(given: EnvInput): ResolvedEnv {
+  const input = ownFields(given, INPUT_KEYS);
+  const home = norm(input.home as string);
+  const env = (name: string) => ownField(input.env as Record<string, string | undefined>, name);
+  const set = (v: string | undefined) => (typeof v === 'string' && v.trim() !== '' ? norm(expandHome(v, home)) : undefined);
+
+  const orchestraHome = set(env('ORCHESTRA_HOME')) ?? win.join(home, '.orchestra');
 
   const launcherGlobs = (input.launcherGlobs ?? DEFAULT_LAUNCHER_GLOBS).map((g) => norm(expandHome(g, home)));
-  const xdg = set(env.XDG_CONFIG_HOME);
+  const xdg = set(env('XDG_CONFIG_HOME'));
   const extraClaude = (input.extraClaudeRoots ?? []).map((r) => norm(expandHome(r, home)));
   const claudeRootCandidates = dedupe([
-    ...(set(env.CLAUDE_CONFIG_DIR) ? [set(env.CLAUDE_CONFIG_DIR) as string] : []),
+    ...(set(env('CLAUDE_CONFIG_DIR')) ? [set(env('CLAUDE_CONFIG_DIR')) as string] : []),
     win.join(home, '.claude'),
     xdg ? win.join(xdg, 'claude') : win.join(home, '.config', 'claude'),
     ...launcherGlobs,
@@ -95,8 +103,8 @@ export function resolveEnv(input: EnvInput): ResolvedEnv {
 
   const defaultDsh = win.join(home, '.dsh');
   const defaultCodex = win.join(home, '.codex');
-  const dshHome = set(env.DSH_HOME) ?? defaultDsh;
-  const codexHome = set(env.CODEX_HOME) ?? defaultCodex;
+  const dshHome = set(env('DSH_HOME')) ?? defaultDsh;
+  const codexHome = set(env('CODEX_HOME')) ?? defaultCodex;
   const dshTuiHome = win.join(home, '.dsh-tui');
   const dsBotHome = win.join(home, '.ds-bot');
 

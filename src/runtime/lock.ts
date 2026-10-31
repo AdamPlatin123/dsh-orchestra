@@ -36,7 +36,10 @@ export function acquireLock(pipe: string): Promise<LockResult> {
       resolve(code === 'EADDRINUSE' ? { ok: false, reason: 'held', pipe } : { ok: false, reason: 'listen-failed', pipe, detail: code });
     };
     server.once('error', onError);
-    server.listen(pipe, () => {
+    // Options without a prototype: server.listen reads port, host, fd and handle through the
+    // prototype chain, and a module that defines Object.prototype.port would turn this into a TCP
+    // listen on 127.0.0.1 and no pipe at all (measured on 24.22), so a second instance would work too.
+    server.listen(Object.freeze(Object.assign(Object.create(null) as { path: string }, { path: pipe })), () => {
       server.off('error', onError);
       // A later server error cannot hand the pipe to anyone else while this process lives.
       server.on('error', () => {});

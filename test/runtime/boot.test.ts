@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { crashLine, exitCodeOf } from '../../src/boot.ts';
 import { EXIT } from '../../src/runtime/startup.ts';
 import { BOOT, isBoot, runOrchestrad, startOrchestrad, waitForLine } from '../helpers/orchestrad.ts';
+import { findImports, scan } from '../helpers/scan-rules.ts';
 import { withTmp } from '../helpers/tmp.ts';
 
 // boot.ts is only ever run here with --test-profile or with arguments it must refuse: the real
@@ -105,6 +106,60 @@ test('every typed exit code lies in 20-29, one per meaning, and none is a code N
     assert.ok(!NODE_OWN_CODES.includes(code), `${name} = ${code} is one of Node's own`);
   }
   assert.equal(new Set(Object.values(EXIT)).size, Object.keys(EXIT).length, 'one code per meaning');
+});
+
+// A typed non-working outcome (refused, ui-only, exit, ...) must commit its exit code before any
+// timer the entry left running can change it: runEntry calls process.exit(code), not just set
+// process.exitCode. Here the entry masks a ui-only refusal (code 22) by scheduling exitCode = 0 and
+// keeps the loop alive; the fix exits 22 before that fires. Mutating finalize() back to a bare
+// process.exitCode assignment lets the keep-alive timer run and the child hangs until timeout.
+test('runEntry commits a typed exit code through process.exit before a later timer can flip it', (t) => {
+  const dir = withTmp(t);
+  const runner = path.join(dir, 'runner.mjs');
+  fs.writeFileSync(runner, `import { runEntry } from ${JSON.stringify(pathToFileURL(BOOT).href)};\nawait runEntry(new URL(process.argv[2]));\n`);
+  const entryFile = path.join(dir, 'uionly-mask.ts');
+  fs.writeFileSync(entryFile, [
+    'export async function start(): Promise<unknown> {',
+    '  setTimeout(() => { process.exitCode = 0; }, 30);',
+    '  setInterval(() => {}, 1000);',
+    `  return { mode: 'ui-only', code: ${EXIT.uiOnly} };`,
+    '}',
+  ].join('\n'));
+  const r = spawnSync(process.execPath, [runner, pathToFileURL(entryFile).href], { encoding: 'utf8', timeout: 30_000, windowsHide: true });
+  assert.equal(r.status, EXIT.uiOnly, `${r.signal ?? ''} ${r.stderr}`);
+});
+
+// The modules boot.ts loads before installImportFence() runs are its transitive static (non-type)
+// relative imports; the runtime fence is installed inside boot() and never judges them. This pins
+// that set, so no new module silently joins the pre-fence graph (where an import-time side effect or
+// a forbidden builtin would run unjudged), and shows the static scan is their standing guard.
+const PRE_FENCE_GRAPH: readonly string[] = [
+  'src/boot.ts', 'src/fs/node-io.ts', 'src/fs/paths.ts', 'src/fs/read-gate.ts', 'src/os/node-proc.ts',
+  'src/os/spawn.ts', 'src/runtime/builtin-policy.ts', 'src/runtime/exit.ts', 'src/runtime/features.ts',
+  'src/runtime/import-fence.ts', 'src/runtime/log.ts', 'src/runtime/own.ts', 'src/runtime/process-powers.ts',
+];
+
+test('boot.ts\'s pre-fence module graph is a fixed set, and the static scan still guards it', () => {
+  const repoDir = fileURLToPath(new URL('../../', import.meta.url));
+  const seen = new Set<string>();
+  const visit = (key: string): void => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    const text = fs.readFileSync(path.join(repoDir, key), 'utf8');
+    for (const r of findImports(text)) {
+      if (r.typeOnly || r.form === 'dynamic' || r.form === 'require') continue;
+      if (!/^\.\.?\//.test(r.spec) || !/\.ts$/.test(r.spec)) continue;
+      visit(path.posix.normalize(path.posix.join(path.posix.dirname(key), r.spec)));
+    }
+  };
+  visit('src/boot.ts');
+  assert.deepEqual([...seen].sort(), [...PRE_FENCE_GRAPH].sort());
+  // These load before the fence, so the static builtin scan — not the runtime fence — is the guard:
+  // a forbidden builtin added to one is caught at build time.
+  for (const m of ['src/fs/read-gate.ts', 'src/os/spawn.ts', 'src/fs/paths.ts']) {
+    const hits = scan(m, "import * as vm from 'node:vm';\n").filter((h) => h.rule === 'builtin-policy');
+    assert.equal(hits.length, 1, `${m}: the static scan flags a forbidden builtin`);
+  }
 });
 
 test('crashLine never throws, whatever was thrown', () => {

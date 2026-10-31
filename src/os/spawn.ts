@@ -1,14 +1,17 @@
-import { spawn as nodeSpawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import type { RealpathFn } from '../fs/paths.ts';
-import { checkPath, nativeRealpath, pathKey } from '../fs/paths.ts';
+import { checkPath, pathKey } from '../fs/paths.ts';
+import { envGet, ownFields } from '../runtime/own.ts';
 
 const win = path.win32;
 
-// The only child_process entry (plan §6 invariant 6): an exact list of (absolute exe, exact argv)
+// The only way to a child process (plan §6 invariant 6): an exact list of (absolute exe, exact argv)
 // pairs. No shell, no .cmd/.bat, no relative path, no argv that is not on the list. Every exe and
-// fixed argument is pinned here; a caller only picks which rules a gate allows.
+// fixed argument is pinned here; a caller only picks which rules a gate allows. The backend that
+// really spawns is minted in src/os/node-proc.ts (the only importer of node:child_process) and
+// reaches a gate only through makeSpawnGate: a gate built anywhere else spawns through whatever its
+// builder wrote, which cannot start a process.
 
 export type SpawnRule = 'whoami' | 'csc' | 'powershell-toast' | 'procguard';
 const RULES: readonly SpawnRule[] = ['whoami', 'csc', 'powershell-toast', 'procguard'];
@@ -43,12 +46,6 @@ export type ProvenSystemRoot = Extract<SystemRoot, { ok: true }>;
 // object or a bare string, so its System32 went through every check below.
 const PROVEN = new WeakSet<object>();
 
-function envGet(env: Readonly<Record<string, string | undefined>>, name: string): string | undefined {
-  if (env[name] !== undefined) return env[name];
-  const key = Object.keys(env).find((k) => k.toLowerCase() === name.toLowerCase());
-  return key === undefined ? undefined : env[key];
-}
-
 function errCode(e: unknown): string {
   return typeof e === 'object' && e !== null && 'code' in e ? String((e as { code: unknown }).code) : String(e);
 }
@@ -59,7 +56,7 @@ function errCode(e: unknown): string {
  * checks catch misconfiguration: a top-level directory of a drive, equal to %windir% when that is
  * set, resolving to itself (no junction). Anything else leaves every exe below it unresolved.
  */
-export function resolveSystemRoot(env: Readonly<Record<string, string | undefined>>, realpath: RealpathFn = nativeRealpath): SystemRoot {
+export function resolveSystemRoot(env: Readonly<Record<string, string | undefined>>, realpath: RealpathFn): SystemRoot {
   const raw = envGet(env, 'SystemRoot');
   if (raw === undefined || raw.trim() === '') return { ok: false, reason: 'unset' };
   const c = checkPath(raw);
@@ -159,7 +156,56 @@ export type ChildLike = Pick<ChildProcess, 'pid' | 'stdin' | 'stdout' | 'stderr'
 
 export type SpawnBackend = (exe: string, argv: readonly string[], opts: BackendOptions) => ChildLike;
 
-const NODE_BACKEND: SpawnBackend = (exe, argv, opts) => nodeSpawn(exe, [...argv], opts);
+/**
+ * What start() hands a caller: a frozen, null-prototype view of a long-lived child with no path back
+ * to the raw ChildProcess or its stdio (the streams of a piped child are net.Socket objects whose
+ * class reaches the whole outbound network). P8: a holder gets exactly these powers, not the object
+ * behind them. The data and close callbacks receive Buffers; nothing exposes the socket itself.
+ */
+export type ProcHandle = {
+  readonly pid: number | null;
+  /** Writes to the child's stdin (a no-op when stdin is not piped). */
+  write(data: Uint8Array | string): void;
+  /** Closes the child's stdin. */
+  end(): void;
+  onStdout(cb: (chunk: Buffer) => void): void;
+  onStderr(cb: (chunk: Buffer) => void): void;
+  onClose(cb: (code: number | null, signal: string | null) => void): void;
+  kill(): void;
+};
+
+/** The ProcHandle's own keys, a fixed set; the measure in spawn.test.ts holds the handle to exactly these. */
+export const HANDLE_KEYS: readonly string[] = ['pid', 'write', 'end', 'onStdout', 'onStderr', 'onClose', 'kill'];
+
+function toBuf(chunk: Buffer | string): Buffer {
+  return typeof chunk === 'string' ? Buffer.from(chunk, 'latin1') : chunk;
+}
+
+/** Wraps a live child in a ProcHandle; the child itself stays captured here and never leaves. */
+function handleOf(child: ChildLike): ProcHandle {
+  const h = Object.assign(Object.create(null) as ProcHandle, {
+    pid: typeof child.pid === 'number' ? child.pid : null,
+    write: (data: Uint8Array | string) => {
+      child.stdin?.write(data);
+    },
+    end: () => {
+      child.stdin?.end();
+    },
+    onStdout: (cb: (chunk: Buffer) => void) => {
+      child.stdout?.on('data', (c: Buffer | string) => cb(toBuf(c)));
+    },
+    onStderr: (cb: (chunk: Buffer) => void) => {
+      child.stderr?.on('data', (c: Buffer | string) => cb(toBuf(c)));
+    },
+    onClose: (cb: (code: number | null, signal: string | null) => void) => {
+      child.on('close', (code: number | null, signal: NodeJS.Signals | null) => cb(code, signal === null ? null : String(signal)));
+    },
+    kill: () => {
+      child.kill();
+    },
+  });
+  return Object.freeze(h);
+}
 
 export type SpawnRequest = {
   exe: string;
@@ -178,10 +224,14 @@ export type SpawnDenyReason =
   | 'not-exe'
   | 'unknown-exe'
   | 'rule-not-enabled'
+  | 'not-startable'
   | 'argv-mismatch'
   | 'out-path-denied'
   | 'exe-unresolved'
   | 'exe-reparsed';
+
+/** The rules that run as a long-lived child, the only ones start() may launch; run-only rules stay run(). */
+const STARTABLE: readonly SpawnRule[] = ['procguard', 'powershell-toast'];
 
 export type SpawnDecision =
   | { allow: true; rule: SpawnRule; exe: string; argv: readonly string[] }
@@ -209,10 +259,13 @@ export type SpawnGateConfig = {
   procguard?: readonly ProcguardSite[];
   /** Hears every spawn (PidLog.record, which ends up in run/pids.jsonl). Required: no spawn goes unrecorded. */
   record: (e: PidEntry) => void;
-  backend?: SpawnBackend;
-  realpath?: RealpathFn;
-  now?: () => number;
+  /** Required, no default: the real one is node-proc.ts's, handed in by makeSpawnGate. */
+  backend: SpawnBackend;
+  realpath: RealpathFn;
+  now: () => number;
 };
+
+const CONFIG_KEYS = ['systemRoot', 'rules', 'csc', 'procguard', 'record', 'backend', 'realpath', 'now'] as const;
 
 export type RunLimits = { timeoutMs: number; maxBytes: number };
 
@@ -232,13 +285,14 @@ function mustPath(p: string, what: string): string {
   return c.path;
 }
 
-function procguardExe(site: ProcguardSite): string {
-  if (site?.at === 'build') return mustPath(PROCGUARD_BUILD_EXE, 'procguard build exe');
-  if (site?.at === 'runtime') {
+function procguardExe(given: ProcguardSite): string {
+  const site = ownFields(given as { at?: string; homeReal?: string; sourceHash?: string }, ['at', 'homeReal', 'sourceHash'] as const);
+  if (site.at === 'build') return mustPath(PROCGUARD_BUILD_EXE, 'procguard build exe');
+  if (site.at === 'runtime') {
     if (typeof site.sourceHash !== 'string' || !SOURCE_HASH.test(site.sourceHash)) {
       throw new Error(`spawn gate: procguard source hash must be 64 lowercase hex digits: ${String(site.sourceHash)}`);
     }
-    return win.join(mustPath(site.homeReal, 'procguard data dir'), 'runtime', 'procguard', site.sourceHash, 'procguard.exe');
+    return win.join(mustPath(site.homeReal as string, 'procguard data dir'), 'runtime', 'procguard', site.sourceHash, 'procguard.exe');
   }
   throw new Error('spawn gate: a procguard site is { at: "runtime", homeReal, sourceHash } or { at: "build" }');
 }
@@ -255,10 +309,12 @@ function copyRequest(req: unknown): RequestCopy {
   let argv: unknown;
   let options: unknown;
   try {
+    // Own fields only, each read once: a field the caller did not set reads undefined, never one
+    // some module put on Object.prototype (a poisoned `options` would otherwise refuse a bare whoami).
     const r = req as Record<string, unknown>;
-    exe = r.exe;
-    argv = r.argv;
-    options = r.options;
+    exe = Object.hasOwn(r, 'exe') ? r.exe : undefined;
+    argv = Object.hasOwn(r, 'argv') ? r.argv : undefined;
+    options = Object.hasOwn(r, 'options') ? r.options : undefined;
   } catch {
     return { ok: false, exe: '<unreadable>' };
   }
@@ -284,10 +340,15 @@ export class SpawnGate {
   readonly #realpath: RealpathFn;
   readonly #now: () => number;
 
-  constructor(cfg: SpawnGateConfig) {
-    const sys = cfg?.systemRoot;
+  constructor(config: SpawnGateConfig) {
+    // Own fields only: an optional field the caller left out reads undefined, never Object.prototype's.
+    const cfg = ownFields(config, CONFIG_KEYS);
+    const sys = cfg.systemRoot;
     if (typeof sys !== 'object' || sys === null || !PROVEN.has(sys)) throw new Error('spawn gate: systemRoot must be the ok result of resolveSystemRoot()');
     if (typeof cfg.record !== 'function') throw new Error('spawn gate: record is required, every spawn lands in run/pids.jsonl');
+    for (const k of ['backend', 'realpath', 'now'] as const) {
+      if (typeof cfg[k] !== 'function') throw new Error(`spawn gate: ${k} is required, there is no default`);
+    }
     const exes = new Map<string, { rule: SpawnRule; exe: string }>();
     const add = (rule: SpawnRule, exe: string) => exes.set(pathKey(exe), { rule, exe });
     add('whoami', win.join(sys.path, WHOAMI_REL));
@@ -300,22 +361,27 @@ export class SpawnGate {
       pgDirs.add(pathKey(win.dirname(exe)));
     }
     this.#exes = exes;
-    for (const r of cfg.rules) if (!RULES.includes(r)) throw new Error(`spawn gate: unknown rule ${String(r)}`);
+    for (const r of cfg.rules!) if (!RULES.includes(r)) throw new Error(`spawn gate: unknown rule ${String(r)}`);
     this.#rules = new Set(cfg.rules);
     if (this.#rules.has('powershell-toast') && TOAST_ENCODED === null) {
       throw new Error('spawn gate: powershell-toast needs the constant script of os/toast-script.ts, which arrives in step 17');
     }
     if (this.#rules.has('procguard') && pgDirs.size === 0) throw new Error('spawn gate: procguard enabled without a site');
-    const outAllowed = cfg.csc?.outAllowed;
+    const outAllowed = ownFields(cfg.csc, ['outAllowed'] as const).outAllowed;
     this.#csc = typeof outAllowed === 'function' ? { outDirs: pgDirs, outAllowed } : null;
     if (this.#rules.has('csc') && (this.#csc === null || pgDirs.size === 0)) throw new Error('spawn gate: csc enabled without an /out: verdict and a procguard site to build into');
-    this.#backend = cfg.backend ?? NODE_BACKEND;
+    this.#backend = cfg.backend!;
     this.#record = cfg.record;
-    this.#realpath = cfg.realpath ?? nativeRealpath;
-    this.#now = cfg.now ?? Date.now;
+    this.#realpath = cfg.realpath!;
+    this.#now = cfg.now!;
+    Object.freeze(this);
   }
 
   decide(req: SpawnRequest): SpawnDecision {
+    return this.#decide(req);
+  }
+
+  #decide(req: SpawnRequest): SpawnDecision {
     const r = copyRequest(req);
     const deny = (reason: SpawnDenyReason, extra: { rule?: SpawnRule; detail?: string } = {}): SpawnDecision => ({ allow: false, reason, exe: r.exe, ...extra });
     if (!r.ok) return deny('bad-request');
@@ -391,16 +457,22 @@ export class SpawnGate {
     return child;
   }
 
-  /** A long-lived child (toast worker, procguard) with stdin, stdout and stderr piped. */
-  start(req: SpawnRequest): ChildLike {
-    const d = this.decide(req);
+  /**
+   * A long-lived child (toast worker, procguard) with stdin, stdout and stderr piped, handed back as
+   * a ProcHandle that holds no path to the raw ChildProcess or its sockets. Only the long-lived rules
+   * may be started; a run-only rule (whoami, csc) is refused here, so a module handed such a gate
+   * cannot reach a live ChildProcess through start() (P8).
+   */
+  start(req: SpawnRequest): ProcHandle {
+    const d = this.#decide(req);
     if (!d.allow) throw new SpawnRefusedError(d);
-    return this.#spawn(d, 'pipe');
+    if (!STARTABLE.includes(d.rule)) throw new SpawnRefusedError({ allow: false, reason: 'not-startable', exe: d.exe, rule: d.rule });
+    return handleOf(this.#spawn(d, 'pipe'));
   }
 
   /** Runs to completion and collects the output; past the time or size limit the child is killed. */
   run(req: SpawnRequest, limits: RunLimits): Promise<RunResult> {
-    const d = this.decide(req);
+    const d = this.#decide(req);
     if (!d.allow) return Promise.resolve({ ok: false, reason: 'refused', decision: d });
     let child: ChildLike;
     try {
@@ -411,6 +483,11 @@ export class SpawnGate {
     return collect(child, limits);
   }
 }
+
+// The prototype and every instance are frozen: a module holding a SpawnGate (or the class) can neither
+// replace a method every holder calls nor change an instance's fields or prototype, and the gate's
+// own paths call only its private members, so a subclass cannot steer them either.
+Object.freeze(SpawnGate.prototype);
 
 function collect(child: ChildLike, limits: RunLimits): Promise<RunResult> {
   return new Promise((resolve) => {

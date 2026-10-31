@@ -5,6 +5,7 @@ import { MIN_NODE, missingFeatures } from './features.ts';
 import { describeDataDir } from './data-dir.ts';
 import { EXIT } from './exit.ts';
 import { describeIntegrity } from './integrity.ts';
+import { POWERS_NODE } from './process-powers.ts';
 
 // planStartup(): one decision from three inputs, in the plan's order (step 2, plan §6 invariants 9
 // and 10). Elevated beats everything; a missing core feature exits (the resolve hook of the import
@@ -15,7 +16,8 @@ export { EXIT };
 
 export type StartupNote =
   | { id: 'zstd-missing'; effect: 'dsh-source-off' }
-  | { id: 'node-below-min'; effect: 'tuning-warning'; node: string; min: string };
+  | { id: 'node-below-min'; effect: 'tuning-warning'; node: string; min: string }
+  | { id: 'node-not-pinned'; effect: 'powers-unverified'; node: string; pinned: string };
 
 export type UiOnlyReason =
   | { id: 'integrity-low'; rid: number }
@@ -28,11 +30,15 @@ export type StartupPlan =
   | { mode: 'ui-only'; reasons: UiOnlyReason[]; notes: StartupNote[] }
   | { mode: 'working'; dataDir: Extract<DataDirCheck, { ok: true }>; notes: StartupNote[] };
 
-/** Tuning notes that never change the mode: no zstd turns the DSH source off; an old Node only warns. */
+/**
+ * Tuning notes that never change the mode: no zstd turns the DSH source off; an old Node only warns;
+ * a Node other than the one the process-powers table was taken on says the table is unverified there.
+ */
 export function startupNotes(f: Features): StartupNote[] {
   const notes: StartupNote[] = [];
   if (!f.zstd) notes.push({ id: 'zstd-missing', effect: 'dsh-source-off' });
   if (!f.nodeAtLeastMin) notes.push({ id: 'node-below-min', effect: 'tuning-warning', node: f.node, min: MIN_NODE.join('.') });
+  if (f.node !== POWERS_NODE) notes.push({ id: 'node-not-pinned', effect: 'powers-unverified', node: f.node, pinned: POWERS_NODE });
   return notes;
 }
 
@@ -81,7 +87,14 @@ function describeReason(r: UiOnlyReason): string {
 }
 
 export function describeNote(n: StartupNote): string {
-  return n.id === 'zstd-missing' ? 'zlib zstd missing: the DSH source stays off' : `node ${n.node} is below ${n.min}`;
+  switch (n.id) {
+    case 'zstd-missing':
+      return 'zlib zstd missing: the DSH source stays off';
+    case 'node-below-min':
+      return `node ${n.node} is below ${n.min}`;
+    case 'node-not-pinned':
+      return `node ${n.node} is not ${n.pinned}, the Node the process-powers table was taken on: its key set is unverified here`;
+  }
 }
 
 /** The one console line for a plan that does not work; null for working. */

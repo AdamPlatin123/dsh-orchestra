@@ -3,6 +3,9 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Rule } from '../helpers/scan-rules.ts';
+import { BUILTIN_ROWS } from '../../src/runtime/builtin-policy.ts';
+import { GLOBAL_POWERS, PROCESS_POWERS } from '../../src/runtime/process-powers.ts';
 import { EXEMPT_SCRIPTS, RULES, SCANNED_DIRS, findImports, scan } from '../helpers/scan-rules.ts';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
@@ -20,65 +23,90 @@ const CASES: readonly Case[] = [
   pos('builtin-policy', 'src/fs/sub/deeper.ts', "import * as fs from 'node:fs';"),
   pos('builtin-policy', 'src/main.ts', "const m = await import('node:module');"),
   pos('builtin-policy', 'scripts/check-real-claude.ts', "import { readFileSync } from 'node:fs';"),
-  neg('builtin-policy', 'src/fs/read-gate.ts', "import * as fs from 'node:fs';\nimport * as path from 'node:path';"),
+  // Since step 2c only the minted modules import node:fs and node:child_process.
+  pos('builtin-policy', 'src/fs/read-gate.ts', "import * as fs from 'node:fs';"),
+  pos('builtin-policy', 'src/fs/write-fence.ts', "import { renameSync } from 'node:fs';"),
+  pos('builtin-policy', 'src/fs/node-io.ts', "import * as fsp from 'node:fs/promises';"),
+  pos('builtin-policy', 'src/os/spawn.ts', "import { execFile } from 'node:child_process';"),
+  neg('builtin-policy', 'src/fs/node-io.ts', "import * as fs from 'node:fs';\nimport * as path from 'node:path';"),
+  neg('builtin-policy', 'src/fs/read-gate.ts', "import type { Stats } from 'node:fs';\nimport * as path from 'node:path';"),
   neg('builtin-policy', 'src/model/inbox.ts', "import type { Stats } from 'node:fs';"),
-  neg('builtin-policy', 'src/os/spawn.ts', "import { execFile } from 'node:child_process';"),
+  neg('builtin-policy', 'src/os/node-proc.ts', "import { spawn } from 'node:child_process';"),
+  neg('builtin-policy', 'src/os/spawn.ts', "import type { ChildProcess } from 'node:child_process';"),
   neg('builtin-policy', 'scripts/test-stage.ts', "import * as fs from 'node:fs';"),
 
   pos('builtin-only-names', 'src/main.ts', "import * as os from 'node:os';"),
   pos('builtin-only-names', 'src/main.ts', "import { homedir, userInfo } from 'node:os';"),
   pos('builtin-only-names', 'src/runtime/lock.ts', "import { createServer, connect } from 'node:net';"),
   neg('builtin-only-names', 'src/main.ts', "import { homedir, totalmem } from 'node:os';"),
-  neg('builtin-only-names', 'src/fs/write-fence.ts', "import { tmpdir } from 'node:os';"),
+  // write-fence.ts's node:os row was stale (it imports only node:path and node:crypto) and was
+  // removed in the fixer pass, so node:os is now not-allowed-for-module there.
+  pos('builtin-policy', 'src/fs/write-fence.ts', "import { tmpdir } from 'node:os';"),
   neg('builtin-only-names', 'src/runtime/lock.ts', "import { createServer, type Server } from 'node:net';"),
   pos('builtin-only-names', 'src/server/http.ts', "import { createServer, request } from 'node:http';"),
   pos('builtin-only-names', 'src/server/http.ts', "import * as http from 'node:http';"),
   neg('builtin-only-names', 'src/server/http.ts', "import { createServer, type IncomingMessage } from 'node:http';"),
 
-  pos('ban:getBuiltinModule', 'src/model/x.ts', "const cp = process.getBuiltinModule('node:child_process');"),
-  neg('ban:getBuiltinModule', 'src/runtime/import-fence.ts', "lock(p, 'getBuiltinModule', wrapper);"),
-  neg('ban:getBuiltinModule', 'src/model/x.ts', 'const builtins = DEFAULT_BUILTINS;'),
-  pos('ban:process.binding', 'src/model/x.ts', "process.binding('fs');"),
-  pos('ban:process.binding', 'src/model/x.ts', "process['binding']('fs');"),
-  neg('ban:process.binding', 'src/model/x.ts', 'const binding = keyBinding(event);'),
-  pos('ban:_linkedBinding', 'src/model/x.ts', "process._linkedBinding('x');"),
-  neg('ban:_linkedBinding', 'src/runtime/import-fence.ts', "for (const n of ['_linkedBinding']) lock(p, n, stub);"),
-  pos('ban:dlopen', 'src/model/x.ts', 'process.dlopen(module, file);'),
-  neg('ban:dlopen', 'src/model/x.ts', 'const dlopened = false;'),
-  pos('ban:loadEnvFile', 'src/model/x.ts', "process.loadEnvFile('C:\\\\x\\\\.env');"),
-  pos('ban:loadEnvFile', 'src/model/x.ts', "const { loadEnvFile } = process;"),
-  neg('ban:loadEnvFile', 'src/runtime/import-fence.ts', "lock(p, 'loadEnvFile', disabled('process.loadEnvFile'));"),
-  neg('ban:loadEnvFile', 'src/model/x.ts', 'const envFile = loadEnv(file);'),
-  pos('ban:_debugProcess', 'src/model/x.ts', 'process._debugProcess(pid);'),
-  pos('ban:_debugProcess', 'src/model/x.ts', "const open = process['_debugProcess'];"),
-  neg('ban:_debugProcess', 'src/runtime/import-fence.ts', "const DEBUG_POWERS = ['_debugProcess', '_debugEnd'];"),
-  neg('ban:_debugProcess', 'src/model/x.ts', 'const debugProcessed = true;'),
-  pos('ban:_debugEnd', 'src/model/x.ts', 'process._debugEnd();'),
-  neg('ban:_debugEnd', 'src/runtime/import-fence.ts', "for (const name of ['_debugEnd']) lock(p, name, stub);"),
-  neg('ban:_debugEnd', 'src/model/x.ts', 'const debugEnded = false;'),
-  pos('ban:_getActiveHandles', 'src/model/x.ts', 'for (const h of process._getActiveHandles()) h.close();'),
-  neg('ban:_getActiveHandles', 'src/runtime/import-fence.ts', "const DEBUG_POWERS = ['_getActiveHandles'];"),
-  neg('ban:_getActiveHandles', 'src/model/x.ts', 'const kinds = process.getActiveResourcesInfo();'),
-  pos('ban:_getActiveRequests', 'src/model/x.ts', 'const reqs = process._getActiveRequests();'),
-  neg('ban:_getActiveRequests', 'src/runtime/import-fence.ts', "const DEBUG_POWERS = ['_getActiveRequests'];"),
-  neg('ban:_getActiveRequests', 'src/model/x.ts', 'const reqs = activeRequests();'),
-  pos('ban:undici.globalDispatcher', 'src/model/x.ts', "const d = globalThis[Symbol.for('undici.globalDispatcher.1')];"),
-  pos('ban:undici.globalDispatcher', 'src/net/dsh-connect.ts', "const slot = Symbol.for('undici.globalDispatcher.2');"),
-  neg('ban:undici.globalDispatcher', 'src/runtime/import-fence.ts', "const UNDICI_DISPATCHERS = [Symbol.for('undici.globalDispatcher.1')];"),
-  neg('ban:undici.globalDispatcher', 'src/net/dsh-connect.ts', 'const r = await fetch(url, { dispatcher });'),
-  pos('ban:undici.globalOrigin', 'src/model/x.ts', "globalThis[Symbol.for('undici.globalOrigin.1')] = new URL(base);"),
-  neg('ban:undici.globalOrigin', 'src/runtime/import-fence.ts', "const UNDICI_ORIGIN = Symbol.for('undici.globalOrigin.1');"),
-  neg('ban:undici.globalOrigin', 'src/net/dsh-connect.ts', 'const u = new URL(path, origin);'),
+  // The process and global rules come from src/runtime/process-powers.ts (step 2c); the table file is
+  // the one they skip, so import-fence.ts, which no longer names any key, gets no exemption.
+  pos('process-power-member', 'src/model/x.ts', "const cp = process.getBuiltinModule('node:child_process');"),
+  neg('process-power-member', 'src/runtime/import-fence.ts', "lock(p, 'getBuiltinModule', wrapper);"),
+  neg('process-power-member', 'src/model/x.ts', 'const builtins = DEFAULT_BUILTINS;'),
+  pos('process-power-member', 'src/model/x.ts', "process.binding('fs');"),
+  pos('process-power-member', 'src/model/x.ts', "process['binding']('fs');"),
+  neg('process-power-member', 'src/model/x.ts', 'const binding = keyBinding(event);'),
+  pos('process-power-member', 'src/model/x.ts', "process._linkedBinding('x');"),
+  neg('process-power-member', 'src/runtime/import-fence.ts', "for (const n of ['_linkedBinding']) lock(p, n, stub);"),
+  pos('process-power-member', 'src/model/x.ts', 'process.dlopen(module, file);'),
+  neg('process-power-member', 'src/model/x.ts', 'const dlopened = false;'),
+  pos('process-power-member', 'src/model/x.ts', "process.loadEnvFile('C:\\\\x\\\\.env');"),
+  pos('process-power-member', 'src/model/x.ts', "const { loadEnvFile } = process;"),
+  pos('process-power-member', 'src/runtime/import-fence.ts', "lock(p, 'loadEnvFile', disabled('process.loadEnvFile'));"),
+  neg('process-power-member', 'src/runtime/process-powers.ts', "lock('loadEnvFile', 'reads a file into process.loadEnvFile past the read gate'),"),
+  neg('process-power-member', 'src/model/x.ts', 'const envFile = loadEnv(file);'),
+  pos('process-power-member', 'src/model/x.ts', 'process._debugProcess(pid);'),
+  pos('process-power-member', 'src/model/x.ts', "const open = process['_debugProcess'];"),
+  pos('process-power-member', 'src/model/x.ts', 'const open = process?._debugProcess;'),
+  neg('process-power-member', 'src/runtime/import-fence.ts', "const DEBUG_POWERS = ['_debugProcess', '_debugEnd'];"),
+  neg('process-power-member', 'src/model/x.ts', 'const debugProcessed = true;'),
+  pos('process-power-member', 'src/model/x.ts', 'process._debugEnd();'),
+  neg('process-power-member', 'src/runtime/import-fence.ts', "for (const name of ['_debugEnd']) lock(p, name, stub);"),
+  neg('process-power-member', 'src/model/x.ts', 'const debugEnded = false;'),
+  pos('process-power-member', 'src/model/x.ts', 'for (const h of process._getActiveHandles()) h.close();'),
+  neg('process-power-member', 'src/model/x.ts', 'const kinds = process.getActiveResourcesInfo();'),
+  pos('process-power-member', 'src/model/x.ts', 'const reqs = process._getActiveRequests();'),
+  neg('process-power-member', 'src/model/x.ts', 'const reqs = activeRequests();'),
+  pos('process-power-member', 'src/model/x.ts', 'process.execve(exe, argv);'),
+  pos('process-power-member', 'src/model/x.ts', 'process.chdir(dir);'),
+  pos('process-power-member', 'src/model/x.ts', 'process.abort();'),
+  pos('process-power-member', 'src/model/x.ts', 'process.umask(0o222);'),
+  pos('process-power-member', 'src/model/x.ts', 'process.setUncaughtExceptionCaptureCallback(() => {});'),
+  // Member access only: the same names as methods of other objects pass, and kept keys pass.
+  neg('process-power-member', 'src/os/spawn.ts', 'child.kill();'),
+  neg('process-power-member', 'src/model/x.ts', 'controller.abort();'),
+  neg('process-power-member', 'src/model/x.ts', 'timer.unref();'),
+  neg('process-power-member', 'src/boot.ts', "process.stderr.write(line, () => process.exit(EXIT.crashed));"),
+  neg('process-power-member', 'src/model/x.ts', 'const { pid, argv } = process;'),
+  pos('global-power-symbol', 'src/model/x.ts', "const d = globalThis[Symbol.for('undici.globalDispatcher.1')];"),
+  pos('global-power-symbol', 'src/net/dsh-connect.ts', "const slot = Symbol.for('undici.globalDispatcher.2');"),
+  pos('global-power-symbol', 'src/runtime/import-fence.ts', "const UNDICI_DISPATCHERS = [Symbol.for('undici.globalDispatcher.1')];"),
+  neg('global-power-symbol', 'src/runtime/process-powers.ts', "lock('Symbol(undici.globalDispatcher.1)', 'undici\\'s global dispatcher slot', { stub: 'dead-dispatcher' }),"),
+  neg('global-power-symbol', 'src/net/dsh-connect.ts', 'const r = await fetch(url, { dispatcher });'),
+  pos('global-power-symbol', 'src/model/x.ts', "globalThis[Symbol.for('undici.globalOrigin.1')] = new URL(base);"),
+  neg('global-power-symbol', 'src/runtime/process-powers.ts', "lock('Symbol(undici.globalOrigin.1)', 'the base of every relative URL', { stub: 'empty' }),"),
+  neg('global-power-symbol', 'src/net/dsh-connect.ts', 'const u = new URL(path, origin);'),
   pos('no-timers-in-lock', 'src/runtime/working.ts', 'setInterval(() => fence.writeAtomic(daemonJson, info), 10_000).unref();'),
   pos('no-timers-in-lock', 'src/runtime/lock.ts', 'const t = setTimeout(retry, 100);'),
   pos('no-timers-in-lock', 'src/runtime/lock.ts', "import { setTimeout as sleep } from 'node:timers/promises';"),
   neg('no-timers-in-lock', 'src/runtime/working.ts', 'fence.writeAtomic(daemonJson, encodeDaemonInfo(info));'),
   neg('no-timers-in-lock', 'src/os/spawn.ts', 'const timer = setTimeout(() => child.kill(), ms);'),
-  pos('ban:process.report', 'src/model/x.ts', 'process.report.writeReport(p);'),
-  pos('ban:process.report', 'src/model/x.ts', "process['report'].directory = d;"),
-  pos('ban:process.report', 'src/model/x.ts', 'const { writeReport } = r;'),
-  neg('ban:process.report', 'src/runtime/import-fence.ts', "lock(p, 'report', Object.freeze({ writeReport: stub }));"),
-  neg('ban:process.report', 'src/model/source-report.ts', 'const report = buildReport(source);'),
+  pos('process-power-member', 'src/model/x.ts', 'process.report.writeReport(p);'),
+  pos('process-power-member', 'src/model/x.ts', "process['report'].directory = d;"),
+  // A bare name is never matched (step 2c): `r` could only be an alias of process.report, whose
+  // writeReport the import fence locks for every spelling.
+  neg('process-power-member', 'src/model/x.ts', 'const { writeReport } = r;'),
+  neg('process-power-member', 'src/runtime/import-fence.ts', "lock(p, 'report', Object.freeze({ writeReport: stub }));"),
+  neg('process-power-member', 'src/model/source-report.ts', 'const report = buildReport(source);'),
   pos('ban:import-attributes', 'src/model/x.ts', "import cfg from './c.json' with { type: 'json' };"),
   pos('ban:import-attributes', 'src/model/x.ts', "const m = await import(u, { with: { type: 'json' } });"),
   pos('ban:import-attributes', 'src/model/x.ts', "import cfg from './c.json' assert { type: 'json' };"),
@@ -91,23 +119,37 @@ const CASES: readonly Case[] = [
   neg('ban:new Function', 'src/model/x.ts', 'const f = newFunction();'),
   pos('ban:eval: true', 'src/runtime/workers.ts', 'new Worker(src, {eval: true});'),
   pos('ban:eval: true', 'src/runtime/workers.ts', "new Worker(src, { 'eval': true });"),
+  pos('ban:eval: true', 'src/workers/bootstrap.ts', 'new Worker(code, { eval: true });'),
   neg('ban:eval: true', 'src/runtime/workers.ts', 'new Worker(url, { eval: false });'),
-  pos('ban:copyFile', 'src/sources/codex/state5-snapshot.ts', 'fs.copyFileSync(a, b);'),
-  neg('ban:copyFile', 'src/sources/codex/state5-snapshot.ts', 'fence.writeAtomic(b, gate.readFile(a));'),
-  pos('ban:cp(', 'src/model/x.ts', 'fs.cp(a, b);'),
-  pos('ban:cp(', 'src/model/x.ts', 'cpSync(a, b);'),
-  neg('ban:cp(', 'src/model/x.ts', 'const cpu = cpus();'),
-  pos('ban:createWriteStream', 'src/model/x.ts', 'const s = fs.createWriteStream(p);'),
-  neg('ban:createWriteStream', 'src/model/x.ts', 'const s = createReadableThing(p);'),
-  pos('ban:truncate', 'src/model/x.ts', 'fs.ftruncateSync(fd, 0);'),
-  neg('ban:truncate', 'src/model/x.ts', 'const short = text.slice(0, 2048);'),
-  pos('ban:utimes', 'src/model/x.ts', 'fs.utimesSync(p, a, m);'),
-  neg('ban:utimes', 'src/model/x.ts', 'const times = [a, m];'),
-  pos('ban:symlink', 'src/model/x.ts', "fs.symlinkSync(a, b, 'junction');"),
-  neg('ban:symlink', 'src/model/x.ts', 'if (st.isSymbolicLink()) removeLinkEntry(p);'),
-  pos('ban:link(', 'src/model/x.ts', 'fs.link(a, b);'),
-  pos('ban:link(', 'src/model/x.ts', 'linkSync(a, b);'),
-  neg('ban:link(', 'src/model/x.ts', 'fs.unlinkSync(a); deepLink(b);'),
+  // Narrowed to the modules that can import node:worker_threads; elsewhere there is no Worker to pass it to.
+  neg('ban:eval: true', 'src/model/x.ts', 'const opts = { eval: true };'),
+  // One table over the modules that can import node:fs (only src/fs/node-io.ts since step 2c).
+  pos('fs-name-bans', 'src/fs/node-io.ts', 'fs.copyFileSync(a, b);'),
+  neg('fs-name-bans', 'src/sources/codex/state5-snapshot.ts', 'fence.writeAtomic(b, gate.readFile(a));'),
+  pos('fs-name-bans', 'src/fs/node-io.ts', 'fs.cp(a, b);'),
+  pos('fs-name-bans', 'src/fs/node-io.ts', 'cpSync(a, b);'),
+  neg('fs-name-bans', 'src/fs/node-io.ts', 'const cpu = cpus();'),
+  pos('fs-name-bans', 'src/fs/node-io.ts', 'const s = fs.createWriteStream(p);'),
+  neg('fs-name-bans', 'src/fs/node-io.ts', 'const s = createReadableThing(p);'),
+  pos('fs-name-bans', 'src/fs/node-io.ts', 'fs.truncateSync(p, 0);'),
+  pos('fs-name-bans', 'src/fs/node-io.ts', 'truncate: (p: string) => fs.truncate(p, 0, () => {}),'),
+  neg('fs-name-bans', 'src/fs/node-io.ts', 'const short = text.slice(0, 2048);'),
+  // ftruncate is allowed in node-io.ts (the only file the rule applies to): step 3 truncates the
+  // journal through the write fence's io. The write-fence.ts negative that used to sit here never
+  // exercised the pattern (holdsFs is false there), so the node-io.ts negative is the real check.
+  neg('fs-name-bans', 'src/fs/node-io.ts', 'ftruncateSync: (fd: number, length: number) => fs.ftruncateSync(fd, length),'),
+  neg('fs-name-bans', 'src/fs/node-io.ts', 'const entry = { truncated: true };'),
+  pos('fs-name-bans', 'src/fs/node-io.ts', 'fs.utimesSync(p, a, m);'),
+  neg('fs-name-bans', 'src/fs/node-io.ts', 'const times = [a, m];'),
+  pos('fs-name-bans', 'src/fs/node-io.ts', "fs.symlinkSync(a, b, 'junction');"),
+  neg('fs-name-bans', 'src/fs/node-io.ts', 'if (st.isSymbolicLink()) removeLinkEntry(p);'),
+  pos('fs-name-bans', 'src/fs/node-io.ts', 'fs.link(a, b);'),
+  pos('fs-name-bans', 'src/fs/node-io.ts', 'linkSync(a, b);'),
+  neg('fs-name-bans', 'src/fs/node-io.ts', 'fs.unlinkSync(a); deepLink(b);'),
+  // Outside node-io.ts the same calls need node:fs first, which the builtin-policy rule flags.
+  neg('fs-name-bans', 'src/model/x.ts', 'fs.copyFileSync(a, b);'),
+  pos('builtin-policy', 'src/sources/codex/state5-snapshot.ts', "import * as fs from 'node:fs';\nfs.copyFileSync(a, b);"),
+  pos('builtin-policy', 'src/fs/read-gate.ts', "import { ftruncateSync } from 'node:fs';\nftruncateSync(fd, 0);"),
   pos('ban:shell: true', 'src/os/spawn.ts', "execFile(exe, argv, { shell: true });"),
   pos('ban:shell: true', 'src/os/spawn.ts', "spawn(exe, argv, { shell: 'cmd.exe' });"),
   neg('ban:shell: true', 'src/os/spawn.ts', 'spawn(exe, argv, { shell: false, windowsHide: true });'),
@@ -120,30 +162,23 @@ const CASES: readonly Case[] = [
   neg('dynamic-import-literal-only', 'src/boot.ts', 'const main = await import(entry.href);'),
   neg('dynamic-import-literal-only', 'src/workers/bootstrap.ts', 'const mod = await import(c.href);'),
   pos('mkdtemp-only-in-write-fence', 'src/sources/codex/state5-snapshot.ts', 'const d = fs.mkdtempSync(p);'),
-  neg('mkdtemp-only-in-write-fence', 'src/fs/write-fence.ts', 'const made = fs.mkdtempSync(win.join(parent, prefix));'),
-  pos('fetch-only-in-dsh-connect', 'src/server/routes.ts', "await fetch('http://example.com/');"),
-  pos('fetch-only-in-dsh-connect', 'src/model/x.ts', 'const f = fetch; await f(url);'),
-  pos('fetch-only-in-dsh-connect', 'src/model/x.ts', 'Reflect.apply(globalThis.fetch, null, [url]);'),
-  neg('fetch-only-in-dsh-connect', 'src/net/dsh-connect.ts', 'const r = await fetch(url, { redirect: "manual" });'),
-  neg('fetch-only-in-dsh-connect', 'src/boot.ts', 'const ports: BootPorts = { fetch: globalThis.fetch };'),
-  neg('fetch-only-in-dsh-connect', 'src/model/x.ts', 'prefetch(items);'),
-  pos('ban:WebSocket/EventSource', 'src/net/dsh-connect.ts', 'const ws = new WebSocket(url);'),
-  pos('ban:WebSocket/EventSource', 'src/model/x.ts', "const es = new globalThis.EventSource('http://127.0.0.1:1/');"),
-  neg('ban:WebSocket/EventSource', 'src/runtime/import-fence.ts', "const NETWORK_GLOBALS = ['fetch', 'WebSocket', 'EventSource'];"),
-  neg('ban:WebSocket/EventSource', 'ui/app.js', "const es = new EventSource('/api/events');"),
-  neg('ban:WebSocket/EventSource', 'src/model/x.ts', 'const socketPath = pipeName(id);'),
-  pos('ban:net.connect', 'src/model/x.ts', 'const s = net.connect(pipe);'),
-  neg('ban:net.connect', 'src/model/x.ts', 'const s = net.createServer();'),
-  pos('ban:createConnection', 'src/model/x.ts', 'const s = createConnection({ path: pipe });'),
-  neg('ban:createConnection', 'src/model/x.ts', 'const c = createConfig();'),
-  pos('ban:http.request', 'src/model/x.ts', 'http.request(url);'),
-  pos('ban:http.request', 'src/model/x.ts', 'https.request(url);'),
-  neg('ban:http.request', 'src/server/http.ts', 'server.on("request", handle);'),
-  pos('ban:http.get', 'src/model/x.ts', 'http.get(url, cb);'),
-  neg('ban:http.get', 'src/server/http.ts', 'routes.get(path);'),
-  pos('ban:node:https', 'src/model/x.ts', "import * as https from 'node:https';"),
-  pos('ban:node:https', 'src/model/x.ts', 'const h = require("https");'),
-  neg('ban:node:https', 'src/net/dsh-connect.ts', "if (u.protocol !== 'http:') return null;"),
+  neg('mkdtemp-only-in-write-fence', 'src/fs/write-fence.ts', 'const made = this.#io.mkdtempSync(win.join(parent, prefix));'),
+  neg('mkdtemp-only-in-write-fence', 'src/fs/node-io.ts', 'mkdtempSync: (prefix: string) => fs.mkdtempSync(prefix, MKDTEMP),'),
+  pos('global-power-name', 'src/server/routes.ts', "await fetch('http://example.com/');"),
+  pos('global-power-name', 'src/model/x.ts', 'const f = fetch; await f(url);'),
+  pos('global-power-name', 'src/model/x.ts', 'Reflect.apply(globalThis.fetch, null, [url]);'),
+  neg('global-power-name', 'src/net/dsh-connect.ts', 'const r = await fetch(url, { redirect: "manual" });'),
+  neg('global-power-name', 'src/boot.ts', 'const ports: BootPorts = { fetch: globalThis.fetch };'),
+  neg('global-power-name', 'src/model/x.ts', 'prefetch(items);'),
+  pos('global-power-name', 'src/net/dsh-connect.ts', 'const ws = new WebSocket(url);'),
+  pos('global-power-name', 'src/boot.ts', 'const ws = new WebSocket(url);'),
+  pos('global-power-name', 'src/model/x.ts', "const es = new globalThis.EventSource('http://127.0.0.1:1/');"),
+  pos('global-power-name', 'src/model/x.ts', "localStorage.setItem('k', v);"),
+  pos('global-power-name', 'src/runtime/import-fence.ts', "const NETWORK_GLOBALS = ['fetch', 'WebSocket', 'EventSource'];"),
+  neg('global-power-name', 'src/runtime/process-powers.ts', "lock('WebSocket', 'the network; no module needs it'),"),
+  neg('global-power-name', 'ui/app.js', "const es = new EventSource('/api/events');"),
+  neg('global-power-name', 'src/model/x.ts', 'const socketPath = pipeName(id);'),
+  // The five network name bans went in step 2c: test 'rules dropped or narrowed in step 2c' shows which defense stops each bad sample.
   pos('ban:agents --json', 'scripts/check-real-claude.ts', "run('claude agents --json');"),
   pos('ban:agents --json', 'src/os/spawn.ts', "execFile(claude, ['agents','--json']);"),
   pos('ban:agents --json', 'src/os/spawn.ts', 'execFile(claude, ["agents", "--json"]);'),
@@ -183,30 +218,42 @@ const CASES: readonly Case[] = [
   pos('fs-write-only-in-write-fence', 'src/fs/paths.ts', 'fs.rm(p, { recursive: true });'),
   neg('fs-write-only-in-write-fence', 'src/fs/write-fence.ts', 'fs.renameSync(tmp, p);'),
   neg('fs-write-only-in-write-fence', 'src/fs/read-gate.ts', 'const fd = this.#io.openSync(real, \'r\');'),
+  neg('fs-write-only-in-write-fence', 'src/fs/node-io.ts', 'renameSync: (from: string, to: string) => fs.renameSync(from, to),'),
+  pos('fs-write-only-in-write-fence', 'src/fs/harness-roots.ts', 'this.#io.unlinkSync(p);'),
   pos('fs-open-only-in-gates', 'src/fs/harness-roots.ts', 'const text = fs.readFileSync(p);'),
   pos('fs-open-only-in-gates', 'src/fs/paths.ts', "const fd = fs.openSync(p, 'r');"),
   neg('fs-open-only-in-gates', 'src/fs/read-gate.ts', "const fd = fs.openSync(p, 'r');"),
   pos('fs-open-only-in-gates', 'src/fs/harness-roots.ts', 'const names = fs.readdirSync(dir);'),
   pos('fs-open-only-in-gates', 'src/fs/paths.ts', 'const d = fs.opendirSync(dir);'),
   neg('fs-open-only-in-gates', 'src/fs/harness-roots.ts', 'return gate.subdirs(dir);'),
+  neg('fs-open-only-in-gates', 'src/fs/node-io.ts', "openSync: (p: string, _flags: 'r') => fs.openSync(p, 'r'),"),
   pos('read-gate-open-flag-r', 'src/fs/read-gate.ts', "const fd = fs.openSync(p, 'r+');"),
   pos('read-gate-open-flag-r', 'src/fs/read-gate.ts', 'const fd = fs.openSync(p, flags);'),
   neg('read-gate-open-flag-r', 'src/fs/read-gate.ts', "openSync: (p, _flags) => fs.openSync(p, 'r'),"),
   neg('read-gate-open-flag-r', 'src/fs/read-gate.ts', "openSync(p: string, flags: 'r'): number;"),
 
-  pos('ban:process.kill', 'src/brakes/kill-tree.ts', 'process.kill(pid);'),
-  pos('ban:process.kill', 'src/runtime/lock.ts', "process['kill'](pid, 'SIGTERM');"),
-  pos('ban:process.kill', 'src/model/x.ts', 'const { kill } = process;'),
-  pos('ban:process.kill', 'src/model/x.ts', 'const { pid, kill: k } = globalThis.process;'),
-  pos('ban:process.kill', 'src/model/x.ts', "Reflect.get(process, 'kill')(pid);"),
-  pos('ban:process.kill', 'src/model/x.ts', 'process._kill(pid, 15);'),
+  pos('node-io-read-io-reads-only', 'src/fs/node-io.ts', "const READ_IO: ReadIo = opts({\n  openSync: (p: string) => fs.openSync(p, 'r+'),\n});\n"),
+  pos('node-io-read-io-reads-only', 'src/fs/node-io.ts', "const READ_IO: ReadIo = opts({\n  closeSync: (fd: number) => { fs.fsyncSync(fd); fs.closeSync(fd); },\n});\n"),
+  pos('node-io-read-io-reads-only', 'src/fs/node-io.ts', "const READ_IO = { ...WRITE_IO, renameSync: (a: string, b: string) => fs.renameSync(a, b) };\n}\n"),
+  pos('node-io-read-io-reads-only', 'src/fs/node-io.ts', "const IO: ReadIo = opts({});\n"),
+  neg('node-io-read-io-reads-only', 'src/fs/node-io.ts', "const READ_IO: ReadIo = opts({\n  openSync: (p: string, _flags: 'r') => fs.openSync(p, 'r'),\n});\n\nconst WRITE_IO: WriteIo = opts({\n  renameSync: (a: string, b: string) => fs.renameSync(a, b),\n});\n"),
+  neg('node-io-read-io-reads-only', 'src/fs/read-gate.ts', 'const READ_IO = { writeSync: (fd) => fs.writeSync(fd) };'),
+
+  pos('process-power-member', 'src/brakes/kill-tree.ts', 'process.kill(pid);'),
+  pos('process-power-member', 'src/runtime/lock.ts', "process['kill'](pid, 'SIGTERM');"),
+  pos('process-power-member', 'src/model/x.ts', 'const { kill } = process;'),
+  pos('process-power-member', 'src/model/x.ts', 'const { pid, kill: k } = globalThis.process;'),
+  pos('process-power-member', 'src/model/x.ts', "Reflect.get(process, 'kill')(pid);"),
+  pos('process-power-member', 'src/model/x.ts', 'process._kill(pid, 15);'),
   // The runtime fence stubs process.kill for src/os/ too, so the scan does not let it through there.
-  pos('ban:process.kill', 'src/os/procguard-client.ts', 'process.kill(helper.pid);'),
-  pos('ban:process.kill', 'src/os/spawn.ts', "const { kill } = process;"),
-  neg('ban:process.kill', 'src/os/spawn.ts', 'child.kill();'),
-  neg('ban:process.kill', 'src/runtime/import-fence.ts', "for (const name of ['kill', '_kill']) lock(p, name, disabled(`process.${name}`));"),
-  neg('ban:process.kill', 'src/brakes/kill-tree.ts', 'await procguard.killTree(plan);'),
+  pos('process-power-member', 'src/os/procguard-client.ts', 'process.kill(helper.pid);'),
+  pos('process-power-member', 'src/os/spawn.ts', "const { kill } = process;"),
+  neg('process-power-member', 'src/runtime/import-fence.ts', "for (const name of ['kill', '_kill']) lock(p, name, disabled(`process.${name}`));"),
+  neg('process-power-member', 'src/brakes/kill-tree.ts', 'await procguard.killTree(plan);'),
   pos('kill-only-in-os', 'src/model/x.ts', 'const p = process; p.kill(pid);'),
+  // import-fence.ts no longer names kill (the process-powers table drives the fence), so it lost its
+  // exemption: a .kill( there is now flagged like any non-os module.
+  pos('kill-only-in-os', 'src/runtime/import-fence.ts', 'child.kill();'),
   pos('kill-only-in-os', 'src/brakes/kill-tree.ts', 'agentChild.kill();'),
   pos('kill-only-in-os', 'scripts/check-real-dsh.ts', 'child.kill();'),
   neg('kill-only-in-os', 'src/os/spawn.ts', 'child.kill();'),
@@ -214,27 +261,6 @@ const CASES: readonly Case[] = [
   neg('kill-only-in-os', 'src/brakes/kill-tree.ts', 'await procguard.killTree(plan);'),
   neg('kill-only-in-os', 'scripts/test-stage.ts', 'agent.kill();'),
 
-  pos('gate-construction-only-in-roots', 'src/sources/claude/roots.ts', 'const gate = new ReadGate({ roots: [], testDirs: [d] });'),
-  pos('gate-construction-only-in-roots', 'src/store/db.ts', 'const fence = new WriteFence({ orchestraHome: "C:\\\\", harnessRoots: [] });'),
-  pos('gate-construction-only-in-roots', 'src/model/x.ts', "import { ReadGate, ReadGateError } from '../fs/read-gate.ts';"),
-  pos('gate-construction-only-in-roots', 'src/model/x.ts', "import * as rg from '../fs/read-gate.ts';\nconst g = new rg.ReadGate(cfg);"),
-  pos('gate-construction-only-in-roots', 'src/model/x.ts', "const { WriteFence } = await import('../fs/write-fence.ts');"),
-  pos('gate-construction-only-in-roots', 'src/model/x.ts', 'class Wide extends WriteFence {}'),
-  pos('gate-construction-only-in-roots', 'src/model/x.ts', 'const g = createReadGate(cfg);'),
-  pos('gate-construction-only-in-roots', 'src/model/x.ts', 'const g = Reflect.construct(ReadGate, [cfg]);'),
-  pos('gate-construction-only-in-roots', 'src/model/x.ts', "import { SpawnGate } from '../os/spawn.ts';\nconst g = new SpawnGate({ systemRoot: sys, rules: ['whoami'], record });"),
-  pos('gate-construction-only-in-roots', 'src/os/toast.ts', "const g = new SpawnGate({ systemRoot: sys, rules: ['powershell-toast'], record });"),
-  pos('gate-construction-only-in-roots', 'src/runtime/integrity.ts', "import * as sp from '../os/spawn.ts';\nconst g = new sp.SpawnGate(cfg);"),
-  pos('gate-construction-only-in-roots', 'src/fs/harness-roots.ts', 'export function other(): void {\n  const gate = new ReadGate({ roots: [] });\n}\n'),
-  pos('gate-construction-only-in-roots', 'src/fs/harness-roots.ts', 'export function launcherRootFs(env: E): RootFs {\n  const fence = new WriteFence(cfg);\n}\n'),
-  neg('gate-construction-only-in-roots', 'src/runtime/working.ts', 'const fence = new WriteFence({ orchestraHome: home, harnessRoots });'),
-  neg('gate-construction-only-in-roots', 'src/main.ts', 'const gate = new ReadGate(cfg);'),
-  neg('gate-construction-only-in-roots', 'src/main.ts', "const gate = new SpawnGate({ systemRoot: sys, rules: ['whoami'], record });"),
-  neg('gate-construction-only-in-roots', 'src/fs/harness-roots.ts', 'export function launcherRootFs(env: E): RootFs {\n  const gate = new ReadGate({ roots, ...opts });\n  return gate;\n}\n'),
-  neg('gate-construction-only-in-roots', 'src/runtime/data-dir.ts', "import type { WriteFence } from '../fs/write-fence.ts';\nexport function prepare(fence: WriteFence): void {}"),
-  neg('gate-construction-only-in-roots', 'src/runtime/integrity.ts', "import type { RunResult, SpawnGate } from '../os/spawn.ts';\nimport { WHOAMI_ARGV } from '../os/spawn.ts';"),
-  neg('gate-construction-only-in-roots', 'src/model/x.ts', "import { ReadGateError, type ReadGate } from '../fs/read-gate.ts';"),
-  neg('gate-construction-only-in-roots', 'scripts/check-real-claude.ts', 'const gate = new ReadGate(productionConfig);'),
 
   pos('working-wiring-only-from-main', 'src/model/x.ts', "import { runWorking } from '../runtime/working.ts';\nawait runWorking(ctx);"),
   pos('working-wiring-only-from-main', 'src/runtime/startup.ts', "const { runWorking } = await import('./working.ts');"),
@@ -249,11 +275,52 @@ const CASES: readonly Case[] = [
   neg('launcher-root-fs-only-in-roots', 'src/runtime/data-dir.ts', "import type { HarnessRoot } from '../fs/harness-roots.ts';"),
   neg('launcher-root-fs-only-in-roots', 'src/runtime/working.ts', "import { rootDenyList } from '../fs/harness-roots.ts';"),
 
-  pos('ban:.constructor', 'src/model/x.ts', 'const G = gate.constructor;'),
-  pos('ban:.constructor', 'src/model/x.ts', "const G = Object.getPrototypeOf(gate)['constructor'];"),
+  pos('minted-import-only-in-boot', 'src/main.ts', "import { makeReadGate } from './fs/node-io.ts';"),
+  pos('minted-import-only-in-boot', 'src/runtime/log.ts', "import * as io from '../fs/node-io.ts';"),
+  pos('minted-import-only-in-boot', 'src/runtime/working.ts', "const { makeSpawnGate } = await import('../os/node-proc.ts');"),
+  pos('minted-import-only-in-boot', 'src/runtime/features.ts', "export { realpath } from '../fs/NODE-IO.ts';"),
+  pos('minted-import-only-in-boot', 'scripts/check-real-claude.ts', "import { makeReadGate } from '../src/fs/node-io.ts';"),
+  neg('minted-import-only-in-boot', 'src/boot.ts', "import { makeReadGate, makeWriteFence, realpath } from './fs/node-io.ts';\nimport { makeSpawnGate } from './os/node-proc.ts';"),
+  neg('minted-import-only-in-boot', 'src/main.ts', "import type { ReadGateSpec } from './fs/node-io.ts';"),
+  neg('minted-import-only-in-boot', 'src/runtime/working.ts', "import { ReadGateError } from '../fs/read-gate.ts';"),
+  neg('minted-import-only-in-boot', 'scripts/test-stage.ts', "import { makeReadGate } from '../src/fs/node-io.ts';"),
+
+  // gate-factory-only-in-roots: the real io is handed out by the factories, so only the composition
+  // roots may name them; in harness-roots.ts only the LauncherFsPorts type and launcherRootFs.
+  pos('gate-factory-only-in-roots', 'src/sources/claude/roots.ts', "const gate = ctx.makeReadGate({ roots: [{ kind: 'claude', path: 'C:\\\\', real: 'C:\\\\' }] });"),
+  pos('gate-factory-only-in-roots', 'src/model/x.ts', 'const g = makeSpawnGate(spec);'),
+  pos('gate-factory-only-in-roots', 'src/model/x.ts', 'const { makeWriteFence } = ports;'),
+  pos('gate-factory-only-in-roots', 'src/fs/harness-roots.ts', 'export function other(env: E, ports: P): void {\n  const g = ports.makeReadGate({ roots: [] });\n}\n'),
+  neg('gate-factory-only-in-roots', 'src/main.ts', "const gate = d.makeSpawnGate({ systemRoot: sys, rules: ['whoami'] });"),
+  neg('gate-factory-only-in-roots', 'src/runtime/working.ts', 'const fence = await ctx.makeWriteFence({ orchestraHome: home, harnessRoots });'),
+  neg('gate-factory-only-in-roots', 'src/fs/harness-roots.ts', 'export function launcherRootFs(env: E, ports: P): RootFs {\n  const gate = ports.makeReadGate({ roots });\n  return gate;\n}\n'),
+  neg('gate-factory-only-in-roots', 'src/fs/harness-roots.ts', 'export type LauncherFsPorts = {\n  makeReadGate(spec: Spec): ReadGate;\n};\n'),
+  neg('gate-factory-only-in-roots', 'src/os/spawn.ts', '// reaches a gate only through makeSpawnGate: a gate built anywhere else'),
+
+  // node-io-append-existing-flag: the flag must open for append without creating (no O_CREAT).
+  pos('node-io-append-existing-flag', 'src/fs/node-io.ts', "const OPEN_FLAGS = bag({ wx: 'wx', ax: 'ax', 'append-existing': 'a' });"),
+  pos('node-io-append-existing-flag', 'src/fs/node-io.ts', "const OPEN_FLAGS = bag({ 'append-existing': fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT });"),
+  neg('node-io-append-existing-flag', 'src/fs/node-io.ts', "const OPEN_FLAGS = bag({ wx: 'wx', ax: 'ax', 'append-existing': fs.constants.O_WRONLY | fs.constants.O_APPEND });"),
+
+  // ban:.constructor: an instance's .constructor reaches its class (process.stdout -> net.Socket -> the network).
+  pos('ban:.constructor', 'src/model/x.ts', 'const S = process.stdout.constructor;'),
   pos('ban:.constructor', 'src/model/x.ts', "const G = Reflect.get(gate, 'constructor');"),
-  pos('ban:.constructor', 'src/model/x.ts', 'const G = Reflect.get(Object.getPrototypeOf(gate), `constructor`);'),
-  neg('ban:.constructor', 'src/model/x.ts', 'constructor(cfg: Config) { this.cfg = cfg; }'),
+  pos('ban:.constructor', 'src/model/x.ts', 'const S = Object.getPrototypeOf(process.stderr).constructor;'),
+  neg('ban:.constructor', 'src/fs/read-gate.ts', 'constructor(config: ReadGateConfig) { this.cfg = config; }'),
+  neg('ban:.constructor', 'src/model/x.ts', 'const label = describeConstructorKind(x);'),
+
+  // The paths are chosen so that none of these strings resolves to src/ from this file, which the
+  // rule scans too; the helper's own import is spelled in two pieces for the same reason.
+  pos('in-process-start-only-in-helper', 'test/x.test.ts', "import { start } from '../src/main.ts';"),
+  pos('in-process-start-only-in-helper', 'test/x.test.ts', "import { defaultStartDeps, start as mainStart } from '../src/main.ts';"),
+  pos('in-process-start-only-in-helper', 'test/x.test.ts', "import * as main from '../src/main.ts';"),
+  pos('in-process-start-only-in-helper', 'test/x.test.ts', "const { runWorking } = await import('../src/runtime/working.ts');"),
+  pos('in-process-start-only-in-helper', 'test/a/b/x.test.ts', "export { runWorking } from '../../../src/runtime/working.ts';"),
+  neg('in-process-start-only-in-helper', 'test/x.test.ts', "import type { StartDeps, StartOutcome } from '../src/main.ts';"),
+  neg('in-process-start-only-in-helper', 'test/x.test.ts', "import { defaultStartDeps } from '../src/main.ts';"),
+  neg('in-process-start-only-in-helper', 'test/x.test.ts', "import { startInProcess } from './helpers/start.ts';"),
+  neg('in-process-start-only-in-helper', 'test/helpers/start.ts', "import { start } from '../../src/" + "main.ts';"),
+  neg('in-process-start-only-in-helper', 'src/model/x.ts', "import { start } from '../main.ts';"),
 ];
 
 for (const c of CASES) {
@@ -272,6 +339,106 @@ test('every rule has at least one positive and one negative example', () => {
   const ids = new Set(RULES.map((r) => r.id));
   for (const c of CASES) assert.ok(ids.has(c.rule), `example for unknown rule ${c.rule}`);
   assert.equal(ids.size, RULES.length, 'rule ids are unique');
+});
+
+test('process-power-member flags every lock and mint key of process in each member form, and none as a method of another object', () => {
+  const fenced = PROCESS_POWERS.filter((e) => e.class !== 'keep');
+  assert.ok(fenced.length >= 17, 'the table locks the keys the brief lists at least');
+  const hit = (text: string) => scan('src/model/x.ts', text).filter((h) => h.rule === 'process-power-member').length > 0;
+  for (const { key } of fenced) {
+    for (const text of [`process.${key}(x);`, `process['${key}'](x);`, `const f = process?.${key};`, `const { ${key} } = process;`, `Reflect.get(process, '${key}');`]) {
+      assert.ok(hit(text), `not flagged: ${text}`);
+    }
+    for (const text of [`thing.${key}(x);`, `const ${key}ed = 1;`, `const x = { ${key}: 1 };`]) assert.ok(!hit(text), `flagged: ${text}`);
+  }
+  for (const { key } of PROCESS_POWERS.filter((e) => e.class === 'keep' && !e.key.startsWith('Symbol('))) assert.ok(!hit(`process.${key};`), `kept key flagged: ${key}`);
+});
+
+test('global-power-name flags every lock and mint global by its bare name, except where a mint entry is minted and held', () => {
+  const named = GLOBAL_POWERS.filter((e) => e.class !== 'keep' && !e.key.startsWith('Symbol('));
+  assert.deepEqual(named.map((e) => e.key).sort(), ['EventSource', 'WebSocket', 'fetch', 'localStorage', 'sessionStorage']);
+  const hit = (file: string, text: string) => scan(file, text).filter((h) => h.rule === 'global-power-name').length > 0;
+  for (const e of named) {
+    assert.ok(hit('src/model/x.ts', `const g = ${e.key};`), e.key);
+    assert.ok(!hit('src/model/x.ts', `const g = my${e.key};`), e.key);
+    assert.ok(!hit('src/runtime/process-powers.ts', `const g = ${e.key};`), `${e.key} in the table`);
+    if (e.class === 'mint') for (const f of [e.mintedBy, ...e.heldBy]) assert.ok(!hit(f, `const g = ${e.key};`), `${e.key} in ${f}`);
+  }
+});
+
+// Rules dropped (or narrowed) in step 2c because another defense stops their bad sample (zen note 7.3,
+// drop-shadow-rules). For every module that can import the builtin a sample needs (BUILTIN_ROWS), and
+// for code modules without a row, the sample must still be flagged by some rule; the rules that flag
+// it are the covering defense. Browser code (ui/) has no node builtins at all.
+type Shadow = { dropped: string; builtin: string; sample: string };
+const fsSample = (call: string) => `import * as fs from 'node:fs';\n${call}`;
+const SHADOWS: readonly Shadow[] = [
+  { dropped: 'ban:net.connect', builtin: 'node:net', sample: "import * as net from 'node:net';\nnet.connect(pipe);" },
+  { dropped: 'ban:net.connect', builtin: 'node:net', sample: "import { connect } from 'node:net';\nconnect(pipe);" },
+  { dropped: 'ban:createConnection', builtin: 'node:net', sample: "import { createConnection } from 'node:net';\ncreateConnection({ path: pipe });" },
+  { dropped: 'ban:http.request', builtin: 'node:http', sample: "import * as http from 'node:http';\nhttp.request(url);" },
+  { dropped: 'ban:http.request', builtin: 'node:http', sample: "import { request } from 'node:http';\nrequest(url);" },
+  { dropped: 'ban:http.request', builtin: 'node:https', sample: "import * as https from 'node:https';\nhttps.request(url);" },
+  { dropped: 'ban:http.get', builtin: 'node:http', sample: "import { get } from 'node:http';\nget(url, cb);" },
+  { dropped: 'ban:node:https', builtin: 'node:https', sample: "import * as https from 'node:https';" },
+  { dropped: 'ban:node:https', builtin: 'node:https', sample: "const h = require('https');" },
+  { dropped: 'ban:copyFile', builtin: 'node:fs', sample: fsSample('fs.copyFileSync(a, b);') },
+  { dropped: 'ban:cp(', builtin: 'node:fs', sample: fsSample('fs.cpSync(a, b);') },
+  { dropped: 'ban:createWriteStream', builtin: 'node:fs', sample: fsSample('fs.createWriteStream(p);') },
+  { dropped: 'ban:truncate', builtin: 'node:fs', sample: fsSample('fs.truncateSync(p, 0);') },
+  { dropped: 'ban:utimes', builtin: 'node:fs', sample: fsSample('fs.utimesSync(p, a, m);') },
+  { dropped: 'ban:symlink', builtin: 'node:fs', sample: fsSample("fs.symlinkSync(a, b, 'junction');") },
+  { dropped: 'ban:link(', builtin: 'node:fs', sample: fsSample('fs.linkSync(a, b);') },
+  { dropped: 'ban:eval: true outside the worker modules', builtin: 'node:worker_threads', sample: "import { Worker } from 'node:worker_threads';\nnew Worker(src, { eval: true });" },
+];
+const ROW_MODULES = [...new Set(BUILTIN_ROWS.flatMap((r) => r.modules))];
+const NO_ROW_MODULES = ['src/model/x.ts', 'shared/x.js', 'scripts/check-real-claude.ts'];
+
+/** For each shadow and module: the rules that flag the sample there ('' when none does). */
+function coverage(rules: readonly Rule[]): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const s of SHADOWS) {
+    for (const m of [...ROW_MODULES, ...NO_ROW_MODULES]) {
+      out.set(`${s.dropped} | ${s.sample.split('\n').at(-1)} | ${m}`, [...new Set(scan(m, s.sample, rules).map((h) => h.rule))].sort().join(','));
+    }
+  }
+  return out;
+}
+const gaps = (c: Map<string, string>) => [...c].filter(([, by]) => by === '').map(([k]) => k);
+
+test('rules dropped or narrowed in step 2c: each bad sample is still flagged in every module that could act on it, derived from BUILTIN_ROWS', () => {
+  const c = coverage(RULES);
+  assert.deepEqual(gaps(c), []);
+  // The covering defense: only-names for the two modules that may import node:net or node:http, the
+  // fs-name table where node:fs can be imported, the narrowed eval rule in the worker modules, and the
+  // builtin-policy rule (the import fence's static twin) everywhere else.
+  const by = (dropped: string, sampleEnd: string, m: string) => c.get(`${dropped} | ${sampleEnd} | ${m}`);
+  assert.equal(by('ban:net.connect', 'net.connect(pipe);', 'src/runtime/lock.ts'), 'builtin-only-names');
+  assert.equal(by('ban:net.connect', 'connect(pipe);', 'src/server/http.ts'), 'builtin-only-names');
+  assert.equal(by('ban:http.request', 'request(url);', 'src/server/http.ts'), 'builtin-only-names');
+  assert.equal(by('ban:http.request', 'https.request(url);', 'src/server/http.ts'), 'builtin-policy');
+  assert.equal(by('ban:net.connect', 'net.connect(pipe);', 'src/model/x.ts'), 'builtin-policy');
+  assert.equal(by('ban:node:https', "const h = require('https');", 'scripts/check-real-claude.ts'), 'builtin-policy');
+  assert.ok(by('ban:copyFile', 'fs.copyFileSync(a, b);', 'src/fs/node-io.ts')!.split(',').includes('fs-name-bans'));
+  // main.ts has a node:os row but not node:fs, so a node:fs call there is caught by the import of node:fs.
+  assert.equal(by('ban:copyFile', 'fs.copyFileSync(a, b);', 'src/main.ts'), 'builtin-policy');
+  assert.equal(by('ban:eval: true outside the worker modules', 'new Worker(src, { eval: true });', 'src/runtime/workers.ts'), 'ban:eval: true');
+  assert.equal(by('ban:eval: true outside the worker modules', 'new Worker(src, { eval: true });', 'src/model/x.ts'), 'builtin-policy');
+});
+
+test('calibration: without the narrowed eval rule the derivation reports exactly the modules allowed node:worker_threads', () => {
+  const workerModules = BUILTIN_ROWS.filter((r) => r.allow.includes('node:worker_threads')).flatMap((r) => r.modules).sort();
+  assert.deepEqual(workerModules, ['src/runtime/workers.ts', 'src/workers/bootstrap.ts']);
+  const open = gaps(coverage(RULES.filter((r) => r.id !== 'ban:eval: true')));
+  assert.deepEqual(open, workerModules.map((m) => `ban:eval: true outside the worker modules | new Worker(src, { eval: true }); | ${m}`));
+  // The bad sample is the real shape of workers.ts's one Worker call with eval switched on.
+  const workers = fs.readFileSync(path.join(repo, 'src/runtime/workers.ts'), 'utf8');
+  assert.match(workers, /return new Worker\(BOOTSTRAP_URL, \{/);
+  const bad = workers.replace('return new Worker(BOOTSTRAP_URL, {', 'return new Worker(BOOTSTRAP_URL, {\n    eval: true,');
+  assert.deepEqual(scan('src/runtime/workers.ts', bad).map((h) => h.rule), ['ban:eval: true']);
+  // Dropping only-names, or the builtin-policy rule, opens the modules each one covers.
+  assert.ok(gaps(coverage(RULES.filter((r) => r.id !== 'builtin-only-names'))).some((g) => g.endsWith('| src/runtime/lock.ts')));
+  assert.ok(gaps(coverage(RULES.filter((r) => r.id !== 'builtin-policy'))).some((g) => g.endsWith('| src/model/x.ts')));
 });
 
 test('findImports reads every import form and keeps type-only imports apart', () => {
@@ -308,6 +475,7 @@ function walk(dir: string, out: string[] = []): string[] {
 test('the repository passes every rule', () => {
   const files = SCANNED_DIRS.flatMap((d) => walk(path.join(repo, d)));
   assert.ok(files.some((f) => f.endsWith('write-fence.ts')), 'the scan saw src/');
+  assert.ok(files.some((f) => f.endsWith('startup-modes.test.ts')), 'the scan saw test/');
   const hits = files.flatMap((f) => {
     const rel = path.relative(repo, f).split(path.sep).join('/');
     return EXEMPT_SCRIPTS.includes(rel) ? [] : scan(rel, fs.readFileSync(f, 'utf8'));

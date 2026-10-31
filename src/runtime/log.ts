@@ -3,6 +3,8 @@
 // through the write fence. Every field is scrubbed on the way in (plan §6 invariant 14): secrets by
 // key name, `token=` values in any string, control characters, and strings over 2 KB.
 
+import { ownFields } from './own.ts';
+
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
 /** The human-facing console, apart from the log: status lines on out, refusals on err. */
@@ -82,7 +84,9 @@ export class Log {
   #dropped = 0;
   #sinkFailures = 0;
 
-  constructor(cfg: LogConfig = {}) {
+  constructor(config: LogConfig = {}) {
+    // Own fields only: a sink nobody set is never one some module put on Object.prototype.
+    const cfg = ownFields(config, ['now', 'capacity', 'sink'] as const);
     this.#now = cfg.now ?? Date.now;
     this.#capacity = Math.max(1, cfg.capacity ?? DEFAULT_CAPACITY);
     this.#sink = cfg.sink ?? null;

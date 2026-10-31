@@ -5,23 +5,22 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { HarnessRoot } from '../../src/fs/harness-roots.ts';
 import type { TestProfile } from '../../src/runtime/test-profile.ts';
-import { ReadGate } from '../../src/fs/read-gate.ts';
+import { makeReadGate, realpath } from '../../src/fs/node-io.ts';
 import { resolveEnv } from '../../src/runtime/env.ts';
 import {
   FAKE_AGENT_MARKER, TestRoots, checkBrakeRoot, decidePairingOutput, describeRefusal, isFakeAgent, parseProfileArgs, testProfileRoots, testReadDirs, windowsTmpdir,
 } from '../../src/runtime/test-profile.ts';
-import { start } from '../../src/main.ts';
 import { EXIT } from '../../src/runtime/exit.ts';
 import { detectFeatures } from '../../src/runtime/features.ts';
 import { put, shortNameOf, tmpDir, rmTree, withTmp } from '../helpers/tmp.ts';
 import { whoamiSpy, whoamiEnglish } from '../helpers/fake-spawn.ts';
 import { runRealProfileUnderTestRunner } from '../helpers/orchestrad.ts';
-import { FENCE_OK, captureConsole, minimalEnv, IN_PROCESS_STOP } from '../helpers/start.ts';
+import { FENCE_OK, captureConsole, minimalEnv, spyGate, startInProcess, testPorts } from '../helpers/start.ts';
 
 const env = process.env;
 /** As start() calls it: this process's own environment (it carries NODE_TEST_CONTEXT) unless `processEnv` is given. */
 const parse = (argv: string[], e: NodeJS.ProcessEnv | Record<string, string | undefined> = env, processEnv: Record<string, string | undefined> = process.env) =>
-  parseProfileArgs(argv, { env: e, processEnv });
+  parseProfileArgs(argv, { env: e, processEnv, realpath });
 const reason = (argv: string[], e?: Record<string, string | undefined>, processEnv?: Record<string, string | undefined>) => {
   const r = parse(argv, e, processEnv);
   return r.ok ? `ok:${r.profile.kind}` : r.refusal.reason;
@@ -76,13 +75,13 @@ test('in-process real profile under the test runner (fake home): refused before 
   const realpaths: string[] = [];
   const spy = whoamiSpy(whoamiEnglish('Medium Mandatory Level'));
   const con = captureConsole();
-  const o = await start(detectFeatures(), FENCE_OK, { fetch: globalThis.fetch }, {
-    argv: [], home, env: minimalEnv({ NODE_TEST_CONTEXT: 'child-v8' }), console: con.port, spawnBackend: spy.backend,
+  const o = await startInProcess(detectFeatures(), FENCE_OK, testPorts(), {
+    argv: [], home, env: minimalEnv({ NODE_TEST_CONTEXT: 'child-v8' }), console: con.port, makeSpawnGate: spyGate(spy),
     realpath: (p) => {
       realpaths.push(p);
       return fs.realpathSync.native(p);
     },
-    tty: () => ({ stdin: false, stdout: false }), stopping: IN_PROCESS_STOP,
+    tty: () => ({ stdin: false, stdout: false }),
   });
   if (o.mode === 'working') t.after(() => o.stop());
   assert.equal(o.mode, 'refused', con.all().join('\n'));
@@ -104,13 +103,13 @@ test('in-process real profile with an environment that lacks the marker: refused
   const realpaths: string[] = [];
   const spy = whoamiSpy(whoamiEnglish('Medium Mandatory Level'));
   const con = captureConsole();
-  const o = await start(detectFeatures(), FENCE_OK, { fetch: globalThis.fetch }, {
-    argv: [], home, env: minimalEnv(), console: con.port, spawnBackend: spy.backend,
+  const o = await startInProcess(detectFeatures(), FENCE_OK, testPorts(), {
+    argv: [], home, env: minimalEnv(), console: con.port, makeSpawnGate: spyGate(spy),
     realpath: (p) => {
       realpaths.push(p);
       return fs.realpathSync.native(p);
     },
-    tty: () => ({ stdin: false, stdout: false }), stopping: IN_PROCESS_STOP,
+    tty: () => ({ stdin: false, stdout: false }),
   });
   if (o.mode === 'working') t.after(() => o.stop());
   assert.equal(o.mode, 'refused', con.all().join('\n'));
@@ -126,7 +125,7 @@ test('the in-test real profile opt-in holds only for a fake home inside an orche
   fs.mkdirSync(home);
   const other = withTmp(t);
   const optIn = (fakeHome: string, homeGiven: string, e: Record<string, string | undefined> = minimalEnv()) => {
-    const r = parseProfileArgs([], { env: e, processEnv: process.env, home: homeGiven, inTestRealProfile: { fakeHome } });
+    const r = parseProfileArgs([], { env: e, processEnv: process.env, realpath, home: homeGiven, inTestRealProfile: { fakeHome } });
     return r.ok ? `ok:${r.profile.kind}` : r.refusal.reason === 'in-test-real-profile-refused' ? r.refusal.detail : r.refusal.reason;
   };
   assert.equal(optIn(home, home), 'ok:real');
@@ -140,7 +139,7 @@ test('the in-test real profile opt-in holds only for a fake home inside an orche
   assert.equal(optIn(home, home, minimalEnv({ ORCHESTRA_HOME: path.join(other, 'orch') })), 'orchestra-home-outside');
   assert.equal(optIn(home, home, minimalEnv({ ORCHESTRA_HOME: base })), 'orchestra-home-outside');
   assert.equal(optIn(path.join(base, 'missing'), path.join(base, 'missing')), 'unresolvable');
-  const r = parseProfileArgs([], { env: minimalEnv(), processEnv: process.env, home: base, inTestRealProfile: { fakeHome: base } });
+  const r = parseProfileArgs([], { env: minimalEnv(), processEnv: process.env, realpath, home: base, inTestRealProfile: { fakeHome: base } });
   assert.match(r.ok ? '' : describeRefusal(r.refusal), /in-test real profile was refused \(outside-test-dir\)/);
 });
 
@@ -230,13 +229,13 @@ test('in the test profile the read gate refuses every real-profile root and read
   // What the real profile would watch, derived from a stand-in home outside the test dir.
   const realLike = resolveEnv({ home: path.join(elsewhere, 'home'), env: {} });
   const realRoots: HarnessRoot[] = realLike.typedHarnessRoots.map((x) => ({ kind: x.kind, path: x.path, real: x.path }));
-  const gate = new ReadGate({ roots: [...realRoots, ...testProfileRoots(p)], orchestraHome: p.orchestraHome, testDirs: testReadDirs(p) });
+  const gate = makeReadGate({ roots: [...realRoots, ...testProfileRoots(p, realpath)], orchestraHome: p.orchestraHome, testDirs: testReadDirs(p) });
   for (const root of realRoots) {
     const d = gate.decide(path.join(root.path, 'projects', 'x', 'a.jsonl'), 'read');
     assert.equal(!d.allow && d.reason, 'test-mode-outside', root.path);
   }
   assert.equal(gate.decide(synthetic, 'read').allow, true);
-  assert.deepEqual(testProfileRoots(p).map((x) => [x.kind, x.path]), [
+  assert.deepEqual(testProfileRoots(p, realpath).map((x) => [x.kind, x.path]), [
     ['claude', path.join(p.rootsDir, 'claude')], ['dsh', path.join(p.rootsDir, 'dsh')], ['codex', path.join(p.rootsDir, 'codex')],
   ]);
 });
@@ -278,9 +277,9 @@ test('a non-TTY real profile (fake home) prints no pairing code and logs why pai
   const home = path.join(base, 'home');
   fs.mkdirSync(home);
   const con = captureConsole();
-  const o = await start(detectFeatures(), FENCE_OK, { fetch: globalThis.fetch }, {
-    argv: [], home, env: minimalEnv(), console: con.port, spawnBackend: whoamiSpy(whoamiEnglish('Medium Mandatory Level')).backend,
-    tty: () => ({ stdin: false, stdout: false }), stopping: IN_PROCESS_STOP, inTestRealProfile: { fakeHome: home },
+  const o = await startInProcess(detectFeatures(), FENCE_OK, testPorts(), {
+    argv: [], home, env: minimalEnv(), console: con.port, makeSpawnGate: spyGate(whoamiSpy(whoamiEnglish('Medium Mandatory Level'))),
+    tty: () => ({ stdin: false, stdout: false }), inTestRealProfile: { fakeHome: home },
   });
   assert.equal(o.mode, 'working', JSON.stringify(con.all()));
   if (o.mode !== 'working') return;

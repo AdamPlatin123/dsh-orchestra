@@ -9,7 +9,6 @@ import * as path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { start } from '../../src/main.ts';
 import { detectFeatures } from '../../src/runtime/features.ts';
 import { acquireLock, encodeDaemonInfo, heldMessage, lockPipeName, parseDaemonInfo } from '../../src/runtime/lock.ts';
 import type { DaemonInfo } from '../../src/runtime/lock.ts';
@@ -17,7 +16,7 @@ import { EXIT } from '../../src/runtime/startup.ts';
 import { whoamiEnglish, whoamiSpy } from '../helpers/fake-spawn.ts';
 import { BOOT, startOrchestrad, waitForLine } from '../helpers/orchestrad.ts';
 import type { Exit, Orchestrad } from '../helpers/orchestrad.ts';
-import { FENCE_OK, captureConsole, minimalEnv, IN_PROCESS_STOP } from '../helpers/start.ts';
+import { FENCE_OK, captureConsole, minimalEnv, spyGate, startInProcess, testPorts } from '../helpers/start.ts';
 import { treeDigest, withTmp } from '../helpers/tmp.ts';
 
 const HOLDER = fileURLToPath(new URL('../helpers/lock-holder.ts', import.meta.url));
@@ -234,13 +233,12 @@ test('one start writes daemon.json once, arms no timer, and nothing rewrites it 
   const writes = recordDaemonJsonWrites(t);
   const timersBefore = timeouts();
   const con = captureConsole();
-  const o = await start(detectFeatures(), FENCE_OK, { fetch: globalThis.fetch }, {
+  const o = await startInProcess(detectFeatures(), FENCE_OK, testPorts(), {
     argv: ['--test-profile', '--test-dir', dir],
     home: path.join(dir, 'user-home'),
     env: minimalEnv(),
     console: con.port,
-    spawnBackend: whoamiSpy(whoamiEnglish('Medium Mandatory Level')).backend,
-    stopping: IN_PROCESS_STOP,
+    makeSpawnGate: spyGate(whoamiSpy(whoamiEnglish('Medium Mandatory Level'))),
   });
   assert.equal(o.mode, 'working', con.all().join('\n'));
   if (o.mode !== 'working') return;

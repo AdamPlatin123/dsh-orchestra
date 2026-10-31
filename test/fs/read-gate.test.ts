@@ -7,6 +7,7 @@ import { resolveEnv } from '../../src/runtime/env.ts';
 import type { ResolvedEnv } from '../../src/runtime/env.ts';
 import { computeHarnessRoots, launcherRootFs } from '../../src/fs/harness-roots.ts';
 import { ReadGate, ReadGateError } from '../../src/fs/read-gate.ts';
+import { makeReadGate, realpath } from '../../src/fs/node-io.ts';
 import { realIo } from '../helpers/read-io.ts';
 import type { Milestone, ReadDecision, ReadGateConfig, ReadIo } from '../../src/fs/read-gate.ts';
 import { junction, probeAds, probeJunction, put, shortNameOf, withTmp } from '../helpers/tmp.ts';
@@ -16,7 +17,8 @@ const U2 = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
 
 type Fixture = { base: string; home: string; claude: string; dsh: string; codex: string; gate: ReadGate; make(cfg?: Partial<ReadGateConfig>): ReadGate };
 
-const rootsOf = (env: ResolvedEnv) => computeHarnessRoots(env, launcherRootFs(env));
+const fsPorts = { makeReadGate, realpath };
+const rootsOf = (env: ResolvedEnv) => computeHarnessRoots(env, launcherRootFs(env, fsPorts));
 
 /** Hard links need a volume that has them; the caller skips with the reason otherwise. */
 function tryLink(existing: string, alias: string): string | null {
@@ -55,7 +57,8 @@ function fixture(t: TestContext, milestone: Milestone = 'M0'): Fixture {
   const env = resolveEnv({ home, env: {}, extraHarnessRoots: [path.join(base, 'dsbot-desktop')] });
   put(path.join(base, 'dsbot-desktop', 'state.json'));
   const roots = rootsOf(env);
-  const make = (cfg: Partial<ReadGateConfig> = {}) => new ReadGate({ roots, milestone, ...cfg });
+  // The real io unless a test brings its own to count or fault calls.
+  const make = (cfg: Partial<ReadGateConfig> = {}) => (cfg.io === undefined ? makeReadGate({ roots, milestone, ...cfg }) : new ReadGate({ roots, milestone, ...cfg, io: cfg.io }));
   return { base, home, claude, dsh, codex, gate: make(), make };
 }
 
@@ -361,7 +364,7 @@ test('test mode: a junction from the test dir to elsewhere is refused after cano
   fs.mkdirSync(path.join(testDir, 'roots'), { recursive: true });
   junction(base, path.join(testDir, 'roots', 'claude'), path.join(base, 'real'));
   const root = path.join(testDir, 'roots', 'claude');
-  const gate = new ReadGate({ roots: [{ kind: 'claude', path: root, real: root }], testDirs: [testDir] });
+  const gate = makeReadGate({ roots: [{ kind: 'claude', path: root, real: root }], testDirs: [testDir] });
   assert.equal(why(gate.decide(path.join(root, 'sessions', '5.json'), 'read')), 'test-mode-outside');
 });
 
@@ -372,5 +375,5 @@ test('decisions are deterministic and bad paths are typed', (t) => {
   assert.equal(why(gate.decide('relative\\x', 'read')), 'bad-path:not-absolute');
   assert.equal(why(gate.decide(`\\\\?\\${file}`, 'read')), 'bad-path:device-namespace');
   assert.equal(why(gate.decide(`${file}.`, 'read')), 'bad-path:trailing-dot-or-space');
-  assert.throws(() => new ReadGate({ roots: [], testDirs: [] }), /test mode needs at least one test dir/);
+  assert.throws(() => makeReadGate({ roots: [], testDirs: [] }), /test mode needs at least one test dir/);
 });

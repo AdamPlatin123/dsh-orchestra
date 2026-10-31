@@ -8,6 +8,13 @@ export type BuiltinRow = {
   allow: readonly string[];
   /** Named imports a module may take from a builtin it is allowed (checked by the static scan). */
   only?: Readonly<Record<string, readonly string[]>>;
+  /**
+   * Minted: boot.ts imports the module before the import fence goes in and hands on what it exports
+   * (BootPorts); after that no module can resolve it (import-fence.ts, minted-before-fence), and the
+   * static scan lets only boot.ts import it. The builtin is then reachable only through what boot
+   * handed on. Step 3 can mint the node:sqlite opener the same way by setting this on its row.
+   */
+  minted?: true;
 };
 
 export const DEFAULT_BUILTINS: readonly string[] = [
@@ -19,9 +26,8 @@ export const FORBIDDEN_BUILTINS: readonly string[] = [
 ];
 
 export const BUILTIN_ROWS: readonly BuiltinRow[] = [
-  { modules: ['src/fs/*'], allow: ['node:fs', 'node:fs/promises'] },
-  { modules: ['src/fs/write-fence.ts'], allow: ['node:os'], only: { 'node:os': ['tmpdir'] } },
-  { modules: ['src/os/spawn.ts'], allow: ['node:child_process'] },
+  { modules: ['src/fs/node-io.ts'], allow: ['node:fs'], minted: true },
+  { modules: ['src/os/node-proc.ts'], allow: ['node:child_process'], minted: true },
   { modules: ['src/store/db.ts'], allow: ['node:sqlite'] },
   { modules: ['src/runtime/lock.ts'], allow: ['node:net'], only: { 'node:net': ['createServer'] } },
   { modules: ['src/server/http.ts'], allow: ['node:http', 'node:net'], only: { 'node:http': ['createServer'], 'node:net': ['createServer'] } },
@@ -71,6 +77,14 @@ export function decideBuiltin(module: string | null, specifier: string): Builtin
   if (isDefaultBuiltin(id)) return { allow: true, builtin: id, module };
   if (rowsFor(module).some((r) => r.allow.includes(id))) return { allow: true, builtin: id, module };
   return { allow: false, builtin: id, module, reason: 'not-allowed-for-module' };
+}
+
+/** Modules boot.ts mints before the fence (rows with `minted`), as repo-relative keys. */
+export const MINTED_MODULES: readonly string[] = BUILTIN_ROWS.filter((r) => r.minted === true).flatMap((r) => r.modules);
+
+/** Is `module` (a repo-relative key, any case) one that boot mints before the fence? */
+export function isMinted(module: string | null): boolean {
+  return module !== null && MINTED_MODULES.includes(module.toLowerCase());
 }
 
 /** Named-import restriction for (module, builtin), if any. */

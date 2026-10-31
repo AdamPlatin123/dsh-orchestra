@@ -1,8 +1,12 @@
 import { homedir } from 'node:os';
 import type { BootPorts } from './boot.ts';
 import type { HarnessRoot } from './fs/harness-roots.ts';
+import type { ReadGateSpec, WriteFenceSpec } from './fs/node-io.ts';
 import type { RealpathFn } from './fs/paths.ts';
-import type { SpawnBackend } from './os/spawn.ts';
+import type { ReadGate } from './fs/read-gate.ts';
+import type { WriteFence } from './fs/write-fence.ts';
+import type { SpawnGateSpec } from './os/node-proc.ts';
+import type { SpawnGate } from './os/spawn.ts';
 import type { DataDirCheck } from './runtime/data-dir.ts';
 import type { Features } from './runtime/features.ts';
 import type { FenceStatus } from './runtime/import-fence.ts';
@@ -12,12 +16,12 @@ import type { StartupPlan } from './runtime/startup.ts';
 import type { InTestRealProfile, Profile, ProfileRefusal } from './runtime/test-profile.ts';
 import type { StopPort, WorkingOutcome } from './runtime/working.ts';
 import { computeHarnessRoots, launcherRootFs } from './fs/harness-roots.ts';
-import { nativeRealpath } from './fs/paths.ts';
-import { PidLog, SpawnGate, resolveSystemRoot } from './os/spawn.ts';
+import { PidLog, resolveSystemRoot } from './os/spawn.ts';
 import { checkDataDir } from './runtime/data-dir.ts';
 import { resolveEnv } from './runtime/env.ts';
 import { describeIntegrity, probeIntegrity } from './runtime/integrity.ts';
 import { Log } from './runtime/log.ts';
+import { envGet, ownFields } from './runtime/own.ts';
 import { EXIT, describeNote, planExit, planMessage, planStartup } from './runtime/startup.ts';
 import { describeRefusal, parseProfileArgs, testProfileRoots } from './runtime/test-profile.ts';
 
@@ -26,7 +30,8 @@ import { describeRefusal, parseProfileArgs, testProfileRoots } from './runtime/t
 // missing features: exit before reading anything) -> data dir check -> planStartup -> (working only)
 // lock, data dir, daemon.json. Everything this module imports statically only reads, or spawns
 // whoami through the gate; the working wiring is imported once the plan says working (plan §6
-// invariant 10).
+// invariant 10). The file system and child processes reach this module only as the gate factories
+// and the realpath port boot minted (BootPorts); main.ts and working.ts are their only holders.
 
 export type StartDeps = {
   argv: readonly string[];
@@ -39,8 +44,12 @@ export type StartDeps = {
   now(): number;
   /** Signals and the end of the process; tests inject one that releases the lock instead of exiting. */
   stopping: StopPort;
+  /** From BootPorts (src/fs/node-io.ts); tests may count or fake it. */
   realpath: RealpathFn;
-  spawnBackend?: SpawnBackend;
+  /** The gate factories boot minted (BootPorts); a test may hand its own, around a spy backend say. */
+  makeReadGate(spec: ReadGateSpec): ReadGate;
+  makeWriteFence(spec: WriteFenceSpec): Promise<WriteFence>;
+  makeSpawnGate(spec: SpawnGateSpec): SpawnGate;
   /**
    * The only way a real profile runs under the test runner: in-process tests that pin `home` to a
    * fake home inside an orchestra-test-* dir in the temp dir (checked by parseProfileArgs).
@@ -79,7 +88,17 @@ function processStopping(): StopPort {
   };
 }
 
-export function defaultStartDeps(): StartDeps {
+// The ports main.ts uses; the network port waits for step 15, which hands it to src/net/dsh-connect.ts.
+const PORT_KEYS = ['realpath', 'makeReadGate', 'makeWriteFence', 'makeSpawnGate'] as const;
+
+/** BootPorts as own properties only, each one required: a port the caller left out is never looked up on Object.prototype. */
+function ownPorts(given: BootPorts): Pick<BootPorts, (typeof PORT_KEYS)[number]> {
+  const p = ownFields(given, PORT_KEYS);
+  for (const k of PORT_KEYS) if (typeof p[k] !== 'function') throw new Error(`start: BootPorts.${k} is missing`);
+  return Object.freeze(p) as Pick<BootPorts, (typeof PORT_KEYS)[number]>;
+}
+
+export function defaultStartDeps(ports: Pick<BootPorts, (typeof PORT_KEYS)[number]>): StartDeps {
   return {
     argv: process.argv.slice(2),
     env: process.env,
@@ -96,7 +115,10 @@ export function defaultStartDeps(): StartDeps {
     },
     now: Date.now,
     stopping: processStopping(),
-    realpath: nativeRealpath,
+    realpath: ports.realpath,
+    makeReadGate: ports.makeReadGate,
+    makeWriteFence: ports.makeWriteFence,
+    makeSpawnGate: ports.makeSpawnGate,
   };
 }
 
@@ -108,7 +130,7 @@ async function measureIntegrity(d: StartDeps, pidLog: PidLog): Promise<Integrity
   const sys = resolveSystemRoot(d.env, d.realpath);
   if (!sys.ok) return { level: 'unknown', reason: 'system-root-unavailable', detail: sys.reason };
   // Before the plan exists the gate allows whoami and nothing else.
-  const gate = new SpawnGate({ systemRoot: sys, rules: ['whoami'], backend: d.spawnBackend, record: (e) => pidLog.record(e), realpath: d.realpath, now: d.now });
+  const gate = d.makeSpawnGate({ systemRoot: sys, rules: ['whoami'], record: (e) => pidLog.record(e), realpath: d.realpath, now: d.now });
   return probeIntegrity(gate, sys.path);
 }
 
@@ -121,12 +143,12 @@ function locate(profile: Profile, d: StartDeps, log: Log): Located {
   try {
     if (profile.kind === 'test') {
       home = profile.orchestraHome;
-      if (d.env.ORCHESTRA_HOME !== undefined) log.info('env-ignored', { name: 'ORCHESTRA_HOME', why: 'test profile' });
+      if (envGet(d.env, 'ORCHESTRA_HOME') !== undefined) log.info('env-ignored', { name: 'ORCHESTRA_HOME', why: 'test profile' });
       roots = testProfileRoots(profile, d.realpath);
     } else {
       const env = resolveEnv({ home: d.home, env: d.env });
       home = env.orchestraHome;
-      roots = computeHarnessRoots(env, launcherRootFs(env));
+      roots = computeHarnessRoots(env, launcherRootFs(env, { makeReadGate: d.makeReadGate, realpath: d.realpath }));
     }
   } catch (e) {
     const fallbackHome = profile.kind === 'test' ? profile.orchestraHome : '';
@@ -136,9 +158,11 @@ function locate(profile: Profile, d: StartDeps, log: Log): Located {
   return { home, roots, dataDir: checkDataDir({ orchestraHome: home, userHome: d.home, roots, realpath: d.realpath, ...testDir }) };
 }
 
-export async function start(f: Features, fence: FenceStatus, _ports: BootPorts, overrides: Partial<StartDeps> = {}): Promise<StartOutcome> {
-  const defaults = defaultStartDeps();
-  const d: StartDeps = { ...defaults, ...overrides };
+export async function start(f: Features, fence: FenceStatus, given: BootPorts, overrides: Partial<StartDeps> = {}): Promise<StartOutcome> {
+  const defaults = defaultStartDeps(ownPorts(given));
+  // No prototype: a dependency nobody set (inTestRealProfile, say) reads undefined, never
+  // Object.prototype's. Object.assign copies the overrides' own fields only.
+  const d = Object.assign(Object.create(null) as StartDeps, defaults, overrides);
   const log = new Log({ now: d.now });
 
   // defaults.env is this process's own environment, which no override replaces.
@@ -181,6 +205,8 @@ export async function start(f: Features, fence: FenceStatus, _ports: BootPorts, 
     home: located.home,
     userHome: d.home,
     realpath: d.realpath,
+    makeReadGate: d.makeReadGate,
+    makeWriteFence: d.makeWriteFence,
     roots: located.roots,
     notes: plan.notes,
     log,

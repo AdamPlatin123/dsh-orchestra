@@ -1,8 +1,8 @@
-import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { PathRejectReason, RealpathFn } from './paths.ts';
-import { canonicalize, checkPath, isWithin, nativeRealpath, pathKey } from './paths.ts';
+import { canonicalize, checkPath, isWithin, pathKey } from './paths.ts';
+import { ownField, ownFields } from '../runtime/own.ts';
 
 const win = path.win32;
 
@@ -40,28 +40,48 @@ export class WriteFenceError extends Error {
   }
 }
 
+/** What the fence reads from a stat: the file's identity and its hard-link count. */
+export type FenceStat = { dev: bigint; ino: bigint; nlink: bigint };
+/** What the fence reads from an lstat: the entry itself, never what a link points at. */
+export type EntryStat = { isSymbolicLink(): boolean; isDirectory(): boolean };
+
 /**
- * The calls that open, create, close or rename a target; injectable so tests can stage a swap between
- * check and act, and between the close of a temp file and its rename.
+ * Every fs call the fence makes. Required, with no default: the real one is minted in
+ * src/fs/node-io.ts and reaches a fence only through makeWriteFence, so a fence built anywhere else,
+ * with whatever roots and home, changes nothing on disk. Tests pass their own io to stage a swap
+ * between check and act, and between the close of a temp file and its rename.
+ * `append-existing` opens an existing file for appending and never creates one; a new file is made
+ * with 'ax' instead. ftruncateSync is there for step 3's journal; nothing calls it yet.
  */
 export type WriteIo = {
-  openSync(p: string, flags: 'wx' | 'ax' | number): number;
-  mkdirSync(p: string): void;
+  realpath: RealpathFn;
+  openSync(p: string, flags: 'wx' | 'ax' | 'append-existing'): number;
+  writeSync(fd: number, buf: Uint8Array, offset: number, length: number): number;
+  fsyncSync(fd: number): void;
+  ftruncateSync(fd: number, length: number): void;
   closeSync(fd: number): void;
+  fstatSync(fd: number): FenceStat;
+  statSync(p: string): FenceStat;
+  lstatSync(p: string): EntryStat;
   renameSync(from: string, to: string): void;
+  unlinkSync(p: string): void;
+  rmdirSync(p: string): void;
+  readdirSync(p: string): string[];
+  mkdirSync(p: string): void;
+  mkdtempSync(prefix: string): string;
 };
 
-const NODE_IO: WriteIo = {
-  openSync: (p, flags) => fs.openSync(p, flags),
-  mkdirSync: (p) => {
-    fs.mkdirSync(p);
-  },
-  closeSync: (fd) => fs.closeSync(fd),
-  renameSync: (from, to) => fs.renameSync(from, to),
-};
+const WRITE_IO_KEYS = [
+  'realpath', 'openSync', 'writeSync', 'fsyncSync', 'ftruncateSync', 'closeSync', 'fstatSync', 'statSync', 'lstatSync',
+  'renameSync', 'unlinkSync', 'rmdirSync', 'readdirSync', 'mkdirSync', 'mkdtempSync',
+] as const;
 
-// Opens an existing file for appending and never creates one; a new file is made with 'ax' instead.
-const APPEND_EXISTING = fs.constants.O_WRONLY | fs.constants.O_APPEND;
+/** A frozen copy of the io's own functions; a missing one refuses the fence. */
+function ownIo(io: WriteIo | undefined): WriteIo {
+  const got = ownFields(io, WRITE_IO_KEYS);
+  for (const k of WRITE_IO_KEYS) if (typeof got[k] !== 'function') throw new Error(`write fence: io.${k} is required`);
+  return Object.freeze(got) as WriteIo;
+}
 
 export type WriteFenceConfig = {
   orchestraHome: string;
@@ -72,9 +92,10 @@ export type WriteFenceConfig = {
    * and canonically, or the fence is not built; every target must already lie in both forms of home.
    */
   confine?: string;
-  realpath?: RealpathFn;
-  io?: WriteIo;
+  io: WriteIo;
 };
+
+const CONFIG_KEYS = ['orchestraHome', 'harnessRoots', 'confine', 'io'] as const;
 
 export type RmResult = { removed: number };
 
@@ -107,10 +128,12 @@ export class WriteFence {
   readonly #realpath: RealpathFn;
   readonly #io: WriteIo;
 
-  constructor(cfg: WriteFenceConfig) {
-    this.#realpath = cfg.realpath ?? nativeRealpath;
-    this.#io = cfg.io ?? NODE_IO;
-    this.home = mustCheck(cfg.orchestraHome, 'ORCHESTRA_HOME');
+  constructor(config: WriteFenceConfig) {
+    // Own fields only: an optional field the caller left out reads undefined, never Object.prototype's.
+    const cfg = ownFields(config, CONFIG_KEYS);
+    this.#io = ownIo(cfg.io);
+    this.#realpath = this.#io.realpath;
+    this.home = mustCheck(cfg.orchestraHome as string, 'ORCHESTRA_HOME');
     this.homeReal = canonicalize(this.home, this.#realpath);
     if (cfg.confine !== undefined) {
       const dir = mustCheck(cfg.confine, 'test dir');
@@ -121,7 +144,7 @@ export class WriteFence {
     }
     const seen = new Set<string>();
     const roots: string[] = [];
-    for (const r of cfg.harnessRoots) {
+    for (const r of cfg.harnessRoots!) {
       const lexical = mustCheck(r, 'harness root');
       for (const form of [lexical, canonicalize(lexical, this.#realpath)]) {
         if (seen.has(pathKey(form))) continue;
@@ -129,7 +152,8 @@ export class WriteFence {
         roots.push(form);
       }
     }
-    this.denyRoots = roots;
+    this.denyRoots = Object.freeze(roots);
+    Object.freeze(this);
   }
 
   /**
@@ -138,6 +162,10 @@ export class WriteFence {
    * those too, so it is refused.
    */
   check(target: string, op: WriteOp): WriteDecision {
+    return this.#check(target, op);
+  }
+
+  #check(target: string, op: WriteOp): WriteDecision {
     const c = checkPath(target);
     if (!c.ok) return { allow: false, op, path: String(target), reason: 'bad-path', detail: c.reason };
     const p = c.path;
@@ -151,7 +179,7 @@ export class WriteFence {
     if (!placed.allow || op !== 'append') return placed;
     let links: number;
     try {
-      links = linkCount(real);
+      links = linkCount(this.#io, real);
     } catch (e) {
       return { allow: false, op, path: p, reason: 'stat-failed', detail: code(e) ?? String(e) };
     }
@@ -176,7 +204,7 @@ export class WriteFence {
   }
 
   #require(target: string, op: WriteOp): string {
-    const d = this.check(target, op);
+    const d = this.#check(target, op);
     if (!d.allow) throw new WriteFenceError(d);
     return d.path;
   }
@@ -199,7 +227,7 @@ export class WriteFence {
     let detail: ChangedDetail | null = again.ok ? null : again.detail;
     if (again.ok) {
       try {
-        const now = fs.statSync(again.real, { bigint: true });
+        const now = this.#io.statSync(again.real);
         if (now.dev !== id.dev || now.ino !== id.ino) detail = 'identity';
       } catch {
         detail = 'identity';
@@ -210,7 +238,7 @@ export class WriteFence {
 
   /** Judges an opened handle: other hard links (from the handle itself), then where its path leads. */
   #verifyOpened(op: 'write' | 'append', fd: number, p: string): FileId {
-    const opened = fs.fstatSync(fd, { bigint: true });
+    const opened = this.#io.fstatSync(fd);
     if (op === 'append' && opened.nlink > 1n) {
       throw new WriteFenceError({ allow: false, op, path: p, reason: 'hardlink', links: Number(opened.nlink) });
     }
@@ -221,7 +249,7 @@ export class WriteFence {
 
   #isLink(p: string): boolean {
     try {
-      return fs.lstatSync(p).isSymbolicLink();
+      return this.#io.lstatSync(p).isSymbolicLink();
     } catch (e) {
       if (code(e) === 'ENOENT') return false;
       throw e;
@@ -248,8 +276,8 @@ export class WriteFence {
       let id: FileId;
       try {
         id = this.#verifyOpened('write', fd, tmp);
-        writeAll(fd, data);
-        fs.fsyncSync(fd);
+        writeAll(this.#io, fd, data);
+        this.#io.fsyncSync(fd);
       } finally {
         this.#io.closeSync(fd);
       }
@@ -258,7 +286,7 @@ export class WriteFence {
       this.#io.renameSync(tmp, p);
       renamed = true;
     } finally {
-      if (!renamed) removeQuietly(tmp);
+      if (!renamed) removeQuietly(this.#io, tmp);
     }
   }
 
@@ -272,7 +300,7 @@ export class WriteFence {
     let fd: number;
     let created = false;
     try {
-      fd = this.#io.openSync(p, APPEND_EXISTING);
+      fd = this.#io.openSync(p, 'append-existing');
     } catch (e) {
       if (code(e) !== 'ENOENT') throw e;
       fd = this.#io.openSync(p, 'ax');
@@ -281,12 +309,12 @@ export class WriteFence {
     let done = false;
     try {
       this.#verifyOpened('append', fd, p);
-      writeAll(fd, data);
-      if (opts.fsync === true) fs.fsyncSync(fd);
+      writeAll(this.#io, fd, data);
+      if (ownField(opts, 'fsync') === true) this.#io.fsyncSync(fd);
       done = true;
     } finally {
       this.#io.closeSync(fd);
-      if (!done && created) removeQuietly(p);
+      if (!done && created) removeQuietly(this.#io, p);
     }
   }
 
@@ -300,7 +328,7 @@ export class WriteFence {
     const p = this.#require(dir, 'mkdir');
     const missing: string[] = [];
     let cur = p;
-    while (!existsEntry(cur)) {
+    while (!existsEntry(this.#io, cur)) {
       missing.push(cur);
       const parent = win.dirname(cur);
       if (parent === cur) break;
@@ -318,7 +346,7 @@ export class WriteFence {
       }
       const again = this.#placeAgain('mkdir', level);
       if (!again.ok) {
-        removeDirQuietly(level);
+        removeDirQuietly(this.#io, level);
         throw new WriteFenceError({ allow: false, op: 'mkdir', path: level, reason: 'changed-during-open', detail: again.detail });
       }
       created.push(level);
@@ -331,7 +359,7 @@ export class WriteFence {
     const again = this.#placeAgain('mkdir', level);
     const changed = (detail: ChangedDetail) => new WriteFenceError({ allow: false, op: 'mkdir', path: level, reason: 'changed-during-open', detail });
     if (!again.ok) throw changed(again.detail);
-    const st = fs.lstatSync(level);
+    const st = this.#io.lstatSync(level);
     if (st.isSymbolicLink()) throw changed('link');
     if (!st.isDirectory()) throw eexist;
   }
@@ -339,10 +367,10 @@ export class WriteFence {
   /** A fresh directory `<parent>\<prefix>XXXXXX`, checked before and after creation. */
   mkdtemp(parent: string, prefix: string): string {
     this.#require(win.join(parent, `${prefix}XXXXXX`), 'mkdir');
-    const made = fs.mkdtempSync(win.join(mustCheck(parent, 'mkdtemp parent'), prefix));
-    const d = this.check(made, 'mkdir');
+    const made = this.#io.mkdtempSync(win.join(mustCheck(parent, 'mkdtemp parent'), prefix));
+    const d = this.#check(made, 'mkdir');
     if (!d.allow) {
-      fs.rmdirSync(made);
+      this.#io.rmdirSync(made);
       throw new WriteFenceError(d);
     }
     return made;
@@ -354,54 +382,59 @@ export class WriteFence {
    * A missing target is not an error.
    */
   rm(target: string, opts: { recursive?: boolean } = {}): RmResult {
-    return { removed: this.#rmEntry(target, opts.recursive === true) };
+    return { removed: this.#rmEntry(target, ownField(opts, 'recursive') === true) };
   }
 
   #rmEntry(p: string, recursive: boolean): number {
     const checked = this.#require(p, 'rm');
-    let st: fs.Stats;
+    let st: EntryStat;
     try {
-      st = fs.lstatSync(checked);
+      st = this.#io.lstatSync(checked);
     } catch (e) {
       if (code(e) === 'ENOENT') return 0;
       throw e;
     }
     if (st.isSymbolicLink()) {
-      removeLinkEntry(checked);
+      removeLinkEntry(this.#io, checked);
       return 1;
     }
     if (!st.isDirectory()) {
-      fs.unlinkSync(checked);
+      this.#io.unlinkSync(checked);
       return 1;
     }
     let n = 0;
     if (recursive) {
-      for (const name of fs.readdirSync(checked)) n += this.#rmEntry(win.join(checked, name), true);
+      for (const name of this.#io.readdirSync(checked)) n += this.#rmEntry(win.join(checked, name), true);
     }
-    fs.rmdirSync(checked);
+    this.#io.rmdirSync(checked);
     return n + 1;
   }
 }
 
-function writeAll(fd: number, data: string | Uint8Array): void {
+// The prototype and every instance are frozen: a module holding a WriteFence (or the class) can neither
+// replace a method every holder calls nor change an instance's fields or prototype, and the gate's
+// own paths call only its private members, so a subclass cannot steer them either.
+Object.freeze(WriteFence.prototype);
+
+function writeAll(io: WriteIo, fd: number, data: string | Uint8Array): void {
   const buf = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;
   let off = 0;
-  while (off < buf.length) off += fs.writeSync(fd, buf, off, buf.length - off);
+  while (off < buf.length) off += io.writeSync(fd, buf, off, buf.length - off);
 }
 
 /** Hard-link count of an existing file; 0 when it does not exist yet. */
-function linkCount(p: string): number {
+function linkCount(io: WriteIo, p: string): number {
   try {
-    return fs.statSync(p).nlink;
+    return Number(io.statSync(p).nlink);
   } catch (e) {
     if (code(e) === 'ENOENT') return 0;
     throw e;
   }
 }
 
-function existsEntry(p: string): boolean {
+function existsEntry(io: WriteIo, p: string): boolean {
   try {
-    fs.lstatSync(p);
+    io.lstatSync(p);
     return true;
   } catch (e) {
     if (code(e) === 'ENOENT') return false;
@@ -409,25 +442,25 @@ function existsEntry(p: string): boolean {
   }
 }
 
-function removeLinkEntry(p: string): void {
+function removeLinkEntry(io: WriteIo, p: string): void {
   try {
-    fs.unlinkSync(p);
+    io.unlinkSync(p);
   } catch {
-    fs.rmdirSync(p);
+    io.rmdirSync(p);
   }
 }
 
-function removeQuietly(p: string): void {
+function removeQuietly(io: WriteIo, p: string): void {
   try {
-    fs.unlinkSync(p);
+    io.unlinkSync(p);
   } catch {
     // The temp file may never have been created.
   }
 }
 
-function removeDirQuietly(p: string): void {
+function removeDirQuietly(io: WriteIo, p: string): void {
   try {
-    fs.rmdirSync(p);
+    io.rmdirSync(p);
   } catch {
     // Not empty any more: something else wrote into it, and it is not ours to clear.
   }

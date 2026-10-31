@@ -1,9 +1,10 @@
 import * as path from 'node:path';
 import type { HarnessRootKind, ResolvedEnv } from '../runtime/env.ts';
 import type { PathRejectReason, RealpathFn } from './paths.ts';
-import type { ReadIo } from './read-gate.ts';
-import { canonicalize, checkPath, nativeRealpath, pathKey } from './paths.ts';
-import { ReadGate, ReadGateError } from './read-gate.ts';
+import type { ReadGate, ReadGateConfig } from './read-gate.ts';
+import { canonicalize, checkPath, pathKey } from './paths.ts';
+import { ReadGateError } from './read-gate.ts';
+import { ownFields } from '../runtime/own.ts';
 
 const win = path.win32;
 
@@ -40,18 +41,27 @@ export function globListRoot(pattern: string): string {
   return /^[A-Za-z]:$/.test(dir) ? `${dir}\\` : dir;
 }
 
+/** What launcherRootFs needs from the composition root: the read gate factory and the realpath port (src/fs/node-io.ts via BootPorts). */
+export type LauncherFsPorts = {
+  makeReadGate(spec: Omit<ReadGateConfig, 'io'>): ReadGate;
+  realpath: RealpathFn;
+};
+
 /**
  * Listing for glob expansion goes through the read gate: a gate whose only roots are the
- * directories the launcher globs are listed from. In test mode it refuses everything outside the
- * test dirs. Only "does not exist" becomes an empty list; every other refusal propagates.
+ * directories the launcher globs are listed from, made by the factory main.ts was handed. In test
+ * mode it refuses everything outside the test dirs. Only "does not exist" becomes an empty list;
+ * every other refusal propagates.
  */
-export function launcherRootFs(env: ResolvedEnv, opts: { testDirs?: readonly string[]; io?: ReadIo } = {}): RootFs {
+export function launcherRootFs(env: ResolvedEnv, ports: LauncherFsPorts, opts: { testDirs?: readonly string[] } = {}): RootFs {
+  const p = ownFields(ports, ['makeReadGate', 'realpath'] as const);
+  if (typeof p.makeReadGate !== 'function' || typeof p.realpath !== 'function') throw new Error('launcherRootFs: makeReadGate and realpath are required');
   const roots: HarnessRoot[] = env.claudeRootCandidates.filter((c) => c.includes('*'))
     .map((pattern) => globListRoot(pattern))
     .map((dir) => ({ kind: 'claude-prefix' as const, path: dir, real: dir }));
-  const gate = new ReadGate({ roots, ...opts });
+  const gate = p.makeReadGate({ roots, ...opts });
   return {
-    realpath: nativeRealpath,
+    realpath: p.realpath,
     listDirs(dir) {
       try {
         return gate.subdirs(dir);

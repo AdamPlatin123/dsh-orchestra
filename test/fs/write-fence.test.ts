@@ -7,12 +7,17 @@ import { resolveEnv } from '../../src/runtime/env.ts';
 import type { ResolvedEnv } from '../../src/runtime/env.ts';
 import { computeHarnessRoots, launcherRootFs, rootDenyList } from '../../src/fs/harness-roots.ts';
 import { WriteFence, WriteFenceError } from '../../src/fs/write-fence.ts';
+import { makeReadGate, makeWriteFence, realpath } from '../../src/fs/node-io.ts';
+import { realWriteIo } from '../helpers/write-io.ts';
 import type { WriteDecision, WriteIo } from '../../src/fs/write-fence.ts';
 import { junction, probeJunction, probeSymlink, put, shortNameOf, treeDigest, withTmp } from '../helpers/tmp.ts';
 
 type Fixture = { base: string; home: string; orch: string; fence: WriteFence; make(io: WriteIo): WriteFence };
 
-const computeHarnessRootsOf = (env: ResolvedEnv) => computeHarnessRoots(env, launcherRootFs(env));
+const fsPorts = { makeReadGate, realpath };
+const computeHarnessRootsOf = (env: ResolvedEnv) => computeHarnessRoots(env, launcherRootFs(env, fsPorts));
+/** A fence on the real fs through the test's own io (the production io is private to node-io.ts and is exercised through makeWriteFence). */
+const fenceOf = (cfg: Omit<ConstructorParameters<typeof WriteFence>[0], 'io'>) => new WriteFence({ ...cfg, io: realWriteIo });
 
 /** Fake user home with three harness roots; ORCHESTRA_HOME defaults to <home>\.orchestra. */
 function fixture(t: TestContext, orchestraHome?: (home: string) => string): Fixture {
@@ -25,7 +30,7 @@ function fixture(t: TestContext, orchestraHome?: (home: string) => string): Fixt
   const orch = orchestraHome ? orchestraHome(home) : path.join(home, '.orchestra');
   const env = resolveEnv({ home, env: { ORCHESTRA_HOME: orch } });
   const harnessRoots = rootDenyList(computeHarnessRootsOf(env));
-  const make = (io?: WriteIo) => new WriteFence({ orchestraHome: env.orchestraHome, harnessRoots, ...(io !== undefined ? { io } : {}) });
+  const make = (io?: WriteIo) => new WriteFence({ orchestraHome: env.orchestraHome, harnessRoots, io: io ?? realWriteIo });
   return { base, home, orch, fence: make(), make };
 }
 
@@ -43,11 +48,12 @@ function staged(stage: { before?: () => void; after?: () => void; afterClose?: (
   const renames: Array<[string, string]> = [];
   return {
     io: {
+      ...realWriteIo,
       openSync: (p, flags) => {
         const first = !ran;
         if (first) stage.before?.();
         ran = true;
-        const fd = fs.openSync(p, flags);
+        const fd = realWriteIo.openSync(p, flags);
         if (first) stage.after?.();
         return fd;
       },
@@ -175,7 +181,7 @@ test('deny first: launcher roots, their glob prefix and extra roots inside ORCHE
   put(path.join(home, '.rec', 'dsbot', 'state.json'), '{}');
   const orch = path.join(home, '.rec');
   const env = resolveEnv({ home, env: { ORCHESTRA_HOME: orch }, extraHarnessRoots: [path.join(home, '.rec', 'dsbot')] });
-  const fence = new WriteFence({ orchestraHome: orch, harnessRoots: rootDenyList(computeHarnessRootsOf(env)) });
+  const fence = fenceOf({ orchestraHome: orch, harnessRoots: rootDenyList(computeHarnessRootsOf(env)) });
   assert.equal(reason(fence.check(path.join(orch, 'claude', 'accounts', '1', 'config', 'x'), 'write')), 'harness-root');
   assert.equal(reason(fence.check(path.join(orch, 'claude', 'accounts', '2'), 'mkdir')), 'harness-root');
   assert.equal(reason(fence.check(path.join(orch, 'dsbot', 'state.json'), 'write')), 'harness-root');
@@ -194,7 +200,7 @@ test('a launcher root behind a junction is denied at its target too (glob expans
   const env = resolveEnv({ home, env: { ORCHESTRA_HOME: orch } });
   const roots = computeHarnessRootsOf(env);
   assert.ok(roots.some((r) => r.kind === 'claude' && r.real.toLowerCase() === fs.realpathSync.native(path.join(orch, 'claude-7')).toLowerCase()));
-  const fence = new WriteFence({ orchestraHome: orch, harnessRoots: rootDenyList(roots) });
+  const fence = fenceOf({ orchestraHome: orch, harnessRoots: rootDenyList(roots) });
   assert.equal(reason(fence.check(path.join(orch, 'claude-7', 'sessions', '1.json'), 'write')), 'harness-root');
   assert.equal(reason(fence.check(path.join(orch, 'claude-7'), 'rm')), 'harness-root');
   assert.equal(reason(fence.check(path.join(orch, 'other.json'), 'write')), 'allow');
@@ -244,7 +250,7 @@ test('ORCHESTRA_HOME behind a junction: both the written and the canonical form 
   put(path.join(home, '.claude', 'settings.json'));
   junction(base, path.join(home, '.orchestra'), path.join(base, 'data'));
   const env = resolveEnv({ home, env: {} });
-  const fence = new WriteFence({ orchestraHome: env.orchestraHome, harnessRoots: rootDenyList(computeHarnessRootsOf(env)) });
+  const fence = fenceOf({ orchestraHome: env.orchestraHome, harnessRoots: rootDenyList(computeHarnessRootsOf(env)) });
   assert.equal(reason(fence.check(path.join(home, '.orchestra', 'run', 'x'), 'write')), 'allow');
   assert.equal(reason(fence.check(path.join(base, 'data', 'run', 'x'), 'write')), 'outside-home');
 });
@@ -473,7 +479,7 @@ function mkdirRace(level: string, stage: () => void): { io: WriteIo; ran(): bool
   let ran = false;
   return {
     io: {
-      openSync: (p, flags) => fs.openSync(p, flags),
+      ...realWriteIo,
       mkdirSync: (p) => {
         if (!ran && p === level) {
           ran = true;
@@ -589,8 +595,8 @@ test('append creates a missing file exclusively and appends to an existing one w
 });
 
 test('a bad ORCHESTRA_HOME or harness root fails construction', () => {
-  assert.throws(() => new WriteFence({ orchestraHome: 'relative', harnessRoots: [] }), /ORCHESTRA_HOME rejected \(not-absolute\)/);
-  assert.throws(() => new WriteFence({ orchestraHome: 'C:\\o', harnessRoots: ['\\\\srv\\share'] }), /harness root rejected \(unc\)/);
+  assert.throws(() => fenceOf({ orchestraHome: 'relative', harnessRoots: [] }), /ORCHESTRA_HOME rejected \(not-absolute\)/);
+  assert.throws(() => fenceOf({ orchestraHome: 'C:\\o', harnessRoots: ['\\\\srv\\share'] }), /harness root rejected \(unc\)/);
 });
 
 test('confine (test profile): the fence is not built when ORCHESTRA_HOME leads out of the test dir', (t) => {
@@ -601,16 +607,43 @@ test('confine (test profile): the fence is not built when ORCHESTRA_HOME leads o
   put(path.join(sibling, 'keep.txt'), 'keep');
   const before = treeDigest(sibling);
   const home = path.join(testDir, 'orchestra');
-  const ok = new WriteFence({ orchestraHome: home, harnessRoots: [], confine: testDir });
+  const ok = fenceOf({ orchestraHome: home, harnessRoots: [], confine: testDir });
   ok.mkdirp(path.join(home, 'run'));
   assert.ok(fs.statSync(path.join(home, 'run')).isDirectory());
-  assert.throws(() => new WriteFence({ orchestraHome: testDir, harnessRoots: [], confine: testDir }), /leaves the test dir/, 'home = the test dir itself');
-  assert.throws(() => new WriteFence({ orchestraHome: path.join(base, 'orchestra'), harnessRoots: [], confine: testDir }), /leaves the test dir/);
+  assert.throws(() => fenceOf({ orchestraHome: testDir, harnessRoots: [], confine: testDir }), /leaves the test dir/, 'home = the test dir itself');
+  assert.throws(() => fenceOf({ orchestraHome: path.join(base, 'orchestra'), harnessRoots: [], confine: testDir }), /leaves the test dir/);
   const linkedHome = path.join(testDir, 'linked');
   junction(base, linkedHome, sibling);
-  assert.throws(() => new WriteFence({ orchestraHome: linkedHome, harnessRoots: [], confine: testDir }), /leaves the test dir/);
+  assert.throws(() => fenceOf({ orchestraHome: linkedHome, harnessRoots: [], confine: testDir }), /leaves the test dir/);
   const linkedDir = path.join(base, 'dir-link');
   junction(base, linkedDir, testDir);
-  assert.throws(() => new WriteFence({ orchestraHome: path.join(linkedDir, 'orchestra'), harnessRoots: [], confine: linkedDir }), /leaves the test dir/, 'the test dir must be canonical');
+  assert.throws(() => fenceOf({ orchestraHome: path.join(linkedDir, 'orchestra'), harnessRoots: [], confine: linkedDir }), /leaves the test dir/, 'the test dir must be canonical');
   assert.equal(treeDigest(sibling), before);
+});
+
+test('makeWriteFence: node-io.ts\'s own io does each act, appends without truncating, and removes a junction as an entry', async (t) => {
+  const probe = probeJunction();
+  const base = fs.realpathSync.native(withTmp(t));
+  const home = path.join(base, 'orchestra');
+  const outside = path.join(base, 'outside');
+  put(path.join(outside, 'keep.txt'), 'keep');
+  const before = treeDigest(outside);
+  const fence = await makeWriteFence({ orchestraHome: home, harnessRoots: [outside], confine: base });
+  assert.deepEqual(fence.mkdirp(path.join(home, 'run')), [home, path.join(home, 'run')]);
+  const log = path.join(home, 'run', 'a.log');
+  fence.append(log, 'one\n');
+  fence.append(log, 'two\n', { fsync: true });
+  assert.equal(fs.readFileSync(log, 'utf8'), 'one\ntwo\n', 'the second append opened the existing file for appending');
+  fence.writeAtomic(path.join(home, 'run', 'd.json'), '{"v":1}');
+  fence.writeAtomic(path.join(home, 'run', 'd.json'), '{"v":2}');
+  assert.equal(fs.readFileSync(path.join(home, 'run', 'd.json'), 'utf8'), '{"v":2}');
+  const made = fence.mkdtemp(home, 'x-');
+  assert.ok(fs.statSync(made).isDirectory());
+  put(path.join(home, 'tmp', 'deep', 'f.bin'), 'f');
+  if (probe.ok) junction(base, path.join(home, 'tmp', 'to-outside'), outside);
+  assert.equal(fence.rm(path.join(home, 'tmp'), { recursive: true }).removed, probe.ok ? 4 : 3);
+  assert.equal(fs.existsSync(path.join(home, 'tmp')), false);
+  assert.throws(() => fence.writeAtomic(path.join(outside, 'keep.txt'), 'x'), (e: unknown) => e instanceof WriteFenceError && e.decision.reason === 'harness-root');
+  assert.deepEqual(fs.readdirSync(path.join(home, 'run')).sort(), ['a.log', 'd.json']);
+  assert.equal(treeDigest(outside), before, 'the junction target is untouched');
 });

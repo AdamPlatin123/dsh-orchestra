@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { TestContext } from 'node:test';
 import { ReadGate, ReadGateError } from '../../src/fs/read-gate.ts';
+import { makeReadGate } from '../../src/fs/node-io.ts';
 import { realIo } from '../helpers/read-io.ts';
 import type { ReadIo } from '../../src/fs/read-gate.ts';
 import { put, withTmp } from '../helpers/tmp.ts';
@@ -33,17 +34,15 @@ function counting(overrides: Partial<ReadIo> = {}): Counted {
   return { io, opens, closes };
 }
 
-/** Without `io` the gate uses its own private real-fs io, as in production. */
+/** Without `io` the gate is made by makeReadGate around node-io.ts's private real-fs io, as in production. */
 function fixture(t: TestContext, io?: ReadIo) {
   const base = withTmp(t);
   const dsh = path.join(base, '.dsh');
   const log = put(path.join(dsh, 'sessions', '--G--p--', UUID, 'session.v4.jsonl.zstd'), 'frame-1');
   const claude = path.join(base, '.claude');
   const reg = put(path.join(claude, 'sessions', '42.json'), '{"status":"idle"}');
-  const gate = new ReadGate({
-    roots: [{ kind: 'dsh', path: dsh, real: dsh }, { kind: 'claude', path: claude, real: claude }],
-    ...(io !== undefined ? { io } : {}),
-  });
+  const roots = [{ kind: 'dsh' as const, path: dsh, real: dsh }, { kind: 'claude' as const, path: claude, real: claude }];
+  const gate = io === undefined ? makeReadGate({ roots }) : new ReadGate({ roots, io });
   return { base, log, reg, claude, gate };
 }
 

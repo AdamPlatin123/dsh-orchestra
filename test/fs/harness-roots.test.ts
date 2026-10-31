@@ -6,6 +6,9 @@ import { resolveEnv } from '../../src/runtime/env.ts';
 import { computeHarnessRoots, defaultVersionFiles, expandGlob, globListRoot, launcherRootFs, rootDenyList } from '../../src/fs/harness-roots.ts';
 import type { RootFs } from '../../src/fs/harness-roots.ts';
 import { ReadGateError } from '../../src/fs/read-gate.ts';
+import { makeReadGate, realpath } from '../../src/fs/node-io.ts';
+
+const fsPorts = { makeReadGate, realpath };
 import { junction, probeJunction, put, withTmp } from '../helpers/tmp.ts';
 
 function refusal(reason: string): (e: unknown) => boolean {
@@ -82,7 +85,7 @@ test('computeHarnessRoots on disk resolves a junctioned launcher root', (t) => {
   fs.mkdirSync(path.join(home, '.rec', 'claude', 'accounts', '3'), { recursive: true });
   junction(base, path.join(home, '.rec', 'claude', 'accounts', '3', 'config'), path.join(base, 'elsewhere'));
   const env = resolveEnv({ home, env: {} });
-  const roots = computeHarnessRoots(env, launcherRootFs(env));
+  const roots = computeHarnessRoots(env, launcherRootFs(env, fsPorts));
   const r = roots.find((x) => x.path.toLowerCase().endsWith('\\accounts\\3\\config'));
   assert.equal(r?.kind, 'claude');
   assert.equal(r?.real.toLowerCase(), fs.realpathSync.native(path.join(base, 'elsewhere')).toLowerCase());
@@ -111,7 +114,7 @@ test('launcherRootFs lists through the read gate: glob roots only, links listed,
   put(path.join(accounts, 'notes.txt'));
   fs.mkdirSync(path.join(home, '.claude', 'projects'), { recursive: true });
   const env = resolveEnv({ home, env: {} });
-  const rfs = launcherRootFs(env);
+  const rfs = launcherRootFs(env, fsPorts);
   const linked = probeJunction().ok;
   if (linked) junction(base, path.join(accounts, '3'), path.join(accounts, '2'));
   assert.deepEqual(rfs.listDirs(accounts), linked ? ['1', '2', '3'] : ['1', '2']);
@@ -121,11 +124,11 @@ test('launcherRootFs lists through the read gate: glob roots only, links listed,
   assert.deepEqual(computeHarnessRoots(env, rfs).filter((r) => r.kind === 'claude' && r.path.startsWith(accounts)).map((r) => r.path),
     [path.join(accounts, '1', 'config')]);
 
-  const testRfs = launcherRootFs(env, { testDirs: [withTmp(t)] });
+  const testRfs = launcherRootFs(env, fsPorts, { testDirs: [withTmp(t)] });
   assert.throws(() => testRfs.listDirs(accounts), refusal('test-mode-outside'));
 
   const partial = resolveEnv({ home, env: {}, launcherGlobs: ['~/.rec/claude/acc*/*/config'] });
-  assert.ok(computeHarnessRoots(partial, launcherRootFs(partial)).some((r) => r.path === path.join(accounts, '1', 'config')));
+  assert.ok(computeHarnessRoots(partial, launcherRootFs(partial, fsPorts)).some((r) => r.path === path.join(accounts, '1', 'config')));
 });
 
 test('defaultVersionFiles: the two global package.json files under APPDATA, or a typed reason why not', () => {

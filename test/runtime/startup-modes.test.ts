@@ -10,7 +10,7 @@ import type { Features } from '../../src/runtime/features.ts';
 import type { Integrity } from '../../src/runtime/integrity.ts';
 import type { StartDeps, StartOutcome } from '../../src/main.ts';
 import type { TestProfile } from '../../src/runtime/test-profile.ts';
-import { start } from '../../src/main.ts';
+import { makeReadGate, makeWriteFence } from '../../src/fs/node-io.ts';
 import { PidLog } from '../../src/os/spawn.ts';
 import { detectFeatures } from '../../src/runtime/features.ts';
 import { Log } from '../../src/runtime/log.ts';
@@ -18,7 +18,7 @@ import { EXIT, planMessage, planStartup } from '../../src/runtime/startup.ts';
 import { fakeSpawn, whoamiChinese, whoamiEnglish, whoamiSpy } from '../helpers/fake-spawn.ts';
 import type { FakeSpawn } from '../helpers/fake-spawn.ts';
 import { findImports } from '../helpers/scan-rules.ts';
-import { FENCE_NO_HOOK, FENCE_OK, captureConsole, minimalEnv, IN_PROCESS_STOP } from '../helpers/start.ts';
+import { FENCE_NO_HOOK, FENCE_OK, captureConsole, minimalEnv, runWorkingInProcess, spyGate, startInProcess, testPorts } from '../helpers/start.ts';
 import { junction, put, treeDigest, withTmp } from '../helpers/tmp.ts';
 
 const REPO = fileURLToPath(new URL('../../', import.meta.url));
@@ -58,7 +58,11 @@ test('planStartup decides in the plan\'s order', () => {
 test('planStartup: no zstd works with the DSH source off; an old Node only warns; both notes ride along in every mode', () => {
   const p = planStartup({ ...FULL, zstd: false, nodeAtLeastMin: false, node: '24.1.0' }, MEDIUM, DIR_OK);
   assert.equal(p.mode, 'working');
-  assert.deepEqual(p.notes, [{ id: 'zstd-missing', effect: 'dsh-source-off' }, { id: 'node-below-min', effect: 'tuning-warning', node: '24.1.0', min: '24.22.0' }]);
+  assert.deepEqual(p.notes, [
+    { id: 'zstd-missing', effect: 'dsh-source-off' },
+    { id: 'node-below-min', effect: 'tuning-warning', node: '24.1.0', min: '24.22.0' },
+    { id: 'node-not-pinned', effect: 'powers-unverified', node: '24.1.0', pinned: '24.22.0' },
+  ]);
   assert.equal(planStartup({ ...FULL, zstd: false }, LOW, DIR_OK).notes.length, 1);
   const missing = planStartup({ ...FULL, sqlite: false, zstd: false }, MEDIUM, DIR_OK);
   assert.ok(missing.mode === 'exit' && missing.reason === 'missing-features');
@@ -74,13 +78,12 @@ async function startTest(t: TestContext, opts: { features?: Partial<Features>; f
   const dir = withTmp(t);
   const spy = opts.spy ?? whoamiSpy(whoamiEnglish('Medium Mandatory Level'));
   const con = captureConsole();
-  const o = await start({ ...detectFeatures(), ...opts.features }, opts.fence ?? FENCE_OK, { fetch: globalThis.fetch }, {
+  const o = await startInProcess({ ...detectFeatures(), ...opts.features }, opts.fence ?? FENCE_OK, testPorts(), {
     argv: ['--test-profile', '--test-dir', dir],
     home: path.join(dir, 'user-home'),
     env: minimalEnv(),
     console: con.port,
-    spawnBackend: spy.backend,
-    stopping: IN_PROCESS_STOP,
+    makeSpawnGate: spyGate(spy),
     ...opts.deps,
   });
   if (o.mode === 'working') t.after(() => o.stop());
@@ -159,13 +162,12 @@ async function startJunctioned(t: TestContext, link: 'orchestra' | 'roots'): Pro
   junction(base, path.join(dir, link), sibling);
   const before = treeDigest(sibling);
   const con = captureConsole();
-  const o = await start(detectFeatures(), FENCE_OK, { fetch: globalThis.fetch }, {
+  const o = await startInProcess(detectFeatures(), FENCE_OK, testPorts(), {
     argv: ['--test-profile', '--test-dir', dir],
     home: path.join(base, 'user-home'),
     env: minimalEnv({ TEMP: temp, TMP: temp }),
     console: con.port,
-    spawnBackend: whoamiSpy(whoamiEnglish('Medium Mandatory Level')).backend,
-    stopping: IN_PROCESS_STOP,
+    makeSpawnGate: spyGate(whoamiSpy(whoamiEnglish('Medium Mandatory Level'))),
   });
   if (o.mode === 'working') t.after(() => o.stop());
   return { o, sibling, before, con };
@@ -185,7 +187,6 @@ for (const link of ['orchestra', 'roots'] as const) {
 }
 
 test('runWorking checks the data dir itself: a junctioned home or the user home handed in directly is refused before any gate or lock', async (t) => {
-  const { runWorking } = await import('../../src/runtime/working.ts');
   const base = withTmp(t);
   fs.mkdirSync(path.join(base, 'orchestra-test-x'));
   const testDir = fs.realpathSync.native(path.join(base, 'orchestra-test-x'));
@@ -198,9 +199,9 @@ test('runWorking checks the data dir itself: a junctioned home or the user home 
   const con = captureConsole();
   const common = {
     roots: [], notes: [], log: new Log(), pidLog: new PidLog(), console: con.port, pid: process.pid, now: Date.now,
-    tty: () => ({ stdin: false, stdout: false }), stopping: IN_PROCESS_STOP, realpath: (p: string) => fs.realpathSync.native(p),
+    tty: () => ({ stdin: false, stdout: false }), realpath: (p: string) => fs.realpathSync.native(p), makeReadGate, makeWriteFence,
   };
-  const o = await runWorking({ ...common, profile, home, userHome: path.join(base, 'user-home') });
+  const o = await runWorkingInProcess({ ...common, profile, home, userHome: path.join(base, 'user-home') });
   if (o.mode === 'working') await o.stop();
   assert.equal(o.mode, 'start-failed');
   assert.equal(o.mode === 'start-failed' && o.stage, 'data-dir');
@@ -210,14 +211,13 @@ test('runWorking checks the data dir itself: a junctioned home or the user home 
   const userHome = path.join(base, 'user-home-2');
   put(path.join(userHome, '.claude', 'projects', 'x.jsonl'), '{}\n');
   const homeBefore = treeDigest(userHome);
-  const o2 = await runWorking({ ...common, profile: { kind: 'real' }, home: userHome, userHome });
+  const o2 = await runWorkingInProcess({ ...common, profile: { kind: 'real' }, home: userHome, userHome });
   if (o2.mode === 'working') await o2.stop();
   assert.equal(o2.mode === 'start-failed' && o2.stage, 'data-dir');
   assert.equal(treeDigest(userHome), homeBefore, 'no run\\, tmp\\ or runtime\\ in the user home');
 });
 
 test('runWorking checks again once the data dir exists: a home that resolves elsewhere afterwards fails, and the lock is released', async (t) => {
-  const { runWorking } = await import('../../src/runtime/working.ts');
   const base = withTmp(t);
   fs.mkdirSync(path.join(base, 'orchestra-test-x'));
   const testDir = fs.realpathSync.native(path.join(base, 'orchestra-test-x'));
@@ -231,20 +231,19 @@ test('runWorking checks again once the data dir exists: a home that resolves els
   const con = captureConsole();
   const ctx = {
     profile, home, userHome: path.join(base, 'user-home'), roots: [], notes: [], log: new Log(), pidLog: new PidLog(), console: con.port, pid: process.pid,
-    now: Date.now, tty: () => ({ stdin: false, stdout: false }), stopping: IN_PROCESS_STOP,
+    now: Date.now, tty: () => ({ stdin: false, stdout: false }), makeReadGate, makeWriteFence,
   };
-  const o = await runWorking({ ...ctx, realpath: moved });
+  const o = await runWorkingInProcess({ ...ctx, realpath: moved });
   if (o.mode === 'working') await o.stop();
   assert.equal(o.mode === 'start-failed' && o.stage, 'data-dir', JSON.stringify(o));
   assert.match(o.mode === 'start-failed' ? o.detail : '', /changed while it was prepared: orchestra-home/);
   assert.equal(fs.existsSync(path.join(home, 'run', 'daemon.json')), false, 'no daemon.json was written');
-  const again = await runWorking({ ...ctx, log: new Log(), pidLog: new PidLog(), realpath: (p: string) => fs.realpathSync.native(p) });
+  const again = await runWorkingInProcess({ ...ctx, log: new Log(), pidLog: new PidLog(), realpath: (p: string) => fs.realpathSync.native(p) });
   assert.equal(again.mode, 'working', 'the failed attempt released the lock pipe');
   if (again.mode === 'working') await again.stop();
 });
 
 test('stop() detaches the log and pid sinks before it ends: what is logged once the lock is going stays in memory, never in ORCHESTRA_HOME', async (t) => {
-  const { runWorking } = await import('../../src/runtime/working.ts');
   const base = withTmp(t);
   fs.mkdirSync(path.join(base, 'orchestra-test-x'));
   const testDir = fs.realpathSync.native(path.join(base, 'orchestra-test-x'));
@@ -254,9 +253,9 @@ test('stop() detaches the log and pid sinks before it ends: what is logged once 
   const pidLog = new PidLog();
   const run = path.join(home, 'run');
   const onDisk: string[] = [];
-  const o = await runWorking({
+  const o = await runWorkingInProcess({
     profile, home, userHome: path.join(base, 'user-home'), roots: [], notes: [], log, pidLog, console: captureConsole().port, pid: process.pid, now: Date.now,
-    tty: () => ({ stdin: false, stdout: false }), realpath: (p: string) => fs.realpathSync.native(p),
+    tty: () => ({ stdin: false, stdout: false }), realpath: (p: string) => fs.realpathSync.native(p), makeReadGate, makeWriteFence,
     stopping: {
       onSignal: () => () => {},
       end: async (lock) => {
@@ -352,12 +351,16 @@ registerHooks({ resolve(specifier, context, next) { const r = next(specifier, co
 const [src, paramsJson] = process.argv.slice(2);
 const params = JSON.parse(paramsJson);
 const fetchPort = globalThis.fetch;
+// Minted before the fence, as boot.ts does: once it is in, neither module can be resolved again.
+const io = await import(src + 'fs/node-io.ts');
+const proc = await import(src + 'os/node-proc.ts');
 const { installImportFence } = await import(src + 'runtime/import-fence.ts');
 const { detectFeatures } = await import(src + 'runtime/features.ts');
 const fence = installImportFence();
 const main = await import(src + 'main.ts');
 const lines = [];
-const o = await main.start(detectFeatures(), fence, { fetch: fetchPort }, {
+const ports = { fetch: fetchPort, realpath: io.realpath, makeReadGate: io.makeReadGate, makeWriteFence: io.makeWriteFence, makeSpawnGate: proc.makeSpawnGate };
+const o = await main.start(detectFeatures(), fence, ports, {
   argv: params.argv, home: params.home, env: params.env,
   console: { out: (l) => lines.push(l), err: (l) => lines.push(l) },
   stopping: { onSignal: () => () => {}, end: (lock) => lock.release() }, tty: () => ({ stdin: false, stdout: false }),
