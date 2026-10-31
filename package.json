@@ -1,0 +1,16 @@
+{
+  "name": "dsh-orchestra",
+  "version": "0.0.0",
+  "private": true,
+  "description": "DSH Orchestra daemon (orchestrad), M0 observe-first",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": { "node": ">=24.22.0" },
+  "scripts": {
+    "start": "node src/boot.ts",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "check": "node --test \"test/repo/**/*.test.ts\" \"test/fs/**/*.test.ts\"",
+    "build:procguard": "node scripts/build-procguard.ts",
+    "scan:fixtures": "node --test \"test/fixtures/**/*.test.ts\""
+  }
+}

@@ -13,3 +13,12 @@ spikes/**/out/
 spikes/**/tmp/
 spikes/**/*.jsonl
 spikes/**/*.zst
+
+# local runtime (Medium-IL node copy, ~94 MB)
+.tools/
+# binaries are built, never committed
+*.exe
+# fixtures: default deny; only reviewed synthetic fixtures and hand-written goldens are committed (r4 §6.1 #3)
+fixtures/*
+!fixtures/synthetic/
+!fixtures/golden/
