@@ -60,6 +60,25 @@ test('knownHarnessRoots covers every harness, glob prefixes and extra roots, wit
   assert.equal(roots.filter((p) => p === 'g:\\_dsbotplayground').length, 1, 'extra roots are deduped');
 });
 
+test('typedHarnessRoots: every known root with its kind, same order as knownHarnessRoots; extra Claude roots are Claude roots', () => {
+  const r = resolveEnv({ home: HOME, env: { DSH_HOME: 'Z:\\dsh' }, extraClaudeRoots: ['Y:\\more-claude\\'], extraHarnessRoots: ['G:\\bot'] });
+  assert.deepEqual(r.typedHarnessRoots.map((x) => x.path), r.knownHarnessRoots);
+  assert.equal(r.claudeRootCandidates.at(-1), 'Y:\\more-claude');
+  const kinds = Object.fromEntries(r.typedHarnessRoots.map((x) => [x.path.toLowerCase(), x.kind]));
+  assert.deepEqual(kinds, {
+    'x:\\fake\\home\\.claude': 'claude',
+    'x:\\fake\\home\\.config\\claude': 'claude',
+    'y:\\more-claude': 'claude',
+    'x:\\fake\\home\\.rec\\claude\\accounts': 'claude-prefix',
+    'z:\\dsh': 'dsh',
+    'x:\\fake\\home\\.dsh': 'dsh',
+    'x:\\fake\\home\\.codex': 'codex',
+    'x:\\fake\\home\\.dsh-tui': 'dsh-tui',
+    'x:\\fake\\home\\.ds-bot': 'ds-bot',
+    'g:\\bot': 'extra',
+  });
+});
+
 test('ORCHESTRA_HOME overrides the data dir; empty values are ignored', () => {
   assert.equal(resolveEnv({ home: HOME, env: { ORCHESTRA_HOME: 'W:\\orch\\' } }).orchestraHome, 'W:\\orch');
   assert.equal(resolveEnv({ home: HOME, env: { ORCHESTRA_HOME: '  ' } }).orchestraHome, 'X:\\fake\\home\\.orchestra');

@@ -11,7 +11,14 @@ export type EnvInput = {
   launcherGlobs?: readonly string[];
   /** Extra harness roots the user adds in Tuning (for example the DS-Bot desktop data dir). */
   extraHarnessRoots?: readonly string[];
+  /** Extra Claude roots the user adds in Tuning; they are read like any other Claude root. */
+  extraClaudeRoots?: readonly string[];
 };
+
+/** What a harness root holds; the read gate picks its policy by kind. */
+export type HarnessRootKind = 'claude' | 'claude-prefix' | 'dsh' | 'codex' | 'dsh-tui' | 'ds-bot' | 'extra';
+
+export type TypedRoot = { kind: HarnessRootKind; path: string };
 
 export type ResolvedEnv = {
   orchestraHome: string;
@@ -25,6 +32,8 @@ export type ResolvedEnv = {
   dsBotHome: string;
   /** Every directory the write fence must deny and the data-dir check must keep apart from orchestraHome. */
   knownHarnessRoots: string[];
+  /** knownHarnessRoots with their kind, same order; the first kind wins when two entries share a path. */
+  typedHarnessRoots: TypedRoot[];
 };
 
 export const DEFAULT_LAUNCHER_GLOBS: readonly string[] = ['~/.rec/claude/accounts/*/config'];
@@ -67,11 +76,13 @@ export function resolveEnv(input: EnvInput): ResolvedEnv {
 
   const launcherGlobs = (input.launcherGlobs ?? DEFAULT_LAUNCHER_GLOBS).map((g) => norm(expandHome(g, home)));
   const xdg = set(env.XDG_CONFIG_HOME);
+  const extraClaude = (input.extraClaudeRoots ?? []).map((r) => norm(expandHome(r, home)));
   const claudeRootCandidates = dedupe([
     ...(set(env.CLAUDE_CONFIG_DIR) ? [set(env.CLAUDE_CONFIG_DIR) as string] : []),
     win.join(home, '.claude'),
     xdg ? win.join(xdg, 'claude') : win.join(home, '.config', 'claude'),
     ...launcherGlobs,
+    ...extraClaude,
   ]);
   const launcherGlobPrefixes = dedupe(launcherGlobs.map(globPrefix));
 
@@ -83,15 +94,23 @@ export function resolveEnv(input: EnvInput): ResolvedEnv {
   const dsBotHome = win.join(home, '.ds-bot');
 
   // Deny more rather than less: the default dirs stay listed even when an env var points elsewhere.
-  const knownHarnessRoots = dedupe([
-    ...claudeRootCandidates.filter((c) => !c.includes('*')),
-    ...launcherGlobPrefixes,
-    dshHome, defaultDsh,
-    codexHome, defaultCodex,
-    dshTuiHome,
-    dsBotHome,
-    ...(input.extraHarnessRoots ?? []).map((r) => norm(expandHome(r, home))),
-  ]);
+  const typed: TypedRoot[] = [
+    ...claudeRootCandidates.filter((c) => !c.includes('*')).map((p) => ({ kind: 'claude' as const, path: p })),
+    ...launcherGlobPrefixes.map((p) => ({ kind: 'claude-prefix' as const, path: p })),
+    { kind: 'dsh', path: dshHome }, { kind: 'dsh', path: defaultDsh },
+    { kind: 'codex', path: codexHome }, { kind: 'codex', path: defaultCodex },
+    { kind: 'dsh-tui', path: dshTuiHome },
+    { kind: 'ds-bot', path: dsBotHome },
+    ...(input.extraHarnessRoots ?? []).map((r) => ({ kind: 'extra' as const, path: norm(expandHome(r, home)) })),
+  ];
+  const seen = new Set<string>();
+  const typedHarnessRoots = typed.filter((r) => {
+    const key = r.path.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const knownHarnessRoots = typedHarnessRoots.map((r) => r.path);
 
-  return { orchestraHome, claudeRootCandidates, launcherGlobPrefixes, dshHome, codexHome, dshTuiHome, dsBotHome, knownHarnessRoots };
+  return { orchestraHome, claudeRootCandidates, launcherGlobPrefixes, dshHome, codexHome, dshTuiHome, dsBotHome, knownHarnessRoots, typedHarnessRoots };
 }
