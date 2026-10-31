@@ -6,6 +6,10 @@ import type { RealpathFn } from '../fs/paths.ts';
 import type { ReadGate } from '../fs/read-gate.ts';
 import type { WriteFence } from '../fs/write-fence.ts';
 import type { PidLog } from '../os/spawn.ts';
+import type { DbOpener, DbOpenerSpec } from '../store/db.ts';
+import type { ChainBreak } from '../store/journal.ts';
+import type { Store } from '../store/store.ts';
+import type { ClockHub } from './clock.ts';
 import type { DataDirInput } from './data-dir.ts';
 import type { DaemonInfo, HeldLock } from './lock.ts';
 import type { ConsolePort, Log } from './log.ts';
@@ -13,6 +17,8 @@ import type { StartupNote } from './startup.ts';
 import type { PairingOutput, Profile } from './test-profile.ts';
 import { rootDenyList } from '../fs/harness-roots.ts';
 import { pathKey } from '../fs/paths.ts';
+import { makeRedactor } from '../store/redact.ts';
+import { openStore } from '../store/store.ts';
 import { checkDataDir, describeDataDir, prepareDataDir } from './data-dir.ts';
 import { acquireLock, encodeDaemonInfo, heldMessage, lockPipeName, parseDaemonInfo } from './lock.ts';
 import { EXIT, describeNote } from './startup.ts';
@@ -21,10 +27,15 @@ import { TestRoots, decidePairingOutput, testReadDirs } from './test-profile.ts'
 const win = path.win32;
 
 // Working-mode wiring, the composition root for the gates: it makes them with the factories boot
-// minted (src/fs/node-io.ts, handed down through main.ts), so they reach the real file system; a gate
-// made any other way reaches nothing. Only main.ts imports this module (static scan), and only after
-// planStartup() says working, so a ui-only process never loads the write fence, the lock or anything
-// that opens storage.
+// minted (src/fs/node-io.ts, src/store/node-sqlite.ts, handed down through main.ts), so they reach the
+// real file system and SQLite; a gate made any other way reaches nothing. Only main.ts imports this
+// module (static scan), and only after planStartup() says working, so a ui-only process never loads
+// the write fence, the lock, node:sqlite or anything that opens storage.
+//
+// The store opens after the lock and the data dir: database, journal, reconciliation (step 3). A
+// broken journal chain is found only here, with the lock held, so it is no ui-only plan: the outcome
+// journal-chain carries the ui-only exit code (22), main.ts prints why and the process ends with the
+// lock, never released by hand while the process lives on (step 2b; D-17 either way).
 
 /** How a working orchestrad stops. */
 export type StopPort = {
@@ -48,20 +59,31 @@ export type WorkingContext = {
   /** The factories boot minted (BootPorts, via main.ts). */
   makeReadGate(spec: ReadGateSpec): ReadGate;
   makeWriteFence(spec: WriteFenceSpec): Promise<WriteFence>;
+  makeDbOpener(spec: DbOpenerSpec): Promise<DbOpener>;
+  /** This orchestrad's own environment (main.ts's StartDeps.env): the redactor replaces its values in every source string (r4 §6.1 #1). */
+  env: Readonly<Record<string, string | undefined>>;
   roots: readonly HarnessRoot[];
   notes: readonly StartupNote[];
   log: Log;
   pidLog: PidLog;
   console: ConsolePort;
   pid: number;
-  now(): number;
+  /** The clock hub boot made (BootPorts, via main.ts). */
+  clock: ClockHub;
   tty(): { stdin: boolean; stdout: boolean };
   stopping: StopPort;
 };
 
 export type WorkingOutcome =
   | { mode: 'lock-held'; code: typeof EXIT.lockHeld; pipe: string; holder: DaemonInfo | null }
-  | { mode: 'start-failed'; code: typeof EXIT.startFailed; stage: 'gates' | 'lock' | 'data-dir'; detail: string }
+  | { mode: 'start-failed'; code: typeof EXIT.startFailed; stage: 'gates' | 'lock' | 'data-dir' | 'store'; detail: string }
+  | {
+    mode: 'journal-chain';
+    code: typeof EXIT.uiOnly;
+    break: ChainBreak;
+    /** Ends this orchestrad through ctx.stopping.end; main.ts never calls it, the process exits with the code. */
+    stop(): Promise<void>;
+  }
   | {
     mode: 'working';
     profile: Profile['kind'];
@@ -69,6 +91,8 @@ export type WorkingOutcome =
     pipe: string;
     pairing: PairingOutput;
     testRoots: TestRoots | null;
+    /** The store this orchestrad opened and reconciled; stop() closes it. */
+    store: Store;
     /** Ends this orchestrad through ctx.stopping.end (in main.ts: the process exits). */
     stop(): Promise<void>;
     /** Settles once stop() has given up the lock, whoever called it (in main.ts: never, the process is gone). */
@@ -160,11 +184,39 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
 
   // Written once, now that the lock is held; nothing rewrites it while this process runs.
   const bootId = crypto.randomUUID();
+  const startedAt = new Date(ctx.clock.port(null).nowWall()).toISOString();
   try {
-    fence.writeAtomic(daemonJson, encodeDaemonInfo({ v: 1, pid: ctx.pid, profile: ctx.profile.kind, bootId, startedAt: new Date(ctx.now()).toISOString() }));
+    fence.writeAtomic(daemonJson, encodeDaemonInfo({ v: 1, pid: ctx.pid, profile: ctx.profile.kind, bootId, startedAt }));
   } catch (e) {
     // Only a second instance's hint reads it: a failed write costs that hint, not the start.
     log.error('daemon-json-failed', { error: e });
+  }
+
+  let store: Store;
+  try {
+    const opener = await ctx.makeDbOpener({ fence });
+    const opened = openStore({
+      openDb: (file) => opener.open(file), writer: fence, reader: gate, home, bootId, clock: ctx.clock.port(null), redactor: makeRedactor({ env: ctx.env }),
+    });
+    if (!opened.ok) {
+      const b = opened.break;
+      log.error('journal-chain', { line: b.line, why: b.why });
+      ctx.console.err(`orchestrad: the journal is broken at line ${b.line} (${b.why}: ${b.detail}); not working, exiting with the ui-only code ${EXIT.uiOnly}`);
+      let ended: Promise<void> | null = null;
+      const stopChain = (): Promise<void> => (ended ??= (async () => {
+        log.detach();
+        ctx.pidLog.detach();
+        await ctx.stopping.end(lock);
+      })());
+      return { mode: 'journal-chain', code: EXIT.uiOnly, break: b, stop: stopChain };
+    }
+    store = opened.store;
+    log.info('store', { jseq: store.tail.jseq, cutBytes: opened.report.cutBytes, appliedBatches: opened.report.appliedBatches, orphansClosed: opened.report.orphansClosed });
+  } catch (e) {
+    await lock.release();
+    log.error('store-failed', { error: e });
+    ctx.console.err(`orchestrad: cannot open the store in ${home}: ${describe(e)}`);
+    return { mode: 'start-failed', code: EXIT.startFailed, stage: 'store', detail: describe(e) };
   }
 
   const testRoots = ctx.profile.kind === 'test' ? new TestRoots(ctx.profile.rootPids) : null;
@@ -199,6 +251,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
     // Nothing reaches ORCHESTRA_HOME from here on, then the process ends with the lock.
     log.detach();
     ctx.pidLog.detach();
+    store.close();
     await ctx.stopping.end(lock);
     resolveStopped();
   })());
@@ -209,5 +262,5 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   log.info('working', { profile: ctx.profile.kind, pipe, bootId });
   // Last line of the startup: everything above is on disk and on the console before it.
   ctx.console.out(`orchestrad: working (${ctx.profile.kind} profile, pid ${ctx.pid}, data ${home})`);
-  return { mode: 'working', profile: ctx.profile.kind, home, pipe, pairing, testRoots, stop, stopped };
+  return { mode: 'working', profile: ctx.profile.kind, home, pipe, pairing, testRoots, store, stop, stopped };
 }

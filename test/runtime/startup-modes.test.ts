@@ -12,8 +12,10 @@ import type { StartDeps, StartOutcome } from '../../src/main.ts';
 import type { TestProfile } from '../../src/runtime/test-profile.ts';
 import { makeReadGate, makeWriteFence } from '../../src/fs/node-io.ts';
 import { PidLog } from '../../src/os/spawn.ts';
+import { makeRealClock } from '../../src/runtime/clock.ts';
 import { detectFeatures } from '../../src/runtime/features.ts';
 import { Log } from '../../src/runtime/log.ts';
+import { makeDbOpener } from '../../src/store/node-sqlite.ts';
 import { EXIT, planMessage, planStartup } from '../../src/runtime/startup.ts';
 import { fakeSpawn, whoamiChinese, whoamiEnglish, whoamiSpy } from '../helpers/fake-spawn.ts';
 import type { FakeSpawn } from '../helpers/fake-spawn.ts';
@@ -22,6 +24,8 @@ import { FENCE_NO_HOOK, FENCE_OK, captureConsole, minimalEnv, runWorkingInProces
 import { junction, put, treeDigest, withTmp } from '../helpers/tmp.ts';
 
 const REPO = fileURLToPath(new URL('../../', import.meta.url));
+/** The clock hub runWorking() gets in these tests, as boot hands main.ts the real one. */
+const CLOCK = makeRealClock();
 const SRC_URL = new URL('../../src/', import.meta.url).href;
 
 const FULL: Features = { node: '24.22.0', nodeAtLeastMin: true, zstd: true, registerHooks: true, sqlite: true, typeStripping: true };
@@ -198,8 +202,8 @@ test('runWorking checks the data dir itself: a junctioned home or the user home 
   const profile: TestProfile = { kind: 'test', testDir, orchestraHome: home, rootsDir: path.join(testDir, 'roots'), rootsDirGiven: false, rootPids: [] };
   const con = captureConsole();
   const common = {
-    roots: [], notes: [], log: new Log(), pidLog: new PidLog(), console: con.port, pid: process.pid, now: Date.now,
-    tty: () => ({ stdin: false, stdout: false }), realpath: (p: string) => fs.realpathSync.native(p), makeReadGate, makeWriteFence,
+    roots: [], notes: [], log: new Log({ clock: CLOCK.port(null) }), pidLog: new PidLog(), console: con.port, pid: process.pid, clock: CLOCK,
+    tty: () => ({ stdin: false, stdout: false }), realpath: (p: string) => fs.realpathSync.native(p), makeReadGate, makeWriteFence, makeDbOpener, env: minimalEnv(),
   };
   const o = await runWorkingInProcess({ ...common, profile, home, userHome: path.join(base, 'user-home') });
   if (o.mode === 'working') await o.stop();
@@ -230,15 +234,15 @@ test('runWorking checks again once the data dir exists: a home that resolves els
   const profile: TestProfile = { kind: 'test', testDir, orchestraHome: home, rootsDir: path.join(testDir, 'roots'), rootsDirGiven: false, rootPids: [] };
   const con = captureConsole();
   const ctx = {
-    profile, home, userHome: path.join(base, 'user-home'), roots: [], notes: [], log: new Log(), pidLog: new PidLog(), console: con.port, pid: process.pid,
-    now: Date.now, tty: () => ({ stdin: false, stdout: false }), makeReadGate, makeWriteFence,
+    profile, home, userHome: path.join(base, 'user-home'), roots: [], notes: [], log: new Log({ clock: CLOCK.port(null) }), pidLog: new PidLog(), console: con.port, pid: process.pid,
+    clock: CLOCK, tty: () => ({ stdin: false, stdout: false }), makeReadGate, makeWriteFence, makeDbOpener, env: minimalEnv(),
   };
   const o = await runWorkingInProcess({ ...ctx, realpath: moved });
   if (o.mode === 'working') await o.stop();
   assert.equal(o.mode === 'start-failed' && o.stage, 'data-dir', JSON.stringify(o));
   assert.match(o.mode === 'start-failed' ? o.detail : '', /changed while it was prepared: orchestra-home/);
   assert.equal(fs.existsSync(path.join(home, 'run', 'daemon.json')), false, 'no daemon.json was written');
-  const again = await runWorkingInProcess({ ...ctx, log: new Log(), pidLog: new PidLog(), realpath: (p: string) => fs.realpathSync.native(p) });
+  const again = await runWorkingInProcess({ ...ctx, log: new Log({ clock: CLOCK.port(null) }), pidLog: new PidLog(), realpath: (p: string) => fs.realpathSync.native(p) });
   assert.equal(again.mode, 'working', 'the failed attempt released the lock pipe');
   if (again.mode === 'working') await again.stop();
 });
@@ -249,13 +253,13 @@ test('stop() detaches the log and pid sinks before it ends: what is logged once 
   const testDir = fs.realpathSync.native(path.join(base, 'orchestra-test-x'));
   const home = path.join(testDir, 'orchestra');
   const profile: TestProfile = { kind: 'test', testDir, orchestraHome: home, rootsDir: path.join(testDir, 'roots'), rootsDirGiven: false, rootPids: [] };
-  const log = new Log();
+  const log = new Log({ clock: CLOCK.port(null) });
   const pidLog = new PidLog();
   const run = path.join(home, 'run');
   const onDisk: string[] = [];
   const o = await runWorkingInProcess({
-    profile, home, userHome: path.join(base, 'user-home'), roots: [], notes: [], log, pidLog, console: captureConsole().port, pid: process.pid, now: Date.now,
-    tty: () => ({ stdin: false, stdout: false }), realpath: (p: string) => fs.realpathSync.native(p), makeReadGate, makeWriteFence,
+    profile, home, userHome: path.join(base, 'user-home'), roots: [], notes: [], log, pidLog, console: captureConsole().port, pid: process.pid, clock: CLOCK,
+    tty: () => ({ stdin: false, stdout: false }), realpath: (p: string) => fs.realpathSync.native(p), makeReadGate, makeWriteFence, makeDbOpener, env: minimalEnv(),
     stopping: {
       onSignal: () => () => {},
       end: async (lock) => {
@@ -354,12 +358,14 @@ const fetchPort = globalThis.fetch;
 // Minted before the fence, as boot.ts does: once it is in, neither module can be resolved again.
 const io = await import(src + 'fs/node-io.ts');
 const proc = await import(src + 'os/node-proc.ts');
+const sqlite = await import(src + 'store/node-sqlite.ts');
+const clockModule = await import(src + 'runtime/clock.ts');
 const { installImportFence } = await import(src + 'runtime/import-fence.ts');
 const { detectFeatures } = await import(src + 'runtime/features.ts');
 const fence = installImportFence();
 const main = await import(src + 'main.ts');
 const lines = [];
-const ports = { fetch: fetchPort, realpath: io.realpath, makeReadGate: io.makeReadGate, makeWriteFence: io.makeWriteFence, makeSpawnGate: proc.makeSpawnGate };
+const ports = { fetch: fetchPort, realpath: io.realpath, makeReadGate: io.makeReadGate, makeWriteFence: io.makeWriteFence, makeSpawnGate: proc.makeSpawnGate, makeDbOpener: sqlite.makeDbOpener, clock: clockModule.makeRealClock(), endProcess: () => { throw new Error('this child stops through its handed stopping'); } };
 const o = await main.start(detectFeatures(), fence, ports, {
   argv: params.argv, home: params.home, env: params.env,
   console: { out: (l) => lines.push(l), err: (l) => lines.push(l) },
@@ -390,7 +396,11 @@ test('measured: a ui-only start (real profile, fake home as ORCHESTRA_HOME, real
   const res = record(t, { argv: [], home, env: minimalEnv({ ORCHESTRA_HOME: home }), inTest: { fakeHome: home } });
   assert.equal(res.mode, 'ui-only', res.lines.join('\n'));
   for (const m of [...NEVER_IN_UI_ONLY, 'node:net', 'node:sqlite', 'node:worker_threads']) assert.ok(!res.seen.includes(m), `${m} was loaded in ui-only`);
-  assert.ok(!res.seen.some((m) => /^src\/(store|sources|server|brakes|detectors)\//.test(m)));
+  // The node:sqlite mint (src/store/node-sqlite.ts) is resolved before the fence in every process, as
+  // node-io.ts is; it loads node:sqlite and db.ts only when working.ts makes an opener, and the line above
+  // shows node:sqlite never loaded. Every other store module stays out.
+  assert.ok(res.seen.includes('src/store/node-sqlite.ts'), 'the recorder minted node-sqlite.ts as boot does');
+  assert.ok(!res.seen.some((m) => /^src\/(store|sources|server|brakes|detectors)\//.test(m) && m !== 'src/store/node-sqlite.ts'), res.seen.join(', '));
   assert.ok(res.seen.includes('src/main.ts') && res.seen.includes('node:child_process'), 'the recorder saw the graph');
   assert.equal(fs.readdirSync(home).length, 0, 'nothing was created in the fake home');
 });
@@ -399,5 +409,5 @@ test('measured, positive control: a working start resolves exactly those modules
   const dir = withTmp(t);
   const res = record(t, { argv: ['--test-profile', '--test-dir', dir], home: path.join(dir, 'user-home'), env: minimalEnv() });
   assert.equal(res.mode, 'working', res.lines.join('\n'));
-  for (const m of [...NEVER_IN_UI_ONLY, 'node:net']) assert.ok(res.seen.includes(m), `${m} not seen in working mode`);
+  for (const m of [...NEVER_IN_UI_ONLY, 'node:net', 'node:sqlite', 'src/store/db.ts', 'src/store/journal.ts', 'src/store/store.ts']) assert.ok(res.seen.includes(m), `${m} not seen in working mode`);
 });

@@ -10,7 +10,7 @@ import { decideBuiltin, moduleKeyFromUrl, rowsFor } from '../../src/runtime/buil
 import { EXIT } from '../../src/runtime/exit.ts';
 import { ImportFenceError, decideImport, installImportFence } from '../../src/runtime/import-fence.ts';
 import { BASE_LOCKS } from '../../src/runtime/process-powers.ts';
-import { BOOTSTRAP_URL, WorkerStartError, checkWorkerTarget, startWorker } from '../../src/runtime/workers.ts';
+import { BOOTSTRAP_HREF, WorkerStartError, checkWorkerTarget, startWorker } from '../../src/runtime/workers.ts';
 import { withTmp } from '../helpers/tmp.ts';
 
 const src = (rel: string) => new URL(`../../src/${rel}`, import.meta.url).href;
@@ -76,7 +76,9 @@ test('policy: default builtins everywhere, rows per module, the forbidden list b
   assert.equal(decideBuiltin('src/os/node-proc.ts', 'child_process').allow, true);
   assert.equal(decideBuiltin('src/os/spawn.ts', 'child_process').allow, false);
   assert.equal(decideBuiltin('src/model/inbox.ts', 'node:child_process').allow, false);
-  assert.equal(decideBuiltin('src/store/db.ts', 'node:sqlite').allow, true);
+  // Step 3 minted node:sqlite: the minted module holds it, db.ts (the gate) no longer does.
+  assert.equal(decideBuiltin('src/store/node-sqlite.ts', 'node:sqlite').allow, true);
+  assert.equal(decideBuiltin('src/store/db.ts', 'node:sqlite').allow, false);
   assert.equal(decideBuiltin('src/main.ts', 'node:module').allow, false);
   assert.equal(decideBuiltin('src/runtime/features.ts', 'node:module').allow, true);
   for (const id of ['node:vm', 'vm', 'node:wasi', 'node:inspector', 'node:inspector/promises', 'node:repl', 'node:cluster']) {
@@ -167,6 +169,30 @@ test('a dispatcher slot undici already filled (writable, not configurable) is lo
   assert.deepEqual(Object.getOwnPropertyDescriptor(fakeGlobal, DISPATCHER_SLOTS[0]!), { value: stub, writable: false, enumerable: false, configurable: false });
 });
 
+// Finding N1: on the main thread exit and reallyExit get the throwing stub (boot.ts ends through the
+// reallyExit it took before the fence); a worker's install pins Node's own instead, since there they
+// end the thread only and Node's worker crash path calls process.exit (the worker test below measures
+// that a crashing worker still ends with 1). The main-thread install is the default.
+test('installImportFence locks exit and reallyExit on the main thread (the default) and pins them on a worker', () => {
+  const make = () => {
+    const own = { exit: function exit() { return 'raw'; }, reallyExit: function reallyExit() { return 'raw'; }, _fatalException: function fatal() { return 'raw'; } };
+    return { own, proc: { ...own } as Record<string, unknown> };
+  };
+  const main = make();
+  installImportFence(main.proc, {}, REPO, {});
+  for (const k of ['exit', 'reallyExit'] as const) {
+    assert.throws(() => (main.proc[k] as () => unknown)(), { code: 'ERR_ORCHESTRA_IMPORT_FENCE', reason: 'disabled' }, k);
+    assert.throws(() => { main.proc[k] = () => 'mine'; }, TypeError, k);
+  }
+  assert.equal(main.proc._fatalException, main.own._fatalException);
+  const worker = make();
+  installImportFence(worker.proc, {}, REPO, {}, 'worker');
+  for (const k of ['exit', 'reallyExit', '_fatalException'] as const) {
+    assert.equal(worker.proc[k], worker.own[k], k);
+    assert.deepEqual(Object.getOwnPropertyDescriptor(worker.proc, k), { value: worker.own[k], writable: false, enumerable: true, configurable: false }, k);
+  }
+});
+
 test('decideImport: builtins by policy; otherwise .ts/.js file: URLs only, no attributes, and src stays inside src/shared', () => {
   const R = REPO.href;
   const fromModel = `${R}src/model/x.ts`;
@@ -232,7 +258,10 @@ test('worker targets: only .ts file URLs, never source text, data: URLs or the b
   assert.deepEqual(checkWorkerTarget(new URL('https://example.com/w.ts')), { ok: false, reason: 'not-file-url' });
   assert.deepEqual(checkWorkerTarget(new URL('file:///C:/x/w.js')), { ok: false, reason: 'not-ts-module' });
   assert.deepEqual(checkWorkerTarget(new URL('file:///C:/x/w.ts?v=2')), { ok: false, reason: 'not-ts-module' });
-  assert.deepEqual(checkWorkerTarget(BOOTSTRAP_URL), { ok: false, reason: 'is-bootstrap' });
+  // workers.ts exports the bootstrap's href only (a URL would stay mutable through its setters).
+  assert.equal(typeof BOOTSTRAP_HREF, 'string');
+  assert.deepEqual(checkWorkerTarget(new URL(BOOTSTRAP_HREF)), { ok: false, reason: 'is-bootstrap' });
+  assert.deepEqual(checkWorkerTarget(BOOTSTRAP_HREF), { ok: false, reason: 'is-bootstrap' });
   assert.throws(() => startWorker(new URL('data:text/javascript,1')), WorkerStartError);
 });
 
@@ -810,13 +839,21 @@ export async function start(): Promise<void> {
     try { p[name]!(); out[name] = 'reached'; } catch (e) { out[name] = (e as { reason?: string }).reason ?? (e as Error).name; }
   }
   try { (globalThis as unknown as Record<symbol, { request(o: object): unknown }>)[Symbol.for('undici.globalDispatcher.1')]!.request({}); out.dispatcher = 'reached'; } catch (e) { out.dispatcher = (e as { reason?: string }).reason ?? (e as Error).name; }
+  // The worker pins (process-powers.ts, worker: 'pin'): Node's own exit and reallyExit, read-only.
+  for (const name of ['exit', 'reallyExit']) {
+    const d = Object.getOwnPropertyDescriptor(process, name)!;
+    out[name] = (d.writable === false && d.configurable === false ? 'pinned ' : 'open ') + (d.value as { name: string }).name;
+  }
   ctx.post(out);
 }
 `,
   });
   assert.equal(r.status, 0, r.stderr);
   const res = lastJson(r.stdout) as Record<string, { messages: unknown[]; error: string | null; exit: number }>;
-  assert.deepEqual(res['worker-powers.ts']!.messages, [{ _debugProcess: 'disabled', _debugEnd: 'disabled', _getActiveHandles: 'disabled', _getActiveRequests: 'disabled', dispatcher: 'disabled' }]);
+  assert.deepEqual(res['worker-powers.ts']!.messages, [{
+    _debugProcess: 'disabled', _debugEnd: 'disabled', _getActiveHandles: 'disabled', _getActiveRequests: 'disabled', dispatcher: 'disabled',
+    exit: 'pinned exit', reallyExit: 'pinned reallyExit',
+  }]);
   assert.deepEqual(res['worker-fs.ts']!.messages, []);
   assert.match(res['worker-fs.ts']!.error ?? '', /ERR_ORCHESTRA_IMPORT_FENCE.*node:fs denied \(not-allowed-for-module\)/);
   assert.equal(res['worker-fs.ts']!.exit, 1);

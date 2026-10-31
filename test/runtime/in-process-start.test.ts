@@ -7,11 +7,15 @@ import * as crypto from 'node:crypto';
 import type { StopPort } from '../../src/runtime/working.ts';
 import { makeReadGate, makeWriteFence } from '../../src/fs/node-io.ts';
 import { PidLog } from '../../src/os/spawn.ts';
+import { makeRealClock } from '../../src/runtime/clock.ts';
 import { detectFeatures } from '../../src/runtime/features.ts';
 import { Log } from '../../src/runtime/log.ts';
+import { makeDbOpener } from '../../src/store/node-sqlite.ts';
 import { whoamiEnglish, whoamiSpy } from '../helpers/fake-spawn.ts';
 import { FENCE_OK, IN_PROCESS_STOP, assertFakeHome, captureConsole, inProcessOverrides, minimalEnv, runWorkingInProcess, spyGate, startInProcess, testPorts } from '../helpers/start.ts';
 import { junction, withTmp } from '../helpers/tmp.ts';
+
+const CLOCK = makeRealClock();
 
 // Step 2c (zen note 7.7, first residual): a test file run directly, or with --test-isolation=none,
 // carries no NODE_TEST_CONTEXT, so an in-process start() without a pinned home would run the real
@@ -103,8 +107,8 @@ test('startInProcess refuses an omitted env or a root variable pointing outside 
 test('runWorkingInProcess refuses unless both home and userHome are fake homes', async (t) => {
   const base = withTmp(t);
   const ctx = {
-    profile: { kind: 'real' as const }, roots: [], notes: [], log: new Log(), pidLog: new PidLog(), console: captureConsole().port, pid: process.pid, now: Date.now,
-    tty: () => ({ stdin: false, stdout: false }), realpath: (p: string) => fs.realpathSync.native(p), makeReadGate, makeWriteFence,
+    profile: { kind: 'real' as const }, roots: [], notes: [], log: new Log({ clock: CLOCK.port(null) }), pidLog: new PidLog(), console: captureConsole().port, pid: process.pid, clock: CLOCK,
+    tty: () => ({ stdin: false, stdout: false }), realpath: (p: string) => fs.realpathSync.native(p), makeReadGate, makeWriteFence, makeDbOpener, env: minimalEnv(),
   };
   // Were the guard missing (a mutation run), the first call would work inside the fixture and is
   // stopped at once, and the second, whose home is its user home, fails the data dir check first.
@@ -119,4 +123,44 @@ test('runWorkingInProcess refuses unless both home and userHome are fake homes',
   const elsewhere = outsideFixture();
   assert.match(await outcome(runWorkingInProcess({ ...ctx, home: elsewhere, userHome: elsewhere })), /^test helper: home must lie inside/);
   assert.equal(fs.readdirSync(base).length, 0, 'nothing was created');
+});
+
+// Finding F3: the checks must judge the very object start() gets. Object.keys skips a non-enumerable
+// env key that resolveEnv's own-field reads see; a spread drops a non-enumerable home or env, so start()
+// would fall back to os.homedir() and process.env; a getter can answer the check and start() apart.
+// Every refusal here comes before start() runs: none of these paths is ever read.
+test('startInProcess judges the copy start() gets: a non-enumerable env root, a non-enumerable home or env, and a getter are refused or carried as checked', async (t) => {
+  const dir = fs.realpathSync.native(withTmp(t));
+  const home = path.join(dir, 'user-home');
+  const ports = testPorts();
+  const refused = async (overrides: Record<string, unknown>) => {
+    try {
+      const o = await startInProcess(detectFeatures(), FENCE_OK, ports, overrides as never);
+      // Never left running (its lock pipe would keep the file alive): a start that got through is stopped.
+      if (o.mode === 'working' || o.mode === 'journal-chain') await o.stop();
+      return 'started';
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+  // (a) a non-enumerable CLAUDE_CONFIG_DIR outside any fixture.
+  const env = minimalEnv();
+  Object.defineProperty(env, 'CLAUDE_CONFIG_DIR', { value: outsideFixture(), enumerable: false });
+  assert.match(await refused({ argv: ['--test-profile', '--test-dir', dir], home, env }), /env\.CLAUDE_CONFIG_DIR must lie inside an orchestra-test-\* dir/);
+  // (b) a non-enumerable home (and env): kept by the copy, so judged, never dropped to os.homedir().
+  const o1: Record<string, unknown> = { argv: ['--test-profile', '--test-dir', dir], env: minimalEnv() };
+  Object.defineProperty(o1, 'home', { value: outsideFixture(), enumerable: false });
+  assert.match(await refused(o1), /home must lie inside an orchestra-test-\* dir/);
+  const copied = inProcessOverrides(Object.defineProperty({ argv: [] }, 'home', { value: home, enumerable: false }) as never);
+  assert.equal(copied.home, home, 'a non-enumerable home reaches start()');
+  const o2: Record<string, unknown> = { argv: ['--test-profile', '--test-dir', dir], home };
+  Object.defineProperty(o2, 'env', { value: minimalEnv({ ORCHESTRA_HOME: outsideFixture() }), enumerable: false });
+  assert.match(await refused(o2), /env\.ORCHESTRA_HOME must lie inside/);
+  // (c) a getter: refused outright, its value never read twice.
+  let reads = 0;
+  const o3 = { argv: ['--test-profile', '--test-dir', dir], env: minimalEnv(), get home() { reads++; return reads === 1 ? home : outsideFixture(); } };
+  assert.match(await refused(o3), /overrides\.home is an accessor/);
+  const env4 = minimalEnv();
+  Object.defineProperty(env4, 'CODEX_HOME', { get: () => outsideFixture(), enumerable: true });
+  assert.match(await refused({ argv: ['--test-profile', '--test-dir', dir], home, env: env4 }), /env\.CODEX_HOME is an accessor/);
 });

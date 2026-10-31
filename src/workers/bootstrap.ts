@@ -1,7 +1,7 @@
 import { isMainThread, parentPort, workerData } from 'node:worker_threads';
 import type { WorkerContext, WorkerPayload } from '../runtime/workers.ts';
 import { checkWorkerTarget, WORKER_DATA_KEY } from '../runtime/workers.ts';
-import { installImportFence } from '../runtime/import-fence.ts';
+import { installWorkerFence } from '../runtime/import-fence.ts';
 
 type WorkerModule = { run?: (ctx: WorkerContext) => unknown };
 
@@ -13,7 +13,7 @@ export async function runBootstrap(): Promise<void> {
   const c = checkWorkerTarget(payload?.target);
   if (payload === undefined || !c.ok) throw new Error(`workers/bootstrap.ts: bad worker target (${c.ok ? 'missing' : c.reason})`);
   // Fail closed: without the resolve hook a worker module could import any builtin.
-  if (!installImportFence().resolveHook) throw new Error('workers/bootstrap.ts: module.registerHooks is missing, worker refused');
+  if (!installWorkerFence().resolveHook) throw new Error('workers/bootstrap.ts: module.registerHooks is missing, worker refused');
   const mod = (await import(c.href)) as WorkerModule;
   if (typeof mod.run !== 'function') throw new Error(`worker module exports no run(): ${c.href}`);
   await mod.run({

@@ -1,8 +1,10 @@
 import type { ChildProcess } from 'node:child_process';
 import * as path from 'node:path';
 import type { RealpathFn } from '../fs/paths.ts';
+import type { Clock, ClockHub, Fired } from '../runtime/clock.ts';
 import { checkPath, pathKey } from '../fs/paths.ts';
 import { envGet, ownFields } from '../runtime/own.ts';
+import { frozenClass } from '../../shared/frozen.js';
 
 const win = path.win32;
 
@@ -10,19 +12,21 @@ const win = path.win32;
 // pairs. No shell, no .cmd/.bat, no relative path, no argv that is not on the list. Every exe and
 // fixed argument is pinned here; a caller only picks which rules a gate allows. The backend that
 // really spawns is minted in src/os/node-proc.ts (the only importer of node:child_process) and
-// reaches a gate only through makeSpawnGate: a gate built anywhere else spawns through whatever its
+// reaches a gate only through node-proc.ts's gate factory: a gate built anywhere else spawns through whatever its
 // builder wrote, which cannot start a process.
 
 export type SpawnRule = 'whoami' | 'csc' | 'powershell-toast' | 'procguard';
-const RULES: readonly SpawnRule[] = ['whoami', 'csc', 'powershell-toast', 'procguard'];
+const RULES: readonly SpawnRule[] = Object.freeze(['whoami', 'csc', 'powershell-toast', 'procguard']);
 
-export const WHOAMI_ARGV: readonly string[] = ['/groups', '/fo', 'csv', '/nh'];
+// The argv tables the gate decides from on every call are frozen where they are defined: a module that
+// imports one could otherwise push an argument into what the gate allows (P8).
+export const WHOAMI_ARGV: readonly string[] = Object.freeze(['/groups', '/fo', 'csv', '/nh']);
 /** The fixed csc vector of plan §2; `/out:<path>` and the source file follow it. */
-export const CSC_FLAGS: readonly string[] = [
+export const CSC_FLAGS: readonly string[] = Object.freeze([
   '/nologo', '/target:exe', '/platform:x64', '/optimize+', '/debug-', '/r:System.Core.dll', '/r:System.Web.Extensions.dll',
-];
+]);
 /** Followed by exactly one argument: the constant script of os/toast-script.ts, encoded. */
-export const TOAST_FLAGS: readonly string[] = ['-NoProfile', '-NonInteractive', '-NoLogo', '-WindowStyle', 'Hidden', '-EncodedCommand'];
+export const TOAST_FLAGS: readonly string[] = Object.freeze(['-NoProfile', '-NonInteractive', '-NoLogo', '-WindowStyle', 'Hidden', '-EncodedCommand']);
 /** The encoded constant of os/toast-script.ts. That module arrives in step 17; until then the rule cannot be enabled. */
 const TOAST_ENCODED: string | null = null;
 const PROTECT_LIST = /^[1-9]\d{0,9}:\d{1,20}(?:,[1-9]\d{0,9}:\d{1,20})*$/;
@@ -143,6 +147,7 @@ export class PidLog {
     }
   }
 }
+frozenClass(PidLog);
 
 /** The spawn options the gate itself chooses; callers never pass any. */
 export type BackendOptions = {
@@ -171,18 +176,40 @@ export type ProcHandle = {
   onStdout(cb: (chunk: Buffer) => void): void;
   onStderr(cb: (chunk: Buffer) => void): void;
   onClose(cb: (code: number | null, signal: string | null) => void): void;
+  /**
+   * Hears a failure of the child or of one of its pipes, by error code: ENOENT or EACCES when the
+   * exe vanished or was blocked between the gate's check and the spawn, EPIPE on a write to a dead
+   * child's stdin. Each failure is handled here (the gate records the first in the pid log), so none
+   * becomes an uncaught exception that ends orchestrad; a callback added late hears the last one.
+   */
+  onError(cb: (code: string) => void): void;
   kill(): void;
 };
 
 /** The ProcHandle's own keys, a fixed set; the measure in spawn.test.ts holds the handle to exactly these. */
-export const HANDLE_KEYS: readonly string[] = ['pid', 'write', 'end', 'onStdout', 'onStderr', 'onClose', 'kill'];
+export const HANDLE_KEYS: readonly string[] = Object.freeze(['pid', 'write', 'end', 'onStdout', 'onStderr', 'onClose', 'onError', 'kill']);
 
 function toBuf(chunk: Buffer | string): Buffer {
   return typeof chunk === 'string' ? Buffer.from(chunk, 'latin1') : chunk;
 }
 
-/** Wraps a live child in a ProcHandle; the child itself stays captured here and never leaves. */
-function handleOf(child: ChildLike): ProcHandle {
+/**
+ * Wraps a live child in a ProcHandle; the child itself stays captured here and never leaves. An
+ * 'error' listener sits on the child and on each of its pipes from the start, so a spawn failure Node
+ * reports asynchronously, or EPIPE on stdin, reaches `failed` (once) and the holder's onError, never
+ * the uncaught-exception handler.
+ */
+function handleOf(child: ChildLike, failed: (code: string) => void): ProcHandle {
+  const listeners: ((code: string) => void)[] = [];
+  let last: string | null = null;
+  const onFailure = (e: unknown) => {
+    const code = errCode(e);
+    if (last === null) failed(code);
+    last = code;
+    for (const cb of listeners) cb(code);
+  };
+  child.on('error', onFailure);
+  for (const s of [child.stdin, child.stdout, child.stderr]) s?.on('error', onFailure);
   const h = Object.assign(Object.create(null) as ProcHandle, {
     pid: typeof child.pid === 'number' ? child.pid : null,
     write: (data: Uint8Array | string) => {
@@ -199,6 +226,10 @@ function handleOf(child: ChildLike): ProcHandle {
     },
     onClose: (cb: (code: number | null, signal: string | null) => void) => {
       child.on('close', (code: number | null, signal: NodeJS.Signals | null) => cb(code, signal === null ? null : String(signal)));
+    },
+    onError: (cb: (code: string) => void) => {
+      listeners.push(cb);
+      if (last !== null) cb(last);
     },
     kill: () => {
       child.kill();
@@ -245,6 +276,7 @@ export class SpawnRefusedError extends Error {
     this.decision = decision;
   }
 }
+frozenClass(SpawnRefusedError);
 
 /** Where procguard.exe may run from: the data dir's runtime\procguard\<source sha256>\, or the repo's build\. */
 export type ProcguardSite = { at: 'runtime'; homeReal: string; sourceHash: string } | { at: 'build' };
@@ -259,15 +291,18 @@ export type SpawnGateConfig = {
   procguard?: readonly ProcguardSite[];
   /** Hears every spawn (PidLog.record, which ends up in run/pids.jsonl). Required: no spawn goes unrecorded. */
   record: (e: PidEntry) => void;
-  /** Required, no default: the real one is node-proc.ts's, handed in by makeSpawnGate. */
+  /** Required, no default: the real one is node-proc.ts's, handed in by its gate factory. */
   backend: SpawnBackend;
   realpath: RealpathFn;
-  now: () => number;
+  /** Required, no default: the hub the composition root holds. The gate mints its own Clock from it: pid entries read its wall clock, run() deadlines are its timers. */
+  clock: ClockHub;
 };
 
-const CONFIG_KEYS = ['systemRoot', 'rules', 'csc', 'procguard', 'record', 'backend', 'realpath', 'now'] as const;
+const CONFIG_KEYS = ['systemRoot', 'rules', 'csc', 'procguard', 'record', 'backend', 'realpath', 'clock'] as const;
 
+/** timeoutMs is a positive integer (a Clock due time is whole milliseconds), at most 2^31 - 1. */
 export type RunLimits = { timeoutMs: number; maxBytes: number };
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 export type RunResult =
   | { ok: true; exitCode: number; stdout: Buffer; stderr: Buffer }
@@ -338,7 +373,10 @@ export class SpawnGate {
   readonly #backend: SpawnBackend;
   readonly #record: (e: PidEntry) => void;
   readonly #realpath: RealpathFn;
-  readonly #now: () => number;
+  readonly #clock: Clock;
+  /** run() deadlines by timerId; the Clock fires into #expire, which looks the run up here. */
+  readonly #deadlines = new Map<string, () => void>();
+  #runs = 0;
 
   constructor(config: SpawnGateConfig) {
     // Own fields only: an optional field the caller left out reads undefined, never Object.prototype's.
@@ -346,9 +384,11 @@ export class SpawnGate {
     const sys = cfg.systemRoot;
     if (typeof sys !== 'object' || sys === null || !PROVEN.has(sys)) throw new Error('spawn gate: systemRoot must be the ok result of resolveSystemRoot()');
     if (typeof cfg.record !== 'function') throw new Error('spawn gate: record is required, every spawn lands in run/pids.jsonl');
-    for (const k of ['backend', 'realpath', 'now'] as const) {
+    for (const k of ['backend', 'realpath'] as const) {
       if (typeof cfg[k] !== 'function') throw new Error(`spawn gate: ${k} is required, there is no default`);
     }
+    const hub = cfg.clock;
+    if (typeof hub !== 'object' || hub === null || typeof hub.port !== 'function') throw new Error('spawn gate: clock is required, there is no default');
     const exes = new Map<string, { rule: SpawnRule; exe: string }>();
     const add = (rule: SpawnRule, exe: string) => exes.set(pathKey(exe), { rule, exe });
     add('whoami', win.join(sys.path, WHOAMI_REL));
@@ -373,7 +413,7 @@ export class SpawnGate {
     this.#backend = cfg.backend!;
     this.#record = cfg.record;
     this.#realpath = cfg.realpath!;
-    this.#now = cfg.now!;
+    this.#clock = hub.port((f) => this.#expire(f));
     Object.freeze(this);
   }
 
@@ -445,7 +485,7 @@ export class SpawnGate {
   }
 
   #spawn(d: Extract<SpawnDecision, { allow: true }>, stdin: 'ignore' | 'pipe'): ChildLike {
-    const at = new Date(this.#now()).toISOString();
+    const at = new Date(this.#clock.nowWall()).toISOString();
     let child: ChildLike;
     try {
       child = this.#backend(d.exe, d.argv, { cwd: win.dirname(d.exe), windowsHide: true, shell: false, stdio: [stdin, 'pipe', 'pipe'] });
@@ -467,11 +507,21 @@ export class SpawnGate {
     const d = this.#decide(req);
     if (!d.allow) throw new SpawnRefusedError(d);
     if (!STARTABLE.includes(d.rule)) throw new SpawnRefusedError({ allow: false, reason: 'not-startable', exe: d.exe, rule: d.rule });
-    return handleOf(this.#spawn(d, 'pipe'));
+    const child = this.#spawn(d, 'pipe');
+    const pid = typeof child.pid === 'number' ? child.pid : null;
+    return handleOf(child, (code) => this.#record({ at: new Date(this.#clock.nowWall()).toISOString(), rule: d.rule, exe: d.exe, pid, error: code }));
   }
 
-  /** Runs to completion and collects the output; past the time or size limit the child is killed. */
-  run(req: SpawnRequest, limits: RunLimits): Promise<RunResult> {
+  /**
+   * Runs to completion and collects the output; past the time or size limit the child is killed. The
+   * time limit is a deadline timer of the gate's Clock (`deadline:spawn-<n>:0`, n counting this gate's
+   * runs), so a virtual clock drives it in tests exactly as the real one does in orchestrad.
+   */
+  run(req: SpawnRequest, given: RunLimits): Promise<RunResult> {
+    const { timeoutMs, maxBytes } = ownFields(given, ['timeoutMs', 'maxBytes'] as const);
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs! <= 0 || timeoutMs! > MAX_TIMEOUT_MS) throw new Error('spawn gate: run limits need timeoutMs, a positive integer of milliseconds up to 2^31 - 1');
+    if (!Number.isSafeInteger(maxBytes) || maxBytes! < 0) throw new Error('spawn gate: run limits need maxBytes, a non-negative integer');
+    const limits: RunLimits = { timeoutMs: timeoutMs!, maxBytes: maxBytes! };
     const d = this.#decide(req);
     if (!d.allow) return Promise.resolve({ ok: false, reason: 'refused', decision: d });
     let child: ChildLike;
@@ -480,16 +530,35 @@ export class SpawnGate {
     } catch (e) {
       return Promise.resolve({ ok: false, reason: 'spawn-failed', detail: errCode(e) });
     }
-    return collect(child, limits);
+    const id = `deadline:spawn-${++this.#runs}:0`;
+    const deadline: Deadline = {
+      arm: (onTimeout) => {
+        this.#deadlines.set(id, onTimeout);
+        this.#clock.schedule({ timerId: id, class: 'deadline', clock: 'mono', due: this.#clock.nowMono() + limits.timeoutMs });
+      },
+      disarm: () => {
+        this.#deadlines.delete(id);
+        this.#clock.cancel(id);
+      },
+    };
+    return collect(child, limits, deadline);
+  }
+
+  #expire(f: Fired): void {
+    const onTimeout = this.#deadlines.get(f.timerId);
+    this.#deadlines.delete(f.timerId);
+    onTimeout?.();
   }
 }
 
 // The prototype and every instance are frozen: a module holding a SpawnGate (or the class) can neither
 // replace a method every holder calls nor change an instance's fields or prototype, and the gate's
 // own paths call only its private members, so a subclass cannot steer them either.
-Object.freeze(SpawnGate.prototype);
+frozenClass(SpawnGate);
 
-function collect(child: ChildLike, limits: RunLimits): Promise<RunResult> {
+type Deadline = { arm(onTimeout: () => void): void; disarm(): void };
+
+function collect(child: ChildLike, limits: RunLimits, deadline: Deadline): Promise<RunResult> {
   return new Promise((resolve) => {
     const out: Buffer[] = [];
     const err: Buffer[] = [];
@@ -499,7 +568,7 @@ function collect(child: ChildLike, limits: RunLimits): Promise<RunResult> {
     const finish = (r: RunResult) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      deadline.disarm();
       resolve(r);
     };
     const halt = (why: 'timeout' | 'output-too-large') => {
@@ -507,7 +576,7 @@ function collect(child: ChildLike, limits: RunLimits): Promise<RunResult> {
       stop = why;
       child.kill();
     };
-    const timer = setTimeout(() => halt('timeout'), limits.timeoutMs);
+    deadline.arm(() => halt('timeout'));
     const take = (into: Buffer[]) => (chunk: Buffer | string) => {
       const b = typeof chunk === 'string' ? Buffer.from(chunk, 'latin1') : chunk;
       bytes += b.length;

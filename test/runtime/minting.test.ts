@@ -2,27 +2,37 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { TestContext } from 'node:test';
-import type { ReadIo } from '../../src/fs/read-gate.ts';
+import type { AllowRule, ReadIo } from '../../src/fs/read-gate.ts';
 import type { WriteIo } from '../../src/fs/write-fence.ts';
 import { launcherRootFs } from '../../src/fs/harness-roots.ts';
 import { makeReadGate, makeWriteFence, realpath } from '../../src/fs/node-io.ts';
 import { canonicalize } from '../../src/fs/paths.ts';
-import { ReadGate } from '../../src/fs/read-gate.ts';
+import { ALLOW_RULES, DENY_RULES, LISTABLE, ReadGate } from '../../src/fs/read-gate.ts';
 import { WriteFence } from '../../src/fs/write-fence.ts';
 import { makeSpawnGate } from '../../src/os/node-proc.ts';
-import { SpawnGate, WHOAMI_ARGV, WHOAMI_REL, resolveSystemRoot } from '../../src/os/spawn.ts';
-import { MINTED_MODULES, builtinId } from '../../src/runtime/builtin-policy.ts';
+import { CSC_FLAGS, HANDLE_KEYS, SpawnGate, TOAST_FLAGS, WHOAMI_ARGV, WHOAMI_REL, resolveSystemRoot } from '../../src/os/spawn.ts';
+import type { BuiltinRow } from '../../src/runtime/builtin-policy.ts';
+import { BUILTIN_ROWS, DEFAULT_BUILTINS, FORBIDDEN_BUILTINS, MINTED_MODULES, NO_BUILTIN_DIRS, builtinId, decideBuiltin } from '../../src/runtime/builtin-policy.ts';
+import { makeRealClock } from '../../src/runtime/clock.ts';
 import { checkDataDir } from '../../src/runtime/data-dir.ts';
 import { resolveEnv } from '../../src/runtime/env.ts';
 import { detectFeatures } from '../../src/runtime/features.ts';
 import { decideImport } from '../../src/runtime/import-fence.ts';
+import { Log } from '../../src/runtime/log.ts';
 import { ownEnv } from '../../src/runtime/own.ts';
 import { checkInTestRealProfile, parseProfileArgs } from '../../src/runtime/test-profile.ts';
+import { makeDbOpener } from '../../src/store/node-sqlite.ts';
+import { FORMAT_RULES, SYSTEM_VARIABLES, makeRedactor } from '../../src/store/redact.ts';
+import { EXIT } from '../../src/runtime/exit.ts';
+import { CSRF_RE } from '../../src/server/routes.ts';
+import { frozen, frozenClass } from '../../shared/frozen.js';
+import { ID_RE, TOOL_NAME_RE } from '../../shared/protocol.js';
 import { fakeSpawn } from '../helpers/fake-spawn.ts';
 import { realIo } from '../helpers/read-io.ts';
+import { openPaths } from '../helpers/frozen-walk.ts';
 import { findImports } from '../helpers/scan-rules.ts';
 import { FENCE_OK, captureConsole, minimalEnv, startInProcess, testPorts } from '../helpers/start.ts';
 import { put, treeDigest, withTmp } from '../helpers/tmp.ts';
@@ -89,14 +99,15 @@ function canonicalTmp(t: TestContext): string {
 // ---------------------------------------------------------------------------------------------
 // The table and the code agree.
 
-test('exactly one src file imports node:fs and one node:child_process; both are minted and only boot.ts imports them', () => {
+test('exactly one src file imports node:fs, one node:child_process and one node:sqlite; all three are minted and only boot.ts imports them', () => {
   const files = srcFiles();
   const importers = (pred: (id: string) => boolean) => files
     .filter((f) => findImports(f.text).some((r) => !r.typeOnly && (r.spec.startsWith('node:') || ['fs', 'fs/promises', 'child_process'].includes(r.spec)) && pred(builtinId(r.spec))))
     .map((f) => f.rel);
   assert.deepEqual(importers((id) => id === 'node:fs' || id.startsWith('node:fs/')), ['src/fs/node-io.ts']);
   assert.deepEqual(importers((id) => id === 'node:child_process'), ['src/os/node-proc.ts']);
-  assert.deepEqual([...MINTED_MODULES].sort(), ['src/fs/node-io.ts', 'src/os/node-proc.ts']);
+  assert.deepEqual(importers((id) => id === 'node:sqlite'), ['src/store/node-sqlite.ts']);
+  assert.deepEqual([...MINTED_MODULES].sort(), ['src/fs/node-io.ts', 'src/os/node-proc.ts', 'src/store/node-sqlite.ts']);
   const mintedImporters = files.filter((f) => findImports(f.text).some((r) => !r.typeOnly && MINTED_MODULES.some((m) => path.posix.normalize(path.posix.join(path.posix.dirname(f.rel), r.spec)).toLowerCase() === m)))
     .map((f) => f.rel);
   assert.deepEqual(mintedImporters, ['src/boot.ts']);
@@ -105,6 +116,7 @@ test('exactly one src file imports node:fs and one node:child_process; both are 
 test('the minted modules export gate factories and the realpath port only; an io or backend in a spec is ignored', async (t) => {
   assert.deepEqual(Object.keys(await import('../../src/fs/node-io.ts')).sort(), ['makeReadGate', 'makeWriteFence', 'realpath']);
   assert.deepEqual(Object.keys(await import('../../src/os/node-proc.ts')).sort(), ['makeSpawnGate']);
+  assert.deepEqual(Object.keys(await import('../../src/store/node-sqlite.ts')).sort(), ['makeDbOpener']);
   const dir = canonicalTmp(t);
   const root = path.join(dir, 'claude');
   put(path.join(root, 'sessions', '7.json'), 'REAL');
@@ -122,10 +134,24 @@ test('the minted modules export gate factories and the realpath port only; an io
   const spy = fakeSpawn();
   const sys = resolveSystemRoot(process.env, realpath);
   assert.ok(sys.ok);
-  const sg = makeSpawnGate({ systemRoot: sys, rules: ['whoami'], record: () => {}, realpath, now: Date.now, backend: spy.backend } as Parameters<typeof makeSpawnGate>[0]);
+  const sg = makeSpawnGate({ systemRoot: sys, rules: ['whoami'], record: () => {}, realpath, clock: makeRealClock(), backend: spy.backend } as Parameters<typeof makeSpawnGate>[0]);
   const r = await sg.run({ exe: path.join(sys.path, WHOAMI_REL), argv: WHOAMI_ARGV }, { timeoutMs: 10_000, maxBytes: 256 * 1024 });
   assert.equal(spy.calls.length, 0, 'the spec\'s backend was not used');
   assert.ok(r.ok && /S-1-16-\d+/.test(r.stdout.toString('latin1')) || (!r.ok && r.reason !== 'refused'), JSON.stringify(r));
+  // The opener factory ignores a backend in its spec: the database is real and the spy is never called.
+  const dbSeen: string[] = [];
+  const spyBackend = { codes: { OK: 0, DENY: 0, SELECT: 0, READ: 0, FUNCTION: 0, PRAGMA: 0, ATTACH: 0, DETACH: 0, TRANSACTION: 0, RECURSIVE: 0 }, open: (f: string) => { dbSeen.push(f); throw new Error('spy'); } };
+  const opener = await makeDbOpener({ fence, backend: spyBackend } as Parameters<typeof makeDbOpener>[0]);
+  let mode: unknown;
+  try {
+    const db = opener.open(path.join(dir, 'orch', 'x.db'));
+    mode = db.pragma('journal_mode');
+    db.close();
+  } catch (e) {
+    mode = `threw ${(e as Error).message}`;
+  }
+  assert.deepEqual(dbSeen, [], 'the opener used node-sqlite.ts\'s own backend, not the one in the spec');
+  assert.equal(mode, 'wal');
 });
 
 test('decideImport: once the fence is in, a minted module resolves for nobody, however its URL is spelled', () => {
@@ -135,7 +161,7 @@ test('decideImport: once the fence is in, a minted module resolves for nobody, h
     return d.allow ? 'allow' : d.reason;
   };
   const parents = [`${R}src/main.ts`, `${R}src/boot.ts`, `${R}src/runtime/working.ts`, `${R}src/workers/bootstrap.ts`, 'file:///C:/Temp/orchestra-test-x/entry.ts', undefined];
-  for (const m of ['fs/node-io.ts', 'os/node-proc.ts']) {
+  for (const m of ['fs/node-io.ts', 'os/node-proc.ts', 'store/node-sqlite.ts']) {
     for (const url of [`${R}src/${m}`, `${R}src/${m}?v=2`, `${R}src/${m}#x`, `${R}SRC/${m.toUpperCase().replace('.TS', '.ts')}`, `${R}src/fs/../${m}`.replace('/fs/../', '/')]) {
       for (const p of parents) assert.equal(why(p, url), 'minted-before-fence', `${p} -> ${url}`);
     }
@@ -144,7 +170,7 @@ test('decideImport: once the fence is in, a minted module resolves for nobody, h
   assert.equal(why(`${R}src/main.ts`, `${R}src/os/spawn.ts`), 'allow');
 });
 
-test('realpath, io and backend are required ports: nothing has a default any more', async (t) => {
+test('realpath, io, backend and clock are required ports: nothing has a default any more', async (t) => {
   const dir = canonicalTmp(t);
   const without = <T extends object>(o: T, k: keyof T) => Object.fromEntries(Object.entries(o).filter(([key]) => key !== k)) as T;
   assert.throws(() => new ReadGate({ roots: [] } as never), /read gate: io\.realpath is required/);
@@ -153,8 +179,10 @@ test('realpath, io and backend are required ports: nothing has a default any mor
   assert.throws(() => new WriteFence({ orchestraHome: path.join(dir, 'o'), harnessRoots: [], io: without(realWriteIo, 'ftruncateSync') }), /write fence: io\.ftruncateSync is required/);
   const sys = resolveSystemRoot(process.env, realpath);
   assert.ok(sys.ok);
-  const base = { systemRoot: sys, rules: ['whoami' as const], record: () => {}, backend: fakeSpawn().backend, realpath, now: Date.now };
-  for (const k of ['backend', 'realpath', 'now'] as const) assert.throws(() => new SpawnGate(without(base, k)), new RegExp(`spawn gate: ${k} is required`));
+  const base = { systemRoot: sys, rules: ['whoami' as const], record: () => {}, backend: fakeSpawn().backend, realpath, clock: makeRealClock() };
+  for (const k of ['backend', 'realpath', 'clock'] as const) assert.throws(() => new SpawnGate(without(base, k)), new RegExp(`spawn gate: ${k} is required`));
+  // A clock that is no hub (a bare now function, as before step 3) is no clock either.
+  assert.throws(() => new SpawnGate({ ...without(base, 'clock'), now: Date.now } as never), /spawn gate: clock is required/);
   assert.throws(() => canonicalize(dir, undefined as never), TypeError);
   assert.throws(() => checkDataDir({ orchestraHome: path.join(dir, 'o'), userHome: path.join(dir, 'h'), roots: [] } as never), /data dir check: realpath is required/);
   assert.throws(() => parseProfileArgs(['--test-profile', '--test-dir', dir], { env: {}, processEnv: {} } as never), /profile: realpath is required/);
@@ -165,6 +193,16 @@ test('realpath, io and backend are required ports: nothing has a default any mor
   await assert.rejects(startInProcess(detectFeatures(), FENCE_OK, without(ports, 'makeSpawnGate'), {
     argv: ['--test-profile', '--test-dir', dir], home: path.join(dir, 'user-home'), env: minimalEnv(), console: captureConsole().port,
   }), /start: BootPorts\.makeSpawnGate is missing/);
+  await assert.rejects(startInProcess(detectFeatures(), FENCE_OK, without(ports, 'makeDbOpener'), {
+    argv: ['--test-profile', '--test-dir', dir], home: path.join(dir, 'user-home'), env: minimalEnv(), console: captureConsole().port,
+  }), /start: BootPorts\.makeDbOpener is missing/);
+  await assert.rejects(startInProcess(detectFeatures(), FENCE_OK, without(ports, 'clock'), {
+    argv: ['--test-profile', '--test-dir', dir], home: path.join(dir, 'user-home'), env: minimalEnv(), console: captureConsole().port,
+  }), /start: BootPorts\.clock is missing/);
+  await assert.rejects(startInProcess(detectFeatures(), FENCE_OK, { ...without(ports, 'clock'), clock: { now: Date.now } } as never, {
+    argv: ['--test-profile', '--test-dir', dir], home: path.join(dir, 'user-home'), env: minimalEnv(), console: captureConsole().port,
+  }), /start: BootPorts\.clock is missing/);
+  assert.throws(() => new Log({} as never), /log: clock is required/);
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -371,7 +409,7 @@ const why = async (f: () => Promise<unknown>) => { try { await f(); return 'load
 const viaFunction = new Function('u', 'return import(u)') as (u: string) => Promise<unknown>;
 export async function start(): Promise<unknown> {
   const out: Record<string, unknown> = {};
-  for (const [name, rel] of [['io', 'fs/node-io.ts'], ['proc', 'os/node-proc.ts']]) {
+  for (const [name, rel] of [['io', 'fs/node-io.ts'], ['proc', 'os/node-proc.ts'], ['sqlite', 'store/node-sqlite.ts']]) {
     out[name] = {
       static: await why(() => import(new URL('./static-' + name + '.ts', import.meta.url).href)),
       concatenated: await why(() => import(base + rel)),
@@ -382,6 +420,7 @@ export async function start(): Promise<unknown> {
     };
   }
   out.control = await why(() => import(base + 'fs/read-gate.ts'));
+  out.sqliteBuiltin = await why(() => import(new URL('./static-builtin.ts', import.meta.url).href));
   out.worker = await new Promise((resolve) => {
     const w = startWorker(new URL('./worker-io.ts', import.meta.url));
     let error = '';
@@ -393,23 +432,29 @@ export async function start(): Promise<unknown> {
 }
 `;
 
-test('after the fence, node-io.ts and node-proc.ts fail with minted-before-fence: static, concatenated, ?query, #hash, other case, Function-made code, and in a worker', (t) => {
+test('after the fence, node-io.ts, node-proc.ts and node-sqlite.ts fail with minted-before-fence: static, concatenated, ?query, #hash, other case, Function-made code, and in a worker; node:sqlite itself for any other module', (t) => {
   const files = {
     'entry.ts': IMPORT_ENTRY,
     'static-io.ts': `import { realpath } from ${JSON.stringify(src('fs/node-io.ts'))};\nexport const got = typeof realpath;\n`,
     'static-proc.ts': `import { makeSpawnGate } from ${JSON.stringify(src('os/node-proc.ts'))};\nexport const got = typeof makeSpawnGate;\n`,
+    'static-sqlite.ts': `import { makeDbOpener } from ${JSON.stringify(src('store/node-sqlite.ts'))};\nexport const got = typeof makeDbOpener;\n`,
+    'static-builtin.ts': "import { DatabaseSync } from 'node:sqlite';\nexport const got = typeof DatabaseSync;\n",
     'worker-io.ts': `import { makeReadGate } from ${JSON.stringify(src('fs/node-io.ts'))};\nexport function run(ctx: { post(m: unknown): void }): void { ctx.post(typeof makeReadGate); }\n`,
   };
   const r = lastJson<Record<string, Record<string, string> | string>>(runChild(t, files, BOOT_RUNNER, {}));
   const all = { static: 'minted-before-fence', concatenated: 'minted-before-fence', query: 'minted-before-fence', hash: 'minted-before-fence', upper: 'minted-before-fence', viaFunction: 'minted-before-fence' };
   assert.deepEqual(r.io, all);
   assert.deepEqual(r.proc, all);
+  assert.deepEqual(r.sqlite, all);
+  assert.equal(r.sqliteBuiltin, 'not-allowed-for-module');
   assert.equal(r.control, 'loaded');
   assert.match(String(r.worker), /ERR_ORCHESTRA_IMPORT_FENCE.*node-io\.ts denied \(minted-before-fence\)/);
 
   // Control: unfenced, every spelling loads (a worker still goes through bootstrap's own fence).
   const c = lastJson<Record<string, Record<string, string> | string>>(runChild(t, files, BARE_RUNNER, {}));
   assert.deepEqual(c.io, { static: 'loaded', concatenated: 'loaded', query: 'loaded', hash: 'loaded', upper: 'loaded', viaFunction: 'loaded' });
+  assert.deepEqual(c.sqlite, { static: 'loaded', concatenated: 'loaded', query: 'loaded', hash: 'loaded', upper: 'loaded', viaFunction: 'loaded' });
+  assert.equal(c.sqliteBuiltin, 'loaded');
 });
 
 // ---------------------------------------------------------------------------------------------
@@ -448,10 +493,10 @@ const fakeChild = () => {
   return ee;
 };
 const LIMITS = { timeoutMs: 5000, maxBytes: 4096 };
-export async function start(_f: unknown, _fence: unknown, ports: { realpath(p: string): string; makeSpawnGate(s: unknown): Gate }): Promise<unknown> {
+export async function start(_f: unknown, _fence: unknown, ports: { realpath(p: string): string; makeSpawnGate(s: unknown): Gate; clock: unknown }): Promise<unknown> {
   const p = JSON.parse(process.argv[2]!) as { dir: string };
   const id = (x: string) => x;
-  const handed = ports.makeSpawnGate({ systemRoot: resolveSystemRoot(process.env, ports.realpath), rules: ['whoami'], record: () => {}, realpath: ports.realpath, now: Date.now });
+  const handed = ports.makeSpawnGate({ systemRoot: resolveSystemRoot(process.env, ports.realpath), rules: ['whoami'], record: () => {}, realpath: ports.realpath, clock: ports.clock });
   const hash = 'a'.repeat(64);
   const pgExe = win.join(p.dir, 'runtime', 'procguard', hash, 'procguard.exe');
   const configs: Record<string, Record<string, unknown>> = {
@@ -477,7 +522,7 @@ export async function start(_f: unknown, _fence: unknown, ports: { realpath(p: s
         const sys = c.systemRoot as { ok: boolean; path: string };
         const results: string[] = [];
         try {
-          const g = build({ ...c, backend, record: () => {}, realpath: id, now: Date.now });
+          const g = build({ ...c, backend, record: () => {}, realpath: id, clock: ports.clock });
           const whoami = await g.run({ exe: win.join(sys.path, 'System32', 'whoami.exe'), argv: WHOAMI_ARGV }, LIMITS);
           results.push('whoami:' + (whoami.ok ? 'ran' : whoami.reason));
           if (cname === 'csc-procguard') {
@@ -496,7 +541,7 @@ export async function start(_f: unknown, _fence: unknown, ports: { realpath(p: s
   // A subclass that overrides decide() does not steer run(): the gate decides privately.
   const steeredCalls: string[] = [];
   class Steered extends (SpawnGate as unknown as Ctor) { decide() { return { allow: true, rule: 'whoami', exe: 'C:\\\\orchestra-evil\\\\evil.exe', argv: [] }; } }
-  const steered = new Steered({ ...configs['real-root'], backend: (exe: string) => { steeredCalls.push(exe); return fakeChild(); }, record: () => {}, realpath: id, now: Date.now });
+  const steered = new Steered({ ...configs['real-root'], backend: (exe: string) => { steeredCalls.push(exe); return fakeChild(); }, record: () => {}, realpath: id, clock: ports.clock });
   const s = await steered.run({ exe: 'C:\\\\orchestra-evil\\\\evil.exe', argv: [] }, LIMITS);
   let started: string;
   try { steered.start({ exe: 'C:\\\\orchestra-evil\\\\evil.exe', argv: [] }); started = 'reached'; } catch (e) { started = why(e); }
@@ -592,12 +637,12 @@ function poison(p: P, values: Record<string, unknown>): () => void {
 const rec = (name: string) => (..._a: unknown[]) => { calls.push(name); return undefined; };
 const norm = (lines: string[]) => lines.map((l) => l.replace(/\\d{8}/g, 'N').replace(/pid \\d+/g, 'pid N'));
 
-export async function start(f: unknown, fence: unknown, ports: Record<string, (s: unknown) => unknown> & { realpath(p: string): string }): Promise<unknown> {
+export async function start(f: unknown, fence: unknown, ports: Record<string, (s: unknown) => unknown> & { realpath(p: string): string; clock: { port(h: null): unknown } }): Promise<unknown> {
   const p = JSON.parse(process.argv[2]!) as P;
   const out: Record<string, unknown> = {};
   const recIo = Object.fromEntries(Object.keys(dummyIo()).map((k) => [k, rec('io.' + k)]));
   const unpoison = poison(p, {
-    io: recIo, realpath: rec('realpath'), backend: rec('backend'), now: () => 0, rules: ['whoami', 'csc', 'procguard'], record: rec('record'),
+    io: recIo, realpath: rec('realpath'), backend: rec('backend'), now: () => 0, clock: { port: rec('clock.port'), nowWall: () => 0 }, rules: ['whoami', 'csc', 'procguard'], record: rec('record'),
     testDir: p.elsewhere, testDirs: [p.elsewhere], versionFiles: [win.join(p.readRoot, 'sessions', '7.json')], milestone: 'M6', confine: p.elsewhere,
     csc: { outAllowed: () => true }, outAllowed: rec('outAllowed'), procguard: [{ at: 'build' }], at: 'build', homeReal: p.elsewhere, sourceHash: 'b'.repeat(64),
     inTestRealProfile: { fakeHome: p.realHome }, fakeHome: p.realHome, makeReadGate: rec('makeReadGate'), makeWriteFence: rec('makeWriteFence'), makeSpawnGate: rec('makeSpawnGate'),
@@ -605,6 +650,11 @@ export async function start(f: unknown, fence: unknown, ports: Record<string, (s
     env: { ORCHESTRA_HOME: p.elsewhere }, processEnv: {}, ORCHESTRA_HOME: p.elsewhere, CLAUDE_CONFIG_DIR: p.elsewhere, XDG_CONFIG_HOME: p.elsewhere, DSH_HOME: p.elsewhere,
     CODEX_HOME: p.elsewhere, NODE_TEST_CONTEXT: 'poisoned', port: 0, host: '127.0.0.1', sink: rec('sink'), capacity: 1, fsync: true, recursive: true,
     options: { cwd: win.join(p.elsewhere, 'poison') }, exe: win.join(p.elsewhere, 'evil.exe'), argv: ['/all'],
+    // DatabaseSync reads each option it is not given through the prototype (step 3, node-sqlite.ts).
+    open: false, readOnly: true, enableForeignKeyConstraints: false, enableDoubleQuotedStringLiterals: true, allowExtension: true, timeout: 1,
+    readBigInts: true, returnArrays: true, allowBareNamedParameters: true, allowUnknownNamedParameters: true, defensive: false,
+    fence: { checkByName: rec('checkByName') }, openDb: rec('openDb'), writer: { append: rec('append'), shorten: rec('shorten') }, reader: { readFile: rec('readFile') },
+    redactor: { redact: rec('redact') }, bootId: '00000000-0000-4000-8000-000000000000', tail: { jseq: 0, hash: 'x' }, file: win.join(p.elsewhere, 'j.jsonl'),
   });
   out.armed = (({}) as Record<string, unknown>).milestone ?? null;
   hits.length = 0;
@@ -647,8 +697,8 @@ export async function start(f: unknown, fence: unknown, ports: Record<string, (s
   attempt('readGateFactory', () => { const g = ports.makeReadGate({ roots: [root] }) as ReadGate; return [g.milestone, g.testMode]; });
   attempt('writeFence', () => { const w = new WriteFence({ orchestraHome: win.join(p.testDir, 'd-orch'), harnessRoots: [], io: dummyIo() } as never); return w.home; });
   attempt('spawnNoBackend', () => new SpawnGate({ systemRoot: sys, rules: ['whoami'], record: () => {} } as never) && 'built');
-  attempt('spawnSite', () => new SpawnGate({ systemRoot: sys, rules: ['procguard'], record: () => {}, backend: rec('b'), realpath: id, now: Date.now, procguard: [{}] } as never) && 'built');
-  attempt('spawnCsc', () => new SpawnGate({ systemRoot: sys, rules: ['csc'], record: () => {}, backend: rec('b'), realpath: id, now: Date.now, procguard: [{ at: 'build' }], csc: {} } as never) && 'built');
+  attempt('spawnSite', () => new SpawnGate({ systemRoot: sys, rules: ['procguard'], record: () => {}, backend: rec('b'), realpath: id, clock: ports.clock, procguard: [{}] } as never) && 'built');
+  attempt('spawnCsc', () => new SpawnGate({ systemRoot: sys, rules: ['csc'], record: () => {}, backend: rec('b'), realpath: id, clock: ports.clock, procguard: [{ at: 'build' }], csc: {} } as never) && 'built');
   attempt('spawnFactory', () => ports.makeSpawnGate({ systemRoot: sys, rules: ['whoami'], record: () => {} }) && 'built');
   attempt('dataDir', () => { const c = checkDataDir({ orchestraHome: win.join(p.testDir, 'd-orch'), userHome: p.realHome, roots: [], realpath: ports.realpath } as never); return c.ok ? 'ok' : c.reason; });
   attempt('env', () => { const e = resolveEnv({ home: p.realHome, env: {} } as never); return [e.orchestraHome, e.claudeRootCandidates.length, e.typedHarnessRoots.length, e.dshHome, e.codexHome]; });
@@ -657,7 +707,8 @@ export async function start(f: unknown, fence: unknown, ports: Record<string, (s
   attempt('inTestNoRealpath', () => checkInTestRealProfile({ fakeHome: p.realHome }, { env: {}, processEnv: p.env, home: p.realHome } as never));
   attempt('inTestNoFakeHome', () => checkInTestRealProfile({} as never, { env: {}, processEnv: p.env, home: p.realHome, realpath: ports.realpath } as never));
   attempt('profileNoRunner', () => { const r = parseProfileArgs([], { env: {}, processEnv: {}, realpath: ports.realpath, home: p.realHome } as never); return r.ok ? r.profile.kind : r.refusal.reason; });
-  attempt('log', () => { const l = new Log(); l.info('one'); l.info('two'); return l.entries().length; });
+  attempt('log', () => { const l = new Log({ clock: ports.clock.port(null) } as never); l.info('one'); l.info('two'); return l.entries().length; });
+  attempt('logNoClock', () => { const l = new Log({} as never); l.info('one'); return l.entries().length; });
   attempt('fenceOpts', () => {
     const log: string[] = [];
     const w = new WriteFence({ orchestraHome: win.join(p.testDir, 'd-orch'), harnessRoots: [], io: recordingIo(log) } as never);
@@ -753,10 +804,191 @@ test('A3 measured: with every optional field name poisoned on Object.prototype, 
     inTestNoFakeHome: { reason: 'in-test-real-profile-refused', detail: 'unresolvable', path: 'undefined' },
     profileNoRunner: 'real',
     log: 2,
+    logNoClock: 'threw log: clock is required, there is no default',
     fenceOpts: 0,
     launcher: 'threw launcherRootFs: makeReadGate and realpath are required',
     portsMissing: 'threw start: BootPorts.makeSpawnGate is missing',
   });
   assert.deepEqual(clean.s, { missing: { allow: false, op: 'read', path: '<T>\\read-root\\sessions\\8.json', reason: 'not-found' }, list: ['7.json', 'sub'], dirs: ['sub'] });
   assert.ok(!fs.existsSync(path.join(testDir, 'elsewhere', 'run')), 'nothing was made where the poison pointed');
+});
+
+// Finding R3-11: the builtin table's membership is a golden, next to MINTED_MODULES', so widening a
+// row (node:timers to a second module, say) needs a deliberate edit here.
+test('the builtin policy table is pinned: every row\'s modules, builtins, named-import limits and minting', () => {
+  assert.deepEqual(JSON.parse(JSON.stringify(BUILTIN_ROWS)), [
+    { modules: ['src/fs/node-io.ts'], allow: ['node:fs'], minted: true },
+    { modules: ['src/os/node-proc.ts'], allow: ['node:child_process'], minted: true },
+    { modules: ['src/store/node-sqlite.ts'], allow: ['node:sqlite'], minted: true },
+    { modules: ['src/runtime/lock.ts'], allow: ['node:net'], only: { 'node:net': ['createServer'] } },
+    { modules: ['src/server/http.ts'], allow: ['node:http', 'node:net'], only: { 'node:http': ['createServer'], 'node:net': ['createServer'] } },
+    { modules: ['src/runtime/workers.ts', 'src/workers/bootstrap.ts'], allow: ['node:worker_threads'] },
+    { modules: ['src/runtime/import-fence.ts', 'src/runtime/features.ts'], allow: ['node:module'] },
+    { modules: ['src/main.ts'], allow: ['node:os'], only: { 'node:os': ['homedir', 'totalmem'] } },
+    { modules: ['src/runtime/clock.ts'], allow: ['node:timers', 'node:timers/promises'] },
+  ]);
+  assert.deepEqual([...DEFAULT_BUILTINS], ['node:path', 'node:url', 'node:events', 'node:util', 'node:crypto', 'node:zlib']);
+  assert.deepEqual([...FORBIDDEN_BUILTINS], ['node:vm', 'node:wasi', 'node:inspector', 'node:repl', 'node:cluster']);
+  assert.deepEqual([...NO_BUILTIN_DIRS], ['shared/']);
+});
+
+// Finding F2: the fence and the spawn gate decide from these tables on every call, so each is frozen
+// through and through where it is defined; a module that imports one can change nothing it allows.
+test('every policy table the fence and the spawn gate read is frozen at every level', () => {
+  const unfrozen = (v: unknown, at: string): string[] => {
+    if (typeof v !== 'object' || v === null) return [];
+    const own = Object.isFrozen(v) ? [] : [at];
+    return [...own, ...Object.getOwnPropertyNames(v).flatMap((k) => unfrozen((v as Record<string, unknown>)[k], `${at}.${k}`))];
+  };
+  const tables: Record<string, unknown> = { DEFAULT_BUILTINS, FORBIDDEN_BUILTINS, NO_BUILTIN_DIRS, BUILTIN_ROWS, MINTED_MODULES, WHOAMI_ARGV, CSC_FLAGS, TOAST_FLAGS, HANDLE_KEYS };
+  for (const [name, table] of Object.entries(tables)) assert.deepEqual(unfrozen(table, name), [], name);
+  assert.throws(() => { (BUILTIN_ROWS as BuiltinRow[]).push({ modules: ['src/model/x.ts'], allow: ['node:fs'] }); }, TypeError);
+  assert.throws(() => { (BUILTIN_ROWS[8]!.modules as string[]).push('src/model/inbox.ts'); }, TypeError);
+  assert.throws(() => { (DEFAULT_BUILTINS as string[]).push('node:child_process'); }, TypeError);
+  assert.throws(() => { (WHOAMI_ARGV as string[])[0] = '/all'; }, TypeError);
+  assert.equal(decideBuiltin('src/model/x.ts', 'node:fs').allow, false);
+});
+
+// ---------------------------------------------------------------------------------------------
+// Finding N3: the F2 shape outside the two modules the walk above lists. Every export of src/ and
+// shared/ is walked, so a new table cannot slip past a hand-kept list: an exported object, array or
+// RegExp must be frozen at every level (a RegExp also with its own compile() stub, shared/frozen.js),
+// an exported class must be frozen with its prototype, and no export may be an object whose contents
+// live in internal slots (a URL, Map, Set or typed array), which Object.freeze cannot hold. The walk is
+// test/helpers/frozen-walk.ts, run on each module in a child of its own.
+
+function codeFiles(dir: string, ext: string, out: string[] = []): string[] {
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const p = path.join(dir, e.name);
+    if (e.isDirectory()) codeFiles(p, ext, out);
+    else if (e.name.endsWith(ext)) out.push(p);
+  }
+  return out;
+}
+
+test('calibration: the export walk reports an open array, object, RegExp, class and a URL, and passes what shared/frozen.js froze', () => {
+  class Open { m(): number { return 1; } }
+  class Shut { m(): number { return 1; } }
+  frozenClass(Shut);
+  const bare = Object.freeze(/^a$/);
+  const fake: Record<string, unknown> = {
+    ARR: [1, 2], OBJ: Object.freeze({ inner: { x: 1 } }), RE: /^a$/, BARE: bare, URLV: new URL('file:///C:/x.ts'), Open, Shut, fn: () => 1,
+    OK: frozen({ list: ['a'], re: /^b$/, deep: [{ re: /c/i }] }),
+  };
+  const found = Object.entries(fake).flatMap(([k, v]) => openPaths(v, k));
+  assert.deepEqual(found, [
+    'ARR', 'OBJ.inner', 'RE', 'RE (compile() not stubbed)', 'BARE (compile() not stubbed)',
+    'URLV ([object URL]: contents Object.freeze cannot hold)', 'Open (class)', 'Open.prototype',
+  ]);
+  // What BARE shows: Object.freeze alone does not hold a RegExp. compile() throws on the frozen
+  // lastIndex, but only after it has put the new pattern in place (measured on Node 24.22).
+  assert.equal(bare.source, '^[\\s\\S]*$');
+  assert.equal(bare.test('anything'), true);
+  assert.throws(() => frozen(new Map()), TypeError);
+  // The stub's descriptor has no prototype: with `get` on Object.prototype (a module's poison, read by
+  // Object.defineProperty through the chain), frozen() still stubs compile.
+  let poisoned: RegExp | undefined;
+  Object.defineProperty(Object.prototype, 'get', { value: () => 1, configurable: true, writable: true });
+  try {
+    poisoned = frozen(/^p$/);
+  } finally {
+    delete (Object.prototype as Record<string, unknown>).get;
+  }
+  assert.deepEqual(openPaths(poisoned, 'poisoned'), []);
+});
+
+/**
+ * Walks each module in a child of its own that loads only that module's graph: in one process a
+ * module that deep-freezes another's export (routes.ts freezes the records.ts grammars its routes
+ * use) would hide that the other module left it open whenever it is loaded without the first.
+ */
+async function walkEachModule(t: TestContext, files: readonly string[]): Promise<{ walked: string[]; open: string[]; failed: string[] }> {
+  const dir = withTmp(t);
+  const walker = path.join(dir, 'walk.mjs');
+  fs.writeFileSync(walker, [
+    `import { walkModule } from ${JSON.stringify(pathToFileURL(path.join(REPO_DIR, 'test', 'helpers', 'frozen-walk.ts')).href)};`,
+    'const [href, rel] = process.argv.slice(2);',
+    'process.stdout.write(JSON.stringify(walkModule(await import(href), rel)));',
+  ].join('\n'));
+  const one = (f: string) => new Promise<{ rel: string; status: number | null; out: string; err: string }>((resolve) => {
+    const rel = path.relative(REPO_DIR, f).split(path.sep).join('/');
+    const child = spawn(process.execPath, [walker, pathToFileURL(f).href, rel], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (c: Buffer) => { out += c.toString('utf8'); });
+    child.stderr.on('data', (c: Buffer) => { err += c.toString('utf8'); });
+    const timer = setTimeout(() => child.kill(), 60_000);
+    child.once('close', (status) => {
+      clearTimeout(timer);
+      resolve({ rel, status, out, err });
+    });
+  });
+  const walked: string[] = [];
+  const open: string[] = [];
+  const failed: string[] = [];
+  for (let i = 0; i < files.length; i += 8) {
+    for (const r of await Promise.all(files.slice(i, i + 8).map(one))) {
+      if (r.status !== 0) {
+        failed.push(`${r.rel}: exit ${r.status} ${r.err.slice(0, 300)}`);
+        continue;
+      }
+      const w = JSON.parse(r.out) as { walked: string[]; open: string[] };
+      walked.push(...w.walked);
+      open.push(...w.open);
+    }
+  }
+  return { walked, open, failed };
+}
+
+test('every exported object, array, RegExp and class of src/ and shared/ is frozen at every level, its RegExps with a compile() stub; the list is generated from the files', async (t) => {
+  const files = [...codeFiles(path.join(REPO_DIR, 'src'), '.ts'), ...codeFiles(path.join(REPO_DIR, 'shared'), '.js')];
+  const { walked, open, failed } = await walkEachModule(t, files);
+  assert.deepEqual(failed, []);
+  assert.deepEqual(open, []);
+  // Not vacuous: the tables the finding named are among the walked exports.
+  for (const w of [
+    'src/fs/read-gate.ts:DENY_RULES', 'src/fs/read-gate.ts:ALLOW_RULES', 'src/fs/read-gate.ts:LISTABLE', 'src/store/redact.ts:FORMAT_RULES',
+    'src/store/redact.ts:SYSTEM_VARIABLES', 'src/runtime/exit.ts:EXIT', 'src/runtime/env.ts:DEFAULT_LAUNCHER_GLOBS', 'src/runtime/integrity.ts:WHOAMI_LIMITS',
+    'src/runtime/clock.ts:TIMER_CLASSES', 'src/server/routes.ts:CSRF_RE', 'src/server/routes.ts:DSH_LINK_RE', 'src/store/records.ts:BODY_SCHEMAS',
+    'shared/protocol.js:ID_RE', 'shared/protocol.js:TOOL_NAME_RE', 'src/runtime/process-powers.ts:PROCESS_POWERS', 'src/runtime/test-profile.ts:TestRoots',
+  ]) assert.ok(walked.includes(w), `not walked: ${w}`);
+  assert.ok(!walked.some((w) => w.startsWith('src/runtime/workers.ts:BOOTSTRAP')), 'workers.ts exports the bootstrap as a string only');
+});
+
+test('PoC: a module that imports the read gate\'s, the redactor\'s or the exit tables can no longer empty or widen them', async (t) => {
+  const root = canonicalTmp(t);
+  put(path.join(root, '.credentials.json'), '{"secret":"x"}');
+  const gate = makeReadGate({ roots: [{ kind: 'claude', path: root, real: root }] });
+  const credentials = path.join(root, '.credentials.json');
+  const before = gate.decide(credentials, 'read');
+  assert.equal(before.allow, false);
+  assert.throws(() => { (DENY_RULES as { length: number }).length = 0; }, TypeError);
+  assert.throws(() => { (ALLOW_RULES.claude as AllowRule[]).push({ id: 'x', re: /^.*$/, since: 'M0' }); }, TypeError);
+  assert.throws(() => { (DENY_RULES[2]! as { re: RegExp }).re = /^$/; }, TypeError);
+  assert.throws(() => { (LISTABLE as Record<string, string | null>).extra = 'M0'; }, TypeError);
+  assert.deepEqual(gate.decide(credentials, 'read'), before);
+  assert.throws(() => gate.readFile(credentials));
+
+  const redactor = makeRedactor({ env: {} });
+  const text = 'Authorization: hunter2pass and ghp_0123456789abcdefghijABCDEFGHIJ';
+  const want = redactor.redact({ text }).text;
+  assert.equal(want, 'Authorization: [redacted:authorization]');
+  assert.throws(() => { (FORMAT_RULES as { length: number }).length = 0; }, TypeError);
+  assert.throws(() => { (SYSTEM_VARIABLES as string[]).push('GITHUB_TOKEN'); }, TypeError);
+  assert.throws(() => { (FORMAT_RULES[6]!.re as unknown as { lastIndex: number }).lastIndex = 5; }, TypeError);
+  assert.equal(redactor.redact({ text }).text, want);
+
+  assert.throws(() => { (EXIT as Record<string, number>).badArgs = 0; }, TypeError);
+  const dir = withTmp(t);
+  const o = await startInProcess(detectFeatures(), FENCE_OK, testPorts(fakeSpawn()), { argv: ['--verbose'], home: path.join(dir, 'user-home'), env: minimalEnv(), console: captureConsole().port });
+  assert.deepEqual([o.mode, (o as { code?: number }).code], ['refused', EXIT.badArgs]);
+  assert.equal(EXIT.badArgs, 24);
+
+  // compile() on an exported grammar meets its own stub and changes nothing; RegExp.prototype's
+  // compile by its full name is the static scan's to catch (ban:RegExp-compile).
+  for (const [name, re, bad] of [['CSRF_RE', CSRF_RE, 'not-a-token'], ['ID_RE', ID_RE, 'free text, with spaces'], ['TOOL_NAME_RE', TOOL_NAME_RE, 'rm -rf /']] as const) {
+    assert.equal(re.test(bad), false, name);
+    assert.throws(() => (re as unknown as { compile(p: string): unknown }).compile('^.*$'), TypeError, name);
+    assert.equal(re.test(bad), false, `${name} after compile()`);
+  }
 });

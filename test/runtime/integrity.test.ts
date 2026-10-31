@@ -4,6 +4,7 @@ import type { RunResult } from '../../src/os/spawn.ts';
 import { SpawnGate, resolveSystemRoot } from '../../src/os/spawn.ts';
 import { realpath } from '../../src/fs/node-io.ts';
 import { makeSpawnGate } from '../../src/os/node-proc.ts';
+import { makeRealClock } from '../../src/runtime/clock.ts';
 import { judgeWhoamiRun, levelForRid, parseCsvLine, parseWhoamiGroups, probeIntegrity } from '../../src/runtime/integrity.ts';
 import { fakeSpawn, whoamiChinese, whoamiEnglish, whoamiSpy } from '../helpers/fake-spawn.ts';
 
@@ -76,7 +77,7 @@ test('probeIntegrity runs exactly whoami /groups /fo csv /nh through the gate an
   const sys = resolveSystemRoot(process.env, realpath);
   assert.ok(sys.ok, JSON.stringify(sys));
   const spy = whoamiSpy(whoamiChinese('Low Mandatory Level'));
-  const gate = new SpawnGate({ systemRoot: sys, rules: ['whoami'], backend: spy.backend, record: () => {}, realpath, now: Date.now });
+  const gate = new SpawnGate({ systemRoot: sys, rules: ['whoami'], backend: spy.backend, record: () => {}, realpath, clock: makeRealClock() });
   assert.deepEqual(await probeIntegrity(gate, sys.path), { level: 'low', rid: 4096, sid: 'S-1-16-4096' });
   assert.equal(spy.calls.length, 1);
   assert.match(spy.calls[0]!.exe, /\\System32\\whoami\.exe$/i);
@@ -88,7 +89,7 @@ test('probeIntegrity: a whoami that never exits is killed through its handle and
   const sys = resolveSystemRoot(process.env, realpath);
   assert.ok(sys.ok);
   const spy = fakeSpawn(() => ({ hang: true }));
-  const gate = new SpawnGate({ systemRoot: sys, rules: ['whoami'], backend: spy.backend, record: () => {}, realpath, now: Date.now });
+  const gate = new SpawnGate({ systemRoot: sys, rules: ['whoami'], backend: spy.backend, record: () => {}, realpath, clock: makeRealClock() });
   const r = await gate.run({ exe: `${sys.path}\\System32\\whoami.exe`, argv: ['/groups', '/fo', 'csv', '/nh'] }, { timeoutMs: 20, maxBytes: 1024 });
   assert.deepEqual(judgeWhoamiRun(r), { level: 'unknown', reason: 'timeout', detail: '20 ms' });
   assert.equal(spy.kills, 1);
@@ -99,7 +100,7 @@ test('the real whoami.exe (the one binary these tests run) gives a typed level',
   assert.ok(sys.ok);
   const recorded: string[] = [];
   // The production backend, as main.ts gets it: makeSpawnGate from the minted src/os/node-proc.ts.
-  const gate = makeSpawnGate({ systemRoot: sys, rules: ['whoami'], record: (e) => recorded.push(e.rule), realpath, now: Date.now });
+  const gate = makeSpawnGate({ systemRoot: sys, rules: ['whoami'], record: (e) => recorded.push(e.rule), realpath, clock: makeRealClock() });
   const i = await probeIntegrity(gate, sys.path);
   assert.deepEqual(recorded, ['whoami'], 'the run was recorded');
   t.diagnostic(`this process: ${JSON.stringify(i)}`);

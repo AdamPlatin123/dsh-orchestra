@@ -32,16 +32,18 @@ const READ_IO: ReadIo = bag({
   readdirSync: (p: string) => fs.readdirSync(p, LIST),
 });
 
-// 'append-existing' opens an existing file for appending and never creates one.
-const OPEN_FLAGS: Readonly<Record<'wx' | 'ax' | 'append-existing', string | number>> = bag({
+// 'append-existing' opens an existing file for appending and never creates one; 'write-existing' opens
+// one for writing in place (the journal's cut, WriteFence.shorten) and never creates or empties it.
+const OPEN_FLAGS: Readonly<Record<'wx' | 'ax' | 'append-existing' | 'write-existing', string | number>> = bag({
   wx: 'wx',
   ax: 'ax',
   'append-existing': fs.constants.O_WRONLY | fs.constants.O_APPEND,
+  'write-existing': fs.constants.O_WRONLY,
 });
 
 const WRITE_IO: WriteIo = bag({
   realpath,
-  openSync: (p: string, flags: 'wx' | 'ax' | 'append-existing') => fs.openSync(p, OPEN_FLAGS[flags]),
+  openSync: (p: string, flags: 'wx' | 'ax' | 'append-existing' | 'write-existing') => fs.openSync(p, OPEN_FLAGS[flags]),
   writeSync: (fd: number, buf: Uint8Array, offset: number, length: number) => fs.writeSync(fd, buf, offset, length),
   fsyncSync: (fd: number) => fs.fsyncSync(fd),
   ftruncateSync: (fd: number, length: number) => fs.ftruncateSync(fd, length),

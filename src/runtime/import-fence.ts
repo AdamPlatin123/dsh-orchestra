@@ -1,7 +1,8 @@
 import * as nodeModule from 'node:module';
-import type { Power } from './process-powers.ts';
+import type { Power, Thread } from './process-powers.ts';
+import { frozenClass } from '../../shared/frozen.js';
 import { builtinId, decideBuiltin, isDefaultBuiltin, isMinted, moduleKeyFromUrl } from './builtin-policy.ts';
-import { GLOBAL_POWERS, PROCESS_POWERS, isFenced, slotOf } from './process-powers.ts';
+import { GLOBAL_POWERS, PROCESS_POWERS, isFenced, keepsOwnValue, slotOf } from './process-powers.ts';
 
 const REPO_ROOT = new URL('../../', import.meta.url);
 const INSTALLED = Symbol.for('orchestra.importFence');
@@ -27,6 +28,7 @@ export type FenceStatus = {
 export type ImportDenyReason =
   | 'forbidden-everywhere'
   | 'not-allowed-for-module'
+  | 'no-builtins-here'
   | 'getter'
   | 'disabled'
   | 'import-attributes'
@@ -43,6 +45,7 @@ export class ImportFenceError extends Error {
     this.reason = reason;
   }
 }
+frozenClass(ImportFenceError);
 
 export type ImportDecision =
   | { allow: true; url: string; module: string | null }
@@ -145,18 +148,18 @@ function stubOf(e: Power, target: Fenced, proc: object, dispatcher: object): unk
 
 /**
  * Makes the slot of every fenced entry (process-powers.ts, isFenced) on `target` read-only: a lock or
- * mint entry gets its stub, a pinned keep entry keeps its value. An optional entry is fenced only
- * where it exists. A slot undici already filled is writable but not configurable and is locked the
- * same way; one Node made neither writable nor configurable throws, and the install with it (fail
- * closed). Returns how many slots it fenced.
+ * mint entry gets its stub, a pinned keep entry keeps its value, and so does a worker pin on a worker
+ * thread (keepsOwnValue). An optional entry is fenced only where it exists. A slot undici already
+ * filled is writable but not configurable and is locked the same way; one Node made neither writable
+ * nor configurable throws, and the install with it (fail closed). Returns how many slots it fenced.
  */
-function applyPowers(target: Fenced, entries: readonly Power[], proc: object, dispatcher: object): number {
+function applyPowers(target: Fenced, entries: readonly Power[], proc: object, dispatcher: object, thread: Thread): number {
   let fenced = 0;
   for (const e of entries) {
     if (!isFenced(e)) continue;
     const slot = slotOf(e);
     if (e.optional !== undefined && !Object.hasOwn(target, slot)) continue;
-    if (e.class === 'keep') pin(target, slot);
+    if (keepsOwnValue(e, thread)) pin(target, slot);
     else lock(target, slot, stubOf(e, target, proc, dispatcher));
     fenced++;
   }
@@ -165,15 +168,19 @@ function applyPowers(target: Fenced, entries: readonly Power[], proc: object, di
 
 /**
  * Installs the import fence on this thread. Must run before the module graph it guards is
- * resolved: boot.ts calls it before importing main.ts, workers/bootstrap.ts before the worker module.
- * Idempotent per process object (each worker has its own). `proc` and `global` get the slots the
- * process-powers table fences; boot.ts takes the originals of the mint entries before this runs.
+ * resolved: boot.ts calls it before importing main.ts, workers/bootstrap.ts (through
+ * installWorkerFence) before the worker module. Idempotent per process object (each worker has its
+ * own). `proc` and `global` get the slots the process-powers table fences; boot.ts takes the
+ * originals of the mint entries before this runs. `thread` defaults to the main thread, the stricter
+ * install: a worker that forgot to say so gets exit and reallyExit locked, and its crashes end with 7
+ * instead of 1 (import-fence.test.ts measures the worker's).
  */
 export function installImportFence(
   proc: object = process,
   mod: HookModule = nodeModule as unknown as HookModule,
   repoRoot: URL = REPO_ROOT,
   global: object = globalThis,
+  thread: Thread = 'main',
 ): FenceStatus {
   const p = proc as Fenced;
   const prior = p[INSTALLED] as FenceStatus | undefined;
@@ -202,8 +209,13 @@ export function installImportFence(
   }
   // One dead dispatcher serves every dispatcher slot of an install.
   const dispatcher = deadDispatcher();
-  const locks = applyPowers(p, PROCESS_POWERS, proc, dispatcher) + applyPowers(global as Fenced, GLOBAL_POWERS, proc, dispatcher);
+  const locks = applyPowers(p, PROCESS_POWERS, proc, dispatcher, thread) + applyPowers(global as Fenced, GLOBAL_POWERS, proc, dispatcher, thread);
   const status: FenceStatus = Object.freeze({ resolveHook, locks });
   lock(p, INSTALLED, status);
   return status;
+}
+
+/** The install a worker thread runs (workers/bootstrap.ts): the same table, with the worker pins (process-powers.ts, Power.worker). */
+export function installWorkerFence(): FenceStatus {
+  return installImportFence(process, nodeModule as unknown as HookModule, REPO_ROOT, globalThis, 'worker');
 }

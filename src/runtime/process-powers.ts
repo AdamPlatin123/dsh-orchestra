@@ -4,15 +4,20 @@
 // key-set golden (test/runtime/process-powers.test.ts) fails on any key the table does not list, on
 // any listed non-optional key that is missing and on any changed shape, so a Node upgrade forces a
 // commit that classifies only the delta. boot.ts loads this module, through import-fence.ts, before
-// the fence goes in, so it imports nothing.
+// the fence goes in, so it imports only shared/frozen.js, which imports nothing.
 //
 //   keep  the slot stays as Node made it; `why` says why it is harmless. `pin` freezes the slot with
-//         its own value: stopping and the crash path end the process through it, so no module may
-//         swap it for one that returns (measured: a no-op exit or reallyExit, or a replaced
-//         _fatalException, keeps a crashed process alive or changes its exit code).
+//         its own value: Node's crash path runs through it, so no module may swap it for one that
+//         returns (measured: a replaced _fatalException keeps a crashed process alive).
 //   lock  the slot gets a stub for good (non-writable, non-configurable); nobody gets the original.
 //   mint  boot.ts takes the original before the fence locks the slot like a lock entry, and hands it
-//         to the one module named in `heldBy`.
+//         to the modules named in `heldBy` (for reallyExit none: boot.ts keeps it for itself).
+//
+// `worker: 'pin'` on a lock or mint entry: on a worker thread (installWorkerFence) the slot is pinned
+// with Node's own value instead. process.exit and reallyExit end only that thread there, and Node's
+// worker crash path calls process.exit itself (measured on 24.22: with both locked, a worker that
+// throws ends with 7 and a second stack trace instead of 1).
+import { frozen } from '../../shared/frozen.js';
 
 /** The Node the table was taken on (process.versions.node); planStartup notes any other (startup.ts). */
 export const POWERS_NODE = '24.22.0';
@@ -34,24 +39,28 @@ export type Stub = 'throws' | 'builtin-getter' | 'report' | 'dead-dispatcher' | 
  * before it locks anything, or that load would throw on the locked slot later (measured on 24.22).
  */
 type Base = { key: string; shape: Shape; optional?: Optional; primedBy?: string; why: string };
+/** The thread an install fences: boot.ts's main thread, or a worker (workers/bootstrap.ts). */
+export type Thread = 'main' | 'worker';
 export type Power =
   | (Base & { class: 'keep'; pin?: true })
-  | (Base & { class: 'lock'; stub: Stub })
-  | (Base & { class: 'mint'; stub: Stub; mintedBy: string; heldBy: readonly string[] });
+  | (Base & { class: 'lock'; stub: Stub; worker?: 'pin' })
+  | (Base & { class: 'mint'; stub: Stub; mintedBy: string; heldBy: readonly string[]; worker?: 'pin' });
 
 const keep = (key: string, shape: Shape, why: string, more: { optional?: Optional } = {}): Power => ({ class: 'keep', key, shape, why, ...more });
 const pin = (key: string, why: string): Power => ({ class: 'keep', key, shape: 'function', why, pin: true });
-const lock = (key: string, why: string, more: { stub?: Stub; shape?: Shape; optional?: Optional; primedBy?: string } = {}): Power => ({
+const lock = (key: string, why: string, more: { stub?: Stub; shape?: Shape; optional?: Optional; primedBy?: string; worker?: 'pin' } = {}): Power => ({
   class: 'lock', key, stub: more.stub ?? 'throws', shape: more.shape ?? 'function', why,
   ...(more.optional !== undefined ? { optional: more.optional } : {}), ...(more.primedBy !== undefined ? { primedBy: more.primedBy } : {}),
+  ...(more.worker !== undefined ? { worker: more.worker } : {}),
 });
 
 const DATA = 'data about this process or build; reading it does nothing';
 const MEASURE = 'a measurement of this process; no I/O';
+const CLOCK_READ = 'a clock read, no I/O; the static scan keeps every clock read in src/runtime/clock.ts (clock-only-in-clock-ts)';
 const EMITTER = 'EventEmitter state; process.emit reaches the stop handler, and stopping ends the process (working.ts)';
 const IPC = 'exists only when a parent forked this process with an IPC channel; orchestrad is started from a console and never forked, and such a parent would already own the process';
 
-export const PROCESS_POWERS: readonly Power[] = [
+export const PROCESS_POWERS: readonly Power[] = frozen([
   // Locked: each reaches the file system, other processes, native code or the inspector past every gate.
   lock('binding', 'internal bindings: fs, pipes and processes without any gate'),
   lock('_linkedBinding', 'linked native bindings, the same'),
@@ -73,9 +82,16 @@ export const PROCESS_POWERS: readonly Power[] = [
   lock('_debugEnd', 'closes it again'),
   lock('_getActiveHandles', 'hands out the live handles, the lock pipe server among them, which anyone could close'),
   lock('_getActiveRequests', 'hands out the live requests'),
-  // Pinned: the ways the process ends.
-  pin('exit', 'stopping and the crash line end the process through it (main.ts, boot.ts)'),
-  pin('reallyExit', 'process.exit ends the process through it'),
+  // The ways the process ends. orchestrad ends only through boot.ts's makeEndProcess, which hands its
+  // typed code to the reallyExit it took before the fence (BootPorts.endProcess reaches the same end).
+  // Anyone else's exit could replace a code boot has already committed while the console drains
+  // (measured: process.exit(0) from a later microtask turned a ui-only 22 into 0), and process.exit
+  // emits 'exit' and then ends with process.exitCode as its listeners left it.
+  lock('exit', 'emits exit and ends with process.exitCode as its listeners left it, past boot.ts\'s typed end; nothing in orchestrad calls it', { worker: 'pin' }),
+  {
+    class: 'mint', key: 'reallyExit', stub: 'throws', shape: 'function', mintedBy: 'src/boot.ts', heldBy: [], worker: 'pin',
+    why: 'ends the process with any code; boot.ts takes it before the fence and ends through it alone (makeEndProcess)',
+  },
   pin('_fatalException', 'Node routes every uncaught error through it to boot.ts\'s crash handler'),
   // Kept.
   keep('version', 'string', DATA),
@@ -98,8 +114,8 @@ export const PROCESS_POWERS: readonly Power[] = [
   keep('debugPort', 'number', 'setting it opens nothing: the inspector needs node:inspector (forbidden) or _debugProcess (locked)'),
   keep('env', 'object', 'read once by main.ts; children get an own-keys copy (own.ts, node-proc.ts)'),
   keep('cwd', 'function', DATA),
-  keep('uptime', 'function', MEASURE),
-  keep('hrtime', 'function', MEASURE),
+  keep('uptime', 'function', CLOCK_READ),
+  keep('hrtime', 'function', CLOCK_READ),
   keep('cpuUsage', 'function', MEASURE),
   keep('threadCpuUsage', 'function', MEASURE),
   keep('resourceUsage', 'function', MEASURE),
@@ -123,7 +139,7 @@ export const PROCESS_POWERS: readonly Power[] = [
   keep('setSourceMapsEnabled', 'function', 'the same'),
   keep('_startProfilerIdleNotifier', 'function', 'marks the CPU profiler idle; no profiler can be started (node:inspector is forbidden)'),
   keep('_stopProfilerIdleNotifier', 'function', 'the same'),
-  keep('exitCode', 'accessor', 'non-configurable, so it cannot be locked; boot.ts\'s crash path passes its code to exit itself'),
+  keep('exitCode', 'accessor', 'non-configurable, so it cannot be locked; boot.ts\'s end hands its code to reallyExit itself, and the static scan keeps assignments to it in boot.ts (process-exit-only-in-boot)'),
   keep('_exiting', 'accessor', 'set by process.exit; it only skips the exit event'),
   keep('domain', 'null', EMITTER),
   keep('_events', 'object', EMITTER),
@@ -144,11 +160,11 @@ export const PROCESS_POWERS: readonly Power[] = [
   keep('disconnect', 'function', IPC, { optional: 'ipc' }),
   keep('_disconnect', 'function', IPC, { optional: 'ipc' }),
   keep('Symbol(kChannelHandle)', 'object', IPC, { optional: 'ipc' }),
-];
+]);
 
 const NO_IO = 'computes in memory only';
 
-export const GLOBAL_POWERS: readonly Power[] = [
+export const GLOBAL_POWERS: readonly Power[] = frozen([
   {
     class: 'mint', key: 'fetch', stub: 'throws', shape: 'function', mintedBy: 'src/boot.ts', heldBy: ['src/net/dsh-connect.ts'],
     why: 'the network; boot.ts wraps the original as ports.fetch, which the DSH connect gets in step 15',
@@ -177,7 +193,7 @@ export const GLOBAL_POWERS: readonly Power[] = [
   keep('Buffer', 'accessor', NO_IO),
   keep('crypto', 'accessor', 'randomness and digests; no I/O'),
   keep('navigator', 'accessor', DATA),
-  keep('performance', 'accessor', 'clock reads; step 3 keeps the clock in clock.ts'),
+  keep('performance', 'accessor', CLOCK_READ),
   keep('eval', 'function', 'compiles code that meets the same fence; the scan bans calling it in our code'),
   keep('Function', 'function', 'the same; the scan bans constructing it'),
   keep('WebAssembly', 'object', 'a module gets no import but those its caller passes; no I/O of its own'),
@@ -188,10 +204,10 @@ export const GLOBAL_POWERS: readonly Power[] = [
   keep('Response', 'function', 'data only'),
   keep('Headers', 'function', 'data only'),
   keep('FormData', 'function', 'data only'),
-];
+]);
 
 /** The rest of globalThis: ECMAScript and web values that compute in memory. Listed by name only. */
-export const PLAIN_GLOBALS: readonly string[] = [
+export const PLAIN_GLOBALS: readonly string[] = frozen([
   'Object', 'Array', 'Number', 'parseFloat', 'parseInt', 'Infinity', 'NaN', 'undefined', 'Boolean', 'String', 'Symbol', 'Date',
   'Promise', 'RegExp', 'Error', 'AggregateError', 'EvalError', 'RangeError', 'ReferenceError', 'SyntaxError', 'TypeError', 'URIError',
   'JSON', 'Math', 'Intl', 'ArrayBuffer', 'Atomics', 'Uint8Array', 'Int8Array', 'Uint16Array', 'Int16Array', 'Uint32Array', 'Int32Array',
@@ -206,7 +222,7 @@ export const PLAIN_GLOBALS: readonly string[] = [
   'ReadableStreamDefaultController', 'ByteLengthQueuingStrategy', 'CountQueuingStrategy', 'CompressionStream', 'DecompressionStream',
   'Blob', 'File', 'Performance', 'PerformanceEntry', 'PerformanceMark', 'PerformanceMeasure', 'PerformanceObserver',
   'PerformanceObserverEntryList', 'PerformanceResourceTiming', 'Crypto', 'CryptoKey', 'SubtleCrypto', 'Navigator', 'Symbol(Symbol.toStringTag)',
-];
+]);
 
 /** The table's label of a property key: its name, or Symbol(description). */
 export function powerLabel(k: PropertyKey): string {
@@ -222,6 +238,11 @@ export function slotOf(e: Power): PropertyKey {
 /** Does the fence make this entry's slot read-only? Lock and mint entries, and pinned keep entries. */
 export function isFenced(e: Power): boolean {
   return e.class !== 'keep' || e.pin === true;
+}
+
+/** Does the fence keep Node's own value in this fenced entry's slot on `thread`? Pinned keep entries, and the worker pins on a worker. */
+export function keepsOwnValue(e: Power, thread: Thread): boolean {
+  return e.class === 'keep' ? e.pin === true : thread === 'worker' && e.worker === 'pin';
 }
 
 /** Slots every fence install makes read-only, whatever the thread: the fenced entries that are not optional. */

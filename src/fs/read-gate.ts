@@ -4,6 +4,7 @@ import type { HarnessRoot } from './harness-roots.ts';
 import type { PathRejectReason, RealpathFn } from './paths.ts';
 import { canonicalize, checkPath, isWithin, pathKey, relativeTo } from './paths.ts';
 import { ownFields } from '../runtime/own.ts';
+import { frozen, frozenClass } from '../../shared/frozen.js';
 
 const win = path.win32;
 
@@ -27,8 +28,10 @@ export type AllowRule = {
 export type DenyRule = { id: string; re: RegExp };
 
 // r4 §10.11 plus the spike additions (S1-Codex: thread_history_1/logs_2; DS-Bot reference: .credentials.yaml*).
-// The first match is reported, so the narrower ids come before the broader ones.
-export const DENY_RULES: readonly DenyRule[] = [
+// The first match is reported, so the narrower ids come before the broader ones. Every table here is
+// frozen through and through where it is defined (shared/frozen.js), its RegExps included: decide()
+// reads them on every call, so a module that imports one must not be able to empty or widen it.
+export const DENY_RULES: readonly DenyRule[] = frozen([
   { id: '*.key', re: /\.key$/i },
   { id: '.credentials.yaml*', re: /^\.credentials\.yaml/i },
   { id: '*credentials*', re: /credentials/i },
@@ -41,12 +44,12 @@ export const DENY_RULES: readonly DenyRule[] = [
   { id: 'logs_2.sqlite*', re: /^logs_2\.sqlite/i },
   { id: 'cookies.json', re: /^cookies\.json$/i },
   { id: '*storageState*.json', re: /storagestate.*\.json$/i },
-];
+]);
 
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 const ANY_DIRS = '(?:[^/]+/)*';
 
-export const ALLOW_RULES: Readonly<Record<GateRootKind, readonly AllowRule[]>> = {
+export const ALLOW_RULES: Readonly<Record<GateRootKind, readonly AllowRule[]>> = frozen({
   claude: [
     { id: 'projects/**/*.jsonl', re: new RegExp(`^projects/${ANY_DIRS}[^/]+\\.jsonl$`, 'i'), since: 'M0' },
     { id: 'sessions/<digits>.json', re: /^sessions\/\d+\.json$/i, since: 'M0' },
@@ -85,10 +88,10 @@ export const ALLOW_RULES: Readonly<Record<GateRootKind, readonly AllowRule[]>> =
   'orchestra-home': [{ id: 'orchestra-home/**', re: /^.+$/, since: 'M0' }],
   // A version file is its own root, so its relative path is ''. Only `version` is used by the caller.
   'version-file': [{ id: 'package.json', re: /^$/, since: 'M0' }],
-};
+});
 
 /** From which milestone stat/readdir are allowed inside a root of this kind; null = never. */
-export const LISTABLE: Readonly<Record<GateRootKind, Milestone | null>> = {
+export const LISTABLE: Readonly<Record<GateRootKind, Milestone | null>> = frozen({
   claude: 'M0',
   'claude-prefix': 'M0',
   dsh: 'M0',
@@ -98,7 +101,7 @@ export const LISTABLE: Readonly<Record<GateRootKind, Milestone | null>> = {
   extra: null,
   'orchestra-home': 'M0',
   'version-file': 'M0',
-};
+});
 
 const ORDER: readonly Milestone[] = ['M0', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6'];
 const reached = (m: Milestone, now: Milestone) => ORDER.indexOf(m) <= ORDER.indexOf(now);
@@ -132,6 +135,7 @@ export class ReadGateError extends Error {
     this.decision = decision;
   }
 }
+frozenClass(ReadGateError);
 
 export type FileStat = {
   dev: bigint;
@@ -148,7 +152,7 @@ export type DirEntry = { name: string; isDirectory(): boolean; isSymbolicLink():
 
 /**
  * Every fs call the gate makes. Required, with no default: the real one is minted in
- * src/fs/node-io.ts and reaches a gate only through makeReadGate, so a gate built anywhere else,
+ * src/fs/node-io.ts and reaches a gate only through node-io.ts's read-gate factory, so a gate built anywhere else,
  * however it got the class, reads nothing but what its own io makes up. Tests pass their own io to
  * count or fault calls.
  */
@@ -460,4 +464,4 @@ export class ReadGate {
 // The prototype and every instance are frozen: a module holding a ReadGate (or the class) can neither
 // replace a method every holder calls nor change an instance's fields or prototype, and the gate's
 // own paths call only its private members, so a subclass cannot steer them either.
-Object.freeze(ReadGate.prototype);
+frozenClass(ReadGate);

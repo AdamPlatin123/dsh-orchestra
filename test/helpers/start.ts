@@ -18,6 +18,8 @@ import { makeReadGate, makeWriteFence, realpath } from '../../src/fs/node-io.ts'
 import { start } from '../../src/main.ts';
 import { makeSpawnGate } from '../../src/os/node-proc.ts';
 import { SpawnGate } from '../../src/os/spawn.ts';
+import { makeDbOpener } from '../../src/store/node-sqlite.ts';
+import { makeRealClock } from '../../src/runtime/clock.ts';
 import { BASE_LOCKS } from '../../src/runtime/process-powers.ts';
 import { runWorking } from '../../src/runtime/working.ts';
 
@@ -37,6 +39,12 @@ export function testPorts(spy?: FakeSpawn): BootPorts {
     makeReadGate,
     makeWriteFence,
     makeSpawnGate: spy === undefined ? makeSpawnGate : spyGate(spy),
+    makeDbOpener,
+    clock: makeRealClock(),
+    // In-process starts stop through IN_PROCESS_STOP; ending the process would end the test file.
+    endProcess: () => {
+      throw new Error('test ports: endProcess would end the test process');
+    },
   };
 }
 
@@ -80,10 +88,32 @@ export function assertFakeHome(home: unknown, what: string, tmp: string = os.tmp
   }
 }
 
-/** The overrides start() gets: the caller's own fields, and IN_PROCESS_STOP unless it hands a StopPort. */
+/**
+ * A plain copy of `o`'s own string-keyed data fields, enumerable or not, each read once through its
+ * descriptor. An accessor is refused (its getter could answer the check one way and start() another),
+ * and so is a symbol key. What the checks below judge is this copy, and the copy is what start() gets.
+ */
+function ownDataCopy(o: object, what: string): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const k of Reflect.ownKeys(o)) {
+    if (typeof k !== 'string') throw new Error(`test helper: ${what} has a symbol key`);
+    const d = Object.getOwnPropertyDescriptor(o, k)!;
+    if (!('value' in d)) throw new Error(`test helper: ${what}.${k} is an accessor; hand a plain value`);
+    out[k] = d.value;
+  }
+  return out;
+}
+
+/**
+ * The overrides start() gets: a copy of the caller's own fields (every own field, enumerable or not,
+ * read once; env copied the same way), and IN_PROCESS_STOP unless it hands a StopPort. A field the
+ * spread of old dropped (a non-enumerable home or env) is kept, so the check and start() see one value.
+ */
 export function inProcessOverrides(overrides: Partial<StartDeps>): Partial<StartDeps> {
-  const own = Object.hasOwn(overrides, 'stopping') ? overrides.stopping : undefined;
-  return { ...overrides, stopping: own ?? IN_PROCESS_STOP };
+  const out = ownDataCopy(overrides, 'overrides');
+  if (typeof out.env === 'object' && out.env !== null) out.env = ownDataCopy(out.env, 'env');
+  if (out.stopping === undefined) out.stopping = IN_PROCESS_STOP;
+  return out as Partial<StartDeps>;
 }
 
 /** The env variables main.ts turns into harness roots or the data dir; each must stay inside a fixture. */
@@ -102,27 +132,35 @@ export function assertFakeEnv(overrides: Partial<StartDeps>): void {
   }
   const env = overrides.env as Record<string, string | undefined>;
   const rootVars = new Set(ENV_ROOT_VARS.map((n) => n.toLowerCase()));
-  for (const key of Object.keys(env)) {
+  // Every own key, enumerable or not, as resolveEnv's own-field reads see them.
+  for (const key of Object.getOwnPropertyNames(env)) {
     if (!rootVars.has(key.toLowerCase())) continue;
-    const v = env[key];
+    const d = Object.getOwnPropertyDescriptor(env, key)!;
+    if (!('value' in d)) throw new Error(`test helper: env.${key} is an accessor`);
+    const v = d.value as unknown;
     if (typeof v === 'string' && v.trim() !== '') assertFakeHome(v, `env.${key}`);
   }
 }
 
-/** main.ts start() in this process: refuses unless `overrides.home` and every env root var are fake (assertFakeHome). */
+/**
+ * main.ts start() in this process: refuses unless `overrides.home` and every env root var are fake
+ * (assertFakeHome). The copy start() gets is made first and the checks judge that very copy.
+ */
 export async function startInProcess(f: Features, fence: FenceStatus, ports: BootPorts, overrides: Partial<StartDeps>): Promise<StartOutcome> {
-  assertFakeHome(Object.hasOwn(overrides, 'home') ? overrides.home : undefined, 'home');
-  assertFakeEnv(overrides);
-  return start(f, fence, ports, inProcessOverrides(overrides));
+  const given = inProcessOverrides(overrides);
+  assertFakeHome(Object.hasOwn(given, 'home') ? given.home : undefined, 'home');
+  assertFakeEnv(given);
+  return start(f, fence, ports, given);
 }
 
 export type InProcessWorking = Omit<WorkingContext, 'stopping'> & { stopping?: StopPort };
 
 /** working.ts runWorking() in this process: refuses unless both `home` and `userHome` are fake homes. */
 export async function runWorkingInProcess(ctx: InProcessWorking): Promise<WorkingOutcome> {
-  assertFakeHome(ctx.home, 'home');
-  assertFakeHome(ctx.userHome, 'userHome');
-  return runWorking({ ...ctx, stopping: ctx.stopping ?? IN_PROCESS_STOP });
+  const given = ownDataCopy(ctx, 'ctx') as InProcessWorking;
+  assertFakeHome(given.home, 'home');
+  assertFakeHome(given.userHome, 'userHome');
+  return runWorking({ ...given, stopping: given.stopping ?? IN_PROCESS_STOP });
 }
 
 export type Captured = { port: ConsolePort; out: string[]; err: string[]; all(): string[] };

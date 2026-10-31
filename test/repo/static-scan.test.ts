@@ -85,8 +85,43 @@ const CASES: readonly Case[] = [
   neg('process-power-member', 'src/os/spawn.ts', 'child.kill();'),
   neg('process-power-member', 'src/model/x.ts', 'controller.abort();'),
   neg('process-power-member', 'src/model/x.ts', 'timer.unref();'),
-  neg('process-power-member', 'src/boot.ts', "process.stderr.write(line, () => process.exit(EXIT.crashed));"),
+  // Finding N1: process.exit is a lock entry and process.reallyExit a mint boot.ts keeps, so neither is
+  // a kept key any more. This example used to be a negative (exit was a pinned keep entry, and boot.ts
+  // ended through it); boot.ts now ends through the reallyExit it took, and no module, boot.ts
+  // included, may call process.exit.
+  pos('process-power-member', 'src/boot.ts', "process.stderr.write(line, () => process.exit(EXIT.crashed));"),
+  pos('process-power-member', 'src/model/x.ts', 'process.exit(0);'),
+  pos('process-power-member', 'src/model/x.ts', 'process.reallyExit(0);'),
+  pos('process-power-member', 'src/runtime/working.ts', "const end = process['reallyExit'];"),
+  neg('process-power-member', 'src/boot.ts', 'const reallyExit: (code: number) => void = process.reallyExit;'),
+  neg('process-power-member', 'src/model/x.ts', 'const code = endCode(exit, reallyExitCode);'),
   neg('process-power-member', 'src/model/x.ts', 'const { pid, argv } = process;'),
+  // The two exit levers outside the table: process.exitCode and the exit-event listeners, boot.ts only.
+  pos('process-exit-only-in-boot', 'src/model/x.ts', "process.on('exit', () => { process.exitCode = 0; });"),
+  pos('process-exit-only-in-boot', 'src/model/x.ts', 'process.exitCode = 0;'),
+  pos('process-exit-only-in-boot', 'src/runtime/working.ts', 'process.exitCode ??= 0;'),
+  pos('process-exit-only-in-boot', 'src/model/x.ts', "process['exitCode'] = 0;"),
+  pos('process-exit-only-in-boot', 'src/model/x.ts', 'process.exitCode++;'),
+  pos('process-exit-only-in-boot', 'src/model/x.ts', '--process.exitCode;'),
+  pos('process-exit-only-in-boot', 'src/model/x.ts', "Reflect.set(process, 'exitCode', 0);"),
+  pos('process-exit-only-in-boot', 'src/model/x.ts', "Object.defineProperty(globalThis.process, 'exitCode', { value: 0 });"),
+  pos('process-exit-only-in-boot', 'src/main.ts', "process.once('beforeExit', flush);"),
+  pos('process-exit-only-in-boot', 'shared/x.js', 'process.prependListener("exit", f);'),
+  pos('process-exit-only-in-boot', 'src/model/x.ts', "process['addListener']('exit', f);"),
+  neg('process-exit-only-in-boot', 'src/boot.ts', 'process.exitCode = code;'),
+  neg('process-exit-only-in-boot', 'src/model/x.ts', 'const was = process.exitCode;'),
+  neg('process-exit-only-in-boot', 'src/model/x.ts', 'if (process.exitCode === 0) note();'),
+  neg('process-exit-only-in-boot', 'src/model/x.ts', 'if (process.exitCode >= 20) note();'),
+  neg('process-exit-only-in-boot', 'src/os/spawn.ts', "child.once('exit', onExit);"),
+  neg('process-exit-only-in-boot', 'src/runtime/working.ts', "process.on('SIGINT', stop);"),
+  // shared/frozen.js names compile to give each frozen RegExp its own stub; nobody else names it.
+  pos('ban:RegExp-compile', 'src/server/x.ts', "CSRF_RE.compile('^.*$');"),
+  pos('ban:RegExp-compile', 'src/model/x.ts', "RegExp.prototype.compile.call(ID_RE, '.*');"),
+  pos('ban:RegExp-compile', 'shared/protocol.js', "ID_RE['compile']('.*');"),
+  pos('ban:RegExp-compile', 'ui/app.js', 'const { compile } = RegExp.prototype;'),
+  neg('ban:RegExp-compile', 'shared/frozen.js', "Object.defineProperty(v, 'compile', { value: compileDisabled });"),
+  neg('ban:RegExp-compile', 'src/model/x.ts', 'const compiled = compileShape(shape);'),
+  neg('ban:RegExp-compile', 'src/os/spawn.ts', '/** The one file csc may compile. */'),
   pos('global-power-symbol', 'src/model/x.ts', "const d = globalThis[Symbol.for('undici.globalDispatcher.1')];"),
   pos('global-power-symbol', 'src/net/dsh-connect.ts', "const slot = Symbol.for('undici.globalDispatcher.2');"),
   pos('global-power-symbol', 'src/runtime/import-fence.ts', "const UNDICI_DISPATCHERS = [Symbol.for('undici.globalDispatcher.1')];"),
@@ -295,12 +330,67 @@ const CASES: readonly Case[] = [
   neg('gate-factory-only-in-roots', 'src/runtime/working.ts', 'const fence = await ctx.makeWriteFence({ orchestraHome: home, harnessRoots });'),
   neg('gate-factory-only-in-roots', 'src/fs/harness-roots.ts', 'export function launcherRootFs(env: E, ports: P): RootFs {\n  const gate = ports.makeReadGate({ roots });\n  return gate;\n}\n'),
   neg('gate-factory-only-in-roots', 'src/fs/harness-roots.ts', 'export type LauncherFsPorts = {\n  makeReadGate(spec: Spec): ReadGate;\n};\n'),
-  neg('gate-factory-only-in-roots', 'src/os/spawn.ts', '// reaches a gate only through makeSpawnGate: a gate built anywhere else'),
+  // Finding F7: the names are words banned wherever they stand outside the roots, comments included (this
+  // was a negative example before; the comment in spawn.ts now names "node-proc.ts's gate factory").
+  pos('gate-factory-only-in-roots', 'src/os/spawn.ts', '// reaches a gate only through makeSpawnGate: a gate built anywhere else'),
+  neg('gate-factory-only-in-roots', 'src/os/spawn.ts', "// reaches a gate only through node-proc.ts's gate factory: a gate built anywhere else"),
+  pos('gate-factory-only-in-roots', 'src/model/x.ts', "const g = ports['makeSpawnGate'](spec);"),
+  pos('gate-factory-only-in-roots', 'src/model/x.ts', "const g = Reflect.get(ports, 'makeReadGate')(spec);"),
+  pos('gate-factory-only-in-roots', 'src/model/x.ts', 'export function f({ makeReadGate: mk }: P) { return mk(spec); }'),
+  neg('gate-factory-only-in-roots', 'src/model/x.ts', 'const g = ports.readGate; const made = makeReadGateLike(spec);'),
+  // Step 3: the node:sqlite mint's factory is a gate factory too.
+  pos('gate-factory-only-in-roots', 'src/store/store.ts', 'const opener = await deps.makeDbOpener({ fence });'),
+  pos('gate-factory-only-in-roots', 'src/model/x.ts', 'const { makeDbOpener } = ports;'),
+  neg('gate-factory-only-in-roots', 'src/runtime/working.ts', 'const opener = await ctx.makeDbOpener({ fence });'),
+  neg('gate-factory-only-in-roots', 'src/store/node-sqlite.ts', 'export async function makeDbOpener(spec: DbOpenerSpec): Promise<DbOpener> {'),
+  pos('minted-import-only-in-boot', 'src/runtime/working.ts', "import { makeDbOpener } from '../store/node-sqlite.ts';"),
+  pos('minted-import-only-in-boot', 'src/store/db.ts', "const m = await import('./node-sqlite.ts');"),
+  neg('minted-import-only-in-boot', 'src/boot.ts', "import { makeDbOpener } from './store/node-sqlite.ts';"),
+  neg('minted-import-only-in-boot', 'src/runtime/working.ts', "import type { DbOpener } from '../store/db.ts';"),
+  pos('builtin-policy', 'src/store/db.ts', "import { DatabaseSync } from 'node:sqlite';"),
+  pos('builtin-policy', 'src/store/store.ts', "const s = await import('node:sqlite');"),
+  neg('builtin-policy', 'src/store/node-sqlite.ts', "const s = await import('node:sqlite');"),
+  neg('builtin-policy', 'src/store/db.ts', "import type { DatabaseSync } from 'node:sqlite';"),
+
+  // sqlite-surface-bans: node-sqlite.ts hands out exec, prepare and the authorizer only.
+  pos('sqlite-surface-bans', 'src/store/node-sqlite.ts', 'const copy = sqlite.backup(db, target);'),
+  pos('sqlite-surface-bans', 'src/store/node-sqlite.ts', 'const s = db.createSession();'),
+  pos('sqlite-surface-bans', 'src/store/node-sqlite.ts', 'db.applyChangeset(buf);'),
+  pos('sqlite-surface-bans', 'src/store/node-sqlite.ts', 'db.enableLoadExtension(true); db.loadExtension(p);'),
+  pos('sqlite-surface-bans', 'src/store/node-sqlite.ts', 'const bytes = db.serialize();'),
+  pos('sqlite-surface-bans', 'src/store/node-sqlite.ts', 'db.function(\'f\', () => 1);'),
+  pos('sqlite-surface-bans', 'src/store/node-sqlite.ts', "db.aggregate('a', { start: 0, step: (a) => a });"),
+  pos('sqlite-surface-bans', 'src/store/node-sqlite.ts', 'const tags = db.createTagStore();'),
+  pos('sqlite-surface-bans', 'src/store/node-sqlite.ts', 'db.enableDefensive(false);'),
+  neg('sqlite-surface-bans', 'src/store/node-sqlite.ts', "exec: (sql: string) => { db.exec(String(sql)); },\nprepare: (sql: string) => statementOf(db.prepare(String(sql))),"),
+  // Only the module that can import node:sqlite: elsewhere there is nothing to call them on.
+  neg('sqlite-surface-bans', 'src/store/db.ts', '// a backup of the database'),
+
+  // sql-text-literal-only: fixed SQL text with positional parameters.
+  pos('sql-text-literal-only', 'src/store/rebuild.ts', 'db.all(`SELECT * FROM ${table} ORDER BY id`);'),
+  pos('sql-text-literal-only', 'src/store/x.ts', 'const q = `DELETE FROM item WHERE id = \'${id}\'`;'),
+  pos('sql-text-literal-only', 'src/store/x.ts', 'db.run(`update item set state = ${s}`);'),
+  pos('sql-text-literal-only', 'src/store/x.ts', "db.get('SELECT * FROM item WHERE id = ' + id);"),
+  pos('sql-text-literal-only', 'src/model/x.ts', "const sql = base + ' WHERE kind = ?';"),
+  neg('sql-text-literal-only', 'src/store/rebuild.ts', "db.run('UPDATE inbox_item SET state = ?, rev = ? WHERE id = ?', to, rev, id);"),
+  neg('sql-text-literal-only', 'src/store/x.ts', 'const m = `${entity} ${id} does not exist`;'),
+  neg('sql-text-literal-only', 'src/store/x.ts', "db.exec(`CREATE TABLE t (\n  a INTEGER\n) STRICT`);"),
 
   // node-io-append-existing-flag: the flag must open for append without creating (no O_CREAT).
   pos('node-io-append-existing-flag', 'src/fs/node-io.ts', "const OPEN_FLAGS = bag({ wx: 'wx', ax: 'ax', 'append-existing': 'a' });"),
   pos('node-io-append-existing-flag', 'src/fs/node-io.ts', "const OPEN_FLAGS = bag({ 'append-existing': fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT });"),
   neg('node-io-append-existing-flag', 'src/fs/node-io.ts', "const OPEN_FLAGS = bag({ wx: 'wx', ax: 'ax', 'append-existing': fs.constants.O_WRONLY | fs.constants.O_APPEND });"),
+  // Finding F8: the value runs to the next comma at depth 0, across lines, and the key is set once.
+  pos('node-io-append-existing-flag', 'src/fs/node-io.ts', "const OPEN_FLAGS = bag({\n  'append-existing': fs.constants.O_WRONLY | fs.constants.O_APPEND\n    | fs.constants.O_CREAT,\n});"),
+  pos('node-io-append-existing-flag', 'src/fs/node-io.ts', "const OPEN_FLAGS = bag({ 'append-existing': fs.constants.O_WRONLY | fs.constants.O_APPEND, 'append-existing': 'a' });"),
+  neg('node-io-append-existing-flag', 'src/fs/node-io.ts', "const OPEN_FLAGS = bag({\n  'append-existing': fs.constants.O_WRONLY\n    | fs.constants.O_APPEND,\n  ax: 'ax',\n});"),
+  pos('node-io-write-existing-flag', 'src/fs/node-io.ts', "const OPEN_FLAGS = bag({ 'write-existing': fs.constants.O_WRONLY, 'write-existing': 'w' });"),
+  // node-io-write-existing-flag: the journal's cut opens for writing in place, never creating or emptying.
+  pos('node-io-write-existing-flag', 'src/fs/node-io.ts', "const OPEN_FLAGS = bag({ 'write-existing': 'w' });"),
+  pos('node-io-write-existing-flag', 'src/fs/node-io.ts', "const OPEN_FLAGS = bag({ 'write-existing': fs.constants.O_WRONLY | fs.constants.O_TRUNC });"),
+  pos('node-io-write-existing-flag', 'src/fs/node-io.ts', "const OPEN_FLAGS = bag({ 'write-existing': fs.constants.O_WRONLY | fs.constants.O_CREAT });"),
+  pos('node-io-write-existing-flag', 'src/fs/node-io.ts', "const OPEN_FLAGS = bag({ wx: 'wx' });"),
+  neg('node-io-write-existing-flag', 'src/fs/node-io.ts', "const OPEN_FLAGS = bag({ 'append-existing': fs.constants.O_WRONLY | fs.constants.O_APPEND, 'write-existing': fs.constants.O_WRONLY });"),
 
   // ban:.constructor: an instance's .constructor reaches its class (process.stdout -> net.Socket -> the network).
   pos('ban:.constructor', 'src/model/x.ts', 'const S = process.stdout.constructor;'),
@@ -308,6 +398,11 @@ const CASES: readonly Case[] = [
   pos('ban:.constructor', 'src/model/x.ts', 'const S = Object.getPrototypeOf(process.stderr).constructor;'),
   neg('ban:.constructor', 'src/fs/read-gate.ts', 'constructor(config: ReadGateConfig) { this.cfg = config; }'),
   neg('ban:.constructor', 'src/model/x.ts', 'const label = describeConstructorKind(x);'),
+  // Finding F6: a destructuring pattern, in an assignment or a parameter.
+  pos('ban:.constructor', 'src/model/x.ts', 'const { constructor: S } = process.stdout;'),
+  pos('ban:.constructor', 'src/model/x.ts', 'export function f({ constructor: C }: { constructor: unknown }) { return C; }'),
+  pos('ban:.constructor', 'src/model/x.ts', 'const { write, constructor } = process.stderr;'),
+  neg('ban:.constructor', 'src/model/x.ts', 'class Gate {\n  constructor(config: Config) {\n    this.config = config;\n  }\n}'),
 
   // The paths are chosen so that none of these strings resolves to src/ from this file, which the
   // rule scans too; the helper's own import is spelled in two pieces for the same reason.
@@ -321,6 +416,116 @@ const CASES: readonly Case[] = [
   neg('in-process-start-only-in-helper', 'test/x.test.ts', "import { startInProcess } from './helpers/start.ts';"),
   neg('in-process-start-only-in-helper', 'test/helpers/start.ts', "import { start } from '../../src/" + "main.ts';"),
   neg('in-process-start-only-in-helper', 'src/model/x.ts', "import { start } from '../main.ts';"),
+  // Step 3: the Clock rule. The sites the step moved onto the Clock port are positives in their old form.
+  pos('clock-only-in-clock-ts', 'src/os/spawn.ts', "const timer = setTimeout(() => halt('timeout'), limits.timeoutMs);"),
+  pos('clock-only-in-clock-ts', 'src/main.ts', 'now: Date.now,'),
+  pos('clock-only-in-clock-ts', 'src/runtime/log.ts', 'this.#now = cfg.now ?? Date.now;'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const t = Date.now();'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const t = Date?.now();'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', "const t = Date['now']();"),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', "const t = Reflect.get(Date, 'now')();"),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const d = new Date();'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const d = new Date;'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const d = new globalThis.Date();'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const s = Date();'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const t = performance.now();'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const o = performance.timeOrigin;'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', "const m = performance['now']();"),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', "performance.mark('x');"),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const p = performance; p.now();'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const { now } = globalThis.performance;'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const t = process.hrtime.bigint();'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const u = process.uptime();'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', "const u = process['uptime']();"),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const { hrtime } = process;'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'setTimeout(f, 10);'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const h = setInterval(f, 1000);'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', "import { setTimeout as sleep } from 'node:timers/promises';"),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', "const s = new Intl.DateTimeFormat('en').format();"),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const p = Intl.DateTimeFormat().formatToParts();'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const sig = AbortSignal.timeout(10_000);'),
+  pos('clock-only-in-clock-ts', 'shared/protocol.js', 'const t = Date.now();'),
+  pos('clock-only-in-clock-ts', 'scripts/check-real-claude.ts', 'const t0 = performance.now();'),
+  neg('clock-only-in-clock-ts', 'src/runtime/clock.ts', 'const read = () => ({ mono: Math.floor(performance.now()), wall: Date.now() });'),
+  neg('clock-only-in-clock-ts', 'src/os/spawn.ts', 'const at = new Date(this.#clock.nowWall()).toISOString();'),
+  neg('clock-only-in-clock-ts', 'src/model/x.ts', 'const d = new Date(ms);'),
+  neg('clock-only-in-clock-ts', 'src/model/x.ts', 'const due = Date.parse(text) + Date.UTC(2026, 0, 1);'),
+  neg('clock-only-in-clock-ts', 'src/model/x.ts', 'const at = clock.nowWall(); const myDate = toDate(at);'),
+  neg('clock-only-in-clock-ts', 'src/model/x.ts', 'const score = sample.performanceScore;'),
+  neg('clock-only-in-clock-ts', 'src/model/x.ts', "const s = new Intl.DateTimeFormat('en', o).format(at);"),
+  // Finding S8: ordinary spellings of a clock read past a member pattern; the words themselves are banned.
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const t = (Date).now();'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const t = Date/**/.now();'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const { now } = Date;'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const d = new Date(...[]);'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const s = Date.call(null);'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const d = Reflect.construct(Date, []);'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', "const t = globalThis['Date'].now();"),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', "const t = globalThis['performance'].now();"),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const t = (performance).now();'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', "const h = Reflect.get(process, 'hrtime');"),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const { timeout } = AbortSignal;'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', "const s = AbortSignal['timeout'](5);"),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', 'const s = (AbortSignal).timeout(5);'),
+  pos('clock-only-in-clock-ts', 'src/model/x.ts', '// a Date in a comment counts too'),
+  neg('clock-only-in-clock-ts', 'src/model/x.ts', 'const iso = new Date(ms).toISOString(); const d = new Date( ms );'),
+  neg('clock-only-in-clock-ts', 'src/model/x.ts', 'const s = AbortSignal.any([a, b]); const t = updatedAt + timeoutMs;'),
+  neg('clock-only-in-clock-ts', 'src/model/x.ts', 'const h = setImmediate(f);'),
+  neg('clock-only-in-clock-ts', 'src/model/x.ts', 'const s = AbortSignal.any([a, b]);'),
+  neg('clock-only-in-clock-ts', 'src/model/x.ts', 'const { pid, argv } = process;'),
+  neg('clock-only-in-clock-ts', 'scripts/test-stage.ts', 'const timer = setTimeout(() => resolve(false), ms);'),
+  neg('clock-only-in-clock-ts', 'ui/clock.js', 'const t = performance.now();'),
+  neg('clock-only-in-clock-ts', 'test/x.test.ts', 'setTimeout(f, 1);'),
+  neg('clock-only-in-clock-ts', 'src/runtime/process-powers.ts', "'isFinite', 'isNaN', 'setTimeout', 'setInterval', 'setImmediate',"),
+  // node:timers left the default row: only clock.ts imports it.
+  pos('builtin-policy', 'src/model/x.ts', "import { setTimeout } from 'node:timers';"),
+  pos('builtin-policy', 'src/runtime/working.ts', "import { setTimeout as sleep } from 'node:timers/promises';"),
+  neg('builtin-policy', 'src/runtime/clock.ts', "import { clearTimeout, setTimeout } from 'node:timers';"),
+
+  pos('clock-factories-only-in-roots', 'src/model/x.ts', "import { makeRealClock } from '../runtime/clock.ts';\nconst hub = makeRealClock();"),
+  pos('clock-factories-only-in-roots', 'src/main.ts', 'const hub = makeRealClock();'),
+  pos('clock-factories-only-in-roots', 'src/runtime/working.ts', 'const vc = new VirtualClock({ mono: 0, wall: 0 });'),
+  pos('clock-factories-only-in-roots', 'src/boot.ts', 'const vc = new VirtualClock({ mono: 0, wall: 0 });'),
+  pos('clock-factories-only-in-roots', 'src/model/x.ts', "import * as c from '../runtime/clock.ts';\nconst hub = c['makeReal' + 'Clock']();"),
+  pos('clock-factories-only-in-roots', 'src/model/x.ts', "const c = await import('../runtime/clock.ts');"),
+  neg('clock-factories-only-in-roots', 'src/boot.ts', "import { makeRealClock } from './runtime/clock.ts';\nconst ports = { clock: makeRealClock() };"),
+  neg('clock-factories-only-in-roots', 'src/boot.ts', "import * as clockModule from './runtime/clock.ts';"),
+  neg('clock-factories-only-in-roots', 'src/runtime/clock.ts', 'export class VirtualClock implements ClockHub {'),
+  neg('clock-factories-only-in-roots', 'src/os/spawn.ts', "import type { Clock, ClockHub, Fired } from '../runtime/clock.ts';"),
+  neg('clock-factories-only-in-roots', 'src/model/x.ts', "import { clockRecord, timerId } from '../runtime/clock.ts';"),
+  neg('clock-factories-only-in-roots', 'test/x.test.ts', 'const vc = new VirtualClock({ mono: 0, wall: 0 });'),
+
+  pos('ban:locale', 'src/model/x.ts', "const s = new Intl.DateTimeFormat('zh-CN').format(t);"),
+  pos('ban:locale', 'src/model/x.ts', 'rows.sort((a, b) => a.name.localeCompare(b.name));'),
+  pos('ban:locale', 'src/model/x.ts', 'const s = new Date(t).toLocaleString();'),
+  pos('ban:locale', 'src/model/x.ts', "const s = n.toLocaleString('en');"),
+  pos('ban:locale', 'src/model/x.ts', 'const u = name.toLocaleUpperCase();'),
+  pos('ban:locale', 'shared/strings.js', 'const c = new Intl.Collator();'),
+  neg('ban:locale', 'src/model/x.ts', 'rows.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));'),
+  neg('ban:locale', 'src/model/x.ts', 'const u = name.toUpperCase();'),
+  neg('ban:locale', 'src/model/x.ts', 'const s = new Date(t).toISOString(); const international = true;'),
+  neg('ban:locale', 'src/runtime/process-powers.ts', "'JSON', 'Math', 'Intl', 'ArrayBuffer',"),
+  neg('ban:locale', 'ui/clock.js', "const f = new Intl.DateTimeFormat('zh-CN', o);"),
+
+  pos('ban:Math.random', 'src/model/x.ts', 'const id = Math.random().toString(36);'),
+  pos('ban:Math.random', 'src/model/x.ts', "const r = Math['random']();"),
+  pos('ban:Math.random', 'shared/protocol.js', 'const tab = Math.random();'),
+  neg('ban:Math.random', 'src/runtime/working.ts', 'const code = crypto.randomInt(0, 100_000_000); const id = crypto.randomUUID();'),
+  neg('ban:Math.random', 'test/x.test.ts', 'const order = Math.random();'),
+
+  pos('shared-imports-shared-only', 'shared/protocol.js', "import { timerId } from '../src/runtime/clock.ts';"),
+  pos('shared-imports-shared-only', 'shared/strings.js', "import { ID_RE } from './protocol.ts';"),
+  pos('shared-imports-shared-only', 'shared/x.js', "import { a } from '../ui/app.js';"),
+  pos('shared-imports-shared-only', 'shared/x.js', "import v from 'lodash';"),
+  pos('shared-imports-shared-only', 'shared/x.js', "/** @typedef {import('../src/main.ts').StartDeps} D */"),
+  neg('shared-imports-shared-only', 'shared/strings.js', "import { ERROR_CODES } from './protocol.js';"),
+  neg('shared-imports-shared-only', 'shared/sub/x.js', "import { a } from '../protocol.js';"),
+  neg('shared-imports-shared-only', 'src/model/x.ts', "import { ID_RE } from '../../shared/protocol.js';"),
+  // A builtin in shared/ is the builtin-policy rule's (NO_BUILTIN_DIRS), defaults included.
+  neg('shared-imports-shared-only', 'shared/x.js', "import * as path from 'node:path';"),
+  pos('builtin-policy', 'shared/x.js', "import * as path from 'node:path';"),
+  pos('builtin-policy', 'shared/x.js', "/** @typedef {import('node:fs').Stats} S */"),
+  neg('builtin-policy', 'src/model/x.ts', "import * as path from 'node:path';"),
 ];
 
 for (const c of CASES) {
@@ -352,6 +557,16 @@ test('process-power-member flags every lock and mint key of process in each memb
     for (const text of [`thing.${key}(x);`, `const ${key}ed = 1;`, `const x = { ${key}: 1 };`]) assert.ok(!hit(text), `flagged: ${text}`);
   }
   for (const { key } of PROCESS_POWERS.filter((e) => e.class === 'keep' && !e.key.startsWith('Symbol('))) assert.ok(!hit(`process.${key};`), `kept key flagged: ${key}`);
+  // A process mint entry is named only where it is minted and held (reallyExit: boot.ts, held by nobody else).
+  const minted = PROCESS_POWERS.filter((e) => e.class === 'mint');
+  assert.deepEqual(minted.map((e) => [e.key, e.class === 'mint' ? e.mintedBy : '', e.class === 'mint' ? [...e.heldBy] : []]), [['reallyExit', 'src/boot.ts', []]]);
+  const hitIn = (file: string, text: string) => scan(file, text).filter((h) => h.rule === 'process-power-member').length > 0;
+  for (const e of minted) {
+    if (e.class !== 'mint') continue;
+    for (const f of [e.mintedBy, ...e.heldBy]) assert.ok(!hitIn(f, `const f = process.${e.key};`), `${e.key} in ${f}`);
+    for (const f of ['src/main.ts', 'src/runtime/working.ts', 'src/model/x.ts']) assert.ok(hitIn(f, `const f = process.${e.key};`), `${e.key} in ${f}`);
+  }
+  assert.ok(hitIn('src/boot.ts', 'process.exit(code);'), 'boot.ts mints reallyExit, not exit');
 });
 
 test('global-power-name flags every lock and mint global by its bare name, except where a mint entry is minted and held', () => {

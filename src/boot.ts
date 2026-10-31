@@ -4,13 +4,22 @@ import type { ReadGate } from './fs/read-gate.ts';
 import type { WriteFence } from './fs/write-fence.ts';
 import type { SpawnGateSpec } from './os/node-proc.ts';
 import type { SpawnGate } from './os/spawn.ts';
+import type { DbOpener, DbOpenerSpec } from './store/db.ts';
+import type { ClockHub } from './runtime/clock.ts';
 import type { Features } from './runtime/features.ts';
 import type { FenceStatus } from './runtime/import-fence.ts';
 // Minted before the fence: the static imports below are evaluated before this module's body, so
 // node:fs and node:child_process are loaded while nothing guards them, and only here. Once
-// installImportFence() has run, neither module can be resolved again (minted-before-fence).
+// installImportFence() has run, none of the minted modules can be resolved again (minted-before-fence).
+// src/store/node-sqlite.ts is minted the same way, but loads node:sqlite only when working.ts makes
+// the first opener, so a ui-only process never loads it (the import its builtin-policy row allows
+// stays its own: no other module may import node:sqlite, and nobody can import node-sqlite.ts). The clock
+// hub is made here too (runtime/clock.ts, the one module that reads the time or arms a timer): it
+// reaches main.ts and working.ts only as BootPorts.clock, never as a default.
 import { makeReadGate, makeWriteFence, realpath } from './fs/node-io.ts';
 import { makeSpawnGate } from './os/node-proc.ts';
+import { makeDbOpener } from './store/node-sqlite.ts';
+import { makeRealClock } from './runtime/clock.ts';
 import { EXIT } from './runtime/exit.ts';
 import { detectFeatures } from './runtime/features.ts';
 import { deadDispatcher, installImportFence } from './runtime/import-fence.ts';
@@ -32,6 +41,12 @@ export type BootPorts = {
   makeReadGate(spec: ReadGateSpec): ReadGate;
   makeWriteFence(spec: WriteFenceSpec): Promise<WriteFence>;
   makeSpawnGate(spec: SpawnGateSpec): SpawnGate;
+  /** The SQLite opener factory (src/store/node-sqlite.ts); working.ts makes the store's opener with it. */
+  makeDbOpener(spec: DbOpenerSpec): Promise<DbOpener>;
+  /** The one real clock hub (src/runtime/clock.ts); main.ts and working.ts mint every Clock from it. */
+  clock: ClockHub;
+  /** Ends the process with exactly this code (endProcess below); main.ts's stopping ends through it. */
+  endProcess(code: number): void;
 };
 
 /**
@@ -61,6 +76,67 @@ function portFetch(raw: typeof globalThis.fetch, dispatcher: object): BootPorts[
 
 type MainModule = { start(f: Features, fence: FenceStatus, ports: BootPorts): Promise<unknown> };
 
+/**
+ * process.reallyExit, taken while this module evaluates, before the fence: a mint entry boot.ts
+ * keeps for itself (process-powers.ts), so after the fence the slot holds a stub and this is the one
+ * live copy. Called as a plain function, never through .call or .apply, which a module could
+ * replace on Function.prototype: Node's binding reads no `this` (measured on 24.22: a bare call and
+ * a call with `this` undefined both end the process with the code given).
+ */
+const reallyExit: (code: number) => void = process.reallyExit;
+
+/** How long the console may take to drain before the process ends anyway. */
+export const EXIT_FLUSH_MS = 2000;
+
+/** Ends the process: `line` (if any) to stderr, the console flushed, then exactly `code`. The first call wins. */
+export type EndProcess = (code: number, line?: string) => void;
+
+/**
+ * The one way orchestrad ends (a typed outcome, a crash, a stop). It writes `line`, waits for stdout
+ * and stderr to drain, but at most EXIT_FLUSH_MS on a deadline timer of the boot hub, so a write whose
+ * callback never comes (a replaced process.stdout.write, say) cannot keep the process alive; then it
+ * hands `code` to the reallyExit it took. Node's exit() would emit 'exit' first and end with
+ * process.exitCode as its listeners left it (measured: a listener setting exitCode = 0 turned a typed
+ * refusal into 0); reallyExit takes the code it is given and runs no listener. The fence locks exit()
+ * and reallyExit on process for everyone else (process-powers.ts), so no module can end the process
+ * with a code of its own while the console drains. Later calls are no-ops, so a crash on the way out
+ * cannot change the code already committed.
+ */
+export function makeEndProcess(hub: ClockHub): EndProcess {
+  let ending = false;
+  return (code, line) => {
+    if (ending) return;
+    ending = true;
+    process.exitCode = code;
+    const end = () => reallyExit(code);
+    const clock = hub.port(end);
+    clock.schedule({ timerId: 'deadline:exit:0', class: 'deadline', clock: 'mono', due: clock.nowMono() + EXIT_FLUSH_MS });
+    let left = 2;
+    const drained = () => {
+      left--;
+      if (left === 0) end();
+    };
+    try {
+      process.stdout.write('', drained);
+    } catch {
+      drained();
+    }
+    try {
+      process.stderr.write(line ?? '', drained);
+    } catch {
+      drained();
+    }
+  };
+}
+
+/** The boot hub and the end built on it; runEntry makes one pair for the whole process. */
+export type BootBase = { hub: ClockHub; end: EndProcess };
+
+function bootBase(): BootBase {
+  const hub = makeRealClock();
+  return { hub, end: makeEndProcess(hub) };
+}
+
 export type BootDeps = { detectFeatures(): Features; installImportFence(): FenceStatus };
 
 /** `result` is what the entry's start() returned (main.ts: a StartOutcome). */
@@ -70,9 +146,11 @@ export type BootOutcome =
 
 const DEFAULT_DEPS: BootDeps = { detectFeatures, installImportFence: () => installImportFence() };
 
-export async function boot(entry: URL, deps: BootDeps = DEFAULT_DEPS): Promise<BootOutcome> {
+export async function boot(entry: URL, deps: BootDeps = DEFAULT_DEPS, base: BootBase = bootBase()): Promise<BootOutcome> {
   const f = deps.detectFeatures();
-  const ports: BootPorts = { fetch: portFetch(globalThis.fetch, deadDispatcher()), realpath, makeReadGate, makeWriteFence, makeSpawnGate };
+  const ports: BootPorts = {
+    fetch: portFetch(globalThis.fetch, deadDispatcher()), realpath, makeReadGate, makeWriteFence, makeSpawnGate, makeDbOpener, clock: base.hub, endProcess: (code: number) => base.end(code),
+  };
   // Hooks only see modules resolved after registration, so the fence goes in before main.ts is
   // imported. Without the resolve hook nothing would stop main.ts's graph from importing any
   // builtin, so boot refuses and never imports the entry (fail closed). Every Node that runs .ts
@@ -105,36 +183,24 @@ export function crashLine(e: unknown): string {
   return `orchestrad: crashed (exit ${EXIT.crashed}): ${scrubString(what)}`;
 }
 
-function crash(e: unknown): void {
-  process.exitCode = EXIT.crashed;
-  // Exit once the line is out: whatever the crash left open (the lock, a timer) must not keep a
-  // process in an unknown state alive.
-  process.stderr.write(`${crashLine(e)}\n`, () => process.exit(EXIT.crashed));
-}
-
-/**
- * Commits a typed outcome's exit code and ends the process through it, flushing the console first.
- * A working outcome returns null and this is never reached; every coded outcome (refused, ui-only,
- * exit, lock-held, start-failed) is terminal. process.exitCode alone would let a module that keeps
- * the loop alive — a pending timer, say — flip it before the process drains, masking a refusal as a
- * clean 0; process.exit uses the code it is handed whatever process.exitCode was set to.
- */
-function finalize(code: number): void {
-  process.exitCode = code;
-  process.stdout.write('', () => process.stderr.write('', () => process.exit(code)));
-}
-
 /**
  * The process entry. Whatever is thrown on the way, or later by a timer or an unhandled rejection,
  * ends the process with EXIT.crashed and one scrubbed line: Node's own code for that is 1, outside
- * the 20-29 that orchestrad's typed outcomes use (exit.ts).
+ * the 20-29 that orchestrad's typed outcomes use (exit.ts). A typed outcome's code (refused, ui-only,
+ * exit, lock-held, start-failed; a working outcome returns null and keeps running) is committed the
+ * same way: through makeEndProcess, so neither a timer that flips process.exitCode, nor an 'exit'
+ * listener that does, nor a console write that never calls back can change or hold it.
  */
 export async function runEntry(entry: URL, deps: BootDeps = DEFAULT_DEPS): Promise<void> {
+  const base = bootBase();
+  // Exit once the line is out: whatever the crash left open (the lock, a timer) must not keep a
+  // process in an unknown state alive.
+  const crash = (e: unknown) => base.end(EXIT.crashed, `${crashLine(e)}\n`);
   process.on('uncaughtException', crash);
   try {
-    const outcome = await boot(entry, deps);
+    const outcome = await boot(entry, deps, base);
     const code = outcome.started ? exitCodeOf(outcome.result) : outcome.code;
-    if (code !== null) finalize(code);
+    if (code !== null) base.end(code);
   } catch (e) {
     crash(e);
   }

@@ -1,7 +1,13 @@
 import { Worker } from 'node:worker_threads';
 import type { ResourceLimits } from 'node:worker_threads';
+import { frozenClass } from '../../shared/frozen.js';
 
-export const BOOTSTRAP_URL = new URL('../workers/bootstrap.ts', import.meta.url);
+// A URL is mutable through its setters whatever Object.freeze says, and startWorker reads this one on
+// every call: exported, any module could point it at a module of its own and start every worker past
+// the bootstrap and its fence. So the URL stays in this module, and only its href (a string) is exported.
+const BOOTSTRAP_URL = new URL('../workers/bootstrap.ts', import.meta.url);
+/** Where every worker starts (workers/bootstrap.ts), as a string. */
+export const BOOTSTRAP_HREF: string = BOOTSTRAP_URL.href;
 export const WORKER_DATA_KEY = 'orchestraWorker';
 
 /** What bootstrap.ts hands to the worker module's run(); worker modules never import worker_threads. */
@@ -25,6 +31,7 @@ export class WorkerStartError extends Error {
     this.reason = reason;
   }
 }
+frozenClass(WorkerStartError);
 
 /** A worker module is a .ts file: URL. Source text and data: URLs are refused, so is the bootstrap itself. */
 export function checkWorkerTarget(target: unknown): WorkerTargetCheck {

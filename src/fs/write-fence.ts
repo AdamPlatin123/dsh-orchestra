@@ -3,6 +3,7 @@ import * as crypto from 'node:crypto';
 import type { PathRejectReason, RealpathFn } from './paths.ts';
 import { canonicalize, checkPath, isWithin, pathKey } from './paths.ts';
 import { ownField, ownFields } from '../runtime/own.ts';
+import { frozenClass } from '../../shared/frozen.js';
 
 const win = path.win32;
 
@@ -27,7 +28,17 @@ export type WriteDecision =
   | { allow: false; op: WriteOp; path: string; reason: 'canonicalize-failed'; detail: string }
   | { allow: false; op: WriteOp; path: string; reason: 'hardlink'; links: number }
   | { allow: false; op: WriteOp; path: string; reason: 'stat-failed'; detail: string }
-  | { allow: false; op: WriteOp; path: string; reason: 'changed-during-open'; detail: ChangedDetail };
+  | { allow: false; op: WriteOp; path: string; reason: 'changed-during-open'; detail: ChangedDetail }
+  | { allow: false; op: WriteOp; path: string; reason: 'link'; detail: 'entry' | 'path' };
+
+/** A file's identity, as stat reports it. */
+export type FileId = { dev: bigint; ino: bigint };
+
+/**
+ * checkByName()'s verdict on a file another component opens by its name (SQLite's database and its
+ * side files): its canonical form and, when it exists, its identity.
+ */
+export type NamedFileDecision = { allow: true; path: string; real: string; id: FileId | null } | Extract<WriteDecision, { allow: false }>;
 
 export type WriteDenyReason = Extract<WriteDecision, { allow: false }>['reason'];
 
@@ -39,23 +50,26 @@ export class WriteFenceError extends Error {
     this.decision = decision;
   }
 }
+frozenClass(WriteFenceError);
 
-/** What the fence reads from a stat: the file's identity and its hard-link count. */
-export type FenceStat = { dev: bigint; ino: bigint; nlink: bigint };
+/** What the fence reads from a stat: the file's identity, its hard-link count and its size. */
+export type FenceStat = { dev: bigint; ino: bigint; nlink: bigint; size: bigint };
 /** What the fence reads from an lstat: the entry itself, never what a link points at. */
 export type EntryStat = { isSymbolicLink(): boolean; isDirectory(): boolean };
 
 /**
  * Every fs call the fence makes. Required, with no default: the real one is minted in
- * src/fs/node-io.ts and reaches a fence only through makeWriteFence, so a fence built anywhere else,
+ * src/fs/node-io.ts and reaches a fence only through node-io.ts's fence factory, so a fence built anywhere else,
  * with whatever roots and home, changes nothing on disk. Tests pass their own io to stage a swap
  * between check and act, and between the close of a temp file and its rename.
  * `append-existing` opens an existing file for appending and never creates one; a new file is made
- * with 'ax' instead. ftruncateSync is there for step 3's journal; nothing calls it yet.
+ * with 'ax' instead. `write-existing` opens an existing file for writing in place, never creating or
+ * emptying it: shorten() cuts the journal's torn tail through it with ftruncateSync (step 3; an
+ * append handle cannot be cut on Windows, measured EPERM).
  */
 export type WriteIo = {
   realpath: RealpathFn;
-  openSync(p: string, flags: 'wx' | 'ax' | 'append-existing'): number;
+  openSync(p: string, flags: 'wx' | 'ax' | 'append-existing' | 'write-existing'): number;
   writeSync(fd: number, buf: Uint8Array, offset: number, length: number): number;
   fsyncSync(fd: number): void;
   ftruncateSync(fd: number, length: number): void;
@@ -98,8 +112,6 @@ export type WriteFenceConfig = {
 const CONFIG_KEYS = ['orchestraHome', 'harnessRoots', 'confine', 'io'] as const;
 
 export type RmResult = { removed: number };
-
-type FileId = { dev: bigint; ino: bigint };
 
 function code(e: unknown): string | undefined {
   return typeof e === 'object' && e !== null && 'code' in e ? String((e as { code: unknown }).code) : undefined;
@@ -354,6 +366,56 @@ export class WriteFence {
     return created;
   }
 
+  /**
+   * Decision only, for a file another component opens by its name, SQLite above all: it creates the
+   * database and its -wal, -shm and -journal files itself, past every open this fence could judge.
+   * Placed like an append target (deny first, inside ORCHESTRA_HOME in both forms, no other hard
+   * link), the entry is no link (a dangling one would not even show in its canonical form), and no
+   * link lies between ORCHESTRA_HOME and it: its canonical form is its written form under the
+   * canonical home. The caller judges again once the file is open and compares the identity.
+   */
+  checkByName(target: string): NamedFileDecision {
+    const d = this.#check(target, 'append');
+    if (!d.allow) return d;
+    const p = d.path;
+    let link: boolean;
+    try {
+      link = this.#isLink(p);
+    } catch (e) {
+      return { allow: false, op: 'append', path: p, reason: 'stat-failed', detail: code(e) ?? String(e) };
+    }
+    if (link) return { allow: false, op: 'append', path: p, reason: 'link', detail: 'entry' };
+    if (pathKey(d.real) !== pathKey(win.join(this.homeReal, win.relative(this.home, p)))) {
+      return { allow: false, op: 'append', path: p, reason: 'link', detail: 'path' };
+    }
+    try {
+      const st = this.#io.statSync(d.real);
+      return { allow: true, path: p, real: d.real, id: { dev: st.dev, ino: st.ino } };
+    } catch (e) {
+      if (code(e) === 'ENOENT') return { allow: true, path: p, real: d.real, id: null };
+      return { allow: false, op: 'append', path: p, reason: 'stat-failed', detail: code(e) ?? String(e) };
+    }
+  }
+
+  /**
+   * Cuts an existing file back to its first `length` bytes and syncs it: the journal drops a torn
+   * tail this way (step 3). Judged like append(), on the handle before the cut; never grows a file.
+   */
+  shorten(target: string, length: number): void {
+    if (!Number.isSafeInteger(length) || length < 0) throw new RangeError('write fence: shorten takes a non-negative integer length');
+    const p = this.#require(target, 'append');
+    const fd = this.#io.openSync(p, 'write-existing');
+    try {
+      this.#verifyOpened('append', fd, p);
+      const size = this.#io.fstatSync(fd).size;
+      if (typeof size !== 'bigint' || size < BigInt(length)) throw new RangeError(`write fence: shorten would grow ${p} to ${length} bytes`);
+      this.#io.ftruncateSync(fd, length);
+      this.#io.fsyncSync(fd);
+    } finally {
+      this.#io.closeSync(fd);
+    }
+  }
+
   /** A level mkdirp found already there: still placed inside ORCHESTRA_HOME, not a link, a directory. */
   #judgeExisting(level: string, eexist: unknown): void {
     const again = this.#placeAgain('mkdir', level);
@@ -414,7 +476,7 @@ export class WriteFence {
 // The prototype and every instance are frozen: a module holding a WriteFence (or the class) can neither
 // replace a method every holder calls nor change an instance's fields or prototype, and the gate's
 // own paths call only its private members, so a subclass cannot steer them either.
-Object.freeze(WriteFence.prototype);
+frozenClass(WriteFence);
 
 function writeAll(io: WriteIo, fd: number, data: string | Uint8Array): void {
   const buf = typeof data === 'string' ? Buffer.from(data, 'utf8') : data;

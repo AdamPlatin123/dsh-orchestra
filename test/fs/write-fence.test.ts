@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
+import nodeFs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import * as path from 'node:path';
 import type { TestContext } from 'node:test';
 import { resolveEnv } from '../../src/runtime/env.ts';
@@ -646,4 +648,32 @@ test('makeWriteFence: node-io.ts\'s own io does each act, appends without trunca
   assert.throws(() => fence.writeAtomic(path.join(outside, 'keep.txt'), 'x'), (e: unknown) => e instanceof WriteFenceError && e.decision.reason === 'harness-root');
   assert.deepEqual(fs.readdirSync(path.join(home, 'run')).sort(), ['a.log', 'd.json']);
   assert.equal(treeDigest(outside), before, 'the junction target is untouched');
+});
+
+// Finding F8: the static rule pins the text of node-io.ts's flags; this measures what production's
+// WRITE_IO really hands node:fs. fs.openSync is wrapped for this test (syncBuiltinESMExports carries
+// the wrapper into node-io.ts's namespace), so the flags of the fence's own opens are recorded.
+test('production WRITE_IO: append-existing opens without O_CREAT, then the fence creates exclusively; write-existing creates nothing', async (t) => {
+  const dir = fs.realpathSync.native(withTmp(t));
+  const home = path.join(dir, 'orchestra');
+  const fence = await makeWriteFence({ orchestraHome: home, harnessRoots: [path.join(dir, 'claude')] });
+  fence.mkdirp(home);
+  const flags: unknown[] = [];
+  const realOpen = nodeFs.openSync;
+  nodeFs.openSync = ((p: fs.PathLike, f: unknown, ...rest: unknown[]) => {
+    if (/probe\.log$|missing\.jsonl$/.test(String(p))) flags.push(f);
+    return (realOpen as (p: fs.PathLike, ...r: unknown[]) => number)(p, f, ...rest);
+  }) as typeof nodeFs.openSync;
+  syncBuiltinESMExports();
+  t.after(() => {
+    nodeFs.openSync = realOpen;
+    syncBuiltinESMExports();
+  });
+  fence.append(path.join(home, 'probe.log'), 'x');
+  assert.deepEqual(flags, [fs.constants.O_WRONLY | fs.constants.O_APPEND, 'ax'], 'the existing-file open failed on the missing file, then the exclusive create');
+  assert.equal((flags[0] as number) & fs.constants.O_CREAT, 0);
+  flags.length = 0;
+  assert.throws(() => fence.shorten(path.join(home, 'missing.jsonl'), 0), (e: unknown) => (e as { code?: unknown }).code === 'ENOENT');
+  assert.deepEqual(flags, [fs.constants.O_WRONLY]);
+  assert.equal(fs.existsSync(path.join(home, 'missing.jsonl')), false);
 });

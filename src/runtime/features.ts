@@ -1,5 +1,6 @@
 import * as zlib from 'node:zlib';
 import * as nodeModule from 'node:module';
+import { frozen } from '../../shared/frozen.js';
 
 export type FeatureDeps = {
   nodeVersion: string;
@@ -17,7 +18,7 @@ export type Features = {
   typeStripping: boolean;
 };
 
-export const MIN_NODE = [24, 22, 0] as const;
+export const MIN_NODE = frozen([24, 22, 0] as const);
 
 export function versionAtLeast(version: string, min: readonly number[]): boolean {
   const parts = version.replace(/^v/, '').split('.').map(Number);

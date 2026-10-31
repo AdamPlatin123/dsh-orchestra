@@ -8,6 +8,7 @@ import {
   CSC_FLAGS, HANDLE_KEYS, PROCGUARD_BUILD_EXE, PROCGUARD_SOURCE, PidLog, SpawnGate, SpawnRefusedError, TOAST_FLAGS, WHOAMI_ARGV, resolveSystemRoot,
 } from '../../src/os/spawn.ts';
 import { makeWriteFence, realpath } from '../../src/fs/node-io.ts';
+import { VirtualClock, makeRealClock } from '../../src/runtime/clock.ts';
 import type { FakeBehavior } from '../helpers/fake-spawn.ts';
 import { fakeSpawn } from '../helpers/fake-spawn.ts';
 import { junction, put, withTmp } from '../helpers/tmp.ts';
@@ -16,8 +17,8 @@ import { junction, put, withTmp } from '../helpers/tmp.ts';
 // the rig's realpath is the identity and the backend a spy, or one that fails the test when called:
 // no exe is looked at or run. The procguard sites live in a temp data dir.
 
-/** backend, realpath and now are required; a gate that should never spawn gets this backend. */
-const NO_SPAWN = { backend: () => { throw new Error('rig: this gate must not spawn'); }, realpath: (p: string) => p, now: Date.now };
+/** backend, realpath and clock are required; a gate that should never spawn gets this backend. */
+const NO_SPAWN = { backend: () => { throw new Error('rig: this gate must not spawn'); }, realpath: (p: string) => p, clock: makeRealClock() };
 
 const HASH = 'a'.repeat(64);
 const OTHER_HASH = 'b'.repeat(64);
@@ -262,7 +263,7 @@ test('start(): refused requests throw a typed error; allowed ones reach the back
   const r = rig(t);
   const spy = fakeSpawn(() => ({ hang: true, pid: 4242 }));
   const pids = new PidLog();
-  const g = r.gate({ backend: spy.backend, record: (e) => pids.record(e), now: () => Date.parse('2026-10-31T00:00:00Z') });
+  const g = r.gate({ backend: spy.backend, record: (e) => pids.record(e), clock: new VirtualClock({ mono: 0, wall: Date.parse('2026-10-31T00:00:00Z') }) });
   assert.throws(() => g.start({ exe: r.ps, argv: ['-Command', 'x'] }), (e: unknown) => e instanceof SpawnRefusedError && e.decision.reason === 'rule-not-enabled');
   assert.throws(() => g.start({ exe: r.pg, argv: ['--run', 'x'] }), (e: unknown) => e instanceof SpawnRefusedError && e.decision.reason === 'argv-mismatch');
   assert.equal(spy.calls.length, 0);
@@ -389,4 +390,77 @@ test('resolveSystemRoot: a top-level directory, equal to windir, resolving to it
   }), { ok: false, reason: 'unresolved', detail: 'ENOENT' });
   assert.deepEqual(resolveSystemRoot({ systemroot: 'c:\\windows', WINDIR: 'C:\\WINDOWS' }, id), { ok: true, path: 'c:\\windows' });
   assert.ok(/^[A-Za-z]:\\[^\\]+$/.test(root));
+});
+
+test('run(): the time limit is a deadline timer of the gate\'s own Clock, so a virtual clock drives it; it is disarmed once the child closes', async (t) => {
+  const r = rig(t);
+  const vc = new VirtualClock({ mono: 0, wall: Date.parse('2026-10-31T00:00:00Z') });
+  const behave: { current: FakeBehavior } = { current: { hang: true } };
+  const spy = fakeSpawn(() => behave.current);
+  const g = r.gate({ backend: spy.backend, clock: vc });
+  const req = { exe: r.whoami, argv: WHOAMI_ARGV };
+  const hung = g.run(req, { timeoutMs: 10_000, maxBytes: 1024 });
+  assert.deepEqual(vc.pending(), ['deadline:spawn-1:0'], 'one deadline, named by the gate\'s run count');
+  let settled = false;
+  void hung.then(() => { settled = true; });
+  vc.advanceBy(9_999);
+  await new Promise((res) => setImmediate(res));
+  await new Promise((res) => setImmediate(res));
+  assert.equal(settled, false, 'not before the limit');
+  assert.equal(spy.kills, 0);
+  vc.advanceBy(1);
+  assert.equal(spy.kills, 1, 'killed through its handle the moment the virtual deadline passed');
+  assert.deepEqual(await hung, { ok: false, reason: 'timeout', timeoutMs: 10_000 });
+  behave.current = { stdout: 'x', exitCode: 0 };
+  const ok = await g.run(req, { timeoutMs: 10_000, maxBytes: 1024 });
+  assert.ok(ok.ok);
+  assert.deepEqual(vc.pending(), [], 'the second run\'s deadline was disarmed when the child closed');
+  vc.advanceBy(60_000);
+  assert.equal(spy.kills, 1, 'a disarmed deadline kills nothing later');
+  // Limits are checked before anything starts: a deadline is whole milliseconds.
+  for (const limits of [{ timeoutMs: 1.5, maxBytes: 1 }, { timeoutMs: 0, maxBytes: 1 }, { timeoutMs: 2 ** 31, maxBytes: 1 }, { timeoutMs: 10, maxBytes: -1 }, Object.create({ timeoutMs: 10, maxBytes: 1 })]) {
+    assert.throws(() => g.run(req, limits), /spawn gate: run limits need/, JSON.stringify(limits));
+  }
+  assert.equal(spy.calls.length, 2, 'refused limits started no child');
+});
+
+// Finding F5: Node reports a spawn failure of a long-lived child (its exe gone or blocked after the
+// check) as an asynchronous 'error', and EPIPE on the stdin of a dead child the same way. With no
+// listener either ends orchestrad as an uncaught exception; the handle listens from the start, hands
+// the code to onError and the gate records the failure in the pid log.
+test('start(): a child that fails after start() (ENOENT) reaches onError and the pid log, never the uncaught-exception handler', async (t) => {
+  const r = rig(t);
+  const spy = fakeSpawn(() => ({ error: 'ENOENT' }));
+  const pids = new PidLog();
+  const g = r.gate({ backend: spy.backend, record: (e) => pids.record(e), clock: new VirtualClock({ mono: 0, wall: Date.parse('2026-10-31T00:00:00Z') }) });
+  const uncaught: unknown[] = [];
+  const onUncaught = (e: unknown) => uncaught.push(e);
+  process.prependListener('uncaughtException', onUncaught);
+  t.after(() => process.off('uncaughtException', onUncaught));
+  const h = g.start({ exe: r.pg, argv: ['--protect', '1:2'] });
+  const codes: string[] = [];
+  h.onError((c) => codes.push(c));
+  await new Promise<void>((done) => h.onClose(() => done()));
+  assert.deepEqual(codes, ['ENOENT']);
+  assert.deepEqual(uncaught, []);
+  assert.deepEqual(pids.entries().map((e) => [e.rule, e.pid, e.error ?? null]), [['procguard', null, null], ['procguard', null, 'ENOENT']]);
+  // A listener added after the failure hears it too.
+  const late: string[] = [];
+  h.onError((c) => late.push(c));
+  assert.deepEqual(late, ['ENOENT']);
+});
+
+test('start(): an error on a pipe of the child (EPIPE on stdin) reaches onError the same way', async (t) => {
+  const r = rig(t);
+  const { EventEmitter } = await import('node:events');
+  const stdin = new EventEmitter() as EventEmitter & { write: () => boolean; end: () => void };
+  stdin.write = () => true;
+  stdin.end = () => {};
+  const child = Object.assign(new EventEmitter(), { pid: 4343, stdin, stdout: null, stderr: null, kill: () => true });
+  const g = r.gate({ backend: () => child as never, record: () => {}, clock: new VirtualClock({ mono: 0, wall: 0 }) });
+  const h = g.start({ exe: r.pg, argv: ['--protect', '1:2'] });
+  const codes: string[] = [];
+  h.onError((c) => codes.push(c));
+  assert.doesNotThrow(() => stdin.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' })));
+  assert.deepEqual(codes, ['EPIPE']);
 });

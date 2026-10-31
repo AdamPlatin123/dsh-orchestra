@@ -3,7 +3,7 @@
 import * as fs from 'node:fs';
 import type { WriteIo } from '../../src/fs/write-fence.ts';
 
-const FLAGS = { wx: 'wx', ax: 'ax', 'append-existing': fs.constants.O_WRONLY | fs.constants.O_APPEND } as const;
+const FLAGS = { wx: 'wx', ax: 'ax', 'append-existing': fs.constants.O_WRONLY | fs.constants.O_APPEND, 'write-existing': fs.constants.O_WRONLY } as const;
 
 export const realWriteIo: WriteIo = {
   realpath: (p) => fs.realpathSync.native(p),

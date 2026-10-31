@@ -3,6 +3,7 @@ import type { HarnessRoot } from '../fs/harness-roots.ts';
 import type { PathRejectReason, RealpathFn } from '../fs/paths.ts';
 import { canonicalize, checkPath, isWithin, pathKey } from '../fs/paths.ts';
 import { envGet, ownFields } from './own.ts';
+import { frozen, frozenClass } from '../../shared/frozen.js';
 
 const win = path.win32;
 
@@ -14,7 +15,7 @@ export const TEST_DIR_PREFIX = 'orchestra-test-';
 /** The command-line marker of the test harness's fake agents (test/fixtures/fake-agent.ts). */
 export const FAKE_AGENT_MARKER = '--orchestra-fake-agent';
 export const FROZEN_DIR = 'orchestra-frozen';
-export const TEST_ROOT_KINDS = ['claude', 'dsh', 'codex'] as const;
+export const TEST_ROOT_KINDS = frozen(['claude', 'dsh', 'codex'] as const);
 /** node:test sets it for every test file and hands it on to their children. */
 export const TEST_RUNNER_MARKER = 'NODE_TEST_CONTEXT';
 /** Variables that move a harness root; a real profile run under the test runner may carry none. */
@@ -358,6 +359,7 @@ export class TestRoots {
     return [...this.#roots.values()];
   }
 }
+frozenClass(TestRoots);
 
 /** May a brake be rooted at (pid, createTime)? In the test profile only at a registered test root. */
 export function checkBrakeRoot(profile: Profile, roots: TestRoots | null, pid: number, createTime: number): BrakeRootCheck {

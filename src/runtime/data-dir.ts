@@ -4,6 +4,7 @@ import type { PathRejectReason, RealpathFn } from '../fs/paths.ts';
 import type { WriteFence } from '../fs/write-fence.ts';
 import { canonicalize, checkPath, isWithin, pathKey } from '../fs/paths.ts';
 import { ownFields } from './own.ts';
+import { frozen } from '../../shared/frozen.js';
 
 const win = path.win32;
 
@@ -135,7 +136,7 @@ export function checkNewRoot(dataDir: { home: string; homeReal: string }, root: 
   return { ok: true, root: c.path };
 }
 
-export const DATA_SUBDIRS = ['run', 'tmp', 'runtime'] as const;
+export const DATA_SUBDIRS = frozen(['run', 'tmp', 'runtime'] as const);
 
 export type PreparedDataDir = { home: string; run: string; tmp: string; runtime: string; created: string[]; tmpEntriesRemoved: number };
 

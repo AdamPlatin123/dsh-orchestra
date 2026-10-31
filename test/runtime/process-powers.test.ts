@@ -7,7 +7,7 @@ import type { TestContext } from 'node:test';
 import type { Power } from '../../src/runtime/process-powers.ts';
 import type { Features } from '../../src/runtime/features.ts';
 import { EXIT } from '../../src/runtime/exit.ts';
-import { BASE_LOCKS, GLOBAL_POWERS, PLAIN_GLOBALS, POWERS_NODE, PROCESS_POWERS, isFenced, powerLabel } from '../../src/runtime/process-powers.ts';
+import { BASE_LOCKS, GLOBAL_POWERS, PLAIN_GLOBALS, POWERS_NODE, PROCESS_POWERS, isFenced, keepsOwnValue, powerLabel } from '../../src/runtime/process-powers.ts';
 import { describeNote, startupNotes } from '../../src/runtime/startup.ts';
 import { put, withTmp } from '../helpers/tmp.ts';
 
@@ -91,8 +91,17 @@ test('the table lists each key once, every lock and mint entry has a stub, and o
       if (e.class !== 'keep') assert.ok(typeof e.stub === 'string', `${name} ${e.key}: no stub`);
     }
   }
+  // Finding N1: exit and reallyExit were pinned keep entries. Nothing in orchestrad calls them since
+  // boot.ts ends through the reallyExit it takes (makeEndProcess), so the fence now locks exit and
+  // mints reallyExit to boot.ts; only _fatalException stays pinned (the crash path runs through it).
   const pinned = PROCESS_POWERS.filter((e) => e.class === 'keep' && e.pin === true).map((e) => e.key);
-  assert.deepEqual(pinned, ['exit', 'reallyExit', '_fatalException']);
+  assert.deepEqual(pinned, ['_fatalException']);
+  // A worker pin is a lock or mint entry a worker's install pins instead: there it ends the thread only.
+  assert.deepEqual([...PROCESS_POWERS, ...GLOBAL_POWERS].filter((e) => e.class !== 'keep' && e.worker === 'pin').map((e) => e.key), ['exit', 'reallyExit']);
+  for (const e of [...PROCESS_POWERS, ...GLOBAL_POWERS]) {
+    assert.equal(keepsOwnValue(e, 'main'), e.class === 'keep' && e.pin === true, `${e.key} on the main thread`);
+    assert.equal(keepsOwnValue(e, 'worker'), e.class === 'keep' ? e.pin === true : e.worker === 'pin', `${e.key} on a worker`);
+  }
   assert.equal(BASE_LOCKS, [...PROCESS_POWERS, ...GLOBAL_POWERS].filter((e) => isFenced(e) && e.optional === undefined).length);
   assert.equal(powerLabel(Symbol.for('undici.globalOrigin.1')), 'Symbol(undici.globalOrigin.1)');
   assert.equal(powerLabel('kill'), 'kill');
@@ -104,9 +113,12 @@ const MUST_LOCK = [
   'binding', '_linkedBinding', 'dlopen', 'loadEnvFile', 'report', 'getBuiltinModule', 'umask', 'setUncaughtExceptionCaptureCallback',
 ];
 
-test('the table locks at least the required process keys, pins exit, reallyExit and _fatalException, and mints only fetch', () => {
+test('the table locks at least the required process keys and exit, mints reallyExit to boot.ts alone, pins _fatalException, and mints only fetch among the globals', () => {
   const cls = (key: string) => PROCESS_POWERS.find((e) => e.key === key)?.class;
   for (const key of MUST_LOCK) assert.equal(cls(key), 'lock', key);
+  assert.equal(cls('exit'), 'lock');
+  assert.equal(cls('_fatalException'), 'keep');
+  assert.deepEqual(PROCESS_POWERS.filter((e) => e.class === 'mint').map((e) => (e.class === 'mint' ? [e.key, e.mintedBy, [...e.heldBy]] : [])), [['reallyExit', 'src/boot.ts', []]]);
   assert.deepEqual(GLOBAL_POWERS.filter((e) => e.class === 'mint').map((e) => e.key), ['fetch']);
   assert.deepEqual(GLOBAL_POWERS.filter((e) => e.class === 'lock' && e.optional === undefined).map((e) => e.key).sort(),
     ['EventSource', 'Symbol(undici.globalDispatcher.1)', 'Symbol(undici.globalDispatcher.2)', 'Symbol(undici.globalOrigin.1)', 'WebSocket']);
@@ -209,7 +221,8 @@ test('key-set golden, mutation run: an injected global and process key, a delete
 const LOCKS_ENTRY = `
 const MUST_LOCK = ${JSON.stringify(MUST_LOCK)};
 const GLOBALS = ['fetch', 'WebSocket', 'EventSource'];
-const PINNED = ['exit', 'reallyExit', '_fatalException'];
+const PINNED = ['_fatalException'];
+const EXITS = ['exit', 'reallyExit'];
 type Fn = (...a: unknown[]) => unknown;
 const why = (e: unknown) => (e as { reason?: string }).reason ?? (e as { code?: string }).code ?? (e as Error).name;
 // Calls that are safe even when a lock is missing (a mutation run); abort and _debugProcess are never called.
@@ -241,12 +254,14 @@ export async function start(_f: unknown, fence: unknown): Promise<unknown> {
     const d = Object.getOwnPropertyDescriptor(p, k)!;
     out[k] = { ro: d.writable === false && d.configurable === false, same: d.value === before[k] };
   }
+  // Never called: in a mutation run without the lock the call would end this child.
+  for (const k of EXITS) out[k] = { ...judge(p, k), same: p[k] === before[k] };
   console.log(JSON.stringify(out));
   return {};
 }
 `;
 
-test('boot(): every required process key is locked to its stub and cannot be put back; exit, reallyExit and _fatalException keep Node\'s own function, frozen', (t) => {
+test('boot(): every required process key, exit and reallyExit are locked to their stubs and cannot be put back; _fatalException keeps Node\'s own function, frozen', (t) => {
   const r = lastJson<Record<string, unknown>>(runChild(t, { 'entry.ts': LOCKS_ENTRY }, { recordPins: true }));
   const dead = (call?: string) => ({ ro: true, stub: 'disabledByFence', ...(call !== undefined ? { call } : {}), assign: 'TypeError' });
   const want: Record<string, unknown> = { fence: { resolveHook: true, locks: BASE_LOCKS } };
@@ -257,7 +272,8 @@ test('boot(): every required process key is locked to its stub and cannot be put
   want.report = { ro: true, stub: 'frozen', assign: 'TypeError' };
   want.writeReport = 'disabled';
   for (const k of ['fetch', 'WebSocket', 'EventSource']) want[k] = dead();
-  for (const k of ['exit', 'reallyExit', '_fatalException']) want[k] = { ro: true, same: true };
+  want._fatalException = { ro: true, same: true };
+  for (const k of ['exit', 'reallyExit']) want[k] = { ...dead(), same: false };
   assert.deepEqual(r, want);
 });
 
@@ -285,23 +301,28 @@ export async function start(): Promise<unknown> {
 }
 `;
 
-const CRASH_KINDS = [['exit', 'TypeError'], ['reallyExit', 'TypeError'], ['fatalException', 'TypeError'], ['capture', 'disabled']] as const;
+// The third field: does the control (no fence) stay alive? Since boot.ts ends the process through the
+// reallyExit it took before any entry module ran (makeEndProcess, finding F1), a replaced process.exit
+// or process.reallyExit no longer keeps even an unfenced crash alive; the fence locks both (finding N1).
+// A replaced _fatalException or a capture callback still swallow the crash before it reaches boot.
+const CRASH_KINDS = [['exit', 'TypeError', false], ['reallyExit', 'TypeError', false], ['fatalException', 'TypeError', true], ['capture', 'disabled', true]] as const;
 
-test('PoC boot(): a module that replaces process.exit, reallyExit or _fatalException, or sets a capture callback, cannot keep a crashed process alive; without the fence each one does', async (t) => {
+test('PoC boot(): a module that replaces process.exit, reallyExit or _fatalException, or sets a capture callback, cannot keep a crashed process alive; without the fence the last two do, and boot\'s own end outlives the first two', async (t) => {
   const crashLines = (s: string) => s.split(/\r?\n/).filter((l) => l.startsWith('orchestrad: crashed'));
   // A control still running 2.5 s after its 20 ms crash was kept alive; it is then stopped through its handle.
   const [fenced, control] = await Promise.all([
     Promise.all(CRASH_KINDS.map(([kind]) => runChildAsync(t, { 'entry.ts': CRASH_ENTRY }, { arg: { kind } }))),
     Promise.all(CRASH_KINDS.map(([kind]) => runChildAsync(t, { 'entry.ts': CRASH_ENTRY }, { arg: { kind }, fenced: false, timeoutMs: 2500 }))),
   ]);
-  for (const [i, [kind, attempt]] of CRASH_KINDS.entries()) {
+  for (const [i, [kind, attempt, controlAlive]] of CRASH_KINDS.entries()) {
     const f = fenced[i]!;
     assert.match(f.stdout, new RegExp(`^ATTEMPT ${attempt}$`, 'm'), kind);
     assert.equal(f.status, EXIT.crashed, `${kind}: ${f.stderr}`);
     assert.deepEqual(crashLines(f.stderr), [`orchestrad: crashed (exit ${EXIT.crashed}): Error: late boom`], kind);
     const c = control[i]!;
     assert.match(c.stdout, /^ATTEMPT reached$/m, kind);
-    assert.notEqual(c.status, EXIT.crashed, `${kind}: without the fence the crash never reaches its typed exit`);
+    if (controlAlive) assert.notEqual(c.status, EXIT.crashed, `${kind}: without the fence the crash never reaches its typed exit`);
+    else assert.equal(c.status, EXIT.crashed, `${kind}: boot ends through the reallyExit it took first, fence or not: ${c.stderr}`);
   }
   t.diagnostic(`controls ended with: ${control.map((c, i) => `${CRASH_KINDS[i]![0]} ${c.status ?? c.signal}`).join(', ')}`);
 });

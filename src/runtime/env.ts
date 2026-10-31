@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import { ownField, ownFields } from './own.ts';
+import { frozen } from '../../shared/frozen.js';
 
 const win = path.win32;
 
@@ -37,7 +38,7 @@ export type ResolvedEnv = {
   typedHarnessRoots: TypedRoot[];
 };
 
-export const DEFAULT_LAUNCHER_GLOBS: readonly string[] = ['~/.rec/claude/accounts/*/config'];
+export const DEFAULT_LAUNCHER_GLOBS: readonly string[] = frozen(['~/.rec/claude/accounts/*/config']);
 
 function expandHome(p: string, home: string): string {
   if (p === '~') return home;

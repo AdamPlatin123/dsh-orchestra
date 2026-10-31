@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import { Log, MAX_STRING, REDACTED, scrubString, scrubValue } from '../../src/runtime/log.ts';
 
 const T0 = Date.parse('2026-10-31T08:00:00Z');
+/** The wall clock a Log stamps entries with: fixed here. */
+const clock = { nowWall: () => T0 };
 
 test('secret-named fields never reach an entry or the sink, at any depth', () => {
   const lines: string[] = [];
-  const log = new Log({ now: () => T0, sink: (l) => lines.push(l) });
+  const log = new Log({ clock, sink: (l) => lines.push(l) });
   log.info('pairing', { code: '12345678', pairingCode: '87654321', nested: { launchToken: 'abc', csrf: 'x', cookie: 'y', Authorization: 'Bearer q', apiKey: 'k', password: 'p' }, exitCode: 3 });
   const e = log.entries()[0]!;
   assert.deepEqual(e.fields, {
@@ -40,8 +42,17 @@ test('long strings are cut at 2 KB, long arrays at 50 items; depth, cycles and o
   assert.deepEqual(scrubValue({ error: err }), { error: { name: 'Error', message: 'open token=*** failed', code: 'EPERM' } });
 });
 
+test('a Log needs a clock: no default, and the old now field is no clock', () => {
+  assert.throws(() => new Log({} as never), /log: clock is required, there is no default/);
+  assert.throws(() => new Log({ now: () => T0 } as never), /log: clock is required/);
+  assert.throws(() => new Log(Object.create({ clock }) as never), /log: clock is required/, 'an inherited clock is not one the caller set');
+  const log = new Log({ clock: { nowWall: () => T0 + 1 } });
+  log.info('x');
+  assert.equal(log.entries()[0]!.at, '2026-10-31T08:00:00.001Z');
+});
+
 test('the ring keeps the newest entries; event names are a fixed alphabet', () => {
-  const log = new Log({ now: () => T0, capacity: 3 });
+  const log = new Log({ clock, capacity: 3 });
   for (let i = 0; i < 5; i++) log.info('tick', { i });
   log.warn('Bad Event Name!');
   assert.deepEqual(log.entries().map((e) => [e.seq, e.event]), [[4, 'tick'], [5, 'tick'], [6, 'invalid-event-name']]);
@@ -50,7 +61,7 @@ test('the ring keeps the newest entries; event names are a fixed alphabet', () =
 });
 
 test('attach() writes what the ring holds, then every new entry, as JSON lines; a failing sink is counted, never thrown', () => {
-  const log = new Log({ now: () => T0 });
+  const log = new Log({ clock });
   log.info('before', { x: 1 });
   const lines: string[] = [];
   log.attach((l) => lines.push(l));

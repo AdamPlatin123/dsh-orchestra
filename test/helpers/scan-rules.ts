@@ -142,16 +142,56 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // match member access only: process.<name>, process['<name>'], Reflect.get(process, '<name>') and
 // destructuring from process, never a bare name, so child.kill(), controller.abort() and timer.unref()
 // pass. A global's own name is matched bare (an alias counts too), except in the module that mints it
-// and the ones it is handed to. An alias of process (`const p = process; p.kill(pid)`) passes the
-// text scan and meets the runtime stub, which every spelling reaches.
+// and the ones it is handed to; a process mint entry likewise (boot.ts takes process.reallyExit and
+// keeps it). An alias of process (`const p = process; p.kill(pid)`) passes the text scan and meets the
+// runtime stub, which every spelling reaches.
 const POWER_TABLE = 'src/runtime/process-powers.ts';
 const isSymbolKey = (key: string) => key.startsWith('Symbol(');
-const PROCESS_NAMES = PROCESS_POWERS.filter((e) => e.class !== 'keep' && !isSymbolKey(e.key)).map((e) => escapeRe(e.key)).join('|');
-const processPowerMember = ban('process-power-member', except(prod, POWER_TABLE),
-  new RegExp(`\\bprocess\\s*(?:\\?\\.|\\.)\\s*(?:${PROCESS_NAMES})(?![\\w$])`),
-  new RegExp(`\\bprocess\\s*(?:\\?\\.\\s*)?\\[\\s*(['"\`])(?:${PROCESS_NAMES})\\1\\s*\\]`),
-  new RegExp(`\\bReflect\\s*\\.\\s*get\\s*\\(\\s*(?:globalThis\\s*\\.\\s*)?process\\s*,\\s*(['"\`])(?:${PROCESS_NAMES})\\1`),
-  new RegExp(`\\{[^{}]*(?<![\\w$])(?:${PROCESS_NAMES})(?![\\w$])[^{}]*\\}\\s*=\\s*(?:globalThis\\s*\\.\\s*)?process\\b`));
+const mintedOrHeldBy = (e: (typeof PROCESS_POWERS)[number], file: string) => e.class === 'mint' && (e.mintedBy === file || e.heldBy.includes(file));
+const PROCESS_FENCED = PROCESS_POWERS.filter((e) => e.class !== 'keep' && !isSymbolKey(e.key));
+/** The member patterns over the process keys `file` may not name: every lock entry, and every mint entry it neither mints nor holds. */
+function processMemberRes(file: string): RegExp[] {
+  const names = PROCESS_FENCED.filter((e) => !mintedOrHeldBy(e, file)).map((e) => escapeRe(e.key)).join('|');
+  if (names === '') return [];
+  return [
+    new RegExp(`\\bprocess\\s*(?:\\?\\.|\\.)\\s*(?:${names})(?![\\w$])`, 'g'),
+    new RegExp(`\\bprocess\\s*(?:\\?\\.\\s*)?\\[\\s*(['"\`])(?:${names})\\1\\s*\\]`, 'g'),
+    new RegExp(`\\bReflect\\s*\\.\\s*get\\s*\\(\\s*(?:globalThis\\s*\\.\\s*)?process\\s*,\\s*(['"\`])(?:${names})\\1`, 'g'),
+    new RegExp(`\\{[^{}]*(?<![\\w$])(?:${names})(?![\\w$])[^{}]*\\}\\s*=\\s*(?:globalThis\\s*\\.\\s*)?process\\b`, 'g'),
+  ];
+}
+const processPowerMember: Rule = {
+  id: 'process-power-member',
+  applies: except(prod, POWER_TABLE),
+  find: (text, file) => processMemberRes(file).flatMap((re) => [...text.matchAll(re)].map((m) => ({ index: m.index, text: m[0] }))),
+};
+
+// orchestrad's exit code is boot.ts's alone (finding N1): makeEndProcess hands its typed code to the
+// reallyExit it took before the fence, and the fence locks process.exit and process.reallyExit for
+// everyone else (process-power-member names them). Two levers stay outside the table:
+// process.exitCode is a non-configurable accessor, and an 'exit' or 'beforeExit' listener runs
+// whenever the process ends by itself. Neither changes a code boot commits (it passes the code to
+// reallyExit), but either decides the code of a process that ends any other way, so both stay in
+// boot.ts. An alias of process (`const p = process; p.exitCode = 0`) is a residual of a text scan.
+const ASSIGN = '\\s*(?:(?:\\*\\*|<<|>>>?|&&|\\|\\||\\?\\?|[-+*/%&|^])?=(?!=)|\\+\\+|--)';
+const EXIT_EVENT_METHODS = '(?:on|once|addListener|prependListener|prependOnceListener)';
+const processExitLevers = ban('process-exit-only-in-boot', except(code, 'src/boot.ts'),
+  new RegExp(`\\bprocess\\s*(?:\\?\\.|\\.)\\s*exitCode${ASSIGN}`),
+  new RegExp(`\\bprocess\\s*(?:\\?\\.\\s*)?\\[\\s*(['"\`])exitCode\\1\\s*\\]${ASSIGN}`),
+  /(?:\+\+|--)\s*process\s*(?:\.\s*exitCode\b|\[\s*(['"`])exitCode\1\s*\])/,
+  /\b(?:Reflect\s*\.\s*(?:set|defineProperty)|Object\s*\.\s*defineProperty)\s*\(\s*(?:globalThis\s*\.\s*)?process\s*,\s*(['"`])exitCode\1/,
+  new RegExp(`\\bprocess\\s*(?:\\?\\.|\\.)\\s*${EXIT_EVENT_METHODS}\\s*\\(\\s*(['"\`])(?:exit|beforeExit)\\1`),
+  new RegExp(`\\bprocess\\s*(?:\\?\\.\\s*)?\\[\\s*(['"\`])${EXIT_EVENT_METHODS}\\1\\s*\\]\\s*\\(\\s*(['"\`])(?:exit|beforeExit)\\2`));
+
+// Object.freeze does not hold a RegExp against Annex B's compile(), which swaps the pattern before it
+// fails on the frozen lastIndex (measured on 24.22). shared/frozen.js gives every RegExp it freezes an
+// own compile that throws, so `X_RE.compile(...)` meets that stub; a call through RegExp.prototype or
+// a destructured compile would reach the original, so the word is banned in our code as a member, a
+// quoted key or a destructured name. shared/frozen.js names it to define the stub. A key computed at
+// run time is a residual of a text scan; RegExp.prototype itself cannot be locked without turning off
+// V8's regex fast paths process-wide (shared/frozen.js).
+const regexpCompile = ban('ban:RegExp-compile', except(prod, 'shared/frozen.js'),
+  /\.\s*compile\b/, /['"`]compile['"`]/, /\{[^{}]*(?<![\w$.])compile\s*[:,}]/);
 
 const GLOBAL_NAMED = GLOBAL_POWERS.filter((e) => e.class !== 'keep' && !isSymbolKey(e.key))
   .map((e) => ({ e, re: new RegExp(`(?<![\\w$])${escapeRe(e.key)}(?![\\w$])`, 'g') }));
@@ -187,9 +227,13 @@ function spanOf(text: string, head: RegExp): [number, number] | null {
 // it). But the FACTORIES hand out the real io: a non-root module that calls makeReadGate would get a
 // real gate over roots it picks. gate-factory-only-in-roots keeps that authority in the composition
 // roots (P8). The factory names appear only in the root files, and in harness-roots.ts only inside
-// the LauncherFsPorts type and launcherRootFs.
-const FACTORY = 'makeReadGate|makeWriteFence|makeSpawnGate';
-const FACTORY_ROOTS: readonly string[] = ['src/boot.ts', 'src/main.ts', 'src/runtime/working.ts', 'src/fs/node-io.ts', 'src/os/node-proc.ts'];
+// the LauncherFsPorts type and launcherRootFs. Step 3 adds makeDbOpener, the node:sqlite mint's
+// factory (src/store/node-sqlite.ts): an opener made by any other module would open databases with a
+// fence of its own choosing. Elsewhere the names are banned as words, wherever they stand: a property,
+// a call, a destructured key renamed or not, a quoted key for brackets or Reflect.get, a comment. A key
+// computed at run time ('make' + 'ReadGate') stays a residual of a text scan.
+const FACTORY = 'makeReadGate|makeWriteFence|makeSpawnGate|makeDbOpener';
+const FACTORY_ROOTS: readonly string[] = ['src/boot.ts', 'src/main.ts', 'src/runtime/working.ts', 'src/fs/node-io.ts', 'src/os/node-proc.ts', 'src/store/node-sqlite.ts'];
 const gateFactoryUse: Rule = {
   id: 'gate-factory-only-in-roots',
   applies: code,
@@ -203,8 +247,18 @@ const gateFactoryUse: Rule = {
       new RegExp(`(?:\\?\\.|\\.)\\s*(?:${FACTORY})(?![\\w$])`, 'g'),
       new RegExp(`(?<![\\w$.])(?:${FACTORY})(?![\\w$])\\s*\\(`, 'g'),
       new RegExp(`\\{[^{}]*(?<![\\w$])(?:${FACTORY})(?![\\w$])[^{}]*\\}\\s*=`, 'g'),
+      // Any other spelling: the bare word (a quoted key, a renamed destructuring, a comment).
+      new RegExp(`(?<![\\w$])(?:${FACTORY})(?![\\w$])`, 'g'),
     ];
-    return res.flatMap((re) => [...text.matchAll(re)]).filter((m) => !allowed(m.index)).map((m) => ({ index: m.index, text: m[0] }));
+    const hits = res.flatMap((re) => [...text.matchAll(re)]).filter((m) => !allowed(m.index));
+    // One hit per place: the bare-word pattern meets the same name as the narrower ones.
+    const seen = new Set<number>();
+    return hits.filter((m) => {
+      const at = m.index + m[0].search(new RegExp(`(?:${FACTORY})`));
+      if (seen.has(at)) return false;
+      seen.add(at);
+      return true;
+    }).map((m) => ({ index: m.index, text: m[0] }));
   },
 };
 
@@ -253,17 +307,46 @@ const readIoReadsOnly: Rule = {
 // out of home) is removed again only because the open did not create one. The write-fence tests run
 // over the helper's own io (test/helpers/write-io.ts), so this pins the constant production uses: a
 // plain 'a', or an added O_CREAT, would silently create and leave a stray file outside home.
-const appendExistingFlag: Rule = {
-  id: 'node-io-append-existing-flag',
-  applies: (f) => f === 'src/fs/node-io.ts',
-  find(text) {
-    const m = /'append-existing'\s*:\s*([^,\n}]+)/.exec(text);
-    if (m === null) return [{ index: 0, text: "no 'append-existing' flag in node-io.ts" }];
-    const expr = m[1]!.trim();
-    if (/^fs\.constants\.O_WRONLY\s*\|\s*fs\.constants\.O_APPEND$/.test(expr)) return [];
-    return [{ index: m.index, text: `append-existing must be fs.constants.O_WRONLY | fs.constants.O_APPEND (no O_CREAT), got ${expr}` }];
-  },
-};
+// The key must appear exactly once (a later duplicate key wins at run time), and its value is read up
+// to the next comma or closing brace at depth 0, across lines, so an O_CREAT on the next line counts.
+// test/fs/write-fence.test.ts also measures production's WRITE_IO: appending to a missing file through
+// the fence's existing-file path creates nothing.
+function valueOf(text: string, from: number): string {
+  let depth = 0;
+  let i = from;
+  for (; i < text.length; i++) {
+    const c = text[i]!;
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') {
+      if (depth === 0) break;
+      depth--;
+    } else if (c === ',' && depth === 0) break;
+  }
+  return text.slice(from, i).replace(/\s+/g, ' ').trim();
+}
+
+function flagRule(id: string, key: string, want: RegExp, wantText: string): Rule {
+  return {
+    id,
+    applies: (f) => f === 'src/fs/node-io.ts',
+    find(text) {
+      const ms = [...text.matchAll(new RegExp(`'${key}'\\s*:`, 'g'))];
+      if (ms.length === 0) return [{ index: 0, text: `no '${key}' flag in node-io.ts` }];
+      if (ms.length > 1) return [{ index: ms[1]!.index, text: `'${key}' is set ${ms.length} times; the last one wins at run time` }];
+      const m = ms[0]!;
+      const expr = valueOf(text, m.index + m[0].length);
+      if (want.test(expr)) return [];
+      return [{ index: m.index, text: `${key} must be ${wantText}, got ${expr}` }];
+    },
+  };
+}
+
+const appendExistingFlag: Rule = flagRule('node-io-append-existing-flag', 'append-existing', /^fs\.constants\.O_WRONLY \| fs\.constants\.O_APPEND$/, 'fs.constants.O_WRONLY | fs.constants.O_APPEND (no O_CREAT)');
+
+// The same for 'write-existing' (step 3), the handle WriteFence.shorten() cuts the journal through:
+// O_WRONLY alone. An O_CREAT would make a file where a swapped directory pointed, an O_TRUNC would
+// empty the whole journal before the fence judged the handle; 'w' would do both.
+const writeExistingFlag: Rule = flagRule('node-io-write-existing-flag', 'write-existing', /^fs\.constants\.O_WRONLY$/, 'fs.constants.O_WRONLY (no O_CREAT, no O_TRUNC)');
 
 // runWorking builds both fs gates from whatever context it is handed and then clears tmp\: only
 // main.ts, after planStartup() said working, may load it. Type-only imports load nothing.
@@ -310,6 +393,43 @@ const fsNameBans: Rule = {
   find: (text) => FS_NAME_BANS.flatMap(({ name, re }) => [...text.matchAll(re)].map((m) => ({ index: m.index, text: `${name}: ${m[0]}` }))),
 };
 
+// The node:sqlite mint hands out exec, prepare and the authorizer, nothing else of the builtin (plan
+// step 3, invariant 17): no backup (copies the database to any path), sessions and changesets,
+// extensions, serialize/deserialize, user functions or aggregates, tag stores, or the defensive switch
+// (left on by the open options). Over the modules that can import node:sqlite at all (builtin-policy.ts;
+// node-sqlite.ts alone): everywhere else there is no node:sqlite to call them on.
+const SQLITE_NAME_BANS: readonly { name: string; re: RegExp }[] = [
+  { name: 'backup', re: /\bbackup\b/g },
+  { name: 'Session', re: /\b(?:Session|createSession|applyChangeset)\b/g },
+  { name: 'loadExtension', re: /\b(?:loadExtension|enableLoadExtension)\b/g },
+  { name: 'serialize', re: /\b(?:serialize|deserialize)\b/g },
+  { name: 'function', re: /\.\s*(?:function|aggregate)\s*\(/g },
+  { name: 'createTagStore', re: /\bcreateTagStore\b/g },
+  { name: 'enableDefensive', re: /\benableDefensive\b/g },
+];
+const holdsSqlite = (f: string) => rowsFor(f).some((r) => r.allow.includes('node:sqlite'));
+const sqliteNameBans: Rule = {
+  id: 'sqlite-surface-bans',
+  applies: (f) => code(f) && holdsSqlite(f),
+  find: (text) => SQLITE_NAME_BANS.flatMap(({ name, re }) => [...text.matchAll(re)].map((m) => ({ index: m.index, text: `${name}: ${m[0]}` }))),
+};
+
+// SQL is fixed text with positional parameters (plan step 3): never a template literal that
+// interpolates into SQL, never SQL glued together with +. Keywords are matched in capitals, the way
+// the store writes SQL, so English in a message does not trip it; and any interpolating template
+// handed straight to a statement method counts whatever its case. The authorizer is the runtime net.
+const SQL_WORD = '(?:SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|PRAGMA|ATTACH|DETACH|VACUUM|REPLACE|WHERE|VALUES)';
+const QUOTE = '[\'"`]';
+const NOT_QUOTE = '[^\'"`\\n]*';
+const sqlTextLiteral = ban('sql-text-literal-only', code,
+  // A template literal with a SQL keyword and an interpolation.
+  new RegExp('`[^`]*\\b' + SQL_WORD + '\\b[^`]*\\$\\{'),
+  // An interpolating template handed straight to a statement method.
+  /\.\s*(?:run|all|exec|prepare)\s*\(\s*`[^`]*\$\{/,
+  // A quoted piece of SQL glued to something with +, on either side.
+  new RegExp('(' + QUOTE + ')' + NOT_QUOTE + '\\b' + SQL_WORD + '\\b' + NOT_QUOTE + '\\1\\s*\\+'),
+  new RegExp('\\+\\s*' + QUOTE + NOT_QUOTE + '\\b' + SQL_WORD + '\\b'));
+
 // `new Worker(src, { eval: true })` runs source text in a thread that never meets the bootstrap, and
 // no resolve hook reaches it: in the modules that can import node:worker_threads (builtin-policy.ts)
 // this rule is the only defense. Every other module cannot get a Worker at all.
@@ -329,6 +449,97 @@ const inProcessStart: Rule = {
     .map((r) => ({ index: r.index, text: `${r.form} import of ${r.spec}` })),
 };
 
+// Invariant 21 (plan step 3): time only through the Clock port. The clocks the plan names (Date.now,
+// new Date(), performance.now, process.hrtime, setTimeout, setInterval) and the environment clocks of
+// zen note 7.3 (Date(), a bare new Date, Intl.DateTimeFormat().format() without an argument,
+// performance.timeOrigin, process.uptime, AbortSignal.timeout) appear only in src/runtime/clock.ts.
+// Every performance member counts (mark, measure and timerify stamp the time too), and so does an
+// alias of performance. new Date(ms) converts a reading and passes; Date.parse and Date.UTC compute.
+// node:timers and node:timers/promises are clock.ts's builtins alone: builtin-policy.ts's row, which the
+// builtin-policy rule and the import fence both read, refuses them everywhere else.
+// ui/ and test/ are outside the scope (ui/clock.js is the page's one clock, step 5). scripts/test-stage.ts
+// keeps its two setTimeout calls under §3's script exemption (EXEMPT_SCRIPTS): it runs beside
+// orchestrad, waits on processes it started, and feeds nothing to the journal. The process-powers
+// table names every global and is skipped.
+//
+// Ordinary spellings reach a clock past a member pattern ((Date).now(), Date/**/.now(), const { now } =
+// Date, Reflect.construct(Date, []), globalThis['Date'].now(), (performance).now()), so the words
+// themselves are banned outside clock.ts: `performance` anywhere, `Date` anywhere but Date.UTC(,
+// Date.parse( and new Date(<an argument that is no spread>), which compute or convert; the timer names
+// and hrtime/uptime/timeOrigin quoted too, and AbortSignal's timeout by any spelling. The globals stay
+// keep entries (process-powers.ts): a key computed at run time (globalThis['Da' + 'te']) is the
+// residual of a text scan.
+const CLOCK_FILE = 'src/runtime/clock.ts';
+
+/** Every `Date` word that is not Date.UTC(, Date.parse( or new Date(<no spread, not empty>). */
+function dateWords(text: string): Finding[] {
+  const out: Finding[] = [];
+  for (const m of text.matchAll(/(?<![\w$])Date(?![\w$])/g)) {
+    const after = text.slice(m.index + 4, m.index + 64);
+    const before = text.slice(Math.max(0, m.index - 24), m.index);
+    if (/^\s*\.\s*(?:UTC|parse)\s*\(/.test(after) && !/\.\s*$/.test(before)) continue;
+    if (/\bnew\s+$/.test(before) && /^\s*\(\s*(?!\.\.\.|\))/.test(after)) continue;
+    out.push({ index: m.index, text: text.slice(m.index, m.index + 24).split('\n')[0]! });
+  }
+  return out;
+}
+
+/** The word bans above, beside the member patterns below: one rule. */
+const clockWords = (text: string): Finding[] => [
+  ...dateWords(text),
+  ...matches(/(?<![\w$])performance(?![\w$])/)(text),
+  ...matches(/['"`](?:hrtime|uptime|timeOrigin)['"`]/)(text),
+  ...matches(/\bAbortSignal\s*(?:\?\.\s*)?\[/)(text),
+  ...matches(/\(\s*AbortSignal\s*\)/)(text),
+  ...matches(/\{[^{}]*(?<![\w$])timeout(?![\w$])[^{}]*\}\s*=\s*(?:globalThis\s*\.\s*)?AbortSignal\b/)(text),
+];
+
+const clockMembers = ban('clock-only-in-clock-ts', (f) => code(f) && f !== CLOCK_FILE && f !== POWER_TABLE,
+  /\bDate\s*(?:\?\.|\.)\s*now\b/,
+  /\bDate\s*\[\s*(['"`])now\1\s*\]/,
+  /\bReflect\s*\.\s*get\s*\(\s*(?:globalThis\s*\.\s*)?Date\s*,\s*(['"`])now\1/,
+  /\bnew\s+(?:globalThis\s*\.\s*)?Date\b(?:\s*\(\s*\)|(?!\s*\())/,
+  /(?<![\w$.])(?<!\bnew\s+)Date\s*\(/,
+  /\bperformance\s*(?:\?\.|\.|\[)/,
+  /=\s*(?:globalThis\s*\.\s*)?performance\b/,
+  /\bprocess\s*(?:\?\.|\.)\s*(?:hrtime|uptime)\b/,
+  /\bprocess\s*(?:\?\.\s*)?\[\s*(['"`])(?:hrtime|uptime)\1\s*\]/,
+  /\{[^{}]*(?<![\w$])(?:hrtime|uptime)(?![\w$])[^{}]*\}\s*=\s*(?:globalThis\s*\.\s*)?process\b/,
+  /\bset(?:Timeout|Interval)\b/,
+  /\bDateTimeFormat\b[^;\n]*?\.\s*format(?:ToParts)?\s*\(\s*\)/,
+  /\bAbortSignal\s*\.\s*timeout\b/);
+const clockOnly: Rule = { id: clockMembers.id, applies: clockMembers.applies, find: (text, file) => [...clockMembers.find(text, file), ...clockWords(text)] };
+
+// The real clock hub is made in boot.ts alone and handed down (BootPorts.clock); a module that made its
+// own would read the time past the Clock its composition root handed it, and a VirtualClock in daemon
+// code would be a second time base. So makeRealClock is named only in boot.ts and clock.ts, and
+// VirtualClock only in clock.ts (tests use both). A namespace or dynamic import of clock.ts would reach
+// either as a property, so it counts too, except in boot.ts; type-only imports load nothing.
+const clockFactories: Rule = {
+  id: 'clock-factories-only-in-roots',
+  applies: (f) => code(f) && f !== CLOCK_FILE,
+  find(text, file) {
+    const out = matches(/\bVirtualClock\b/)(text);
+    if (file === 'src/boot.ts') return out;
+    out.push(...matches(/\bmakeRealClock\b/)(text));
+    for (const r of valueImports(text)) {
+      if (r.names === null && r.form !== 'side-effect' && resolvesTo(file, r.spec, CLOCK_FILE)) out.push({ index: r.index, text: `${r.form} import of ${r.spec}` });
+    }
+    return out;
+  },
+};
+
+// shared/ is loaded by the page too (ui/ imports '../shared/x.js'): it imports only .js files inside
+// shared/. Builtins are refused there by builtin-policy.ts (NO_BUILTIN_DIRS) for the builtin-policy rule
+// and the import fence alike; this rule covers everything else, src/ included.
+const sharedSelfContained: Rule = {
+  id: 'shared-imports-shared-only',
+  applies: (f) => f.startsWith('shared/'),
+  find: (text, file) => findImports(text)
+    .filter((r) => !nodeModule.isBuiltin(r.spec) && !(/^\.\.?\//.test(r.spec) && /\.js$/.test(r.spec) && path.posix.normalize(path.posix.join(path.posix.dirname(file), r.spec)).startsWith('shared/')))
+    .map((r) => ({ index: r.index, text: r.spec })),
+};
+
 const readGateFlag: Rule = {
   id: 'read-gate-open-flag-r',
   applies: (f) => f === 'src/fs/read-gate.ts',
@@ -339,6 +550,8 @@ export const RULES: readonly Rule[] = [
   builtinPolicy,
   builtinOnlyNames,
   processPowerMember,
+  processExitLevers,
+  regexpCompile,
   globalPowerName,
   globalPowerSymbol,
   // The lock is identity, not heartbeat: daemon.json is written once per start and nothing in the
@@ -352,6 +565,8 @@ export const RULES: readonly Rule[] = [
   ban('ban:new Function', prod, /\bnew\s+Function\b/),
   ban('ban:eval: true', (f) => prod(f) && holdsWorkers(f), /\beval\s*:\s*true\b/, /['"`]eval['"`]\s*:\s*true\b/),
   fsNameBans,
+  sqliteNameBans,
+  sqlTextLiteral,
   ban('ban:shell: true', prod, /\bshell\s*:\s*(?:true\b|['"`])/),
   ban('ban:cc-msg', prod, /cc-msg/),
   ban('dynamic-import-literal-only', except(prod, 'src/boot.ts', 'src/workers/bootstrap.ts'), /\bimport\s*\(\s*(?!(['"])[^'"\n]*\1\s*\))/),
@@ -375,6 +590,7 @@ export const RULES: readonly Rule[] = [
   readGateFlag,
   readIoReadsOnly,
   appendExistingFlag,
+  writeExistingFlag,
   inProcessStart,
   handleKill,
   mintedImport,
@@ -385,7 +601,18 @@ export const RULES: readonly Rule[] = [
   // (a net.Socket under a pipe or tty) leads to a class that reaches the whole outbound network. The
   // import fence governs imports, not property access, so this is the one static tripwire for that
   // route; nothing in daemon code needs .constructor. The quoted name covers Reflect.get(x, 'constructor').
-  ban('ban:.constructor', code, /\.\s*constructor\b/, /['"`]constructor['"`]/),
+  // A destructuring pattern reaches it too (`const { constructor: S } = process.stdout`), in an
+  // assignment or a parameter; a key computed at run time ('constr' + 'uctor') is a residual.
+  ban('ban:.constructor', code, /\.\s*constructor\b/, /['"`]constructor['"`]/, /\{[^{}]*(?<![\w$.])constructor\s*[:,}]/),
+  clockOnly,
+  clockFactories,
+  // Apply, rebuild and replay must not depend on the machine's locale, and daemon code needs none: the
+  // page formats times (ui/clock.js), strings compare by code units. The table lists Intl as a global.
+  ban('ban:locale', (f) => code(f) && f !== POWER_TABLE, /\bIntl\b/, /\btoLocale[A-Z]\w*/, /\blocaleCompare\b/),
+  // Daemon code needs no non-cryptographic randomness: ids are written to the journal when made, and the
+  // pairing code and the CSRF token come from node:crypto (zen note 7.6: no Rng port).
+  ban('ban:Math.random', code, /\bMath\s*(?:\?\.|\.)\s*random\b/, /\bMath\s*\[\s*(['"`])random\1\s*\]/),
+  sharedSelfContained,
 ];
 
 function lineOf(text: string, index: number): number {

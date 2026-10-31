@@ -3,7 +3,9 @@
 // through the write fence. Every field is scrubbed on the way in (plan §6 invariant 14): secrets by
 // key name, `token=` values in any string, control characters, and strings over 2 KB.
 
+import type { Clock } from './clock.ts';
 import { ownFields } from './own.ts';
+import { frozen, frozenClass } from '../../shared/frozen.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 
@@ -19,7 +21,8 @@ export type LogEntry = {
 };
 
 export type LogConfig = {
-  now?: () => number;
+  /** Required, no default: entries are stamped with its wall clock (a Clock the composition root minted). */
+  clock: Pick<Clock, 'nowWall'>;
   /** Entries kept in memory; the oldest go first. */
   capacity?: number;
   sink?: (line: string) => void;
@@ -32,7 +35,7 @@ const DEFAULT_CAPACITY = 500;
 export const REDACTED = '***';
 
 /** Field names whose values never reach the log, whatever they hold. */
-export const SECRET_KEY = /^(?:code|pairing[-_]?code|.*token|.*secret|password|passwd|.*cookie|csrf.*|authorization|.*api[-_]?key|credentials?)$/i;
+export const SECRET_KEY = frozen(/^(?:code|pairing[-_]?code|.*token|.*secret|password|passwd|.*cookie|csrf.*|authorization|.*api[-_]?key|credentials?)$/i);
 
 const EVENT = /^[a-z0-9][a-z0-9.-]{0,63}$/;
 // C0, DEL and C1, ESC included: a harness string must not drive the console (OSC 8, OSC 52).
@@ -76,7 +79,7 @@ export function scrubValue(v: unknown, depth = 0, seen: Set<object> = new Set())
 }
 
 export class Log {
-  readonly #now: () => number;
+  readonly #clock: Pick<Clock, 'nowWall'>;
   readonly #capacity: number;
   readonly #ring: LogEntry[] = [];
   #sink: ((line: string) => void) | null;
@@ -84,10 +87,12 @@ export class Log {
   #dropped = 0;
   #sinkFailures = 0;
 
-  constructor(config: LogConfig = {}) {
+  constructor(config: LogConfig) {
     // Own fields only: a sink nobody set is never one some module put on Object.prototype.
-    const cfg = ownFields(config, ['now', 'capacity', 'sink'] as const);
-    this.#now = cfg.now ?? Date.now;
+    const cfg = ownFields(config, ['clock', 'capacity', 'sink'] as const);
+    const clock = cfg.clock;
+    if (typeof clock !== 'object' || clock === null || typeof clock.nowWall !== 'function') throw new Error('log: clock is required, there is no default');
+    this.#clock = clock;
     this.#capacity = Math.max(1, cfg.capacity ?? DEFAULT_CAPACITY);
     this.#sink = cfg.sink ?? null;
   }
@@ -136,7 +141,7 @@ export class Log {
     const scrubbed = fields === undefined ? {} : scrubValue(fields);
     const entry: LogEntry = {
       seq: ++this.#seq,
-      at: new Date(this.#now()).toISOString(),
+      at: new Date(this.#clock.nowWall()).toISOString(),
       level,
       event: EVENT.test(event) ? event : 'invalid-event-name',
       fields: typeof scrubbed === 'object' && scrubbed !== null && !Array.isArray(scrubbed) ? (scrubbed as Record<string, unknown>) : {},
@@ -159,3 +164,4 @@ export class Log {
     }
   }
 }
+frozenClass(Log);

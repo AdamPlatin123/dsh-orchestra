@@ -7,6 +7,8 @@ import type { ReadGate } from './fs/read-gate.ts';
 import type { WriteFence } from './fs/write-fence.ts';
 import type { SpawnGateSpec } from './os/node-proc.ts';
 import type { SpawnGate } from './os/spawn.ts';
+import type { DbOpener, DbOpenerSpec } from './store/db.ts';
+import type { ClockHub } from './runtime/clock.ts';
 import type { DataDirCheck } from './runtime/data-dir.ts';
 import type { Features } from './runtime/features.ts';
 import type { FenceStatus } from './runtime/import-fence.ts';
@@ -41,7 +43,8 @@ export type StartDeps = {
   pid: number;
   tty(): { stdin: boolean; stdout: boolean };
   console: ConsolePort;
-  now(): number;
+  /** The clock hub boot made (BootPorts); every time read and timer below start() goes through Clocks it mints. */
+  clock: ClockHub;
   /** Signals and the end of the process; tests inject one that releases the lock instead of exiting. */
   stopping: StopPort;
   /** From BootPorts (src/fs/node-io.ts); tests may count or fake it. */
@@ -50,6 +53,8 @@ export type StartDeps = {
   makeReadGate(spec: ReadGateSpec): ReadGate;
   makeWriteFence(spec: WriteFenceSpec): Promise<WriteFence>;
   makeSpawnGate(spec: SpawnGateSpec): SpawnGate;
+  /** The SQLite opener factory boot minted (BootPorts, src/store/node-sqlite.ts); only working.ts calls it. */
+  makeDbOpener(spec: DbOpenerSpec): Promise<DbOpener>;
   /**
    * The only way a real profile runs under the test runner: in-process tests that pin `home` to a
    * fake home inside an orchestra-test-* dir in the temp dir (checked by parseProfileArgs).
@@ -76,25 +81,28 @@ function installStopSignals(stop: () => void): () => void {
 /**
  * Stopping ends the process, whoever asked (a signal, or anything that emits one): the lock is never
  * released by hand, the kernel frees the pipe once the process is gone, so no code of this process
- * runs without it. The console is flushed first, while the lock is still held.
+ * runs without it. It ends through boot's endProcess (BootPorts): the console is flushed first, while
+ * the lock is still held, for a bounded time, and the code is the one handed over, whatever an 'exit'
+ * listener or a stalled console write would make of it.
  */
-function processStopping(): StopPort {
-  const exit = process.exit;
+function processStopping(endProcess: (code: number) => void): StopPort {
   return {
     onSignal: installStopSignals,
     end: () => new Promise<void>(() => {
-      process.stdout.write('', () => process.stderr.write('', () => exit.call(process, EXIT.ok)));
+      endProcess(EXIT.ok);
     }),
   };
 }
 
 // The ports main.ts uses; the network port waits for step 15, which hands it to src/net/dsh-connect.ts.
-const PORT_KEYS = ['realpath', 'makeReadGate', 'makeWriteFence', 'makeSpawnGate'] as const;
+const FN_PORT_KEYS = ['realpath', 'makeReadGate', 'makeWriteFence', 'makeSpawnGate', 'makeDbOpener', 'endProcess'] as const;
+const PORT_KEYS = [...FN_PORT_KEYS, 'clock'] as const;
 
 /** BootPorts as own properties only, each one required: a port the caller left out is never looked up on Object.prototype. */
 function ownPorts(given: BootPorts): Pick<BootPorts, (typeof PORT_KEYS)[number]> {
   const p = ownFields(given, PORT_KEYS);
-  for (const k of PORT_KEYS) if (typeof p[k] !== 'function') throw new Error(`start: BootPorts.${k} is missing`);
+  for (const k of FN_PORT_KEYS) if (typeof p[k] !== 'function') throw new Error(`start: BootPorts.${k} is missing`);
+  if (typeof p.clock !== 'object' || p.clock === null || typeof p.clock.port !== 'function') throw new Error('start: BootPorts.clock is missing');
   return Object.freeze(p) as Pick<BootPorts, (typeof PORT_KEYS)[number]>;
 }
 
@@ -113,12 +121,13 @@ export function defaultStartDeps(ports: Pick<BootPorts, (typeof PORT_KEYS)[numbe
         process.stderr.write(`${line}\n`);
       },
     },
-    now: Date.now,
-    stopping: processStopping(),
+    clock: ports.clock,
+    stopping: processStopping(ports.endProcess),
     realpath: ports.realpath,
     makeReadGate: ports.makeReadGate,
     makeWriteFence: ports.makeWriteFence,
     makeSpawnGate: ports.makeSpawnGate,
+    makeDbOpener: ports.makeDbOpener,
   };
 }
 
@@ -130,7 +139,7 @@ async function measureIntegrity(d: StartDeps, pidLog: PidLog): Promise<Integrity
   const sys = resolveSystemRoot(d.env, d.realpath);
   if (!sys.ok) return { level: 'unknown', reason: 'system-root-unavailable', detail: sys.reason };
   // Before the plan exists the gate allows whoami and nothing else.
-  const gate = d.makeSpawnGate({ systemRoot: sys, rules: ['whoami'], record: (e) => pidLog.record(e), realpath: d.realpath, now: d.now });
+  const gate = d.makeSpawnGate({ systemRoot: sys, rules: ['whoami'], record: (e) => pidLog.record(e), realpath: d.realpath, clock: d.clock });
   return probeIntegrity(gate, sys.path);
 }
 
@@ -163,7 +172,7 @@ export async function start(f: Features, fence: FenceStatus, given: BootPorts, o
   // No prototype: a dependency nobody set (inTestRealProfile, say) reads undefined, never
   // Object.prototype's. Object.assign copies the overrides' own fields only.
   const d = Object.assign(Object.create(null) as StartDeps, defaults, overrides);
-  const log = new Log({ now: d.now });
+  const log = new Log({ clock: d.clock.port(null) });
 
   // defaults.env is this process's own environment, which no override replaces.
   const inTest = d.inTestRealProfile !== undefined ? { inTestRealProfile: d.inTestRealProfile } : {};
@@ -207,13 +216,15 @@ export async function start(f: Features, fence: FenceStatus, given: BootPorts, o
     realpath: d.realpath,
     makeReadGate: d.makeReadGate,
     makeWriteFence: d.makeWriteFence,
+    makeDbOpener: d.makeDbOpener,
+    env: d.env,
     roots: located.roots,
     notes: plan.notes,
     log,
     pidLog,
     console: d.console,
     pid: d.pid,
-    now: d.now,
+    clock: d.clock,
     tty: d.tty,
     stopping: d.stopping,
   });

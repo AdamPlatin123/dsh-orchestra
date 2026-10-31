@@ -1,9 +1,12 @@
 // Every way orchestrad ends on its own, one code per meaning (P1). Node exits by itself with 1, 3-7,
 // 9, 10, 12, 13, 14 and above 128 (an uncaught error, a V8 out-of-memory, a bad flag, a signal), so
 // every typed code lives in 20-29 and no exit of Node's own reads as one of these. boot.ts reads this
-// before the import fence is in place, so this module imports nothing.
+// before the import fence is in place, so this module imports only shared/frozen.js, which imports
+// nothing. Frozen: main.ts reads a code from it whenever it returns a typed outcome, and a module that
+// could set EXIT.badArgs = 0 would turn a refusal into a clean exit.
+import { frozen } from '../../shared/frozen.js';
 
-export const EXIT = {
+export const EXIT = frozen({
   /** A clean stop after a signal. */
   ok: 0,
   /** Running at High integrity or above: the plan refuses before reading anything. */
@@ -19,4 +22,4 @@ export const EXIT = {
   startFailed: 25,
   /** Anything thrown that no stage typed: a bug or an unexpected environment. */
   crashed: 26,
-} as const;
+} as const);

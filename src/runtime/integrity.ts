@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 import type { RunResult, SpawnGate } from '../os/spawn.ts';
 import { WHOAMI_ARGV, WHOAMI_REL } from '../os/spawn.ts';
+import { frozen } from '../../shared/frozen.js';
 
 const win = path.win32;
 
@@ -35,7 +36,7 @@ export const MEDIUM_RID = 8192;
 const MAX_RID = 0xffffffff;
 const LABEL = /^S-1-16-(\d{1,10})$/;
 
-export const WHOAMI_LIMITS = { timeoutMs: 10_000, maxBytes: 256 * 1024 } as const;
+export const WHOAMI_LIMITS = frozen({ timeoutMs: 10_000, maxBytes: 256 * 1024 } as const);
 
 export function levelForRid(rid: number): KnownLevel {
   if (rid >= HIGH_RID) return 'high-or-above';
