@@ -235,7 +235,7 @@ DS-Bot 的三个故障正好是三种闭眼（docs/research/2026-10-30-ds-bot-no
   - 脚本和 csc 源都直接 import 常量；`/out:` 和 procguard 路径由同一个函数算出，按相等比较，不接受回调，也不接受 fence 对象。
   - backend、realpath、now 都改成必填、没有默认值。
 - **修复没被见证。** 把 `write-fence.ts` 第 234–235 行（writeAtomic 里 rename 前的两处复查）注释掉，`write-fence.test.ts` 仍然 26 过。原因是 WriteIo 只钩了 openSync 和 mkdirSync，close 到 rename 之间的窗口没有任何测试守着。补法：WriteIo 加一个 rename 钩子，补一条见证测试。
-- **缺导入钩子时又放行了。** 第 2 步按我给的遗留项 (b) 改成走 ui-only，删掉了第 1 步的拒绝。补法：恢复拒绝，以退出码 2 退出，不 import 入口。凡是能直接跑 `.ts` 的 Node 都带 registerHooks，所以这条分支只有手动给 22.14 加 `--experimental-strip-types` 才走得到，那种情况本来就该拒绝。r4 L589「缺失就在 Tuning 中报错」要跟着改措辞，等你点头。
+- **缺导入钩子时又放行了。** 第 2 步按我给的遗留项 (b) 改成走 ui-only，删掉了第 1 步的拒绝。补法：恢复拒绝，以缺功能的退出码退出（第 2b 步起是 21），不 import 入口。凡是能直接跑 `.ts` 的 Node 都带 registerHooks，所以这条分支只有手动给 22.14 加 `--experimental-strip-types` 才走得到，那种情况本来就该拒绝。r4 L589「缺失就在 Tuning 中报错」要跟着改措辞，等你点头。
 - **测试用真实 profile 跑了 orchestrad。** 这是第 2 步实现代理自己报的事故。一个第 0 步的旧测试不带参数启动了 orchestrad，于是：
   - 跑了一次真实的 whoami；
   - 对真实的 harness 根取了 realpath；
@@ -286,7 +286,7 @@ DS-Bot 的三个故障正好是三种闭眼（docs/research/2026-10-30-ds-bot-no
   - 第一档（安全，必做，约 1.25 d）：第 2b 步，加上第 3 步开工前那几条。
   - 第二档（人这一端，约 2.3 d）：可以只做核心的四条（show 回执、通道状态条、按身份选中、固定词表），约 1 d，其余留到 M1。
   - 第三档（门脚本，约 1.5 d）：可以先只做修复见证，约 0.5 d。
-- **ui-only 网页还做不做。** 不做的话，Low、unknown、数据目录检查失败、journal 断链时，都只打印原因并按各自的退出码退出，也就是保持第 2 步的现状，能省约 0.25–0.5 d。r4 写的是 ui-only 提供 Tuning 页，所以要你定，第 4 步开工前定下即可。
+- ~~**ui-only 网页还做不做。**~~ 已定：fork 的前端设计保留 ui-only 页面，所有动作返回 503，和 r4 原写法一致。
 - **r4 措辞**：D3「心跳锁」改为「身份锁」；L589 缺 registerHooks 时改为退出。
 - **两个 agent 定义加不加。**
 
@@ -299,3 +299,17 @@ DS-Bot 的三个故障正好是三种闭眼（docs/research/2026-10-30-ds-bot-no
 - **通用的 itemRev / 409**：M0 的条目内容创建后不变，而 notify-ack 会抬高 rev，造成假 409。
 - **用管理员身份跑全套**：违反不变式 9。**给 harness 目录算摘要**：要读凭据文件；而且编排器自己的会话一直在写转录，摘要永远在变。
 - **锁掉 reallyExit、exit、emit**：会让 `process.exit()` 抛错。
+
+### 7.7 第 2b 步落地后学到的
+
+复核又打出 5 个洞，都已补上，每处补丁都有变异见证。值得记下的是这几条事实：
+
+- **锁只能随进程一起没。** 原来 stop() 只释放锁管道，而任何模块都能 `process.emit('SIGINT')`。再挂一个定时器，旧守护进程就没锁地活着，第二个实例照样进入 working，等于两个写者。现在停止就是退出进程，锁交给内核回收；生产代码里没有任何一行手动释放锁。这正是 P8：锁不是能被够到的东西，而是进程活着这件事本身。7.6 否掉「锁掉 emit」的理由仍然成立，不必锁 emit，让它无害就够了。
+- **空原型的 init 挡不住 undici。** 在 24.22 上实测，fetch 的 RequestInit 转换对没有自有值的字段会顺着 Object.prototype 去读，dispatcher 也一样。所以 ports.fetch 每次都新造一个 init，每个字段都写成自有值，dispatcher 绑定死；调用方的 init 从不往下传。undici 的 globalOrigin 槽也锁空了，否则相对 URL 会被解析到模块指定的主机。
+- **「在测试里」要从进程自己身上判断。** 注入的 env 可以不带标记，所以真实 profile 同时读进程自己的环境。测试里要跑真实 profile，只能走带类型的 opt-in，而且假 home 必须在临时目录的 orchestra-test-* 里。
+- **退出码移到 20–29**，避开 Node 自己会用的 1、3–7、9、10、12–14。
+
+留着的口子，已经记进第 3 步的简报：
+- 直接 `node x.test.ts` 或 `--test-isolation=none` 时没有标记。这时进程内调 start() 又不覆盖 home，仍会跑真实 profile。打算加一条仓库测试：test/ 下每个进程内 start() 都必须固定 home，并传 IN_PROCESS_STOP。
+- process.exit 和 reallyExit 仍可写。这是失败即关闭：替换掉它们，进程停不下来，但锁也不放。是否钉回原值，交给 process-powers 表决定。
+- no-timers-in-lock 规则把 working.ts 也框住了。哪天组装根需要定时器，就把定时器放进独立模块，规则只留在 lock.ts。
