@@ -700,7 +700,7 @@ spikes/                               冻结的参考代码，生产代码不许
   - `os/procguard-build.ts`。
   - `os/procguard-client.ts`：
     - 只发这七个命令：`ping`、`self`、`snapshot`、`alive`、`kill-tree`、`protect`、`notif-state`，其他一律拒绝。
-    - 请求按 id 配对；刹车调用串行执行；orchestrad 一直开着 procguard 的 stdin。每个请求 10 s 超时（暂定，经 Clock 端口的 `deadline` 类，timerId `deadline:<requestId>:<seq>`；和 SpawnGate 在同一个 hub 上，requestId 不能和它的撞，靠第 3b 步修的跨 gate 唯一性或给 procguard 的 requestId 加前缀，推断；不写 clock 记录、不引起转换；Clock 由组装处从 hub 造好递进来）：kill-tree 请求超时的那棵子树记 `status:'unknown'`（执行第 1 步核对用的快照超时记 `refused`：那时 daemon 还没动手），整次动作照常写 `human.result`，人类动词的 in-flight 因此有钟（UI 设计第一节 5）。`protect/*` 遇到 procguard 超时算请求失败（没有子树可记 unknown；推断）：回 503 `procguard-timeout`（推断；页面显示「保护名单没改成，可重试」，错误码进步骤 3 冻结的全表），不写 journal，删 in-flight，同 actionId 重试会再做一次（按自然键写，无害）。
+    - 请求按 id 配对；刹车调用串行执行；orchestrad 一直开着 procguard 的 stdin。每个请求 10 s 超时（暂定，经 Clock 端口的 `deadline` 类，timerId `deadline:<requestId>:<seq>`；和 SpawnGate 在同一个 hub 上，deadline id 不能和它的撞：用第 3b 步给 hub 加的同一个分配器（每个 hub 一条序号，或由 hub 发 gate id），不另加前缀；具体机制等 3b 提交后照代码写进线 C 的 brief；不写 clock 记录、不引起转换；Clock 由组装处从 hub 造好递进来）：kill-tree 请求超时的那棵子树记 `status:'unknown'`（执行第 1 步核对用的快照超时记 `refused`：那时 daemon 还没动手），整次动作照常写 `human.result`，人类动词的 in-flight 因此有钟（UI 设计第一节 5）。`protect/*` 遇到 procguard 超时算请求失败（没有子树可记 unknown；推断）：回 503 `procguard-timeout`（推断；页面显示「保护名单没改成，可重试」，错误码进步骤 3 冻结的全表），不写 journal，删 in-flight，同 actionId 重试会再做一次（按自然键写，无害）。
     - procguard 崩了就退避重启。启动时用 `--protect` 带上 `protect_entry` 里的名单，每次收到 `ready` 后再补发 `protect`。收到确认之前，刹车接口返回 503 `brake-unavailable`，UI 显示「刹车不可用」。
     - 按快照把 createTime 已对不上的条目挑出来：之后不再带给 procguard，表里不删，Tuning 标「已失效」，你点「移除」才经 journal 删（§2.2 第 15 条，推断）。这里不直接删行：步骤 4 起只有 journal 追加 + apply 写投影表。
   - `brakes/kill-tree.ts`：
