@@ -56,9 +56,11 @@ export type ProfileRefusal =
   | { reason: 'duplicate-root-pid'; pid: number }
   | { reason: 'localappdata-unset' }
   | { reason: 'roots-dir-bad-path'; path: string; detail: PathRejectReason }
-  | { reason: 'roots-dir-outside-frozen'; path: string; frozen: string };
+  | { reason: 'roots-dir-outside-frozen'; path: string; frozen: string }
+  | { reason: 'bad-peek-port'; value: string };
 
-export type ProfileParse = { ok: true; profile: Profile } | { ok: false; refusal: ProfileRefusal };
+/** `peekPort` is there only when --peek-port was given (the thin slice's peek page, src/server/http.ts). */
+export type ProfileParse = { ok: true; profile: Profile; peekPort?: number } | { ok: false; refusal: ProfileRefusal };
 
 export type ProfileDeps = {
   env: Readonly<Record<string, string | undefined>>;
@@ -89,11 +91,15 @@ export function windowsTmpdir(env: Readonly<Record<string, string | undefined>>)
 
 const FLAGS_WITH_VALUE = new Set(['--test-dir', '--test-root-pid', '--roots-dir']);
 const PID = /^[1-9]\d{0,9}$/;
+/** --peek-port: either profile, 1024-65535, at most once. Step 4 takes the port from config instead. */
+const PEEK_PORT_FLAG = '--peek-port';
+const PORT = /^[1-9]\d{3,4}$/;
 
 /**
  * Parses orchestrad's own arguments. Anything unrecognized, repeated or out of place refuses the
  * start: the real profile accepts none; the test profile exactly
  * `--test-profile --test-dir <dir> [--test-root-pid <pid>]... [--roots-dir <dir>]`, in any order.
+ * Either profile may add `--peek-port <port>` (the thin slice's peek page).
  * The real profile also refuses when either environment (the injected one or the process's own)
  * carries TEST_RUNNER_MARKER, whatever its value: a test that starts orchestrad without arguments, or
  * calls start() with an environment that lacks the marker, would otherwise run it against the real
@@ -109,8 +115,18 @@ export function parseProfileArgs(argv: readonly string[], givenDeps: ProfileDeps
   let rootsDir: string | null = null;
   const pids: number[] = [];
   const seenTestFlags: string[] = [];
+  let peekPort: number | null = null;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
+    if (arg === PEEK_PORT_FLAG) {
+      if (peekPort !== null) return refuse({ reason: 'duplicate-flag', flag: arg });
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('--')) return refuse({ reason: 'missing-value', flag: arg });
+      i++;
+      if (!PORT.test(value) || Number(value) > 65535) return refuse({ reason: 'bad-peek-port', value });
+      peekPort = Number(value);
+      continue;
+    }
     if (arg === '--test-profile') {
       if (testProfile) return refuse({ reason: 'duplicate-flag', flag: arg });
       testProfile = true;
@@ -134,6 +150,7 @@ export function parseProfileArgs(argv: readonly string[], givenDeps: ProfileDeps
       pids.push(pid);
     }
   }
+  const peek = peekPort !== null ? { peekPort } : {};
   if (!testProfile) {
     if (seenTestFlags.length > 0) return refuse({ reason: 'test-flag-without-test-profile', flag: seenTestFlags[0]! });
     if (envGet(deps.env, TEST_RUNNER_MARKER) !== undefined || envGet(deps.processEnv, TEST_RUNNER_MARKER) !== undefined) {
@@ -141,7 +158,7 @@ export function parseProfileArgs(argv: readonly string[], givenDeps: ProfileDeps
       const bad = checkInTestRealProfile(deps.inTestRealProfile, deps);
       if (bad !== null) return refuse(bad);
     }
-    return { ok: true, profile: { kind: 'real' } };
+    return { ok: true, profile: { kind: 'real' }, ...peek };
   }
   if (testDir === null) return refuse({ reason: 'test-dir-required' });
   const realpath = deps.realpath;
@@ -194,6 +211,7 @@ export function parseProfileArgs(argv: readonly string[], givenDeps: ProfileDeps
   return {
     ok: true,
     profile: { kind: 'test', testDir: dirReal, orchestraHome: win.join(dirReal, 'orchestra'), rootsDir: roots, rootsDirGiven: rootsDir !== null, rootPids: pids },
+    ...peek,
   };
 }
 
@@ -281,6 +299,8 @@ export function describeRefusal(r: ProfileRefusal): string {
       return `--roots-dir rejected (${r.detail}): ${r.path}`;
     case 'roots-dir-outside-frozen':
       return `--roots-dir must lie below ${r.frozen}: ${r.path}`;
+    case 'bad-peek-port':
+      return `--peek-port needs a port from 1024 to 65535, got ${JSON.stringify(r.value)}`;
   }
 }
 

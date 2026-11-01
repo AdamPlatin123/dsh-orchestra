@@ -227,5 +227,6 @@ export async function start(f: Features, fence: FenceStatus, given: BootPorts, o
     clock: d.clock,
     tty: d.tty,
     stopping: d.stopping,
+    ...(parsed.peekPort !== undefined ? { peekPort: parsed.peekPort } : {}),
   });
 }

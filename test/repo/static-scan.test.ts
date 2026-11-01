@@ -227,6 +227,8 @@ const CASES: readonly Case[] = [
   neg('global-power-name', 'src/net/dsh-connect.ts', 'const r = await fetch(url, { redirect: "manual" });'),
   neg('global-power-name', 'src/boot.ts', 'const ports: BootPorts = { fetch: globalThis.fetch };'),
   neg('global-power-name', 'src/model/x.ts', 'prefetch(items);'),
+  neg('global-power-name', 'src/server/http.ts', "const site = req.headers['sec-fetch-site'];"),
+  pos('global-power-name', 'src/server/http.ts', "const site = req.headers['sec-fetch-site']; await fetch(url);"),
   pos('global-power-name', 'src/net/dsh-connect.ts', 'const ws = new WebSocket(url);'),
   pos('global-power-name', 'src/boot.ts', 'const ws = new WebSocket(url);'),
   pos('global-power-name', 'src/model/x.ts', "const es = new globalThis.EventSource('http://127.0.0.1:1/');"),

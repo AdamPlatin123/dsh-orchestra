@@ -72,6 +72,8 @@ export type WorkingContext = {
   clock: ClockHub;
   tty(): { stdin: boolean; stdout: boolean };
   stopping: StopPort;
+  /** --peek-port: serve the thin slice's peek page (src/server/http.ts) on this port. Absent: no HTTP at all. */
+  peekPort?: number;
 };
 
 export type WorkingOutcome =
@@ -231,13 +233,33 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
 
   // The test profile never looks at the console: its harness reads stdout, which is a pipe.
   const pairing = decidePairingOutput(ctx.profile, ctx.profile.kind === 'test' ? { stdin: false, stdout: false } : ctx.tty());
+  let code: string | null = null;
   if (pairing.print === 'none') {
     log.warn('pairing-disabled', { why: pairing.reason });
     ctx.console.out('orchestrad: pairing is off: stdin and stdout are not both an interactive console');
   } else {
+    code = pairingCode();
     // Straight to the console, never through the log.
-    ctx.console.out(`orchestrad: pairing code ${pairingCode()}`);
+    ctx.console.out(`orchestrad: pairing code ${code}`);
     log.info('pairing-code-printed', { to: pairing.print });
+  }
+
+  // The thin slice's peek page, only when asked for: loaded here so that a start without --peek-port
+  // resolves no HTTP module at all.
+  let peek: { close(): Promise<void> } | null = null;
+  if (ctx.peekPort !== undefined) {
+    const redactor = makeRedactor({ env: ctx.env });
+    try {
+      const { startPeekServer } = await import('../server/http.ts');
+      const server = await startPeekServer({
+        port: ctx.peekPort, gate, roots: ctx.roots, redact: (text) => redactor.redact({ text }).text, clock: ctx.clock.port(null), log, pairingCode: code, profile: ctx.profile.kind,
+      });
+      peek = server;
+      ctx.console.out(`orchestrad: peek page at ${server.url} (read-only; pair with the code above)`);
+    } catch (e) {
+      log.error('peek-failed', { error: e });
+      ctx.console.err(`orchestrad: the peek page did not start on port ${ctx.peekPort}: ${describe(e)}`);
+    }
   }
   let resolveStopped!: () => void;
   const stopped = new Promise<void>((r) => {
@@ -247,6 +269,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   let ending: Promise<void> | null = null;
   const stop = (): Promise<void> => (ending ??= (async () => {
     uninstall();
+    if (peek !== null) await peek.close();
     log.info('stopped', { pidSinkFailures: ctx.pidLog.failures() });
     // Nothing reaches ORCHESTRA_HOME from here on, then the process ends with the lock.
     log.detach();

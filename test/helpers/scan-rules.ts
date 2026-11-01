@@ -205,12 +205,19 @@ const regexpCompile = ban('ban:RegExp-compile', except(prod, 'shared/frozen.js')
 
 const GLOBAL_NAMED = GLOBAL_POWERS.filter((e) => e.class !== 'keep' && !isSymbolKey(e.key))
   .map((e) => ({ e, re: new RegExp(`(?<![\\w$])${escapeRe(e.key)}(?![\\w$])`, 'g') }));
+// The Fetch Metadata request headers (Sec-Fetch-Site and its siblings) name no global: the server
+// checks Sec-Fetch-Site (plan step 4, invariant 12). They are blanked to the same length before the
+// match, so offsets stay put and a bare fetch beside one still counts.
+const FETCH_METADATA = /\bsec-fetch-(?:site|mode|dest|user)\b/gi;
 const globalPowerName: Rule = {
   id: 'global-power-name',
   applies: (f) => code(f) && f !== POWER_TABLE,
-  find: (text, file) => GLOBAL_NAMED
-    .filter(({ e }) => !(e.class === 'mint' && (e.mintedBy === file || e.heldBy.includes(file))))
-    .flatMap(({ re }) => [...text.matchAll(re)].map((m) => ({ index: m.index, text: m[0] }))),
+  find: (text, file) => {
+    const t = text.replace(FETCH_METADATA, (m) => ' '.repeat(m.length));
+    return GLOBAL_NAMED
+      .filter(({ e }) => !(e.class === 'mint' && (e.mintedBy === file || e.heldBy.includes(file))))
+      .flatMap(({ re }) => [...t.matchAll(re)].map((m) => ({ index: m.index, text: m[0] })));
+  },
 };
 // A symbol entry is matched by its registered key without the trailing version (undici.globalDispatcher.1 -> undici.globalDispatcher).
 const SYMBOL_TEXTS = [...new Set(GLOBAL_POWERS.filter((e) => e.class !== 'keep' && isSymbolKey(e.key)).map((e) => e.key.slice('Symbol('.length, -1).replace(/\.\d+$/, '')))];
