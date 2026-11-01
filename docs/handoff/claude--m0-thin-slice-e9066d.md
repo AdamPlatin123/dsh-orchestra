@@ -18,6 +18,7 @@ M0 的「最薄通路」：在计划第 10 步之前，让 orchestrad 以只读�
 - `src/sources/peek.ts`：列出 harness 根下的 Claude transcript（`projects/<目录>/<uuid>.jsonl`）和 DSH v4 日志，读一个会话的最后 200 条事件。所有读取都经读闸门：只用 `'r'` 打开、读完即关、不开 tail 句柄。不留游标，不写 journal 和 db。源里来的每段文字都剥控制字符、过脱敏器，并截到 2 KB。验证：`test/sources/peek.test.ts`，6 条；跳过脱敏后测试变红。
 - `src/server/http.ts`：peek 页，只在加了 `--peek-port <端口>` 时才加载。从第 4 步取的部分：只听 127.0.0.1 和 ::1；Host 必须完全相等；一次性配对码（10 分钟，连错 5 次作废）；cookie 带 HttpOnly 和 SameSite=Strict；POST 校验 Origin；`Sec-Fetch-Site` 只放行 same-origin 或 none；不发 CORS 头。页面在服务端渲染、全部转义，不含任何脚本（CSP `default-src 'none'`）。验证：`test/server/peek-http.test.ts`（6 条，HTML 不转义时测试变红）、`test/server/peek-e2e.test.ts`（真正起一个测试 profile 的 orchestrad，从配对一路走到读出两种会话）。
 - 改动后全量测试：958 条，955 过、0 失败、1 跳过、2 todo。跳过的一条要开发者模式才能建目录链接。
+- 用户用真实 profile 打开配对页后，配对被拒，页面显示 `wrong origin`。原因：响应头带 `Referrer-Policy: no-referrer` 时，浏览器对发往同源的 POST 也把 Origin 写成 `null`，精确的 Origin 校验就拒绝了每一次配对。修复：改成 `Referrer-Policy: same-origin`，跨站照样不带 referrer。验证：在应用内置浏览器里，用测试 profile 加合成数据复现了 403，修复后配对成功，列表页和会话页都能打开，`<b>` 按字面显示；`peek-http.test` 钉住了这个头；全量测试 958 条，955 过、0 失败。
 
 ## Unverified（做了但没验证，或验证没过）
 - 真实 profile 加 `--peek-port`，在本机真实数据上显示会话：还没有人跑过。按计划 §6 不变量 11，agent 只能起测试 profile，真实 profile 只能由用户启动。这也是 orchestrad 头一回以真实 profile 启动：会建 `~/.orchestra`。
@@ -33,6 +34,7 @@ M0 的「最薄通路」：在计划第 10 步之前，让 orchestrad 以只读�
 - `test/repo/contract-freeze.test.ts` 的金样：这条分支没改冻结契约，以后也不应该为 peek 去改它。
 
 ## Open questions
+- 计划第 4 步自己有冲突，会卡住第 4 步的鉴权代码：它规定每个响应带 `Referrer-Policy: no-referrer`（计划第 581 行），又规定 POST 的 Origin 必须完全相等（第 584、589 行）。浏览器在 no-referrer 下对同源 POST 发 `Origin: null`，按 Fetch 规范，同源的 fetch() 也一样（推断：页面上只实测了表单提交），所以照计划写，配对和所有改数据的请求都会被 403。peek 改成了 `same-origin`。r4 里没写 Referrer-Policy，这是计划自己的取舍。要用户定第 4 步改成哪一种：`same-origin`，或 `strict-origin-when-cross-origin`。
 - 这一版和计划第 4 步有三处不同，都只针对 peek：页面没有脚本，所以配对表单用 form-urlencoded，不是 JSON；因为除了配对没有改状态的路由，所以没有 CSRF 令牌；端口来自 `--peek-port`，不是 config。第 4 步是照计划改回来，还是保留无脚本的页面，要用户定。
 - `test/helpers/scan-rules.ts` 的 global-power-name 规则现在先把 `Sec-Fetch-Site`、`-Mode`、`-Dest`、`-User` 这四个头名抹成空格再匹配（它们不是全局变量）。这条扫描规则放宽了一点，要用户点头。
 
