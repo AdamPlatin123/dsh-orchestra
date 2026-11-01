@@ -47,3 +47,5 @@
 ## Divergence（接手者填写：交接与现实的差异）
 - 2026-11-01 AdamPlatin123：会话开始时，SessionStart hook 报的是 main 检出目录的状态（branch main、1 个未提交文件、TAKEOVER CHECK）。本 worktree 自己是干净的，HEAD 也一致。处理：只读 worktree，没有改动主检出目录，已告知用户，在等用户确认。2026-11-01 用户确认：这份 r4 改动是本人留下的。Owner 不变，不需要接管。
 - 2026-11-01 AdamPlatin123：第一次 push 被 GitHub 推送保护拒收。原因是 M0 第 3 步的提交 dafd29e 在 `test/store/redact.test.ts` 里写了一个形似 DeepSeek 密钥的测试值（假的）。经用户同意，改写了本地历史：从 dafd29e 起的 9 个提交按原作者、原时间重放，只做了两处改动：一是测试里把这个值改成运行时拼接（`FAKE_SK`），二是正文和提交说明里引用这 9 个提交的短哈希，换成了新哈希。新旧对照：dafd29e→e451d4c、ebde3c7→dd3d9d0、a3c8ac0→70a4e52、46f9138→7a76a26、0ac951d→fd35af0、ca59fea→f92bdc5、21d1d10→7b7c93d、4f50192→a1492bf、fae04f9→6e96c3c。`main` 和 `claude/handoff-protocol` 都移到了 a1492bf。主检出目录用的是 `git reset --keep`，r4 的未提交改动前后逐字节一致。旧引用备份在 `refs/backup/pre-secret-rewrite/*`。
+
+- 2026-11-01 AdamPlatin123：研究线收尾，分支快进合并进 main，本文件归档。后续状态见 `docs/handoff/main.md`。
