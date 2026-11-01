@@ -6,7 +6,7 @@
 - Machine: 550W备份1号机
 - Branch: claude/m0-thin-slice-e9066d（从 main 的 d3fcbcd 切出）
 - Commit: 200ea73
-- Pushed: no（push 前要问用户）
+- Pushed: yes（origin/claude/m0-thin-slice-e9066d，2026-11-01 用户同意后 push）
 - Uncommitted on that machine: none（主检出目录里 r4「第七批」的未提交改动不在这条分支上，见 `docs/handoff/main.md`）
 
 ## Goal
