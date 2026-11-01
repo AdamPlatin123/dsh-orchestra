@@ -1,0 +1,10 @@
+{
+  "name": "spike-claude-sdk",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Spike: one Orchestra-owned Claude session via the Agent SDK (not part of M0 src/)",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.287"
+  }
+}
