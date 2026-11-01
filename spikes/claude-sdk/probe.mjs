@@ -6,7 +6,7 @@
 //   node probe.mjs --phase live --out <dir>   # haiku only, one query(), five turns plus an idle tail
 //   node probe.mjs --phase init --out <dir>   # one turn per workflow setting, keeps system/init only
 // Common: --proxy http://host:port (HTTPS_PROXY for the child), --config-dir <CLAUDE_CONFIG_DIR>,
-//         --claude <claude.exe>, --budget <usd per query()>.
+//         --claude <claude.exe>, --budget <usd per query()>, --env inherit (default: allowlist).
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -27,9 +27,14 @@ fs.mkdirSync(OUT, { recursive: true });
 // Allowlisted environment: the parent here is a Desktop-hosted Claude Code session, whose
 // messaging socket, host session id and proxy must not leak into the probe's child.
 const ENV_KEEP = ['SystemRoot', 'windir', 'SystemDrive', 'PATH', 'Path', 'PATHEXT', 'ComSpec', 'OS', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA', 'ProgramData', 'ProgramFiles', 'ProgramFiles(x86)', 'CommonProgramFiles', 'TEMP', 'TMP', 'USERNAME', 'USERDOMAIN', 'COMPUTERNAME', 'NUMBER_OF_PROCESSORS', 'PROCESSOR_ARCHITECTURE'];
+// --env inherit: the whole parent environment minus the Desktop host's messaging and session
+// variables and the sandbox proxy, to check that the allowlist itself is not why auth fails.
+const ENV_DROP = /^(CLAUDE_CODE_MESSAGING_|CLAUDE_CODE_HOST_SESSION_ID$|CLAUDE_CODE_SESSION_ID$|CLAUDE_PID$|CLAUDECODE$|CLAUDE_CODE_CHILD_SESSION$|CLAUDE_CODE_ENTRYPOINT$|CLAUDE_AGENT_SDK_VERSION$|https?_proxy$|HTTPS?_PROXY$|npm_config_)/i;
 function childEnv(extra) {
   const env = {};
-  for (const k of ENV_KEEP) if (process.env[k] !== undefined) env[k] = process.env[k];
+  if (args.env === 'inherit') {
+    for (const [k, v] of Object.entries(process.env)) if (!ENV_DROP.test(k)) env[k] = v;
+  } else for (const k of ENV_KEEP) if (process.env[k] !== undefined) env[k] = process.env[k];
   env.CLAUDE_CONFIG_DIR = CONFIG_DIR;
   // The CLI does not read the Windows system proxy (the Desktop app does); without it the API
   // answered 403 "Request not allowed" on this machine. Pass it explicitly: --proxy http://host:port
@@ -447,7 +452,7 @@ async function zero() {
 // While the CLI cannot authenticate the turn ends in a synthetic error and costs nothing.
 async function initOnly() {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-sdk-init-'));
-  const ev = { claude: CLAUDE, claudeVersion: claudeVersion(), configDir: CONFIG_DIR, cwd, runs: [] };
+  const ev = { claude: CLAUDE, claudeVersion: claudeVersion(), configDir: CONFIG_DIR, cwd, env: args.env ?? 'allowlist', runs: [] };
   for (const [label, extraEnv] of [['workflows-off', { CLAUDE_CODE_DISABLE_WORKFLOWS: '1' }], ['workflows-default', {}]]) {
     const input = inbox();
     const q = query({ prompt: input, options: baseOptions(cwd, extraEnv, { maxTurns: 1, maxBudgetUsd: 0.02, canUseTool: async () => ({ behavior: 'deny', message: 'probe' }) }) });
@@ -455,7 +460,7 @@ async function initOnly() {
     input.push(userMsg('Reply with exactly the word PONG and nothing else.'));
     for await (const m of q) {
       if (m.type === 'system' && m.subtype === 'init' && !run.tools) Object.assign(run, { model: m.model, tools: m.tools, slashCommands: m.slash_commands, skills: m.skills ?? null, plugins: (m.plugins ?? []).map((p) => p.name), sessionId: m.session_id });
-      if (m.type === 'assistant') run.assistantModel = m.message?.model ?? null;
+      if (m.type === 'assistant') Object.assign(run, { assistantModel: m.message?.model ?? null, apiError: m.error ?? null });
       if (m.type === 'result') {
         run.result = { subtype: m.subtype, isError: m.is_error, costUsd: m.total_cost_usd };
         break;
@@ -465,7 +470,7 @@ async function initOnly() {
     q.close();
     ev.runs.push(run);
   }
-  save('init.json', ev);
+  save(args.env === 'inherit' ? 'init-inherit.json' : 'init.json', ev);
   return ev;
 }
 

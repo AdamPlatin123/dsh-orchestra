@@ -1,10 +1,12 @@
 # Claude Agent SDK 探针：报告
 
-日期：2026-11-01（UTC 约 21:05–21:45）。分支 `claude/sdk-probe-bead9f`，从最薄通路分支 `claude/m0-thin-slice-e9066d` 的 3b34a53 切出。
+日期：2026-11-01（UTC 约 21:05–22:20）。分支 `claude/sdk-probe-bead9f`，从最薄通路分支 `claude/m0-thin-slice-e9066d` 的 3b34a53 切出。
 
-**一句话结论：partial。** SDK 能在本机以普通权限（Medium 完整性）拉起 Claude 会话，收发都通，注册表、磁盘 transcript、peek 页这三条只读路径都能看到这次会话。但子进程**鉴权失败**，没有一次真正调到模型。所以凡是要模型真正回答的问题都还没答：插话（`next`）、排队（`later`）、中断一个在跑的回合、`canUseTool` 拒绝后会话怎么走、注册表里的 `waiting`。
+**一句话结论：partial。** SDK 能在本机以普通权限（Medium 完整性）拉起 Claude 会话，消息能发进去、事件能收回来，注册表、磁盘 transcript、peek 页这三条只读路径都能看到这次会话。但子进程**鉴权失败**，没有一次真正调到模型。所以凡是要模型真正回答的问题都还没答：插话（`next`）、排队（`later`）、中断一个在跑的回合、`canUseTool` 拒绝后会话怎么走、注册表里的 `waiting`。
 
-花费 $0。
+鉴权失败直接碰到一条已定决策：r4 的 Q8（自有 Claude 会话的配置根，2026-10-29 已定 A：沿用你的 `CLAUDE_CONFIG_DIR`、复用你的登录，r4 第 2908 行）。本机的配置根由桌面应用托管，登录靠桌面宿主续期；Orchestra 单独拉起的 CLI 用不上这份登录（§1 第 1c 行、§5）。
+
+花费 $0。本版已按独立复核者的意见改过，处理见文末「复核」。
 
 ## 0. 这是什么
 
@@ -19,7 +21,7 @@ r4（现行规格 `docs/specs/2026-10-27-dsh-orchestra-design-r4.md`）§7.1 的
 - `cwd` 用系统临时目录下新建的空目录；
 - `model: 'haiku'`，并加 `claude-haiku-only` 守卫（r4 §7.2：真实回合只许走 haiku）：`system/init` 报的模型不含 haiku 就立即 `interrupt()` 并结束；
 - `pathToClaudeCodeExecutable` 指向 PATH 上的 `~/.local/bin/claude.exe`，`claude --version` 报 **2.1.310**；
-- 子进程环境用白名单：只带系统变量、`CLAUDE_CONFIG_DIR`、`HTTPS_PROXY`（见 §1）。原因见 §6 第 3 条。
+- 子进程环境用白名单：只带系统变量、`CLAUDE_CONFIG_DIR`、`HTTPS_PROXY`（见 §1）。原因见 §4 第 3 条。另做过一次对照（`--env inherit`）：继承本会话的完整环境，只去掉桌面宿主的消息管道、会话 id 和沙箱代理。
 
 SDK：npm 上有 r4 §7.2 钉的 **0.3.287**（2026-10-01 发布；当前 latest 是 0.3.316），就用它。它带一个平台包 `@anthropic-ai/claude-agent-sdk-win32-x64@0.3.287`，里面有自己的 `claude.exe`（对应 Claude Code 2.1.287）。探针没用这个自带的，用的是 2.1.310。装在 `spikes/claude-sdk/package.json`，版本钉死，提交了 lockfile（v3，112 个包），`node_modules` 被根目录 `.gitignore` 的 `node_modules/` 忽略。根目录 `package.json` 仍是零依赖。
 
@@ -27,22 +29,22 @@ SDK：npm 上有 r4 §7.2 钉的 **0.3.287**（2026-10-01 发布；当前 latest
 
 | # | 问题 | 结论 | 证据 |
 |---|---|---|---|
-| 1a | 能否以普通权限拉起会话 | **能** | 4 次 `query()` 都拉起了 CLI：`initializationResult()` 在 1.8 s 内返回，`system/init` 在 1.6–2.9 s 到达。全量测试里要真正启动 orchestrad 的用例都过了，说明本会话不是提权运行（orchestrad 在提权环境下拒绝启动）|
+| 1a | 能否以普通权限拉起会话 | **能** | 9 次 `query()`（零模型 3、真实回合 2、`--phase init` 两轮各 2）都拉起了 CLI。从调用 `query()` 算起：`initializationResult()` 约 1.4 s 返回，首个 `system/init` 在 1.5 s（运行 1）/ 2.8 s（运行 2）到达。全量测试里要真正启动 orchestrad 的用例都过了，说明本会话不是提权运行（orchestrad 在提权环境下拒绝启动）|
 | 1b | 能否拿到回复 | **不能，鉴权失败** | 运行 1：每个回合都是 CLI 合成的错误（assistant 的 `model` 是 `<synthetic>`，`isApiErrorMessage: true`），内容是 `API Error: 403 Request not allowed`。运行 2 加了代理以后变成 `OAuth session expired and could not be refreshed`，之后是 `Not logged in · Please run /login`；`system/api_error` 记的是 401 `invalid x-api-key` |
-| 1c | 鉴权走哪个配置目录 | 继承的 `CLAUDE_CONFIG_DIR`，即本会话所在的账号目录 `accounts/54102/config` | 子进程只拿到这一个配置目录。`init.apiKeySource` = `none`。这个目录里存的登录已过期，刷新失败。桌面应用里的 CLI 是由宿主代为续期的：本会话的环境里有 `CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH=1`。单独拉起的子进程拿不到这种续期（推断：没有去读凭据文件，见 §5）|
-| 1d | 网络 | CLI **不读 Windows 系统代理**，要显式传 `HTTPS_PROXY` | 不经代理时，连一个不带任何凭据的 `curl` 都得到 403 `forbidden / Request not allowed`；正常情况下不带凭据应该是 401。改走系统代理（HKCU 里的 `ProxyServer` = 127.0.0.1:10809）后，同一个 `curl` 得到正常的 401 `x-api-key header is required`。会话环境里的 `https_proxy=127.0.0.1:12477` 是沙箱的中间人代理，证书不受信，不能给子进程用 |
+| 1c | 鉴权走哪个配置目录 | 继承的 `CLAUDE_CONFIG_DIR`，即本会话所在的账号目录 `accounts/54102/config` | 子进程只拿到这一个配置目录。`init.apiKeySource` = `none`。这个目录里存的登录已过期，刷新失败。桌面应用里的 CLI 是由宿主代为续期的：本会话的环境里有 `CLAUDE_CODE_SDK_HAS_HOST_AUTH_REFRESH=1`，单独拉起的子进程拿不到这种续期（推断：没有去读凭据文件）。排除了「白名单造成的」：`--env inherit` 对照带上了白名单去掉的 `CLAUDE_CODE_OAUTH_SCOPES` 等变量，两个回合照样是 `authentication_failed`（`init-inherit.json`）|
+| 1d | 网络 | CLI **不读 Windows 系统代理**，要显式传 `HTTPS_PROXY` | 不经代理时，连一个不带任何凭据的 `curl` 都得到 403 `forbidden / Request not allowed`；正常情况下不带凭据应该是 401。改走系统代理（HKCU 里的 `ProxyServer` = 127.0.0.1:10809）后，同一个 `curl` 得到正常的 401 `x-api-key header is required`。会话环境里的 `https_proxy=127.0.0.1:12477` 是沙箱的中间人代理，证书不受信，不能给子进程用。这组 curl 对照只在本会话里手跑过，没有存进证据文件 |
 | 1e | `system/init.capabilities` 里有没有 `msg_lifecycle_v1` | **有**（2.1.310） | 13 项：`interrupt_receipt_v1, interrupt_cancel_queued_v1, interrupt_send_now_v1, interrupt_requeue_taken_v1, msg_lifecycle_v1, request_marker_lists_v1, lifecycle_wakeup_source_v1, sdk_mcp_tools_list_changed, sdk_mcp_manifests, mcp_read_resource_v1, mcp_tool_ui_meta_v1, ui_surface_v1, mcp_call_result_not_for_model_v1`。init 帧在调模型之前发出，不受鉴权失败影响。注意：`initializationResult()` 返回的 `capabilities` 是另一张表，只有 `ui_surface_v1, mcp_call_result_not_for_model_v1` 两项；能力检查要看 `system/init`，不要看 initialize 的返回 |
 | 2a | `streamInput` 发后续消息 | **通**，每条消息开一个回合 | 运行 2：首条消息走 `prompt`，后面 6 条走 `q.streamInput()`；7 条消息各得到一组 `system/init` → `system/status` →（`system/api_retry` ×2）→ `assistant` → `result` |
 | 2b | `next`（插话）/ `later`（排队） | **未测** | 探针等长回复流出第一个文字增量后再发插话或排队消息。但每个回合都在 20 ms–2.7 s 内以合成错误结束，等增量等到 60 s 超时，消息是在会话空闲时才发的，不说明任何语义。磁盘上的行都没有 `priority` 字段，同样因为没测成，不能当证据 |
 | 2c | `interrupt()` 能否停下当前回合 | **未测** | 只测到会话空闲时调用 `interrupt()` 会返回 `{still_queued: []}`，不抛错 |
-| 3a | 工作流有没有关掉 | **关掉了** | 同一配置目录、同一 CLI，只差这一个环境变量，各跑一个回合（`--phase init`）：不设时 `system/init.tools` 有 28 项，含 `Workflow`；设了是 27 项，没有 `Workflow`；技能和命令表也少了 `deep-research`、`workflow-authoring`。零模型阶段的命令表差异与此一致 |
+| 3a | 工作流有没有关掉 | **`Workflow` 工具去掉了；工作流命令还在，能不能启动未测** | 零模型阶段是干净对照（只差这一个环境变量）：设了以后命令表只少 `deep-research`、`workflow-authoring` 两项。`--phase init` 各跑一个回合：不设时 `system/init.tools` 有 28 项，含 `Workflow`；设了是 27 项，没有 `Workflow`。但这组对照不干净：两次的命令表还差 4 项（设了的一边多出 `schedule`、`ultrareview`、`usage-credits`、`extra-usage`），推断和 §4 第 1 条的登录状态有关。关掉以后，命令表里仍有 `__remote-workflow`、`workflow-launch-exec` |
 | 3b | `canUseTool` 有没有被调用；拒绝后会话怎么表现 | **未测** | 0 次调用：模型没跑起来，就不会有工具调用 |
-| 4a | 注册表 `sessions/<pid>.json` 的 `entrypoint` | **`sdk-ts`**，`kind` = `interactive`，`version` = 2.1.310 | 1 s 轮询，只读文件名是 `<数字>.json` 的那些，按 `sessionId` 或 `cwd` 匹配。r4 §7.1 表后和 S5 记的 `sdk-cli` 是 `claude -p` 加 stdio 审批的入口；SDK 的 `query()` 是另一个值。M1 判断「这是不是 Orchestra 自己的会话」，两个值都要认，并且不能只靠它（见 §6 第 4 条）|
-| 4b | 注册表出现得多快 | 第一次轮询就出现：`query()` 后约 1.0 s 已有文件，约 2.1 s 出现 `status` 键 | 运行 1 和运行 2 一样。S5 在高负载下测到的是 28–46 s，这次机器不忙（推断：差别来自负载）|
-| 4c | busy / idle / waiting 能否用 1 s 轮询看到 | busy 与 idle：**能**，限于长过轮询间隔的回合。waiting：**未测** | 运行 2：2.3–2.7 s 的回合（两次 API 重试）都看到了 busy → idle（两个连着的回合合成一段 busy，各 5.0 s）；20 ms 的回合一次都没看到。会话关闭后的下一次轮询（≤1 s）里，注册表文件已经消失。没有工具调用，所以没有出现 `waiting` |
-| 4d | 注册表的键 | `cwd, entrypoint, kind, messagingSocketPath, name, nameSince, nameSource, peerFeatures, peerProtocol, pid, pidDomain, procStart, sessionId, startedAt, version`，有状态后再加 `status, statusUpdatedAt, updatedAt` | SDK 拉起的会话**也开了消息管道**（`messagingSocketPath`、`peerProtocol`）。r4 §7.1「非自有会话的控制」一行说磁盘上的 `peerToken` 可能让同用户进程往会话里注入消息（未核实）。这对自有会话同样成立 |
+| 4a | 注册表 `sessions/<pid>.json` 的 `entrypoint` | **`sdk-ts`**，`kind` = `interactive`，`version` = 2.1.310 | 1 s 轮询，只读文件名是 `<数字>.json` 的那些，按 `sessionId` 或 `cwd` 匹配。r4 §7.1 表后和 S5 记的 `sdk-cli` 是 `claude -p` 加 stdio 审批的入口；SDK 的 `query()` 是另一个值。M1 判断「这是不是 Orchestra 自己的会话」，两个值都要认，并且不能只靠它，要用自己记下的 pid 和 `sessionId` 对上 |
+| 4b | 注册表出现得多快 | `query()` 后 ≤1 s 出现文件，`status` 键在 1–2 s 之间出现 | 调 `query()` 那一刻的轮询是 absent，下一次（约 1.0 s）已有文件、没有 `status`，再下一次（约 2.0 s）有 `status`。运行 1 和运行 2 一样。S5 测到的是 28–46 s，但那是 `claude -p`、高负载、另一个版本，差别不能只归到负载 |
+| 4c | busy / idle / waiting 能否用 1 s 轮询看到 | busy 与 idle：**能**，限于长过轮询间隔的回合。waiting：**未测** | 运行 2：两次各 2.3–2.7 s 的回合连在一起，合成一段 busy，两段都是 5.0 s，之后回到 idle。20 ms 级的回合分不出来：它们落在第一段 busy（约 2.0→3.0 s）里。会话关闭后的下一次轮询（≤1 s）里，注册表文件已经消失。没有工具调用，所以没有出现 `waiting` |
+| 4d | 注册表的键 | `cwd, entrypoint, kind, messagingSocketPath, name, nameSince, nameSource, peerFeatures, peerProtocol, pid, pidDomain, procStart, sessionId, startedAt, version`，有状态后再加 `status, statusUpdatedAt, updatedAt` | SDK 拉起的会话**也开了消息管道**（`messagingSocketPath`、`peerProtocol`）。r4 §7.1「非自有会话的控制」一行说磁盘上的 `peerToken` 可能让同用户进程往会话里注入消息（未核实）。推断这对自有会话同样成立；轮询器只读 `<数字>.json`，没有查有没有对应的 `.key` 文件 |
 | 5 | SDK 事件流和磁盘 transcript 的对照 | 有重叠，也各有对方没有的东西。见 §2 | 运行 2：流里 36 个带 uuid 的消息，磁盘上 48 个带 uuid 的行，两边共有的只有 7 个，全是 assistant |
-| 6 | peek 页能否读出这次会话 | **能，读取器不用改** | `peek-check.mjs` 起一个测试 profile 的 orchestrad（`--test-profile --peek-port`），根目录里只放这一个 transcript 的副本。配对 303；列表 200、1 行；会话页 200、**91 行，对应 transcript 的 91 行**，类型一一对应。问题是 91 行里有 77 行「内容」列是空的：读取器只给 user、assistant、system、summary 取文字，2.1.310 新出现的 7 种行（见 §2）都只显示类型。列表里的项目名不是原样的目录名（推断：经过了脱敏器，`peek.ts` 第 92 行）|
+| 6 | peek 页能否读出这次会话 | **这次能，读取器不用改；真实会话很快会超出它的尾读窗口** | `peek-check.mjs` 起一个测试 profile 的 orchestrad（`--test-profile --peek-port`），根目录里只放这一个 transcript 的副本。配对 303；列表 200、1 行；会话页 200、91 行，transcript 也是 91 行，每种类型的行数相等（只比了计数，没有逐行对）。91 行里有 77 行「内容」列是空的：8 种非消息行（`queue-operation, attachment, atis-latch, last-prompt, api-request-shape, api-request-blob, api-request, cost-state`，这些行型 `docs/research/cc-codex-protocols.md` 第 10 行早就列过，不是 2.1.310 新出现的）只显示类型；8 行 `system/api_error` 没有 `content` 字段，读取器取不到文字（`peek.ts` 第 198 行）。文件 204,617 B，已接近 `peek.ts` 第 48 行的 256 KiB 尾读窗口：每个空回合约 29 KB，真实会话的最后 200 行很可能大半是 `api-request-blob` 和 `attachment`。列表里的项目名不是原样的目录名（推断：经过了脱敏器，`peek.ts` 第 92 行）|
 | 7 | S3 遗留项 | 见 §3 | |
 
 ## 2. 事件流与磁盘的对照（运行 2）
@@ -51,20 +53,20 @@ SDK：npm 上有 r4 §7.2 钉的 **0.3.287**（2026-10-01 发布；当前 latest
 
 | 只在 SDK 事件流里 | 两边都有 | 只在磁盘上 |
 |---|---|---|
-| `system/init`（每回合一帧，带 tools、命令、技能、插件、capabilities）×7 | `assistant` ×7（同一 uuid） | 我们发的 `user` 消息 ×7。流里不回显，磁盘行带 `promptId, promptSource, turnOrigin, turnPosition` |
+| `system/init`（每回合一帧，带 tools、命令、技能、插件、capabilities）×7 | `assistant` ×7（同一 uuid） | 我们发的 `user` 消息 ×7，磁盘行带 `promptId, promptSource, turnOrigin, turnPosition`。流里没有回显：但探针发消息时**没有带 uuid**。类型声明里生命周期帧和中断收据都以消息的 uuid 为键（`sdk.d.ts` 第 4601、4613 行），推断不带 uuid 的消息就不会有。所以这只说明「不带 uuid 时没有」 |
 | `system/status` ×7 | | `attachment` ×26，11 种：`environment, model, deferred_tools_delta, agent_listing_delta, skill_listing, total_tokens_reminder, budget_usd, session_context, date, credential_org, prompt_snapshot` |
 | `result`（每回合一个，带累计花费、`modelUsage`、`permission_denials`）×7 | | `system/api_error` ×8（同一时刻流里是 `system/api_retry`，uuid 不同） |
 | `system/api_retry` ×8 | | 不带 uuid 的行：`queue-operation` ×14（`enqueue` / `dequeue`）、`api-request` ×8（`params` 的键：`betas, context_management, max_tokens, model, output_config, thinking`；`querySource` = `sdk`）、`api-request-blob` ×8（存请求消息的正文块）、`api-request-shape` ×2、`atis-latch` ×5、`last-prompt` ×5、`cost-state` ×1（只在最后一行） |
 
 对 M1 的含义：r4 §5.2 要求自有会话的事件也经只读解析器，好让自有和只读两边共用一套事件模型。按这次看到的结构，这一条做得到，但不够：
 
-- **回合边界和花费只在流里有。** 磁盘上没有 `result`，花费只有最后一行 `cost-state`。驱动的「回合结束」「花了多少」要从流里取。
-- **用户消息、排队操作只在磁盘上有。** 流里看不到自己发出的消息落盘没有、什么时候出队。
+- **按回合的美元花费只在流里有。** 磁盘上没有 `result`，美元数只在最后一行 `cost-state`。回合边界磁盘上也能拼出来（user 行有 `turnPosition`），真实回合的 `assistant.message.usage` 也有 token 数（`docs/research/cc-codex-protocols.md` 第 12 行，本次没见到，因为没有真实回合）。
+- **用户消息和排队操作：本次只在磁盘上见到，但没测公平。** r4 第 952 行的设计用的正是流里的消息生命周期帧（`command_lifecycle`）和回显（`isReplay`）；它们要求消息带 uuid，探针没带。M1 的驱动要给每条消息带 uuid，再看流里有没有。
 - **磁盘比流晚。** S5 测过 tool_use 写进 transcript 比 stdout 晚 0.8–2.5 s。
 
 所以 M1 的形状更像：消息内容走解析器（和只读一侧同一套）；回合生命周期、花费和审批走流。两边用 assistant 的 uuid 对齐。这是推断，要在真实回合上再对一次。
 
-磁盘体积：7 个只有一句错误的回合，transcript 就有 204 KB，因为每次请求都把正文块存进 `api-request-blob`。
+磁盘体积：7 个只有一句错误的回合，transcript 就有 204,617 B（约 200 KiB），因为每次请求都把正文块存进 `api-request-blob`。
 
 ## 3. S3 遗留项（r4 末尾「未核实」清单里和 SDK 会话相关的几条）
 
@@ -74,7 +76,7 @@ S3 是 r4 §13.3 里 M1 的 Claude 后端 spike。
 |---|---|---|
 | 乐章实际生效的 effort 能否回读 | **设定值能回读；API 是否照办未测** | 传 `effort: 'low'` 后，`q.getSettings()`（SDK 有这个方法，但 `sdk.d.ts` 的 Query 接口里没声明）的 `applied.effort` = `low`，不传时是 `medium`；磁盘上的 `api-request.params.output_config.effort` = `low`，`assistant.perTurnEffort` = `low`。`system/init.effort` 是 null：类型注释说只有 Remote Control 一类宿主才发这个字段 |
 | 传 `disableAllHooks: true` 能否关掉 `/goal` | **命令还在；执行未测** | 零模型阶段：`settings: {disableAllHooks: true}` 生效了（`getSettings().effective.disableAllHooks` = true），命令表里仍有 `goal`。没有执行 `/goal`：它会开启自动续跑，要调模型 |
-| 愿望档案要用 `disallowedTools` 去掉的工具叫什么 | **名字已知** | 2.1.310 在本机 SDK 会话里暴露：`CronCreate, CronDelete, CronList, ScheduleWakeup, RemoteTrigger, PushNotification`；没有 `Monitor`，也没有 `Bash`（本机没有 Git Bash，只有 `PowerShell` 工具；后台执行的参数在不在它上面未查）。另有 `SendMessage, ListAgents, DesignSync, ReportFindings, AskUserQuestion, EnterWorktree` 等，完整列表见 §7 的 `init.json` |
+| 愿望档案要用 `disallowedTools` 去掉的工具叫什么 | **名字已知** | 2.1.310 在本机 SDK 会话里暴露：`CronCreate, CronDelete, CronList, ScheduleWakeup, RemoteTrigger, PushNotification`；没有 `Monitor`，也没有 `Bash`：只有 `PowerShell` 工具。本机其实装了 Git Bash（`I:Git`，在 PATH 上），CLI 为什么不暴露 Bash 没查；`PowerShell` 有没有后台执行的参数也没查。另有 `SendMessage, ListAgents, DesignSync, ReportFindings, AskUserQuestion, EnterWorktree` 等，完整列表在证据 `init.json` 里 |
 | SDK 能否报告回合结束时还在跑的后台任务数 | 未测 | SDK 有 `backgroundTasks()` 方法和 `background_tasks_changed` 事件（据类型声明），没跑到 |
 | `autoContinueAtUsageLimit: false`、`maxEffortLevel` 在 SDK 会话里是否生效 | 未测 | |
 | `settingSources: []` 下 CLAUDE.md 附加段是否生效 | 未测 | |
@@ -82,21 +84,24 @@ S3 是 r4 §13.3 里 M1 的 Claude 后端 spike。
 
 ## 4. 顺带发现（会影响 M1）
 
-1. **同一个会话里，工具表会在回合之间变。** 运行 2 的第 4 个回合起，`system/init.tools` 多了 `RemoteTrigger`，技能多了 `schedule`；运行 1 一开始就有。推断这和账号的登录状态有关。r4 §7.4（第 902 行，愿望档案）要求「每次乐章启动断言 `system/init.tools`」，只在启动时断言不够，要每个回合的 init 帧都断言。
-2. **`settingSources: []` 挡不住插件和技能。** 每个 init 帧都报 3 个插件（`cc-plugin-agents-md, cc-plugin-telemetry, cc-plugin-plugin-authoring`）和 16–18 个技能（`design, dataviz, loop, schedule, claude-api, run…`）。来源没查：可能是 CLI 自带的，也可能来自配置目录的 `plugins/`、`skills/`。r4 §7.4 的配置隔离要把这一条算进去。
+1. **同一个会话里，工具表会在回合之间变。** 运行 2 的第 5 个回合起，`system/init.tools` 多了 `RemoteTrigger`，技能多了 `schedule`；运行 1 一开始就有。第 4 个回合是第一次报 `Not logged in`，所以推断这和登录状态有关，而且 init 帧比登录状态的变化晚一个回合。r4 §7.4（第 902 行，愿望档案）要求「每次乐章启动断言 `system/init.tools`」，只在启动时断言不够，要每个回合的 init 帧都断言。
+2. **`settingSources: []` 挡不住 CLI 自带的技能和插件。** 每个 init 帧都报 3 个插件（`cc-plugin-agents-md, cc-plugin-telemetry, cc-plugin-plugin-authoring`）和 16–18 个技能（`design, dataviz, loop, schedule, claude-api, run…`）。复核者查过：配置目录 `skills/synced` 下用户同步的技能一个都没出现，`plugins/` 里也找不到这 3 个插件，所以它们像是 CLI 自带的（推断）。r4 §7.4 的配置隔离要把自带的这部分算进去，必要时用 `disallowedTools` 或 `skills` 选项收窄。
 3. **子进程的环境必须用白名单。** 本会话是桌面应用托管的，环境里有 `CLAUDE_CODE_MESSAGING_SOCKET`、`CLAUDE_CODE_HOST_SESSION_ID`、`CLAUDE_CODE_CHILD_SESSION`、沙箱代理等几十个变量。SDK 默认把 `process.env` 整个传给子进程，子进程就会以为自己是桌面会话的一部分。orchestrad 自己不跑在桌面会话里，但 r4 §10.16 的 `--env-allowlist` 思路同样适用于 Claude host。
-4. **`initializationResult().account` 不代表已登录。** 登录已过期时它照样返回 `email` 和 `subscriptionType`（只记了键名）。接入向导的「登录状态」卡（r4 §5.2 SecretStore 与接入向导一行）不能拿它当判据；要么跑一个真实回合，要么看 `api_error`。
+4. **`initializationResult().account` 不代表已登录（证据偏弱）。** 它返回了 `email`、`subscriptionType`（证据里只记了 `email` 的键名，`subscriptionType` 记了值 `Claude Max`）。但零模型阶段跑在 21:09–21:10 UTC，早于 21:16 第一次刷新失败，当时登录也许还没失效；要在确认失效以后重测一次才算数。接入向导的「登录状态」卡（r4 §5.2 SecretStore 与接入向导一行）不能拿它当判据；要么跑一个真实回合，要么看 `api_error`。
 5. **代理。** 见 §1 第 1d 行。M1 的 Claude host 要从 Tuning 或系统设置拿代理，显式传 `HTTPS_PROXY`。
 
 ## 5. 没验到的，和怎么补
 
-真实回合全卡在鉴权上。要补，得先让子进程能登录。选项（要用户定）：
+真实回合全卡在鉴权上。要补，得先让子进程能登录。
 
-- A. 给 Orchestra 单独一个 Claude 配置目录（例如 `%USERPROFILE%\.orchestra-claude-probe`），由用户本人在那里登录一次：`$env:CLAUDE_CONFIG_DIR='…'; claude`，再在里面执行 `/login`。好处：探针的会话目录不进日常的 `projects/`，和 r4 §5.3「`~/.orchestra` 不得在 harness 根目录之内」的方向一致。代价：多一份登录；M1 是不是也这样做，要另外定。
-- B. 用本机其它已有的配置目录（S5 当时用的是 `accounts/53087/config`）。我没有去看那些目录里的登录是否有效：那要读凭据文件。
-- C. 就停在这里，等 M1 的 S3 再测。
+先说冲突：r4 的 Q8 已定 A（自有 Claude 会话沿用你的 `CLAUDE_CONFIG_DIR`、复用你的登录，好处是乐章结束后能在原生 CLI 里 `--resume`）。本机这个配置根是桌面应用托管的：桌面里的 CLI 由宿主续期登录，Orchestra 单独拉起的 CLI 没有宿主，用的是目录里存的那份，而那份已经过期、刷新失败。所以照 Q8 的做法，在本机现在跑不通。选项（要用户定）：
 
-补测命令（选 A 或 B 之后，约 4 分钟，haiku，预计远低于 $0.15）：
+- A. 照 Q8：由用户本人在普通终端里，对这个配置根重新登录一次：`$env:CLAUDE_CONFIG_DIR='<本会话的配置根>'; claude`，再执行 `/login`。不清楚的是：这会不会影响桌面应用对同一目录的登录管理，存下的登录能撑多久、过期后谁来刷新（未测）。
+- B. 偏离 Q8，给 Orchestra 单独一个 Claude 配置目录，由用户本人在那里登录一次。代价是要重开 Q8：会话不在你的 `projects/` 里，原生 CLI 的 `--resume` 要指向那个目录。r4 §5.3 只规定 `~/.orchestra` 不得在 harness 根目录之内，跟这件事只是类比，不是依据。
+- C. 用本机其它已有的配置根（S5 当时用的是 `accounts/53087/config`）。我没有去看那些目录里的登录是否有效：那要读凭据文件。
+- D. 就停在这里，等 M1 的 S3 再测。
+
+补测命令（选 A、B 或 C 之后，约 4 分钟，haiku，上限 $0.15）：
 
 ```
 node spikes/claude-sdk/probe.mjs --phase live --proxy http://127.0.0.1:10809 --config-dir <目录> --out <草稿区>/evidence
@@ -108,28 +113,35 @@ node spikes/claude-sdk/peek-check.mjs --transcript <目录>/projects/<…>/<sess
 
 ## 6. 花费
 
-**$0。** 没有一次请求被 API 接受。运行 1 是 403（网络层拒绝），运行 2 和 `--phase init` 是 401（凭据无效）。所有 `result.total_cost_usd` 都是 0，`modelUsage` 都是空的。上限：运行 2 一个 `query()` 设 `maxBudgetUsd: 0.15`（比建议的 0.05 高：一个 `query()` 里有 5 个回合加一次空闲，SDK 的预算按整个 `query()` 累计）；`--phase init` 每个 `query()` 0.02；零模型阶段 0.01（不调模型）。
+**$0。** 没有一次请求被 API 接受：
+
+- 运行 1：发出了请求，403（网络层拒绝，没走代理）。
+- 运行 2：前 3 个回合在发请求之前就以「OAuth 过期且刷新失败」结束；后 4 个回合各发了 2 次请求，都是 401（凭据无效），磁盘上 `api-request` 共 8 行。
+- `--phase init`（两轮）：transcript 里没有 `api-request` 行，CLI 在发请求前就判定未登录。
+
+所有 `result.total_cost_usd` 都是 0，`modelUsage` 都是空的。上限：运行 2 一个 `query()` 设 `maxBudgetUsd: 0.15`，比任务简报建议的 0.05 高（这个 0.05 是简报给的，r4 里没有），因为一个 `query()` 里有 7 条消息，SDK 的预算按整个 `query()` 累计；`--phase init` 每个 `query()` 0.02；零模型阶段 0.01（不调模型）。
 
 ## 7. 留在本机的痕迹
 
 **claude 自己写进 `accounts/54102/config` 的**（没有删，由用户决定）：
 
-`projects/` 下 5 个目录，名字都以 `C--Users-Calx-AppData-Local-Temp-orchestra-sdk-` 开头：
+`projects/` 下 6 个目录，名字都以 `C--Users-Calx-AppData-Local-Temp-orchestra-sdk-` 开头：
 
 | 目录后缀 | 来源 | 内容 |
 |---|---|---|
 | `zero-1zXME0`、`zero-JbXzIY` | 零模型阶段（两次） | 只有一个空的 `memory/`：没发消息也会建目录 |
 | `probe-ejqi6N` | 运行 1（无代理） | 1 个 jsonl，181 KB |
-| `probe-aC0TNi` | 运行 2（有代理） | 1 个 jsonl，205 KB |
-| `init-VRk5ea` | `--phase init` | 2 个 jsonl，共 57 KB |
+| `probe-aC0TNi` | 运行 2（有代理） | 1 个 jsonl，204,617 B |
+| `init-VRk5ea` | `--phase init`（白名单环境） | 2 个 jsonl，共 57 KB |
+| `init-pgosUL` | `--phase init --env inherit`（复核后补的对照） | 2 个 jsonl，共 58 KB |
 
 注册表：这几次会话的 `sessions/<pid>.json` 都已自行删除。查不了的：每个新会话可能往 `.claude.json`、`history.jsonl` 写了东西（没有读这些文件）。
 
 **进程**：结束前按命令行查过，没有残留的 claude.exe 或 node.exe。
 
-**临时目录**：探针的 5 个 cwd（系统临时目录下 `orchestra-sdk-*`）始终是空的，已删除。`peek-check.mjs` 的测试 profile 目录用完即删。
+**临时目录**：探针的 6 个 cwd（系统临时目录下 `orchestra-sdk-*`）始终是空的，已删除。`peek-check.mjs` 的测试 profile 目录用完即删。
 
-**证据**（只有结构、计数、键名、时间，不含会话内容）在本会话的草稿区 `…/scratchpad/evidence/`：`zero.json`、`live-run1-no-proxy.json`、`live.json`、`init.json`、`peek-check.json`、`projects-before.txt`。草稿区不跨机器，所以本报告里的数字是自足的。
+**证据**（只有结构、计数、键名、时间，不含会话内容）在本会话的草稿区 `…/scratchpad/evidence/`：`zero.json`、`live-run1-no-proxy.json`、`live.json`、`init.json`、`init-inherit.json`、`peek-check.json`、`projects-before.txt`。草稿区不跨机器，所以本报告里的数字是自足的。
 
 **读的范围**：只打开过 `sessions/<数字>.json`、`projects/` 下这几次会话自己的 jsonl。为了诊断，读过 transcript 里 CLI 合成的错误文本（只有三种，都已原文写在 §1）。没有读 `.key`、`.claude.json`、任何凭据文件。
 
@@ -142,6 +154,7 @@ cd spikes/claude-sdk
 npm ci --ignore-scripts                     # 装 lockfile 里钉死的 0.3.287
 node probe.mjs --phase zero --proxy http://127.0.0.1:10809 --out <dir>   # 不调模型，约 12 s
 node probe.mjs --phase init --proxy http://127.0.0.1:10809 --out <dir>   # 每种工作流设置 1 个回合；登录失效时 $0
+node probe.mjs --phase init --env inherit --proxy http://127.0.0.1:10809 --out <dir>   # 同上，继承完整环境的对照
 node probe.mjs --phase live --proxy http://127.0.0.1:10809 --out <dir>   # 约 4 分钟；登录有效时会花钱（haiku，上限 $0.15）
 node summarize.mjs <dir>/live.json
 node peek-check.mjs --transcript <CLAUDE_CONFIG_DIR>/projects/<目录>/<sessionId>.jsonl --out <dir>/peek-check.json
@@ -157,6 +170,29 @@ node peek-check.mjs --transcript <CLAUDE_CONFIG_DIR>/projects/<目录>/<sessionI
 
 全量测试：`.tools/node24/node.exe --test "test/**/*.test.ts"`，958 条，955 过、0 失败、1 跳过、2 todo，和起点（最薄通路分支 3b34a53）相同。
 
+## 复核
+
+初稿交给一个没参与写作的子代理，要求逐条去推翻（只读证据、代码和规格，不调模型）。它判定成立的：1b、1d、1e、2a、2b、2c、3b、4a；流与磁盘 36 / 48 / 7 的算法和 §2 的计数；§3 的 effort、`/goal`、后台任务三行；§4 第 3、5 条；§7；r4 第 902、2404 行和 M0 计划第 74 行的引用。打折扣或推翻的，处理如下（都已改进正文）：
+
+| 复核意见 | 判定 | 处理 |
+|---|---|---|
+| §2「用户消息、出队只在磁盘上有」：探针没给消息带 uuid，而 r4 第 952 行的投递确认用的正是流里的 `command_lifecycle` 和 `isReplay` 回显 | 推翻 | 接受。改成「不带 uuid 时没见到」，并写明 M1 要给每条消息带 uuid 再测 |
+| 「回合边界和花费只在流里」 | 打折扣 | 接受。改成「按回合的美元花费只在流里」：回合边界磁盘上也能拼，token 数真实回合在磁盘上也有 |
+| §3「本机没有 Git Bash」 | 推翻 | 接受，已核实 `I:\Git\usr\bin\bash.exe` 存在。改成「CLI 没暴露 Bash，原因没查」 |
+| §4.2「`settingSources: []` 挡不住插件和技能」 | 打折扣 | 接受。改成「挡不住 CLI 自带的」：用户同步的技能没有加载 |
+| §4.1「第 4 个回合起」 | 推翻 | 接受，已核实是第 5 个 init 帧。并写明 init 帧比登录状态晚一个回合 |
+| 3a「只差一个变量」 | 打折扣 | 接受。`--phase init` 的两次命令表还差 4 项；干净对照只有零模型阶段。结论改成「`Workflow` 工具去掉了，工作流命令还在，能否启动未测」 |
+| 4b「第一次轮询就出现」 | 打折扣 | 接受。改成「≤1 s 出现，`status` 在 1–2 s 之间」；和 S5 的差别不只来自负载 |
+| 1a 的次数和计时起点 | 打折扣 | 接受。改成 9 次 `query()`（含复核后补的对照），时间从调 `query()` 算 |
+| 4c「20 ms 的回合一次都没看到」 | 打折扣 | 接受。改成「分不出来」：它们落在第一段 busy 里 |
+| 4d「peerToken 对自有会话同样成立」 | 打折扣 | 接受，标成推断：没查 `.key` 文件 |
+| 6「peek 不用改」 | 打折扣 | 接受。补上：256 KiB 尾读窗口很快会被 `api-request-blob` 占满；空行是 8 种非消息行加 8 行 `api_error`；这些行型早有记录，不是 2.1.310 新出现的；「一一对应」只比了计数 |
+| §4.4「account 不代表已登录」 | 打折扣 | 接受。零模型阶段早于第一次刷新失败，证据偏弱，要重测 |
+| §6 失败原因和回合数；「建议的 0.05」r4 里没有 | 打折扣 | 接受。按运行逐个写失败原因；0.05 注明出自任务简报 |
+| §5 选项 A 引用不准：Q8 已定沿用你的配置根，§5.3 只能算类比 | 引用不准 | 接受。§5 重写：先写和 Q8 的冲突，再列选项 |
+| 1c：也可能是环境白名单造成的 | 打折扣 | 补测了对照：`--env inherit` 继承完整环境（只去掉桌面宿主的消息管道、会话 id 和沙箱代理），仍是 `authentication_failed`，$0。这条原因排除 |
+| transcript 体积 §2 和 §7 不一致 | 小问题 | 统一成 204,617 B |
+
 ## 代号速查
 
 | 代号 | 内容（一句话） | 出处 |
@@ -166,6 +202,8 @@ node peek-check.mjs --transcript <CLAUDE_CONFIG_DIR>/projects/<目录>/<sessionI
 | 自有乐章 | Orchestra 自己拉起并驱动的一次 harness 会话 | r4 §7.1 |
 | S3 | M1 的 Claude 后端 spike：vendored 后端、haiku 真实回合、MCP 注入、`msg_lifecycle_v1`、`/goal`、工具名等 | r4 §13.3（第 2404 行） |
 | S5 | 2026-10-29/30 的 Claude 根目录与等待信号 spike | `spikes/s5-claude/REPORT.md` |
+| Q8 | 自有 Claude 会话的配置根：2026-10-29 已定 A，沿用你的 `CLAUDE_CONFIG_DIR`、复用你的登录 | r4 第 2908 行 |
+| `command_lifecycle` | 流里的消息生命周期帧，r4 用 `state:'started'` 当投递确认 | r4 第 952 行 |
 | `claude-haiku-only` | 契约守卫：真实回合只许走 haiku | r4 §7.2 |
 | `msg_lifecycle_v1` | `system/init.capabilities` 里的一项协议能力；r4 用它做能力检查 | r4 §7.1、§7.2 |
 | `sdk-cli` / `sdk-ts` | 注册表的 `entrypoint`：前者是 `claude -p` 加 stdio 审批，后者是 SDK 的 `query()`（本次实测） | r4 §7.1 表后；本报告 §1 |
