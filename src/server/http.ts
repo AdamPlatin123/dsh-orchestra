@@ -34,7 +34,10 @@ const CSP = "default-src 'none'; style-src 'self'; img-src 'none'; form-action '
 const BASE_HEADERS: readonly [string, string][] = frozen([
   ['Content-Security-Policy', CSP],
   ['X-Content-Type-Options', 'nosniff'],
-  ['Referrer-Policy', 'no-referrer'],
+  // Not no-referrer, as step 4 has it: under no-referrer a browser sends `Origin: null` on a POST,
+  // even to its own origin (Fetch, "append a request Origin header"), and the exact Origin check would
+  // refuse every pairing. same-origin sends nothing to another site either.
+  ['Referrer-Policy', 'same-origin'],
   ['Cross-Origin-Resource-Policy', 'same-origin'],
   ['Cross-Origin-Opener-Policy', 'same-origin'],
   // Every page holds session text: never cached.

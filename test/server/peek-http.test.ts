@@ -71,6 +71,8 @@ test('every reply carries the strict CSP and no CORS header; a wrong Host or a c
   assert.equal(r.status, 200);
   assert.match(String(r.headers['content-security-policy']), /^default-src 'none';/);
   assert.equal(r.headers['x-content-type-options'], 'nosniff');
+  // no-referrer would make the browser send Origin: null on the pairing POST (found on the real page).
+  assert.equal(r.headers['referrer-policy'], 'same-origin');
   assert.equal(r.headers['cache-control'], 'no-store');
   assert.equal(r.headers['access-control-allow-origin'], undefined);
   assert.equal(r.body.includes('<script'), false);
