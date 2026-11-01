@@ -6,7 +6,7 @@
 - Machine: 550W备份1号机
 - Branch: claude/zen-superagent-exploration-04992d（worktree，从 main@a1492bf 拉出）
 - Commit: 6e96c3c（研究笔记）；本交接的更新随后单独提交
-- Pushed: yes，origin/claude/zen-superagent-exploration-04992d。`main` 和 `claude/handoff-protocol` 没推，远端只有这一个分支（它的历史里已包含 main 的全部提交）
+- Pushed: yes，origin/claude/zen-superagent-exploration-04992d；`main`（a1492bf）也已推到 origin/main。`claude/handoff-protocol` 没推（它和 main 指向同一个提交）
 - Uncommitted on that machine: 这个 worktree 里没有。但主检出目录（main 分支）有一处未提交改动：`docs/specs/2026-10-27-dsh-orchestra-design-r4.md`，约 +145/−113 行。它来自另一个 Claude 账号目录的会话，本会话没碰它，也没读它的内容。
 
 ## Goal
@@ -33,8 +33,7 @@
 1. 请用户确认主检出目录里那份 r4 未提交改动是谁留下的，按 `.claude/rules/handoff.md` §1.5 和 §5 处理。确认之前，不要以那份改动为准引用 r4。
 2. 请用户对总览 §4 表里「M0 / M1 开工前要定的」6 个问题拍板：Q-SA8、Q-SA5、Q-SA6、Q-SP2、Q-SP4、Q-SP6。定下来以后，按 r4 的决策传播流程并入（附录 G 记一批）。
 3. 如果用户同意 Q-SA8 的推荐：在 `src/store/journal.ts` 的 `parseLine` 里，对不认识的 kind 单独报一个原因（例如 `journal-newer`），和 `journal-chain` 分开。补一条测试：旧版读到带新 kind 的 journal 时，拒绝启动，退出原因可以区分。预期结果是现有测试仍然全绿（要在非管理员控制台里跑，见 Unverified 最后一条）。
-4. 要不要把 `main` 也推到 origin，由用户决定：`git push -u origin main`。改写后的 main（a1492bf）不再含被拦的假密钥，应当能推上去。
-5. 本地还留着改写前的备份引用 `refs/backup/pre-secret-rewrite/*`（三个分支各一份，仍含旧的假密钥提交）。用户确认不需要回退后，可以 `git update-ref -d` 删掉。这些引用不会被普通 push 带上远端，但不要用 `git push --mirror` 或推 `refs/*`。
+4. 本地还留着改写前的备份引用 `refs/backup/pre-secret-rewrite/*`（三个分支各一份，仍含旧的假密钥提交）。用户确认不需要回退后，可以 `git update-ref -d` 删掉。这些引用不会被普通 push 带上远端，但不要用 `git push --mirror` 或推 `refs/*`。
 
 ## Do not touch
 - 主检出目录里那份未提交的 r4 改动：不是本会话留下的，由用户决定怎么处理。
