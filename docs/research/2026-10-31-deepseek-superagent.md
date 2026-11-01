@@ -1,5 +1,7 @@
 # DeepSeek Super-agent 调研与对照（2026-10-31）
 
+> 2026-11-01 更新：深读原型后，本文有 26 处说法被更正（如 `inject` 并不写进历史、SA-4 并无「唤醒优先」、在线改规则的能力在 Router 身上而非 Watchdog），见 `2026-11-01-zen-superagent-deep-read.md` §5；三方总览见 `2026-11-01-zen-superagent-spawn-overview.md`。本文正文未改。
+
 DeepSeek Harness 团队 2026-10-31 晚发布了技术文章《Super-agent 设计探索：迈向更自主的 Agent 系统》，同时开源了原型 `deepseek-ai/dsh-superagent-prototype`。本文说清三件事：它是什么，和 Orchestra r4 哪里一样、哪里不一样，我们的规划要不要因此调整。
 
 **方法。**
