@@ -62,7 +62,11 @@ export function walkFrames(b: Uint8Array, start = 0): { frames: Frame[]; next: n
   return { frames, next: off };
 }
 
-/** One complete, non-skippable frame decoded on its own. */
-export function decodeFrame(b: Uint8Array, f: Frame): Buffer {
-  return zstdDecompressSync(b.subarray(f.start, f.end));
+/**
+ * One complete, non-skippable frame decoded on its own. With `maxOutputLength`, a frame that decodes to
+ * more bytes throws a RangeError (code ERR_BUFFER_TOO_LARGE) instead of growing past it.
+ */
+export function decodeFrame(b: Uint8Array, f: Frame, maxOutputLength?: number): Buffer {
+  const frame = b.subarray(f.start, f.end);
+  return maxOutputLength === undefined ? zstdDecompressSync(frame) : zstdDecompressSync(frame, { maxOutputLength });
 }

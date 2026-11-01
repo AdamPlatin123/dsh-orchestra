@@ -1,0 +1,732 @@
+{
+  "v": 1,
+  "kind": "stage-preview",
+  "rev": "0000000000000000",
+  "observedAt": 0,
+  "computedMs": 0,
+  "profile": "test",
+  "sources": {
+    "claude": {
+      "state": "ok",
+      "sessions": 1,
+      "registry": 1,
+      "error": null
+    },
+    "dsh": {
+      "state": "ok",
+      "sessions": 3,
+      "registry": null,
+      "error": null
+    },
+    "codex": {
+      "state": "not-connected"
+    }
+  },
+  "rules": [
+    {
+      "id": "claude.live.registry",
+      "hits": 1,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "claude.join.agentId",
+      "hits": 1,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "claude.join.description",
+      "hits": 2,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "claude.clone.running",
+      "hits": 2,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "claude.clone.orphan",
+      "hits": 1,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "claude.stand.todo-keys",
+      "hits": 1,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "dsh.stand.todo-keys",
+      "hits": 1,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "dsh.stand.goal-keys",
+      "hits": 1,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "dsh.team-task-keys",
+      "hits": 1,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "dsh.child.parentSession",
+      "hits": 2,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "dsh.live.mtime",
+      "hits": 3,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "instrument.tool-map",
+      "hits": 8,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "fermata.registry-waiting",
+      "hits": 1,
+      "n": 0,
+      "status": "untested"
+    }
+  ],
+  "podium": {
+    "fermatas": [
+      "p:432a4c806b9d285085e0"
+    ],
+    "inbox": null
+  },
+  "lanes": [
+    {
+      "id": "3891f96377d9f6d5dc7a",
+      "name": "shop",
+      "basis": "cwd",
+      "players": [
+        {
+          "id": "p:432a4c806b9d285085e0",
+          "session": "00000000000000000001",
+          "harness": "claude",
+          "role": "principal",
+          "parent": null,
+          "depth": 0,
+          "shade": 0,
+          "label": "shop",
+          "agentType": null,
+          "live": {
+            "state": "waiting",
+            "basis": "registry",
+            "waitingFor": "permission prompt",
+            "ageMs": 0
+          },
+          "look": "solid",
+          "lookRule": "look.solid.waiting",
+          "instrument": {
+            "class": "percussion",
+            "window": 4,
+            "read": 0,
+            "write": 0,
+            "shell": 1,
+            "role": null
+          },
+          "stand": {
+            "source": "todo",
+            "keys": "ok",
+            "title": null,
+            "items": [
+              {
+                "text": "Explore cart code",
+                "status": "completed"
+              },
+              {
+                "text": "Implement checkout",
+                "status": "in_progress"
+              },
+              {
+                "text": "Rotate the key [redacted:sk-ant]",
+                "status": "pending"
+              }
+            ],
+            "selfReported": {
+              "checked": 1,
+              "total": 3
+            }
+          },
+          "bytes": 2095,
+          "note": null
+        },
+        {
+          "id": "p:23d4685c6441a51ab6aa",
+          "session": "00000000000000000002",
+          "harness": "claude",
+          "role": "clone",
+          "parent": "p:432a4c806b9d285085e0",
+          "depth": 1,
+          "shade": 1,
+          "label": "Explore cart",
+          "agentType": "Explore",
+          "live": {
+            "state": "returned",
+            "basis": "unpaired-tool-use",
+            "waitingFor": null,
+            "ageMs": 0
+          },
+          "look": "translucent",
+          "lookRule": "look.translucent.returned",
+          "instrument": {
+            "class": "woodwind",
+            "window": 1,
+            "read": 1,
+            "write": 0,
+            "shell": 0,
+            "role": "Explore"
+          },
+          "stand": {
+            "source": "task-brief",
+            "keys": "ok",
+            "title": "Explore cart",
+            "items": [],
+            "selfReported": {
+              "checked": 0,
+              "total": 0
+            }
+          },
+          "bytes": 294,
+          "note": null
+        },
+        {
+          "id": "p:f0da593cb7e018d87617",
+          "session": "00000000000000000003",
+          "harness": "claude",
+          "role": "clone",
+          "parent": "p:432a4c806b9d285085e0",
+          "depth": 1,
+          "shade": 1,
+          "label": "Review diff",
+          "agentType": "code-reviewer",
+          "live": {
+            "state": "running",
+            "basis": "unpaired-tool-use",
+            "waitingFor": null,
+            "ageMs": 0
+          },
+          "look": "solid",
+          "lookRule": "look.solid.running",
+          "instrument": {
+            "class": "brass",
+            "window": 2,
+            "read": 1,
+            "write": 0,
+            "shell": 0,
+            "role": "code-reviewer"
+          },
+          "stand": {
+            "source": "task-brief",
+            "keys": "ok",
+            "title": "Review diff",
+            "items": [],
+            "selfReported": {
+              "checked": 0,
+              "total": 0
+            }
+          },
+          "bytes": 708,
+          "note": null
+        },
+        {
+          "id": "p:d6fd0ebf29854932a86f",
+          "session": "00000000000000000004",
+          "harness": "claude",
+          "role": "clone",
+          "parent": "p:f0da593cb7e018d87617",
+          "depth": 2,
+          "shade": 2,
+          "label": "Run checkout tests",
+          "agentType": "general-purpose",
+          "live": {
+            "state": "running",
+            "basis": "unpaired-tool-use",
+            "waitingFor": null,
+            "ageMs": 0
+          },
+          "look": "solid",
+          "lookRule": "look.solid.running",
+          "instrument": {
+            "class": "percussion",
+            "window": 1,
+            "read": 0,
+            "write": 0,
+            "shell": 1,
+            "role": "general-purpose"
+          },
+          "stand": {
+            "source": "task-brief",
+            "keys": "ok",
+            "title": "Run checkout tests",
+            "items": [],
+            "selfReported": {
+              "checked": 0,
+              "total": 0
+            }
+          },
+          "bytes": 310,
+          "note": null
+        },
+        {
+          "id": "p:4ed5663bc35e36685b4c",
+          "session": "00000000000000000005",
+          "harness": "claude",
+          "role": "clone",
+          "parent": "p:432a4c806b9d285085e0",
+          "depth": 1,
+          "shade": 1,
+          "label": "Scan legacy coupons",
+          "agentType": "Explore",
+          "live": {
+            "state": "unknown",
+            "basis": "none",
+            "waitingFor": null,
+            "ageMs": 0
+          },
+          "look": "ghost",
+          "lookRule": "look.ghost.orphan",
+          "instrument": {
+            "class": "woodwind",
+            "window": 1,
+            "read": 1,
+            "write": 0,
+            "shell": 0,
+            "role": "Explore"
+          },
+          "stand": {
+            "source": "task-brief",
+            "keys": "ok",
+            "title": "Scan legacy coupons",
+            "items": [],
+            "selfReported": {
+              "checked": 0,
+              "total": 0
+            }
+          },
+          "bytes": 300,
+          "note": null
+        },
+        {
+          "id": "p:e8523ae68da21e111627",
+          "session": "00000000000000000006",
+          "harness": "dsh",
+          "role": "principal",
+          "parent": null,
+          "depth": 0,
+          "shade": 0,
+          "label": "shop",
+          "agentType": null,
+          "live": {
+            "state": "running",
+            "basis": "mtime",
+            "waitingFor": null,
+            "ageMs": 0
+          },
+          "look": "solid",
+          "lookRule": "look.solid.running",
+          "instrument": {
+            "class": "woodwind",
+            "window": 2,
+            "read": 0,
+            "write": 0,
+            "shell": 0,
+            "role": null
+          },
+          "stand": {
+            "source": "goal",
+            "keys": "ok",
+            "title": "Ship checkout; deploy key [redacted:sk-ant]",
+            "items": [
+              {
+                "text": "Spec checkout",
+                "status": "completed"
+              },
+              {
+                "text": "Implement",
+                "status": "in_progress"
+              },
+              {
+                "text": "e2e",
+                "status": "pending"
+              }
+            ],
+            "selfReported": {
+              "checked": 1,
+              "total": 3
+            }
+          },
+          "bytes": 777,
+          "note": null
+        },
+        {
+          "id": "p:1e53d9e5cf74b7dff31e",
+          "session": "00000000000000000007",
+          "harness": "dsh",
+          "role": "teammate",
+          "parent": "p:e8523ae68da21e111627",
+          "depth": 1,
+          "shade": 1,
+          "label": "impl",
+          "agentType": "worker",
+          "live": {
+            "state": "running",
+            "basis": "mtime",
+            "waitingFor": null,
+            "ageMs": 0
+          },
+          "look": "solid",
+          "lookRule": "look.solid.running",
+          "instrument": {
+            "class": "strings",
+            "window": 1,
+            "read": 0,
+            "write": 1,
+            "shell": 0,
+            "role": "worker"
+          },
+          "stand": {
+            "source": "team-task",
+            "keys": "ok",
+            "title": "Implement checkout",
+            "items": [],
+            "selfReported": {
+              "checked": 0,
+              "total": 0
+            }
+          },
+          "bytes": 282,
+          "note": null
+        },
+        {
+          "id": "p:b69d912394efe22b30f4",
+          "session": "00000000000000000008",
+          "harness": "dsh",
+          "role": "clone",
+          "parent": "p:e8523ae68da21e111627",
+          "depth": 1,
+          "shade": 1,
+          "label": "reviewer",
+          "agentType": "reviewer",
+          "live": {
+            "state": "quiet",
+            "basis": "mtime",
+            "waitingFor": null,
+            "ageMs": 0
+          },
+          "look": "translucent",
+          "lookRule": "look.translucent.quiet",
+          "instrument": {
+            "class": "brass",
+            "window": 1,
+            "read": 1,
+            "write": 0,
+            "shell": 0,
+            "role": "reviewer"
+          },
+          "stand": {
+            "source": "none",
+            "keys": "none",
+            "title": null,
+            "items": [],
+            "selfReported": {
+              "checked": 0,
+              "total": 0
+            }
+          },
+          "bytes": 279,
+          "note": null
+        }
+      ],
+      "items": [
+        {
+          "id": "w:task:3fdce4beb925d62f",
+          "owner": "p:432a4c806b9d285085e0",
+          "executor": "p:23d4685c6441a51ab6aa",
+          "parent": null,
+          "source": "task",
+          "brief": "Explore cart — Find cart code. Done when files listed.",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "reported",
+          "stateRule": "claude.join.agentId",
+          "todoStatus": null,
+          "join": "agentId",
+          "report": {
+            "at": 1793527220000,
+            "bytes": 21
+          },
+          "flow": {
+            "childBytes": 294,
+            "reportBytes": 21
+          },
+          "verdict": "no-reviewer"
+        },
+        {
+          "id": "w:task:205fc60dbb16b121",
+          "owner": "p:432a4c806b9d285085e0",
+          "executor": "p:f0da593cb7e018d87617",
+          "parent": null,
+          "source": "task",
+          "brief": "Review diff — Review checkout diff; the old key was [redacted:sk-ant]",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "working",
+          "stateRule": "claude.clone.running",
+          "todoStatus": null,
+          "join": "description",
+          "report": null,
+          "flow": null,
+          "verdict": "no-reviewer"
+        },
+        {
+          "id": "w:agent:7865c240c74b57b0",
+          "owner": "p:432a4c806b9d285085e0",
+          "executor": "p:4ed5663bc35e36685b4c",
+          "parent": null,
+          "source": "subagent-catalog",
+          "brief": "Scan legacy coupons",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "orphan",
+          "stateRule": "claude.clone.orphan",
+          "todoStatus": null,
+          "join": null,
+          "report": null,
+          "flow": null,
+          "verdict": "no-reviewer"
+        },
+        {
+          "id": "w:todo:432a4c806b9d285085e0:0",
+          "owner": "p:432a4c806b9d285085e0",
+          "executor": null,
+          "parent": null,
+          "source": "todo",
+          "brief": "Explore cart code",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "self",
+          "stateRule": "claude.stand.todo-keys",
+          "todoStatus": "completed",
+          "join": null,
+          "report": null,
+          "flow": null,
+          "verdict": "no-reviewer"
+        },
+        {
+          "id": "w:todo:432a4c806b9d285085e0:1",
+          "owner": "p:432a4c806b9d285085e0",
+          "executor": null,
+          "parent": null,
+          "source": "todo",
+          "brief": "Implement checkout",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "self",
+          "stateRule": "claude.stand.todo-keys",
+          "todoStatus": "in_progress",
+          "join": null,
+          "report": null,
+          "flow": null,
+          "verdict": "no-reviewer"
+        },
+        {
+          "id": "w:todo:432a4c806b9d285085e0:2",
+          "owner": "p:432a4c806b9d285085e0",
+          "executor": null,
+          "parent": null,
+          "source": "todo",
+          "brief": "Rotate the key [redacted:sk-ant]",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "self",
+          "stateRule": "claude.stand.todo-keys",
+          "todoStatus": "pending",
+          "join": null,
+          "report": null,
+          "flow": null,
+          "verdict": "no-reviewer"
+        },
+        {
+          "id": "w:task:1ad3ca6c0be1e51d",
+          "owner": "p:f0da593cb7e018d87617",
+          "executor": "p:d6fd0ebf29854932a86f",
+          "parent": "w:task:205fc60dbb16b121",
+          "source": "task",
+          "brief": "Run checkout tests — Run only the checkout tests and paste failures.",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "working",
+          "stateRule": "claude.clone.running",
+          "todoStatus": null,
+          "join": "description",
+          "report": null,
+          "flow": null,
+          "verdict": "no-reviewer"
+        },
+        {
+          "id": "w:team:a668d400d9a40f4a",
+          "owner": "p:e8523ae68da21e111627",
+          "executor": "p:1e53d9e5cf74b7dff31e",
+          "parent": null,
+          "source": "team-task",
+          "brief": "Implement checkout",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "working",
+          "stateRule": "dsh.team-task-keys",
+          "todoStatus": null,
+          "join": "team-owner",
+          "report": null,
+          "flow": null,
+          "verdict": "no-reviewer"
+        },
+        {
+          "id": "w:dsh:5dab288537ada348",
+          "owner": "p:e8523ae68da21e111627",
+          "executor": "p:b69d912394efe22b30f4",
+          "parent": null,
+          "source": "subagent-catalog",
+          "brief": "review diff",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "unknown",
+          "stateRule": "dsh.child.parentSession",
+          "todoStatus": null,
+          "join": "parentSession",
+          "report": null,
+          "flow": null,
+          "verdict": "no-reviewer"
+        },
+        {
+          "id": "w:todo:e8523ae68da21e111627:0",
+          "owner": "p:e8523ae68da21e111627",
+          "executor": null,
+          "parent": null,
+          "source": "todo",
+          "brief": "Spec checkout",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "self",
+          "stateRule": "dsh.stand.todo-keys",
+          "todoStatus": "completed",
+          "join": null,
+          "report": null,
+          "flow": null,
+          "verdict": "no-reviewer"
+        },
+        {
+          "id": "w:todo:e8523ae68da21e111627:1",
+          "owner": "p:e8523ae68da21e111627",
+          "executor": null,
+          "parent": null,
+          "source": "todo",
+          "brief": "Implement",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "self",
+          "stateRule": "dsh.stand.todo-keys",
+          "todoStatus": "in_progress",
+          "join": null,
+          "report": null,
+          "flow": null,
+          "verdict": "no-reviewer"
+        },
+        {
+          "id": "w:todo:e8523ae68da21e111627:2",
+          "owner": "p:e8523ae68da21e111627",
+          "executor": null,
+          "parent": null,
+          "source": "todo",
+          "brief": "e2e",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "self",
+          "stateRule": "dsh.stand.todo-keys",
+          "todoStatus": "pending",
+          "join": null,
+          "report": null,
+          "flow": null,
+          "verdict": "no-reviewer"
+        }
+      ],
+      "cues": [
+        {
+          "from": "p:432a4c806b9d285085e0",
+          "to": "p:23d4685c6441a51ab6aa",
+          "item": "w:task:3fdce4beb925d62f",
+          "kind": "dispatch"
+        },
+        {
+          "from": "p:23d4685c6441a51ab6aa",
+          "to": "p:432a4c806b9d285085e0",
+          "item": "w:task:3fdce4beb925d62f",
+          "kind": "report"
+        },
+        {
+          "from": "p:432a4c806b9d285085e0",
+          "to": "p:f0da593cb7e018d87617",
+          "item": "w:task:205fc60dbb16b121",
+          "kind": "dispatch"
+        },
+        {
+          "from": "p:432a4c806b9d285085e0",
+          "to": "p:4ed5663bc35e36685b4c",
+          "item": "w:agent:7865c240c74b57b0",
+          "kind": "dispatch"
+        },
+        {
+          "from": "p:f0da593cb7e018d87617",
+          "to": "p:d6fd0ebf29854932a86f",
+          "item": "w:task:1ad3ca6c0be1e51d",
+          "kind": "dispatch"
+        },
+        {
+          "from": "p:e8523ae68da21e111627",
+          "to": "p:1e53d9e5cf74b7dff31e",
+          "item": "w:team:a668d400d9a40f4a",
+          "kind": "dispatch"
+        },
+        {
+          "from": "p:e8523ae68da21e111627",
+          "to": "p:b69d912394efe22b30f4",
+          "item": "w:dsh:5dab288537ada348",
+          "kind": "dispatch"
+        }
+      ]
+    }
+  ],
+  "clipped": {
+    "lanes": 0,
+    "players": 0,
+    "items": 0,
+    "standItems": 0
+  }
+}

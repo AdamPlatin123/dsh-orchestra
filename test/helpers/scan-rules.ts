@@ -20,6 +20,12 @@ export const EXEMPT_SCRIPTS: readonly string[] = [
   'scripts/procmon-check.ts',
   'scripts/rss-20.ts',
   'scripts/test-stage.ts',
+  // The stage preview's (0.1 alpha design §4, §9): stage-demo writes the synthetic fixture into a
+  // %TEMP%\orchestra-test-* dir; embed-ui reads the repo's ui/ and shared/ and writes the one generated
+  // src/server/ui-assets.ts. Neither touches a harness root. stage-keys-sample reads real roots and so
+  // stays scanned (plan step 1).
+  'scripts/stage-demo.ts',
+  'scripts/embed-ui.ts',
 ];
 
 // test/ is scanned for in-process-start-only-in-helper alone: every other rule's scope excludes it.
@@ -560,6 +566,23 @@ const sharedSelfContained: Rule = {
     .map((r) => ({ index: r.index, text: r.spec })),
 };
 
+// Daemon-side code never loads test/ code (a test helper may hold node:fs, or write and delete helpers,
+// that builtin-policy cannot see through, and plain `node scripts/x.ts` runs outside the import fence).
+// The one exception: a scanned script may take test/helpers/read-io.ts, whose openSync refuses every
+// flag but 'r'. Type-only imports load nothing.
+const READ_IO_HELPER = 'test/helpers/read-io.ts';
+const noTestImport: Rule = {
+  id: 'code-no-test-import',
+  applies: code,
+  find: (text, file) => valueImports(text)
+    .filter((r) => /^\.\.?\//.test(r.spec))
+    .filter((r) => {
+      const to = path.posix.normalize(path.posix.join(path.posix.dirname(file), r.spec)).toLowerCase();
+      return to.startsWith('test/') && !(file.startsWith('scripts/') && to === READ_IO_HELPER);
+    })
+    .map((r) => ({ index: r.index, text: r.spec })),
+};
+
 const readGateFlag: Rule = {
   id: 'read-gate-open-flag-r',
   applies: (f) => f === 'src/fs/read-gate.ts',
@@ -600,6 +623,18 @@ export const RULES: readonly Rule[] = [
   ban('ui:insertAdjacentHTML', ui, /\binsertAdjacentHTML\b/),
   ban('ui:document.write', ui, /\bdocument\s*\.\s*write(?:ln)?\b/),
   ban('ui:fetch-relative-api-only', ui, /\bfetch\s*\(\s*(?!['"`]\/api\/)/),
+  // The page's powers, one module each (plan step 5's ui rules): the network in ui/api.js, time in
+  // ui/clock.js (T7: the browser's wall clock is never set against the daemon's), storage in
+  // ui/prefs.js, navigation in ui/route.js. No other channel out, and no attribute that runs or styles.
+  ban('ui:fetch-only-in-api', except(ui, 'ui/api.js'), /\bfetch\b/),
+  ban('ui:clock-only-in-clock', except(ui, 'ui/clock.js'),
+    /(?<![\w$])Date(?![\w$])/, /(?<![\w$])performance(?![\w$])/, /\bset(?:Timeout|Interval)\b/, /\brequestAnimationFrame\b/, /\bAbortSignal\s*(?:\?\.|\.)\s*timeout\b/),
+  ban('ui:storage-only-in-prefs', except(ui, 'ui/prefs.js'), /\b(?:localStorage|sessionStorage|indexedDB)\b/, /\bdocument\s*\.\s*cookie\b/),
+  ban('ui:location-write-only-in-route', except(ui, 'ui/route.js'),
+    /\blocation\s*\.\s*(?:href|hash|search|pathname|host|hostname|port|protocol)\s*=(?!=)/, /\blocation\s*=(?!=)/,
+    /\blocation\s*\.\s*(?:assign|replace|reload)\s*\(/, /\bhistory\s*\.\s*(?:pushState|replaceState)\b/),
+  ban('ui:no-other-channel', ui, /\bWebSocket\b/, /\bXMLHttpRequest\b/, /\bsendBeacon\b/, /\bEventSource\b/, /\bimportScripts\b/, /\bwindow\s*\.\s*open\s*\(/),
+  ban('ui:setAttribute-on-style', ui, /\bsetAttribute(?:NS)?\s*\(\s*(?:[^,()]*,\s*)?['"`](?:on[a-z]*|style|href|xlink:href|src)['"`]/i),
   ban('vendor:no-dangerously', vendor, /dangerously/i),
   // r4 §5.3/§7.2: no module but the write fence calls fs write APIs. Only src/fs/node-io.ts imports
   // node:fs, and implements them there; its read io is held apart by node-io-read-io-reads-only.
@@ -633,6 +668,7 @@ export const RULES: readonly Rule[] = [
   // pairing code and the CSRF token come from node:crypto (zen note 7.6: no Rng port).
   ban('ban:Math.random', code, /\bMath\s*(?:\?\.|\.)\s*random\b/, /\bMath\s*\[\s*(['"`])random\1\s*\]/),
   sharedSelfContained,
+  noTestImport,
 ];
 
 function lineOf(text: string, index: number): number {

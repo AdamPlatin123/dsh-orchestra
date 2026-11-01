@@ -169,8 +169,9 @@ test('constants: the numbers step 3 shares, as the plan states them', () => {
 test('shared/ imports nothing but shared/ and no builtin, for the static scan and the import fence alike; src/ may import shared/', () => {
   const dir = fileURLToPath(new URL('shared/', REPO));
   const files = fs.readdirSync(dir).filter((f) => f.endsWith('.js'));
-  // frozen.js: the one deep freeze of every exported table (finding N3).
-  assert.deepEqual(files.sort(), ['constants.js', 'frozen.js', 'protocol.js', 'strings.js']);
+  // frozen.js: the one deep freeze of every exported table (finding N3). stage-contract.js: the stage
+  // preview's contract, which the daemon's golden file and the page's sample both pass (alpha design §3).
+  assert.deepEqual(files.sort(), ['constants.js', 'frozen.js', 'protocol.js', 'stage-contract.js', 'strings.js']);
   for (const f of files) {
     const text = fs.readFileSync(path.join(dir, f), 'utf8');
     assert.ok(text.startsWith('// @ts-check\n'), `${f} is checked JS`);

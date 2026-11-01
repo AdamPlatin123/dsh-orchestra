@@ -6,7 +6,9 @@ import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import { EXIT } from '../../src/runtime/startup.ts';
 import { runOrchestrad, startOrchestrad, waitForLine } from '../helpers/orchestrad.ts';
+import { STAGE_CANARY, writeStageFixture } from '../helpers/stage-fixture.ts';
 import { put, withTmp } from '../helpers/tmp.ts';
+import { validateStage } from '../../shared/stage-contract.js';
 
 // The thin slice end to end: a test-profile orchestrad with --peek-port over synthetic roots, paired
 // with the code it prints, serves the list and a session page. This is the path the real profile
@@ -66,6 +68,26 @@ test('a test-profile orchestrad with --peek-port serves both harnesses after pai
   assert.match(text, /synthetic claude line/);
   assert.match(text, /synthetic dsh line/);
 
+  await child.stop();
+});
+
+test('the stage preview end to end: pair, then /api/peek/stage over the stage fixture', async (t) => {
+  const dir = withTmp(t);
+  writeStageFixture(dir, Date.now());
+  const port = await freePort();
+  const child = startOrchestrad(t, ['--test-profile', '--test-dir', dir, '--peek-port', String(port)]);
+  await waitForLine(child, /^orchestrad: peek page at /);
+  const code = /^orchestrad: pairing code (\d{8})$/.exec(child.lines().find((l) => l.startsWith('orchestrad: pairing code')) ?? '')?.[1];
+  assert.ok(code !== undefined);
+  const cookie = String((await request(port, 'POST', '/pair', { origin: `http://orchestra.localhost:${port}`, 'content-type': 'application/x-www-form-urlencoded' }, `code=${code}`)).headers['set-cookie']).split(';')[0]!;
+  const r = await request(port, 'GET', '/api/peek/stage', { cookie });
+  assert.equal(r.status, 200);
+  const snap = JSON.parse(r.body) as { profile: string; lanes: { name: string; players: unknown[] }[]; podium: { fermatas: unknown[] } };
+  assert.deepEqual(validateStage(snap).errors, []);
+  assert.equal(snap.profile, 'test');
+  assert.deepEqual(snap.lanes.map((l) => [l.name, l.players.length]), [['shop', 8]]);
+  assert.equal(snap.podium.fermatas.length, 1);
+  assert.equal(r.body.includes(STAGE_CANARY), false);
   await child.stop();
 });
 

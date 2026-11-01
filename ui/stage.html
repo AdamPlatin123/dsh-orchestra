@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto" data-view="stage" data-ready="0" data-fresh="live">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Stage</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%23241a12'/%3E%3Cpath d='M9 24l13-15' stroke='%23d4a017' stroke-width='2.5' stroke-linecap='round'/%3E%3Ccircle cx='9' cy='24' r='3' fill='%23d4a017'/%3E%3C/svg%3E">
+<link rel="icon" type="image/svg+xml" media="(prefers-color-scheme: light)" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%23f6f2ea' stroke='%234b3fbf' stroke-width='2'/%3E%3Cpath d='M9 24l13-15' stroke='%23b8860b' stroke-width='2.5' stroke-linecap='round'/%3E%3Ccircle cx='9' cy='24' r='3' fill='%234b3fbf'/%3E%3C/svg%3E">
+<link rel="icon" type="image/svg+xml" media="(prefers-color-scheme: dark)" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Ccircle cx='16' cy='16' r='15' fill='%23120e0b' stroke='%23d4a017' stroke-width='2'/%3E%3Cpath d='M9 24l13-15' stroke='%23f2c14e' stroke-width='2.5' stroke-linecap='round'/%3E%3Ccircle cx='9' cy='24' r='3' fill='%234f8cf0'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/assets/ui/stage.css">
+<script type="module" src="/assets/ui/app.js"></script>
+</head>
+<body>
+<svg class="defs" aria-hidden="true" focusable="false"><defs>
+<radialGradient id="g-spot" cx="50%" cy="72%" r="60%"><stop class="s-spot0" offset="0"/><stop class="s-spot1" offset=".45"/><stop class="s-spot2" offset="1"/></radialGradient>
+<linearGradient id="g-wall" x1="0" y1="0" x2="0" y2="1"><stop class="s-wall0" offset="0"/><stop class="s-wall1" offset="1"/></linearGradient>
+<linearGradient id="g-beam" x1="0" y1="0" x2="0" y2="1"><stop class="s-beam0" offset="0"/><stop class="s-beam1" offset="1"/></linearGradient>
+<radialGradient id="g-lamp"><stop class="s-lamp0" offset="0"/><stop class="s-lamp1" offset=".3"/><stop class="s-spot2" offset="1"/></radialGradient>
+<linearGradient id="g-riser" x1="0" y1="0" x2="0" y2="1"><stop class="s-r0" offset="0"/><stop class="s-r1" offset="1"/></linearGradient>
+<linearGradient id="g-arch" x1="0" y1="0" x2="0" y2="1"><stop class="s-arch0" offset="0"/><stop class="s-arch1" offset="1"/></linearGradient>
+<pattern id="scallop" width="60" height="52" patternUnits="userSpaceOnUse"><path class="scallop" d="M0 0H60V32Q30 54 0 32Z"/><path class="fringe" d="M0 32Q30 54 60 32"/></pattern>
+<symbol id="lamp" overflow="visible"><circle r="46" fill="url(#g-lamp)"/><path class="lamp-cap" d="M-7 4H7L4 -6H-4Z"/><circle class="lamp-core" cy="-9" r="5"/></symbol>
+<pattern id="hatch" width="2" height="2" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="1" height="2" fill="currentColor"/></pattern>
+<marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0L8 4L0 8z" fill="context-stroke"/></marker>
+<symbol id="chair" overflow="visible" fill="currentColor"><path d="M-11 -37h22a2 2 0 0 1 2 2v19h-26v-19a2 2 0 0 1 2-2zM-14 -15h28v4h-28zM-12 -11h3v11h-3zM9 -11h3v11h-3z"/></symbol>
+<symbol id="robe" overflow="visible" fill="currentColor"><path d="M-11 -30Q0 -35 11 -30L14 -6Q15 0 9 0H-9Q-15 0 -14 -6Z"/></symbol>
+<symbol id="bow" overflow="visible" fill="currentColor"><path d="M-4.5 -32L0 -29.5L4.5 -32V-27L0 -29.5L-4.5 -27Z"/></symbol>
+<symbol id="head" overflow="visible" fill="currentColor"><circle cx="0" cy="-47" r="14"/></symbol>
+<symbol id="blush" overflow="visible" fill="currentColor"><ellipse cx="-8.6" cy="-41.6" rx="2.7" ry="1.5" fill="#f29b9b" stroke="none" opacity=".7"/><ellipse cx="8.6" cy="-41.6" rx="2.7" ry="1.5" fill="#f29b9b" stroke="none" opacity=".7"/></symbol>
+<symbol id="eyes-open" overflow="visible" fill="currentColor"><ellipse cx="-5" cy="-45.5" rx="1.9" ry="2.5"/><ellipse cx="5" cy="-45.5" rx="1.9" ry="2.5"/><circle cx="-4.3" cy="-46.6" r=".7" fill="#fff" stroke="none"/><circle cx="5.7" cy="-46.6" r=".7" fill="#fff" stroke="none"/><path d="M-2 -39.6q2 1.7 4 0" fill="none" stroke-width="1.1" stroke-linecap="round"/></symbol>
+<symbol id="eyes-shut" overflow="visible" fill="currentColor"><path d="M-7.3 -45q2.3 -2.9 4.6 0M2.7 -45q2.3 -2.9 4.6 0M-2.4 -40.2q2.4 2.6 4.8 0" fill="none" stroke-width="1.3" stroke-linecap="round"/></symbol>
+<symbol id="hair-bob" overflow="visible" fill="currentColor"><path d="M-15.5 -40C-17.5 -56 -10 -63.5 0 -63.5C10 -63.5 17.5 -56 15.5 -40L15 -33C12 -35.5 11.5 -41 11.5 -46C9 -50 5 -51.5 3 -49C1.5 -52.5 -2.5 -52.5 -4 -49C-6.5 -51.5 -10 -50 -11.5 -46C-11.5 -41 -12 -35.5 -15 -33ZM-1 -63q3 -7 8 -5.5q-4.5 1 -5.5 5.5z"/></symbol>
+<symbol id="hair-twin" overflow="visible" fill="currentColor"><path d="M-14.5 -42C-16 -57 -9 -63 0 -63C9 -63 16 -57 14.5 -42C12.5 -44 11 -46 10.5 -48C8 -51 4.5 -52 2.5 -49.5C1 -52.5 -3 -52.5 -4.5 -49.5C-7 -52 -10 -50 -11 -47.5C-12 -45 -13 -43 -14.5 -42ZM-13 -56C-22 -56 -24.5 -44 -21 -31C-20 -38 -17 -44 -13.5 -48ZM13 -56C22 -56 24.5 -44 21 -31C20 -38 17 -44 13.5 -48Z"/></symbol>
+<symbol id="ins-flute" overflow="visible" fill="currentColor"><rect x="-6" y="-38.6" width="34" height="2.8" rx="1.4"/><circle cx="12" cy="-37.2" r=".8" fill="#5b5650" stroke="none"/><circle cx="17" cy="-37.2" r=".8" fill="#5b5650" stroke="none"/><circle cx="22" cy="-37.2" r=".8" fill="#5b5650" stroke="none"/><circle cx="-2" cy="-36" r="2.4" fill="#f3d9c4"/><circle cx="7" cy="-36" r="2.4" fill="#f3d9c4"/></symbol>
+<symbol id="ins-violin" overflow="visible" fill="currentColor"><g transform="rotate(-28 -10 -32)"><path d="M-10 -41c-4 0-5.2 3-3.3 5.5-1.9 1.4-2.3 5.2 1 6.8h4.6c3.3-1.6 2.9-5.4 1-6.8C-4.8 -38 -6 -41 -10 -41z"/><rect x="-11" y="-53" width="2" height="12"/></g><path d="M-23 -23L9 -45" fill="none" stroke-width="1.1"/><circle cx="-4" cy="-30" r="2.4" fill="#f3d9c4"/></symbol>
+<symbol id="ins-harp" overflow="visible" fill="currentColor"><path fill-rule="evenodd" d="M-31 0V-62Q-15 -68 -4 -44L-6 0ZM-28 -4V-57Q-16 -61 -8.6 -44L-9.6 -4Z"/><path d="M-25 -58V-4M-21.5 -59V-4M-18 -58V-4M-14.5 -55V-4M-11.5 -50V-4" fill="none" stroke-width=".5"/><circle cx="-8" cy="-30" r="2.6" fill="#f3d9c4"/></symbol>
+<symbol id="ins-timpani" overflow="visible" fill="currentColor"><path d="M-17 -15H17Q15 0 0 0Q-15 0 -17 -15Z"/><ellipse cx="0" cy="-15" rx="17" ry="3.6" fill="#efe3c8"/><path d="M-11 -28L-4 -17M11 -28L4 -17" fill="none" stroke-width="1.3"/><circle cx="-11.4" cy="-28.6" r="2" fill="#efe3c8"/><circle cx="11.4" cy="-28.6" r="2" fill="#efe3c8"/></symbol>
+<symbol id="ins-trumpet" overflow="visible" fill="currentColor"><path d="M1 -40.5H20L28.5 -46V-32L20 -37.5H1Z"/><path d="M9 -41v-3.5M12.5 -41v-3.5M16 -41v-3.5" fill="none" stroke-width="1.2"/><circle cx="8" cy="-36.5" r="2.4" fill="#f3d9c4"/></symbol>
+<symbol id="ins-rest" overflow="visible" fill="currentColor"><circle cx="17" cy="-60" r="6.5"/><path d="M14.8 -62.2q0 -2.5 2.3 -2.5q2.3 0 2.3 2.1q0 1.6 -2.3 2.5v1.5" fill="none" stroke-width="1.2" stroke-linecap="round"/><circle cx="17.1" cy="-55.6" r=".8"/></symbol>
+<symbol id="stand" overflow="visible" fill="currentColor"><path d="M30 -17V0M25 0H35" fill="none" stroke-width="1.4"/><path d="M15 -34H45L43 -16H17Z"/><path d="M17.6 -32.4H42.4L41 -17.6H19Z" fill="#fbf6e9" stroke="none"/></symbol>
+<symbol id="fermata" overflow="visible" fill="currentColor"><path d="M-8 -73a8 8 0 0 1 16 0h-2a6 6 0 0 0 -12 0z"/><circle cx="0" cy="-74.5" r="1.6"/></symbol>
+<symbol id="m-coat" overflow="visible" fill="currentColor"><path d="M-13 -32Q0 -38 13 -32L16 -2L6 0L0 -9L-6 0L-16 -2ZM10 -30L22 -49L26.5 -46L14 -27ZM-10 -30L-24 -38L-22.5 -42L-8 -34Z"/></symbol>
+<symbol id="m-hair" overflow="visible" fill="currentColor"><path d="M-16 -50a16 16 0 1 1 32 0q0 10 -6 14q-10 3.5 -20 0q-6 -4 -6 -14zM8 -40q13 6 7 23q-2 -10 -10 -16z"/></symbol>
+<symbol id="m-hands" overflow="visible" fill="currentColor"><circle cx="24.4" cy="-48.6" r="2.7"/><circle cx="-23.6" cy="-40.6" r="2.5"/></symbol>
+<symbol id="podium-top" overflow="visible" fill="currentColor"><path d="M-48 0v9a48 9.5 0 0 0 96 0v-9z"/><ellipse cx="0" cy="0" rx="48" ry="9.5" fill="#000" fill-opacity=".12"/></symbol>
+</defs></svg>
+
+<header id="bar" class="bar">
+  <div class="brand">
+    <span class="mark">Stage</span>
+    <label class="lane"><span class="sr" data-t="bar.lane"></span><select id="lane" data-slot="lane"></select></label>
+    <span class="approx" data-slot="approx" data-hide="1" data-t="bar.approx"></span>
+  </div>
+  <p class="stats"><span data-slot="players"></span><span data-slot="items"></span></p>
+  <p class="meta"><span data-slot="sources"></span><span class="fresh" data-slot="fresh"></span></p>
+  <p class="badges"><span class="badge test" data-slot="test" data-hide="1"></span><span class="badge" data-t="bar.preview"></span><button id="theme" class="ghost" type="button" data-act="theme"></button><a class="ghost home" href="/" data-t="link.home"></a></p>
+</header>
+<nav class="tabs"><button id="tab-stage" type="button" data-act="stage" aria-pressed="true" data-t="tab.stage"></button><button id="tab-plan" type="button" data-act="plan" aria-pressed="false" data-t="tab.plan"></button></nav>
+<p id="alert" class="alert" role="alert" aria-live="assertive" data-hide="1"></p>
+<p id="live" class="sr" aria-live="polite"></p>
+
+<main class="split">
+<section id="stage" class="pane stage-pane" aria-labelledby="stage-h">
+<h2 id="stage-h" class="sr" data-t="stage.label"></h2>
+<div class="stage-wrap">
+<svg class="stage" viewBox="0 0 1200 920" role="group" aria-labelledby="stage-h">
+<rect class="wall" width="1200" height="920"/>
+<path class="arch" d="M90 292V150a90 90 0 0 1 180 0V292ZM300 292V150a90 90 0 0 1 180 0V292ZM510 292V150a90 90 0 0 1 180 0V292ZM720 292V150a90 90 0 0 1 180 0V292ZM930 292V150a90 90 0 0 1 180 0V292Z"/>
+<g class="lamps" transform="translate(0 170)"><use href="#lamp" x="75"/><use href="#lamp" x="285"/><use href="#lamp" x="495"/><use href="#lamp" x="705"/><use href="#lamp" x="915"/><use href="#lamp" x="1125"/></g>
+<path class="floor" d="M0 300H1200V920H0Z"/>
+<path class="plank" d="M120 300L-900 920M216 300L-600 920M312 300L-300 920M408 300L0 920M504 300L300 920M600 300L600 920M696 300L900 920M792 300L1200 920M888 300L1500 920M984 300L1800 920M1080 300L2100 920M0 372H1200M0 470H1200M0 600H1200M0 760H1200"/>
+<path class="skirt" d="M0 294H1200V302H0Z"/>
+<path class="beam" d="M500 0H700L980 920H220Z"/>
+<ellipse class="spot" cx="600" cy="690" rx="720" ry="400"/>
+<g class="sec-labels">
+<text class="sec sec-claude" x="230" y="100" data-t="sec.claude"></text>
+<text class="sec sec-dsh" x="600" y="100" data-t="sec.dsh"></text>
+<text class="sec sec-codex" x="970" y="100" data-t="sec.codex"></text>
+</g>
+<g class="codex" aria-hidden="true">
+<path class="riser" d="M780 470H1160V640H780Z"/><path class="riser-top" d="M784 456H1156L1160 472H780Z"/>
+<path class="riser" d="M780 640H1160V866H780Z"/><path class="riser-top" d="M784 626H1156L1160 642H780Z"/>
+<use href="#chair" transform="translate(880 470) scale(1.7)"/><use href="#chair" transform="translate(1060 470) scale(1.7)"/>
+<use href="#chair" transform="translate(850 640) scale(1.9)"/><use href="#chair" transform="translate(970 640) scale(1.9)"/><use href="#chair" transform="translate(1090 640) scale(1.9)"/>
+<use href="#chair" transform="translate(970 862) scale(3)"/>
+</g>
+<g class="risers" data-slot="risers"></g>
+<g class="players" data-slot="players"></g>
+<g class="cues" data-slot="cues"></g>
+<g class="more" data-slot="more"></g>
+<path class="lip" d="M0 906H1200V920H0Z"/>
+<g id="podium" class="podium" data-act="podium" tabindex="0" role="button">
+<title data-t="podium.label"></title>
+<use class="podium-top" href="#podium-top" transform="translate(600 892) scale(1.5)"/>
+<g class="maestro" transform="translate(600 890) scale(2.2)">
+<use class="m-coat" href="#m-coat"/><use class="m-hands" href="#m-hands"/><use class="m-hair" href="#m-hair"/>
+<path class="baton" d="M24.4 -48.6L40 -68"/>
+</g>
+</g>
+<path class="drape" d="M0 0H42Q30 420 24 920H0ZM1200 0H1158Q1170 420 1176 920H1200Z"/>
+<rect class="valance" width="1200" height="52"/>
+<text class="nolanes" x="600" y="420" data-slot="nolanes" data-hide="1"></text>
+</svg>
+</div>
+<div class="stage-foot">
+<button type="button" class="podium-line" data-act="podium" data-slot="podium"></button>
+<ul class="legend">
+<li class="legend-h" data-t="legend.title"></li>
+<li data-instr="woodwind"><svg viewBox="-8 -41 38 8" aria-hidden="true"><use class="i-flute" href="#ins-flute"/></svg><span data-t="instr.woodwind"></span></li>
+<li data-instr="strings"><svg viewBox="-25 -56 36 36" aria-hidden="true"><use class="i-violin" href="#ins-violin"/></svg><span data-t="instr.strings"></span></li>
+<li data-instr="percussion"><svg viewBox="-19 -31 38 32" aria-hidden="true"><use class="i-timpani" href="#ins-timpani"/></svg><span data-t="instr.percussion"></span></li>
+<li data-instr="brass"><svg viewBox="0 -48 30 18" aria-hidden="true"><use class="i-trumpet" href="#ins-trumpet"/></svg><span data-t="instr.brass"></span></li>
+<li data-instr="unknown"><svg viewBox="9 -68 16 16" aria-hidden="true"><use class="i-rest" href="#ins-rest"/></svg><span data-t="instr.unknown"></span></li>
+<li class="lg-cue" data-kind="dispatch"><svg viewBox="0 0 26 8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4"/></svg><span data-t="legend.dispatch"></span></li>
+<li class="lg-cue" data-kind="report"><svg viewBox="0 0 26 8" aria-hidden="true"><line x1="1" y1="4" x2="21" y2="4"/></svg><span data-t="legend.report"></span></li>
+</ul>
+</div>
+</section>
+
+<section id="plan" class="pane plan-pane" aria-labelledby="plan-h">
+  <h2 id="plan-h" class="pane-h"><span data-t="tab.plan"></span><small>Parts</small></h2>
+  <p class="health" data-slot="health" data-hide="1"></p>
+  <div class="desks" data-slot="desk"></div>
+  <p id="chips-l" class="sr" data-t="chip.label"></p>
+  <div class="chips" role="group" aria-labelledby="chips-l" data-slot="chips"></div>
+  <p class="total" data-slot="total" data-hide="1"></p>
+  <div class="cols" aria-hidden="true"><span data-t="col.brief"></span><span data-t="col.exec"></span><span data-t="col.report"></span><span data-t="col.verdict"></span></div>
+  <ol class="rows" data-slot="list"></ol>
+  <p class="empty" data-slot="empty" data-hide="1"></p>
+  <p class="clipped" data-slot="clipped" data-hide="1"></p>
+  <details class="rules"><summary data-t="rules.title"></summary><ul data-slot="rules"></ul></details>
+</section>
+</main>
+
+<dialog id="drawer" class="drawer" aria-labelledby="dr-title">
+  <header class="dr-head">
+    <svg class="mini" viewBox="-33 -77 64 82" aria-hidden="true" data-slot="head"><g class="fig"></g></svg>
+    <div class="dr-id"><h2 id="dr-title" data-slot="title"></h2><p class="sub" data-slot="sub"></p></div>
+    <button type="button" class="ghost" data-act="close" data-t="dr.close"></button>
+  </header>
+  <dl class="facts" data-slot="facts"></dl>
+  <section class="dr-sec" data-slot="briefBox" data-hide="1"><h3 data-t="dr.brief"></h3><p class="brief-text" data-slot="brief"></p><p class="crit"><span class="chip-crit" data-t="plan.crit"></span><span class="note" data-t="plan.critNote"></span></p></section>
+  <section class="dr-sec" data-slot="standBox" data-hide="1"><h3 data-slot="standHead"></h3><ul class="todo" data-slot="stand"></ul></section>
+  <section class="dr-sec"><h3 data-t="dr.events"></h3><p class="note" data-slot="evNote"></p><ol class="events" data-slot="events"></ol></section>
+  <p class="dr-foot"><button type="button" class="ghost" data-act="peek" data-slot="peek" data-t="dr.peek"></button></p>
+</dialog>
+
+<template id="tpl-opt"><option></option></template>
+<template id="tpl-player"><svg><g class="player" tabindex="0" role="button">
+<title data-slot="title"></title>
+<g class="body" data-slot="body">
+<ellipse class="sel" cx="6" cy="1" rx="34" ry="7"/>
+<use class="chair" href="#chair"/>
+<g class="fig"><use class="robe" href="#robe"/><use class="bow" href="#bow"/><use class="skin" href="#head"/><use class="blush" href="#blush"/><use class="eyes-open" href="#eyes-open"/><use class="eyes-shut" href="#eyes-shut"/><use class="hair hair-lead" href="#hair-bob"/><use class="hair hair-clone" href="#hair-twin"/><g class="ins"><use class="i-flute" href="#ins-flute"/><use class="i-violin" href="#ins-violin"/><use class="i-harp" href="#ins-harp"/><use class="i-timpani" href="#ins-timpani"/><use class="i-trumpet" href="#ins-trumpet"/><use class="i-rest" href="#ins-rest"/></g></g>
+<g class="stand"><use class="stand-body" href="#stand"/><text class="plate" x="30" y="-26.4" data-slot="plate"></text>
+<circle data-slot="d0" cx="21" cy="-22.6" r="1.2"/><circle data-slot="d1" cx="24.6" cy="-22.6" r="1.2"/><circle data-slot="d2" cx="28.2" cy="-22.6" r="1.2"/><circle data-slot="d3" cx="31.8" cy="-22.6" r="1.2"/><circle data-slot="d4" cx="35.4" cy="-22.6" r="1.2"/><circle data-slot="d5" cx="39" cy="-22.6" r="1.2"/>
+<circle data-slot="d6" cx="21" cy="-19.6" r="1.2"/><circle data-slot="d7" cx="24.6" cy="-19.6" r="1.2"/><circle data-slot="d8" cx="28.2" cy="-19.6" r="1.2"/><circle data-slot="d9" cx="31.8" cy="-19.6" r="1.2"/><circle data-slot="d10" cx="35.4" cy="-19.6" r="1.2"/><circle data-slot="d11" cx="39" cy="-19.6" r="1.2"/></g>
+<use class="ferm" href="#fermata"/>
+</g>
+<text class="tag" x="0" y="17" data-slot="tag"></text>
+<text class="name" x="0" y="34" data-slot="name"></text>
+</g></svg></template>
+<template id="tpl-riser"><svg><g class="riser-g"><g data-slot="face"><rect class="riser" width="1" height="1"/></g><g data-slot="lip"><path class="riser-top" d="M0 2H1L.99 -14H.01Z"/></g></g></svg></template>
+<template id="tpl-cue"><svg><g class="cue"><line class="cue-glow" data-slot="glow"/><line class="cue-line" data-slot="line"/><text class="cue-label" data-slot="label"></text></g></svg></template>
+<template id="tpl-more"><svg><g class="more-badge"><rect x="-28" y="-15" width="56" height="30" rx="15"/><text y="6" data-slot="t"></text></g></svg></template>
+<template id="tpl-desk"><article class="desk">
+<svg class="mini" viewBox="-33 -77 64 82" aria-hidden="true"><g class="fig"></g></svg>
+<div class="desk-body"><h3><button type="button" class="open" data-slot="name"></button></h3><p class="who" data-slot="who"></p><p class="goal" data-slot="goal"></p><p class="todo-head" data-slot="todoHead"></p><ul class="todo" data-slot="todo"></ul><p class="note" data-slot="note"></p></div>
+</article></template>
+<template id="tpl-todo"><li class="todo-i"><span class="g" data-slot="g" aria-hidden="true"></span><span class="t" data-slot="t"></span><span class="st" data-slot="st"></span></li></template>
+<template id="tpl-chip"><button type="button" class="chip"></button></template>
+<template id="tpl-row"><li class="row">
+<div class="c c-brief"><span class="lab" data-t="col.brief"></span><button type="button" class="open" data-slot="brief"></button><span class="tags"><span class="tag" data-slot="src"></span><span class="dept" data-slot="dept"></span><span class="deep" data-slot="deep" data-t="plan.deep"></span></span><span class="crit"><span class="chip-crit" data-t="plan.crit"></span><span class="note" data-t="plan.critNote"></span></span></div>
+<div class="c c-exec"><span class="lab" data-t="col.exec"></span><svg class="mini" viewBox="-33 -77 64 82" aria-hidden="true"><g class="fig"></g></svg><span class="ex"><span class="ex-name" data-slot="exName"></span><span class="ex-instr" data-slot="exInstr"></span><span class="ex-live" data-slot="exLive"></span></span></div>
+<div class="c c-report"><span class="lab" data-t="col.report"></span><span class="rep" data-slot="report"></span><span class="funnel" aria-hidden="true"><i class="f-in"></i><i class="f-out"></i></span><span class="flow" data-slot="flowText"></span></div>
+<div class="c c-verdict"><span class="lab" data-t="col.verdict"></span><span class="verdict" data-slot="verdict"></span></div>
+</li></template>
+<template id="tpl-head"><li class="head"><span class="head-t" data-slot="t"></span><span class="note" data-slot="note"></span></li></template>
+<template id="tpl-rule"><li class="rule"><code data-slot="id"></code><span class="rule-n" data-slot="n"></span><span class="rule-h" data-slot="hits"></span></li></template>
+<template id="tpl-kv"><div class="kv"><dt data-slot="k"></dt><dd data-slot="v"></dd></div></template>
+<template id="tpl-ev"><li class="ev"><span class="ev-at" data-slot="at"></span><span class="ev-ty" data-slot="ty"></span><span class="ev-tx" data-slot="tx"></span></li></template>
+</body>
+</html>
