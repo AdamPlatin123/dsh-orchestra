@@ -30,18 +30,20 @@
 - 全量测试（`.tools/node24/node.exe --test "test/**/*.test.ts"`）939 条中 13 条失败，都是要真正启动 orchestrad 的测试，原因是本会话以管理员权限运行，orchestrad 拒绝在提权环境下启动（stderr：`refusing to run elevated`）。改写前的提交上失败的也正是这 13 条，所以与改写无关；但它们在普通权限的控制台里能不能过，本会话没验证。
 
 ## Next（按优先级，每条可独立执行）
-1. 请用户确认主检出目录里那份 r4 未提交改动是谁留下的，按 `.claude/rules/handoff.md` §1.5 和 §5 处理。确认之前，不要以那份改动为准引用 r4。
+1. 把本分支的笔记和用户的 r4「第七批」对一遍。主检出目录里那份 r4 未提交改动就是第七批：并入了 SA-1–SA-10，加了 W1–W6（更积极的唤醒）、R82、规则 9（沉默与唤醒），D20 放宽成「你不在时照派只读 Task」。本分支三份笔记写的时候，依据的是已提交的 r4，所以至少有两处要对：
+   - r4 第七批的 §10.2、§10.12 和 §13（主检出目录工作区第 1558、1745、2522 行附近）写着 SA-4「排队时你的消息唤醒已有乐手优先于启动新乐章」，并标注出处为「Super-agent 参考」「槽数取自 Super-agent 原型」。可深读笔记 §5 核过原型：只有「多一个槽的溢出」，没有唤醒优先。所以「唤醒优先」应改标为 r4 自己的设计，不能算借鉴。改不改 r4，由用户决定。
+   - 总览 §4 末尾写「Q-SA1 到 Q-SA3 仍然开着」，按第七批，Q-SA1 已定（并入），只有 Q-SA2、Q-SA3 还开着。
+   完整做法：把深读笔记 §5 的 26 处更正逐条在第七批 r4 里查一遍，列出 r4 继承了哪些已被推翻的说法。只出报告，不改 r4。
 2. 请用户对总览 §4 表里「M0 / M1 开工前要定的」6 个问题拍板：Q-SA8、Q-SA5、Q-SA6、Q-SP2、Q-SP4、Q-SP6。定下来以后，按 r4 的决策传播流程并入（附录 G 记一批）。
 3. 如果用户同意 Q-SA8 的推荐：在 `src/store/journal.ts` 的 `parseLine` 里，对不认识的 kind 单独报一个原因（例如 `journal-newer`），和 `journal-chain` 分开。补一条测试：旧版读到带新 kind 的 journal 时，拒绝启动，退出原因可以区分。预期结果是现有测试仍然全绿（要在非管理员控制台里跑，见 Unverified 最后一条）。
 4. 本地还留着改写前的备份引用 `refs/backup/pre-secret-rewrite/*`（三个分支各一份，仍含旧的假密钥提交）。用户确认不需要回退后，可以 `git update-ref -d` 删掉。这些引用不会被普通 push 带上远端，但不要用 `git push --mirror` 或推 `refs/*`。
 
 ## Do not touch
-- 主检出目录里那份未提交的 r4 改动：不是本会话留下的，由用户决定怎么处理。
+- 主检出目录里那份未提交的 r4 改动（第七批）：用户本人在另一个会话里写的，还没提交。由用户决定什么时候提交，本会话不改它。
 
 ## Open questions
-- 主检出目录里的 r4 改动是用户自己留下的吗？
 - 总览 §4 列出的 14 个问题（Q-SA4–Q-SA10、Q-SP1–Q-SP7）。
 
 ## Divergence（接手者填写：交接与现实的差异）
-- 2026-11-01 AdamPlatin123：会话开始时，SessionStart hook 报的是 main 检出目录的状态（branch main、1 个未提交文件、TAKEOVER CHECK）。本 worktree 自己是干净的，HEAD 也一致。处理：只读 worktree，没有改动主检出目录，已告知用户，在等用户确认。
+- 2026-11-01 AdamPlatin123：会话开始时，SessionStart hook 报的是 main 检出目录的状态（branch main、1 个未提交文件、TAKEOVER CHECK）。本 worktree 自己是干净的，HEAD 也一致。处理：只读 worktree，没有改动主检出目录，已告知用户，在等用户确认。2026-11-01 用户确认：这份 r4 改动是本人留下的。Owner 不变，不需要接管。
 - 2026-11-01 AdamPlatin123：第一次 push 被 GitHub 推送保护拒收。原因是 M0 第 3 步的提交 dafd29e 在 `test/store/redact.test.ts` 里写了一个形似 DeepSeek 密钥的测试值（假的）。经用户同意，改写了本地历史：从 dafd29e 起的 9 个提交按原作者、原时间重放，只做了两处改动：一是测试里把这个值改成运行时拼接（`FAKE_SK`），二是正文和提交说明里引用这 9 个提交的短哈希，换成了新哈希。新旧对照：dafd29e→e451d4c、ebde3c7→dd3d9d0、a3c8ac0→70a4e52、46f9138→7a76a26、0ac951d→fd35af0、ca59fea→f92bdc5、21d1d10→7b7c93d、4f50192→a1492bf、fae04f9→6e96c3c。`main` 和 `claude/handoff-protocol` 都移到了 a1492bf。主检出目录用的是 `git reset --keep`，r4 的未提交改动前后逐字节一致。旧引用备份在 `refs/backup/pre-secret-rewrite/*`。
