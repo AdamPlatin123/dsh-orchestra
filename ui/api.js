@@ -1,5 +1,6 @@
 // @ts-check
-// The page's only network calls (0.1 alpha design §5): two GETs, each with a literal /api/ path. Every
+// The page's only network calls (0.1 alpha design §5, kept for the tower, orchestra app plan §5): two GETs,
+// each with a literal /api/ path. Every
 // answer is turned into a value, never a throw: { ok: true, body } or { ok: false, code } with the
 // server's error code, 'unpaired' for a 403, 'network' when the daemon cannot be reached or is too slow.
 
@@ -46,8 +47,8 @@ async function read(go) {
   return { ok: false, code };
 }
 
-/** GET /api/peek/stage: the whole snapshot, always 200 when paired. */
-export const getStage = () => read(() => fetch('/api/peek/stage', opts()));
+/** GET /api/tower: the whole tower snapshot (shared/tower-contract.js), always 200 when paired. */
+export const getTower = () => read(() => fetch('/api/tower', opts()));
 
 /**
  * GET /api/peek/session?id=: one session's last events. The id is checked before it goes into the URL.

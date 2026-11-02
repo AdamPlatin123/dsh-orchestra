@@ -51,6 +51,13 @@ test('shapes and grammars: ids, enums, missing and unknown keys, text bounds', (
   broken(golden, (s) => { s.projects[0].nodes[0].activity = 'a‮b'; }, 'control or bidi');
   broken(golden, (s) => { s.meta.sources.codex.registry = 2; }, 'Codex has no registry');
   broken(golden, (s) => { delete s.meta.sources.dsh; }, 'missing dsh');
+  // The rules the about view lists: a name, two counts, and no status that would read as a pass (T4).
+  broken(golden, (s) => { delete s.meta.rules; }, 'missing rules');
+  broken(golden, (s) => { s.meta.rules[0].status = 'passed'; }, 'meta.rules[0].status');
+  broken(golden, (s) => { s.meta.rules[1].id = s.meta.rules[0].id; }, 'listed twice');
+  broken(golden, (s) => { s.meta.rules[0].id = 'Has Space'; }, 'rule name');
+  broken(golden, (s) => { s.meta.rules[0].n = -1; }, 'meta.rules[0].n');
+  broken(golden, (s) => { s.meta.rules[0].hits = 1.5; }, 'meta.rules[0].hits');
 });
 
 test('T1: unknown is said as unknown, only unknown has no basis, and a pushed-out source is not empty', () => {

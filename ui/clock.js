@@ -1,6 +1,6 @@
 // @ts-check
-// The page's one clock (0.1 alpha design §5, T7): monotonic time, the frame callback, the poll timers
-// and the wall-time formatting. A time the page shows is the daemon's observedAt plus a monotonic delta
+// The page's one clock (0.1 alpha design §5, T7; kept for the tower, orchestra app plan §5): monotonic
+// time, the frame callback, the poll timers, the one-shot quiet timer and the wall-time formatting. A time the page shows is the daemon's observedAt plus a monotonic delta
 // measured here; the browser's wall clock is never subtracted from the daemon's.
 
 /** Monotonic milliseconds. */
@@ -17,6 +17,16 @@ export const onFrame = (fn) => requestAnimationFrame(fn);
 export function every(ms, fn) {
   const id = setInterval(fn, ms);
   return () => clearInterval(id);
+}
+
+/**
+ * Calls `fn` once after `ms`, unless the returned cancel runs first.
+ * @param {number} ms @param {() => void} fn
+ * @returns {() => void}
+ */
+export function after(ms, fn) {
+  const id = setTimeout(fn, ms);
+  return () => clearTimeout(id);
 }
 
 /** @param {number} ms @returns {AbortSignal} */

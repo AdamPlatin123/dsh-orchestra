@@ -50,6 +50,8 @@ export const TOWER_ENUMS = frozen({
   waitingSource: ['orchestra', 'native', 'inferred'],
   groupKind: ['same-type', 'returned', 'idle'],
   routerKind: ['human'],
+  /** untested: no sample checked against real data (T4); keys-mismatch: the records were not shaped as the rule expects. */
+  ruleStatus: ['untested', 'keys-mismatch'],
 });
 
 /** A state's place among siblings: lower comes first. */
@@ -91,8 +93,13 @@ export const TOWER_BOUNDS = frozen({
  *   v: 1, rev: string, observedAt: number, profile: 'test' | 'real',
  *   sources: { claude: Src, dsh: Src, codex: Src },
  *   clipped: { projects: number, nodes: number, sessions: { claude: number, dsh: number, codex: number } },
+ *   rules: Rule[],
  * }} Meta
  *   clipped.sessions: per source, total - shown (a breakdown, never added to clipped.nodes).
+ *   rules: the derivation rules the states and links were read with, for the page's about view.
+ * @typedef {{ id: string, hits: number, n: number, status: 'untested' | 'keys-mismatch' }} Rule
+ *   hits: how often this snapshot used it; n: samples checked against real data. Seeing a rule fire
+ *   is not validating it, so a rule says untested however many hits it has (T4).
  * @typedef {{ state: 'ok' | 'empty' | 'error', total: number, shown: number, registry: number | null, error: string | null }} Src
  *   total: every session file the source holds, before any cut; shown: how many of them are in this
  *   snapshot. empty only when total is 0 (T1: a source the limits pushed out is clipped, not empty).
@@ -409,7 +416,7 @@ export function validateTower(x) {
   const s = c.obj(x, '$', ['meta', 'router', 'projects', 'waitingBar', 'tally']);
   if (s === null) return { ok: false, errors: c.errors };
 
-  const meta = c.obj(s.meta, '$.meta', ['v', 'rev', 'observedAt', 'profile', 'sources', 'clipped']);
+  const meta = c.obj(s.meta, '$.meta', ['v', 'rev', 'observedAt', 'profile', 'sources', 'clipped', 'rules']);
   /** @type {Record<string, unknown> | null} */
   let src = null;
   if (meta !== null) {
@@ -439,6 +446,18 @@ export function validateTower(x) {
         }
       }
     }
+    const seenRules = new Set();
+    c.arr(meta.rules, '$.meta.rules').forEach((r, i) => {
+      const at = `$.meta.rules[${i}]`;
+      const o = c.obj(r, at, ['id', 'hits', 'n', 'status']);
+      if (o === null) return;
+      c.re(o.id, `${at}.id`, TOWER_CODE_RE, 'rule name');
+      if (seenRules.has(o.id)) c.bad(`${at}.id`, `${String(o.id)} listed twice`);
+      seenRules.add(o.id);
+      c.int(o.hits, `${at}.hits`);
+      c.int(o.n, `${at}.n`);
+      c.en(o.status, `${at}.status`, TOWER_ENUMS.ruleStatus);
+    });
   }
 
   const router = c.obj(s.router, '$.router', ['kind', 'dispatch']);

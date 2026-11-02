@@ -1,21 +1,31 @@
 // @ts-check
-// The page's one DOM writer (0.1 alpha design §5): a keyed patcher for HTML and SVG. Nodes are <template>
-// clones; a write (textContent, dataset, classList, setAttribute from ATTRS) is skipped when the value is
-// there, so an identical render writes nothing. No markup is parsed (trusted-types 'none'). A keyed node
-// keeps its identity across renders (so a CSS animation runs on) and moves only when its place changed.
+// The page's one DOM writer (orchestra app plan §5): a keyed patcher. Nodes are <template> clones; a
+// write (textContent, dataset, classList, setAttribute from ATTRS) is skipped when the value is there,
+// so an identical render writes nothing. No markup is parsed (trusted-types 'none'). A keyed node keeps
+// its identity across renders (so focus and a CSS animation stay on it) and moves only when its place
+// changed: a poll patches the rows it changed and leaves the rest alone.
 import { frozen } from '../shared/frozen.js';
-import { STAGE_TEXT } from '../shared/strings.js';
+import { TOWER_TEXT } from '../shared/strings.js';
 
-/** @typedef {import('./view.js').Paint} Paint */
-/** @typedef {import('./view.js').Desc} Desc */
+/**
+ * What one element gets: text, data-* fields, classes, attributes (null removes one) from ATTRS, the
+ * paints of named descendants (data-slot) and a keyed list of children.
+ * @typedef {{
+ *   text?: string,
+ *   data?: Record<string, string>,
+ *   cls?: string,
+ *   attr?: Record<string, string | null>,
+ *   slots?: Record<string, Paint>,
+ *   kids?: readonly Desc[],
+ * }} Paint
+ * @typedef {Paint & { key: string, tpl: string }} Desc
+ */
 
-/** What setAttribute may write: SVG geometry, aria-pressed and aria-current. Never href, style or on*. */
-export const ATTRS = frozen(['transform', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'width', 'height', 'viewBox', 'aria-pressed', 'aria-current']);
-
-/** @param {DOMRect} b @param {number} x @param {number} y */
-export function outsideBox(b, x, y) {
-  return x < b.left || x > b.right || y < b.top || y > b.bottom;
-}
+/** What setAttribute may write: the tree's ARIA state, roving tabindex and a title. Never href, style or on*. */
+export const ATTRS = frozen([
+  'aria-pressed', 'aria-current', 'aria-level', 'aria-expanded', 'aria-selected', 'aria-setsize', 'aria-posinset',
+  'aria-busy', 'aria-label', 'tabindex', 'title',
+]);
 
 /** @param {{ key: string, isComposing?: boolean }} e */
 export function activates(e) {
@@ -33,11 +43,10 @@ export function makePatcher(doc) {
   /** @type {WeakMap<Element, Map<string, Element>>} */
   const lists = new WeakMap();
 
-  /** A fresh copy of a template's one element; an <svg> wrapper (for the SVG namespace) is skipped. @param {string} id */
+  /** A fresh copy of a template's one element. @param {string} id */
   function clone(id) {
     const t = /** @type {HTMLTemplateElement | null} */ (doc.getElementById(id));
-    let root = t === null ? null : t.content.firstElementChild;
-    if (root !== null && root.localName === 'svg' && root.firstElementChild !== null) root = root.firstElementChild;
+    const root = t === null ? null : t.content.firstElementChild;
     if (root === null) throw new Error(`no template ${id}`);
     return /** @type {Element} */ (root.cloneNode(true));
   }
@@ -84,7 +93,9 @@ export function makePatcher(doc) {
     if (p.attr !== undefined) {
       for (const [k, v] of Object.entries(p.attr)) {
         if (!ATTRS.includes(k)) throw new Error(`attribute ${k} is not on the patcher's list`);
-        if (el.getAttribute(k) !== v) el.setAttribute(k, v);
+        if (v === null) {
+          if (el.hasAttribute(k)) el.removeAttribute(k);
+        } else if (el.getAttribute(k) !== v) el.setAttribute(k, v);
       }
     }
     if (p.slots !== undefined) for (const [name, sp] of Object.entries(p.slots)) paint(slot(el, name), sp);
@@ -116,17 +127,17 @@ export function makePatcher(doc) {
     lists.set(parent, next);
   }
 
-  /** At boot: each [data-t] takes its STAGE_TEXT, each empty .ins the five glyphs (CSS shows one). */
+  /** The keyed node of `parent` under `key`, if the last list put one there. @param {Element} parent @param {string} key */
+  const keyed = (parent, key) => lists.get(parent)?.get(key) ?? null;
+
+  /** At boot: each [data-t] in the page and its templates takes its TOWER_TEXT. */
   function fillStatic() {
     const roots = [doc, ...Array.from(doc.querySelectorAll('template')).map((t) => /** @type {HTMLTemplateElement} */ (t).content)];
-    const glyphs = clone('tpl-glyph');
     for (const r of roots) {
-      for (const el of Array.from(r.querySelectorAll('.ins'))) {
-        if (el.firstElementChild === null) for (const c of Array.from(glyphs.children)) el.insertBefore(c.cloneNode(true), null);
-      }
       for (const el of Array.from(r.querySelectorAll('[data-t]'))) {
         const k = /** @type {string} */ (el.getAttribute('data-t'));
-        if (Object.hasOwn(STAGE_TEXT, k) && el.textContent !== STAGE_TEXT[k]) el.textContent = STAGE_TEXT[k];
+        if (!Object.hasOwn(TOWER_TEXT, k)) throw new Error(`no text ${k}`);
+        if (el.textContent !== TOWER_TEXT[k]) el.textContent = TOWER_TEXT[k];
       }
     }
   }
@@ -142,19 +153,13 @@ export function makePatcher(doc) {
     clone,
     paint,
     list,
+    keyed,
     fillStatic,
     byId,
     /** Paints the element with that id. @param {string} id @param {Paint} p */
     paintId: (id, p) => paint(byId(id), p),
     /** @param {string} t */
     title: (t) => { if (doc.title !== t) doc.title = t; },
-    /** @param {HTMLSelectElement} sel @param {number} i */
-    select: (sel, i) => { if (sel.selectedIndex !== i) sel.selectedIndex = i; },
-    /** Opens or closes the drawer dialog, modal so focus stays inside and Esc closes it. @param {HTMLDialogElement} d @param {boolean} open */
-    drawer: (d, open) => {
-      if (open && !d.open) d.showModal();
-      else if (!open && d.open) d.close();
-    },
     /** @param {Element} el @param {string} text */
     say: (el, text) => { if (el.textContent !== text) el.textContent = text; },
   };

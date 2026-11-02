@@ -9,9 +9,10 @@ import { runOrchestrad, startOrchestrad, waitForLine } from '../helpers/orchestr
 import { STAGE_CANARY, writeStageFixture } from '../helpers/stage-fixture.ts';
 import { put, withTmp } from '../helpers/tmp.ts';
 import { validateStage } from '../../shared/stage-contract.js';
+import { validateTower } from '../../shared/tower-contract.js';
 
 // The thin slice end to end: a test-profile orchestrad with --peek-port over synthetic roots, paired
-// with the code it prints, serves the list and a session page. This is the path the real profile
+// with the code it prints, serves the tower page, the tower and a session's full record. This is the path the real profile
 // takes on your machine, minus the real roots.
 
 const U1 = '0e0f3a52-7b1c-4d2e-9f00-1234567890ab';
@@ -57,11 +58,15 @@ test('a test-profile orchestrad with --peek-port serves both harnesses after pai
   const paired = await request(port, 'POST', '/pair', { origin: `http://orchestra.localhost:${port}`, 'content-type': 'application/x-www-form-urlencoded' }, `code=${code}`);
   assert.equal(paired.status, 303);
   const cookie = String(paired.headers['set-cookie']).split(';')[0]!;
-  const list = await request(port, 'GET', '/', { cookie });
-  assert.match(list.body, /TEST PROFILE/);
-  assert.match(list.body, /G--synthetic-claude/);
-  assert.match(list.body, /--G--synthetic-dsh--/);
-  const ids = [...list.body.matchAll(/href="\/session\?id=([0-9a-f]{20})"/g)].map((m) => m[1]!);
+  const home = await request(port, 'GET', '/', { cookie });
+  assert.equal(home.status, 200);
+  assert.match(home.body, /role="tree"/);
+  const tower = JSON.parse((await request(port, 'GET', '/api/tower', { cookie })).body) as { meta: { profile: string }; projects: { name: string; nodes: { harness: string; session: string | null }[] }[] };
+  assert.deepEqual(validateTower(tower).errors, []);
+  assert.equal(tower.meta.profile, 'test');
+  const roots = tower.projects.flatMap((p) => p.nodes.map((n) => n.harness)).sort();
+  assert.deepEqual(roots, ['claude', 'dsh']);
+  const ids = tower.projects.flatMap((p) => p.nodes.map((n) => n.session)).filter((s): s is string => s !== null);
   assert.equal(ids.length, 2);
   const pages = await Promise.all(ids.map((id) => request(port, 'GET', `/session?id=${id}`, { cookie })));
   const text = pages.map((p) => p.body).join('\n');
@@ -71,7 +76,7 @@ test('a test-profile orchestrad with --peek-port serves both harnesses after pai
   await child.stop();
 });
 
-test('the stage preview end to end: pair, then /api/peek/stage over the stage fixture', async (t) => {
+test('the tower end to end over the stage fixture (the demo data): pair, then the page, /api/tower and /api/peek/stage', async (t) => {
   const dir = withTmp(t);
   writeStageFixture(dir, Date.now());
   const port = await freePort();
@@ -88,6 +93,15 @@ test('the stage preview end to end: pair, then /api/peek/stage over the stage fi
   assert.deepEqual(snap.lanes.map((l) => [l.name, l.players.length]), [['shop', 11]], '5 Claude, 3 DSH, 3 Codex');
   assert.equal(snap.podium.fermatas.length, 1);
   assert.equal(r.body.includes(STAGE_CANARY), false);
+  const page = await request(port, 'GET', '/', { cookie });
+  assert.equal(page.status, 200);
+  assert.match(page.body, /role="tree"/);
+  const tw = await request(port, 'GET', '/api/tower', { cookie });
+  const tower = JSON.parse(tw.body) as { tally: { waiting: number }; waitingBar: unknown[]; projects: { nodes: unknown[] }[] };
+  assert.deepEqual(validateTower(tower).errors, []);
+  assert.equal(tower.projects[0]!.nodes.length, 11);
+  assert.equal(tower.waitingBar.length, tower.tally.waiting);
+  assert.equal(tw.body.includes(STAGE_CANARY), false);
   await child.stop();
 });
 

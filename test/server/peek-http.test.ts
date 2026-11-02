@@ -100,13 +100,16 @@ test('unpaired: the list is a pairing form and a session page is 403; pairing ne
   assert.equal(JSON.stringify(fx.log.entries()).includes(CODE), false);
 });
 
-test('paired: the list names the session and its page shows the text escaped and redacted', async (t) => {
+test('paired: home is the tower page, the tower names the session and its full record shows the text escaped and redacted', async (t) => {
   const fx = await fixture(t);
   const cookie = await paired(fx);
-  const list = await request(fx, 'GET', '/', { cookie });
-  assert.equal(list.status, 200);
-  const id = /href="\/session\?id=([0-9a-f]{20})"/.exec(list.body)?.[1];
-  assert.ok(id !== undefined, 'the list links the session');
+  const home = await request(fx, 'GET', '/', { cookie });
+  assert.equal(home.status, 200);
+  assert.match(home.body, /<ul id="tree" class="tree" role="tree"/);
+  assert.equal(home.body.includes('G--proj'), false, 'the page itself holds no session data');
+  const tower = JSON.parse((await request(fx, 'GET', '/api/tower', { cookie })).body) as { projects: { nodes: { session: string | null }[] }[] };
+  const id = tower.projects[0]?.nodes[0]?.session ?? undefined;
+  assert.ok(id !== undefined && id !== null, 'the tower names the session');
   const s = await request(fx, 'GET', `/session?id=${id}`, { cookie });
   assert.equal(s.status, 200);
   assert.equal(s.body.includes('<script>alert'), false);

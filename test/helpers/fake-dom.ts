@@ -1,9 +1,9 @@
 // A small DOM for the page's tests (UI design UID:164, 0.1 alpha design §5): elements, text, templates
 // with .content, dataset, classList, attributes, createElementNS, and a parser for the markup subset
-// ui/stage.html uses, so a test can patch the real templates. Every write to the tree is counted in
+// ui/tower.html uses, so a test can patch the real templates. Every write to the tree is counted in
 // doc.ops (the render budget: an identical render writes nothing). innerHTML, outerHTML and
 // insertAdjacentHTML throw: the page never parses markup (Trusted Types: trusted-types 'none').
-// jsdom and happy-dom are out (UID:311); this is only what the stage needs.
+// jsdom and happy-dom are out (UID:311); this is only what the tower page needs.
 
 const HTML_NS = 'http://www.w3.org/1999/xhtml';
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -75,6 +75,11 @@ class FakeParent extends FakeNode {
     return [...this.walk()].filter(m);
   }
   querySelector(sel: string): FakeElement | null { return this.querySelectorAll(sel)[0] ?? null; }
+  /** This node or one of its descendants. */
+  contains(n: unknown): boolean {
+    for (let x = n instanceof FakeNode ? n : null; x !== null; x = x.parentNode as FakeNode | null) if (x === (this as unknown)) return true;
+    return false;
+  }
 }
 
 export class FakeFragment extends FakeParent {
@@ -217,7 +222,7 @@ const decode = (s: string) => s.replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi, (m, e: str
 });
 
 /**
- * Parses the markup subset of ui/stage.html into a fresh document: elements, attributes (quoted, bare
+ * Parses the markup subset of ui/tower.html into a fresh document: elements, attributes (quoted, bare
  * or boolean), text, comments, the doctype, void elements, `/>` (SVG), and <template> children into
  * .content. Elements inside <svg> get the SVG namespace. Not a general HTML parser.
  */

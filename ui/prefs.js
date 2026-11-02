@@ -1,41 +1,26 @@
 // @ts-check
-// Per-viewer conveniences in localStorage (0.1 alpha design §5): the theme and the last lane. Every
-// access is in try/catch, and the page works the same when storage is blocked or empty.
+// Per-viewer conveniences in localStorage (orchestra app plan §5): the theme. Every access is in
+// try/catch, and the page works the same when storage is blocked or empty.
 
 const THEMES = ['auto', 'light', 'dark'];
+const KEY = 'orchestra.tower.theme';
 
-/** @param {string} k */
-function get(k) {
+/** @returns {'auto' | 'light' | 'dark'} */
+export function getTheme() {
+  let v = null;
   try {
-    return localStorage.getItem(`orchestra.stage.${k}`);
+    v = localStorage.getItem(KEY);
   } catch {
-    return null;
+    v = null;
   }
+  return v !== null && THEMES.includes(v) ? /** @type {'auto' | 'light' | 'dark'} */ (v) : 'auto';
 }
 
-/** @param {string} k @param {string} v */
-function put(k, v) {
+/** @param {'auto' | 'light' | 'dark'} theme */
+export function setTheme(theme) {
   try {
-    localStorage.setItem(`orchestra.stage.${k}`, v);
+    localStorage.setItem(KEY, theme);
   } catch {
     // Storage blocked: the choice lasts for this page only.
   }
 }
-
-/** @returns {'auto' | 'light' | 'dark'} */
-export function getTheme() {
-  const t = get('theme');
-  return t !== null && THEMES.includes(t) ? /** @type {'auto' | 'light' | 'dark'} */ (t) : 'auto';
-}
-
-/** @param {'auto' | 'light' | 'dark'} t */
-export const setTheme = (t) => put('theme', t);
-
-/** @returns {string | null} */
-export function getLane() {
-  const l = get('lane');
-  return l !== null && /^[0-9a-f]{20}$/.test(l) ? l : null;
-}
-
-/** @param {string} id */
-export const setLane = (id) => put('lane', id);

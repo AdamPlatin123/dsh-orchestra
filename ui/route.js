@@ -1,14 +1,10 @@
 // @ts-check
-// The hash route (0.1 alpha design §1): #/<view>/<laneId>[/<nodeId>[/peek]], view stage or plan. The
-// view matters only on a phone, where one of the two shows; /peek means the drawer is open. This is
-// the one module that navigates away (openPeek).
-import { frozen } from '../shared/frozen.js';
+// The hash route of the tower page (orchestra app plan §5): #/ is the tower, #/n/<nodeId> the tower with
+// that node open (on a phone, its full-screen page), #/about the about view. This is the one module that
+// navigates: the hash, and the server-rendered full record of a session (openFull).
+import { NODE_ID_RE, TOWER_HEX20_RE } from '../shared/tower-contract.js';
 
-/** @typedef {{ view: 'stage' | 'plan', lane: string | null, node: string | null, peek: boolean }} Route */
-
-export const VIEWS = frozen(['stage', 'plan']);
-const LANE = /^[0-9a-f]{20}$/;
-const NODE = /^(?:p:[0-9a-f]{20}|w:[A-Za-z0-9][A-Za-z0-9_.:-]{0,79})$/;
+/** @typedef {{ view: 'tower' | 'about', node: string | null }} Route */
 
 /** @param {string} s */
 const decode = (s) => {
@@ -19,32 +15,28 @@ const decode = (s) => {
   }
 };
 
-/** @param {string} hash @returns {Route} */
+/** Any hash gives a route; what does not parse is the plain tower. @param {string} hash @returns {Route} */
 export function parse(hash) {
-  const [view, lane, node, peek] = hash.replace(/^#\/?/, '').split('/').map(decode);
-  const okNode = node !== undefined && NODE.test(node);
-  return {
-    view: view === 'plan' ? 'plan' : 'stage',
-    lane: lane !== undefined && LANE.test(lane) ? lane : null,
-    node: okNode ? node : null,
-    peek: okNode && peek === 'peek',
-  };
+  const [head, id] = hash.replace(/^#\/?/, '').split('/').map(decode);
+  if (head === 'about') return { view: 'about', node: null };
+  if (head === 'n' && id !== undefined && NODE_ID_RE.test(id)) return { view: 'tower', node: id };
+  return { view: 'tower', node: null };
 }
 
 /** @param {Route} r */
 export function format(r) {
-  if (r.lane === null) return `#/${r.view}`;
-  if (r.node === null) return `#/${r.view}/${r.lane}`;
-  return `#/${r.view}/${r.lane}/${encodeURIComponent(r.node)}${r.peek ? '/peek' : ''}`;
+  if (r.view === 'about') return '#/about';
+  // A node id is 'n:' + 20 hex (NODE_ID_RE): nothing in it needs escaping; anything else is the tower.
+  return r.node !== null && NODE_ID_RE.test(r.node) ? `#/n/${r.node}` : '#/';
 }
 
-/** Writes the route into the hash; hashchange brings it back to the page. @param {Route} r */
+/** Writes the route into the hash (a history entry, so Back closes a node page); hashchange brings it back. @param {Route} r */
 export function go(r) {
   const h = format(r);
-  if (location.hash !== h) location.hash = h;
+  if (location.hash !== h && !(h === '#/' && location.hash === '')) location.hash = h;
 }
 
-/** Leaves for the full peek page of a session (the server-rendered /session view). @param {string} id */
-export function openPeek(id) {
-  if (LANE.test(id)) location.href = '/session?id=' + id;
+/** Leaves for the full record of a session (the server-rendered /session page). @param {string} id */
+export function openFull(id) {
+  if (TOWER_HEX20_RE.test(id)) location.href = '/session?id=' + id;
 }

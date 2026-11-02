@@ -35,7 +35,129 @@
         "dsh": 0,
         "codex": 0
       }
-    }
+    },
+    "rules": [
+      {
+        "id": "claude.live.registry",
+        "hits": 1,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "claude.join.agentId",
+        "hits": 1,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "claude.join.description",
+        "hits": 2,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "claude.clone.running",
+        "hits": 2,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "claude.clone.orphan",
+        "hits": 1,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "claude.stand.todo-keys",
+        "hits": 1,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "dsh.stand.todo-keys",
+        "hits": 1,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "dsh.stand.goal-keys",
+        "hits": 1,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "dsh.team-task-keys",
+        "hits": 1,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "dsh.child.parentSession",
+        "hits": 2,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "dsh.live.mtime",
+        "hits": 3,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "instrument.tool-map",
+        "hits": 11,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "fermata.registry-waiting",
+        "hits": 1,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "codex.meta.keys",
+        "hits": 3,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "codex.live.turn",
+        "hits": 2,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "codex.waiting.unpaired",
+        "hits": 1,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "codex.child.parentThread",
+        "hits": 2,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "codex.join.spawn",
+        "hits": 2,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "codex.join.activity",
+        "hits": 2,
+        "n": 0,
+        "status": "untested"
+      },
+      {
+        "id": "codex.stand.plan-keys",
+        "hits": 1,
+        "n": 0,
+        "status": "untested"
+      }
+    ]
   },
   "router": {
     "kind": "human",

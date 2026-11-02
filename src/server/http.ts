@@ -5,16 +5,16 @@ import type { HarnessRoot } from '../fs/harness-roots.ts';
 import type { ReadGate } from '../fs/read-gate.ts';
 import type { Clock } from '../runtime/clock.ts';
 import type { Log } from '../runtime/log.ts';
-import type { PeekEvent, PeekView, Redact, SessionList } from '../sources/peek.ts';
-import { PEEK_LIMITS, findSession, listSessions, readSession } from '../sources/peek.ts';
+import type { PeekEvent, PeekView, Redact } from '../sources/peek.ts';
+import { PEEK_LIMITS, findSession, readSession } from '../sources/peek.ts';
 import { makeStageBuilder } from '../sources/stage.ts';
 import { makeTowerBuilder } from '../sources/tower.ts';
 import type { UiAsset } from './ui-assets.ts';
 import { UI_ASSETS } from './ui-assets.ts';
 import { frozen } from '../../shared/frozen.js';
 
-// The peek server: the thin slice ahead of plan steps 4-5. It shows the sessions under the harness
-// roots and the last events of one, and nothing else: GET pages plus the one POST that pairs.
+// The peek server: the thin slice ahead of plan steps 4-5. It shows the tower of the sessions under the
+// harness roots and the last events of one, and nothing else: GET pages plus the one POST that pairs.
 //
 // Taken from step 4 as it stands there: loopback only (127.0.0.1 and ::1 on the same port; a port
 // someone else holds on ::1 refuses the start, since the browser may try ::1 first and would hand that
@@ -23,22 +23,21 @@ import { frozen } from '../../shared/frozen.js';
 // after 20; a host-only cookie (HttpOnly, SameSite=Strict, Path=/) whose session lives in memory;
 // Origin exact on the POST; Sec-Fetch-Site, when sent, only same-origin or none; no CORS header.
 //
-// Not as step 4 has it, for this slice only: the pages are rendered here as HTML with every source
-// string escaped, and carry no script at all, so the CSP is stricter than r4:595 (script-src 'none'
+// Not as step 4 has it, for this slice only: the pairing and full-record pages are rendered here as HTML
+// with every source string escaped, and carry no script at all, so the CSP is stricter than r4:595 (script-src 'none'
 // through default-src). Without a script the pairing form posts form-encoded, not JSON; there is no
 // CSRF token because nothing but pairing changes state. Step 4 replaces this module's routes with the
 // route table of server/routes.ts and step 5 replaces the pages.
 //
-// The stage preview (0.1 alpha design §4; a labelled M2 preview, r4:2051) is the one place with a
-// script: GET /stage serves the embedded ui/stage.html, /assets/ui/* and /assets/shared/* serve the
-// embedded modules and styles it loads (src/server/ui-assets.ts, by map lookup only, no cookie: they
-// hold no session data), and /api/peek/stage and /api/peek/session answer its polls with JSON. Those
-// routes carry STAGE_CSP: script and connections to self only, trusted types on with no policy, so the
-// page writes the DOM through textContent and attributes alone. Every other route keeps the scriptless CSP.
-//
-// GET /api/tower (orchestra app plan §1) answers the tower snapshot (shared/tower-contract.js), built
-// from the same stage builder, behind the same pairing cookie and under the same STAGE_CSP. The stage
-// routes stay until the tower page replaces them.
+// The tower page (orchestra app plan §5) is the one place with a script: once paired, GET / and
+// GET /tower serve the embedded ui/tower.html, /assets/ui/* and /assets/shared/* serve the embedded
+// modules and styles it loads (src/server/ui-assets.ts, by map lookup only, no cookie: they hold no
+// session data), and /api/tower and /api/peek/session answer its polls with JSON. Those routes carry
+// UI_CSP: script and connections to self only, trusted types on with no policy, so the page writes the
+// DOM through textContent and attributes alone. Every other route keeps the scriptless CSP: the pairing
+// form, and /session, the full record of one session the tower's detail links to. The old stage page is
+// gone: /stage answers a redirect to /. GET /api/peek/stage still answers the stage snapshot the tower
+// is built from (shared/stage-contract.js), for tools and tests; no page polls it.
 
 export const PEEK_HOST = 'orchestra.localhost';
 export const PAIR_TTL_MS = 10 * 60 * 1000;
@@ -46,9 +45,9 @@ export const PAIR_TTL_MS = 10 * 60 * 1000;
 const LIMITS = frozen({ wrongInRow: 5, wrongTotal: 20, sessions: 16, pairBodyBytes: 1024 });
 const COOKIE = 'orchestra_sid';
 const CSP = "default-src 'none'; style-src 'self'; img-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; require-trusted-types-for 'script'";
-/** The stage routes' CSP: stricter than r4:595 (nothing inline, trusted types with no policy). */
-export const STAGE_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; require-trusted-types-for 'script'; trusted-types 'none'";
-const STAGE_HEADERS: readonly [string, string][] = frozen([['Content-Security-Policy', STAGE_CSP]]);
+/** The tower page's CSP: stricter than r4:595 (nothing inline, trusted types with no policy). */
+export const UI_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; require-trusted-types-for 'script'; trusted-types 'none'";
+const UI_HEADERS: readonly [string, string][] = frozen([['Content-Security-Policy', UI_CSP]]);
 const ASSET_PATH = /^(?:ui|shared)\/[a-z0-9][a-z0-9-]*\.(?:js|css)$/;
 const HEX20 = /^[0-9a-f]{20}$/;
 const BASE_HEADERS: readonly [string, string][] = frozen([
@@ -158,17 +157,6 @@ function pairPage(profile: 'real' | 'test', message: string | null, open: boolea
 const kib = (n: number) => (n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1024 / 1024).toFixed(1)} MiB`);
 const iso = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
 
-function listPage(profile: 'real' | 'test', list: SessionList): string {
-  const rows = list.sessions.map((s) => `<tr><td class="n">${s.harness}</td><td><a href="/session?id=${s.id}">${escapeHtml(s.project)}</a></td><td class="n">${iso(s.mtimeMs)} UTC</td><td class="n">${kib(s.size)}</td></tr>`).join('\n');
-  // Every harness keeps a floor of the places (fairShare), so the cut is said per harness (T1).
-  const per = (['claude', 'dsh', 'codex'] as const).map((h) => `${h} ${list.totals[h]}`).join('、');
-  const more = list.total > list.sessions.length ? `<p class="sub">共 ${list.total} 个（${per}），只列 ${list.sessions.length} 个：每个 harness 保底一份，其余按最新。</p>` : '';
-  const empty = list.total === 0 ? '<p class="note">没在 harness 根下找到 Claude、DSH 或 Codex 会话文件。</p>' : '';
-  return page('Orchestra · 会话', profile, `<h1>会话（只读）</h1><p class="sub">最薄通路：按修改时间排，刷新页面重读。正文经过脱敏，不落盘。</p>${empty}${more}
-<p><a href="/stage">Stage 预览（M2，只读）</a></p>
-<table><thead><tr><th>harness</th><th>项目目录</th><th>修改时间</th><th>大小</th></tr></thead><tbody>${rows}</tbody></table>`);
-}
-
 function eventRow(e: PeekEvent): string {
   return `<tr><td class="n">${e.at === null ? '' : escapeHtml(e.at.replace('T', ' ').slice(0, 23))}</td><td class="n">${escapeHtml(e.type)}</td><td class="t">${escapeHtml(e.text)}</td></tr>`;
 }
@@ -177,7 +165,7 @@ function sessionPage(profile: 'real' | 'test', v: PeekView): string {
   const s = v.session;
   const note = v.note === null ? '' : `<p class="note">${escapeHtml(NOTES[v.note])}</p>`;
   const unparsed = v.unparsed > 0 ? `<p class="sub">${v.unparsed} 行不是 JSON 对象，没显示。</p>` : '';
-  return page(`Orchestra · ${s.project}`, profile, `<p><a href="/">← 会话列表</a></p><h1>${escapeHtml(s.project)}</h1>
+  return page(`Orchestra · ${s.project}`, profile, `<p><a href="/">← 回到塔</a></p><h1>${escapeHtml(s.project)}</h1>
 <p class="sub">${s.harness} · ${kib(s.size)} · 修改于 ${iso(s.mtimeMs)} UTC · 最后 ${v.events.length} 条事件（上限 ${PEEK_LIMITS.events}）</p>${note}${unparsed}
 <table><thead><tr><th>时间（UTC）</th><th>类型</th><th>内容</th></tr></thead><tbody>${v.events.map(eventRow).join('\n')}</tbody></table>`);
 }
@@ -192,8 +180,8 @@ function send(res: ServerResponse, status: number, type: string, body: string | 
 
 const html = (res: ServerResponse, status: number, body: string, extra: [string, string][] = []) => send(res, status, 'text/html; charset=utf-8', body, extra);
 const plain = (res: ServerResponse, status: number, body: string, extra: readonly (readonly [string, string])[] = []) => send(res, status, 'text/plain; charset=utf-8', `${body}\n`, extra);
-// Stage JSON holds session text like every page: never cached (BASE_HEADERS' no-store).
-const json = (res: ServerResponse, status: number, body: unknown) => send(res, status, 'application/json; charset=utf-8', JSON.stringify(body), STAGE_HEADERS);
+// Tower JSON holds session text like every page: never cached (BASE_HEADERS' no-store).
+const json = (res: ServerResponse, status: number, body: unknown) => send(res, status, 'application/json; charset=utf-8', JSON.stringify(body), UI_HEADERS);
 
 function cookieOf(req: IncomingMessage): string | null {
   const header = req.headers.cookie;
@@ -262,9 +250,9 @@ export async function startPeekServer(opts: PeekServerOptions): Promise<PeekServ
       if (req.method !== 'GET') return plain(res, 405, 'method not allowed');
       const name = url.pathname.slice('/assets/'.length);
       const asset = ASSET_PATH.test(name) ? assets.get(name) : undefined;
-      if (asset === undefined) return plain(res, 404, 'not found', STAGE_HEADERS);
+      if (asset === undefined) return plain(res, 404, 'not found', UI_HEADERS);
       // Revalidated on every load (no-cache), so a new build shows at once; the ETag spares the bytes.
-      const headers: [string, string][] = [...STAGE_HEADERS, ['Cache-Control', 'no-cache'], ['ETag', asset.etag]];
+      const headers: [string, string][] = [...UI_HEADERS, ['Cache-Control', 'no-cache'], ['ETag', asset.etag]];
       if (req.headers['if-none-match'] === asset.etag) return send(res, 304, asset.type, '', headers);
       return send(res, 200, asset.type, asset.body, headers);
     }
@@ -297,21 +285,26 @@ export async function startPeekServer(opts: PeekServerOptions): Promise<PeekServ
     const sid = cookieOf(req);
     const paired = sid !== null && sessions.has(sid);
     if (req.method !== 'GET') return plain(res, 405, 'method not allowed');
+    // The old stage page is gone; a bookmark of it lands on the tower (or on pairing).
+    if (url.pathname === '/stage') {
+      res.setHeader('Location', '/');
+      return plain(res, 301, 'moved to /');
+    }
+    const towerPage = url.pathname === '/' || url.pathname === '/tower';
     if (!paired) {
-      if (url.pathname === '/') return html(res, 200, pairPage(profile, null, pairing.open));
+      if (towerPage) return html(res, 200, pairPage(profile, null, pairing.open));
       return plain(res, 403, 'not paired');
     }
     try {
-      if (url.pathname === '/') return html(res, 200, listPage(profile, listSessions(gate, roots, redact)));
+      if (towerPage) {
+        const page = assets.get('ui/tower.html');
+        if (page === undefined) return plain(res, 503, 'ui-not-embedded', UI_HEADERS);
+        return send(res, 200, page.type, page.body, UI_HEADERS);
+      }
       if (url.pathname === '/session') {
         const s = findSession(gate, roots, redact, url.searchParams.get('id') ?? '');
         if (s === null) return plain(res, 404, 'no such session');
         return html(res, 200, sessionPage(profile, readSession(gate, s, redact)));
-      }
-      if (url.pathname === '/stage') {
-        const page = assets.get('ui/stage.html');
-        if (page === undefined) return plain(res, 503, 'ui-not-embedded', STAGE_HEADERS);
-        return send(res, 200, page.type, page.body, STAGE_HEADERS);
       }
       if (url.pathname === '/api/peek/stage') return json(res, 200, stage.snapshot());
       if (url.pathname === '/api/tower') return json(res, 200, tower.snapshot());

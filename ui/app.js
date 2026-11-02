@@ -1,43 +1,58 @@
 // @ts-check
-// The stage preview's boot (0.1 alpha design §5), the one module with top-level effects: poll, hash
-// route, clicks and keys; one render per frame while visible. Read only (r4:2051).
-import { getSession, getStage, oneAtATime } from './api.js';
-import { every, fmtClock, fmtIso, nowMono, onFrame } from './clock.js';
-import { activates, makePatcher, outsideBox } from './dom.js';
-import { getLane, getTheme, setLane, setTheme } from './prefs.js';
-import { go, openPeek, parse } from './route.js';
-import { CHIPS, describeDrawer, describeHeader, describePlan, describeScore, fill, pickLane } from './view.js';
-import { STAGE_TEXT } from '../shared/strings.js';
+// The tower page's boot (orchestra app plan §5), the one module with top-level effects: the 2 s poll of
+// /api/tower (stopped while the page is hidden), the hash route, clicks and keys, and one render per
+// frame. Read only: nothing here asks orchestrad to change anything (M0).
+//
+// While the pointer or focus is in the tree, its order holds still (research §1.5): fresh data still
+// reaches the rows that stay, and what would appear, go or move is counted on the "↻ N" button, applied
+// on a click or 5 s after the pointer and focus have left.
+import { getSession, getTower, oneAtATime } from './api.js';
+import { after, every, fmtIso, nowMono, onFrame } from './clock.js';
+import { activates, makePatcher } from './dom.js';
+import { getTheme, setTheme } from './prefs.js';
+import { go, openFull, parse } from './route.js';
+import { FILTERS, buildRows, freeze, groupKey, indexOf, navigate, projectKey } from './tree.js';
+import { describeAbout, describeBar, describeDetail, describeDock, describePins, describeTower, t } from './view.js';
+import { validateTower } from '../shared/tower-contract.js';
 
-/** @typedef {import('../shared/stage-contract.js').StageSnapshot} StageSnapshot */
-/** @typedef {import('./view.js').Chip} Chip */
+/** @typedef {import('../shared/tower-contract.js').TowerSnapshot} TowerSnapshot */
+/** @typedef {import('./tree.js').Row} Row */
+/** @typedef {import('./tree.js').Filter} Filter */
+/** @typedef {import('./view.js').Detail} Detail */
 
-const POLL_MS = 5000;
-const STALE_MS = 15000;
-const fmt = { time: fmtClock, iso: fmtIso };
+const POLL_MS = 2000;
+const STALE_MS = 10000;
+const QUIET_MS = 5000;
 const dom = makePatcher(document);
+const treeEl = dom.byId('tree');
+const towerEl = dom.byId('tower');
 
 const state = {
-  /** @type {StageSnapshot | null} */ snap: null,
-  /** Monotonic time of the last good answer. */ okMono: 0,
-  route: parse(location.hash),
-  /** @type {Chip | null} */ chip: null,
-  theme: getTheme(),
-  /** @type {{ id: string, rev: string, body: any } | null} */ detail: null,
+  /** @type {TowerSnapshot | null} */ snap: null,
+  /** Monotonic time of the last good answer; null before the first. @type {number | null} */ okMono: null,
   /** @type {string | null} */ error: null,
+  route: parse(location.hash),
+  /** @type {Filter | null} */ filter: null,
+  /** @type {Set<string>} */ collapsed: new Set(),
+  /** @type {Set<string>} */ open: new Set(),
+  /** @type {Set<string>} */ peek: new Set(),
+  /** The selected row's key. @type {string | null} */ sel: null,
+  theme: getTheme(),
+  hover: false,
+  focusIn: false,
+  /** Cancels the pending unfreeze. @type {(() => void) | null} */ quiet: null,
+  /** The frozen layout. @type {Row[] | null} */ held: null,
+  /** The rows on screen. @type {Row[]} */ rows: [],
+  /** @type {Detail | null} */ detail: null,
+  detailRev: '',
+  /** @type {Map<string, string>} */ lastState: new Map(),
+  /** @type {Map<string, string>} */ flash: new Map(),
+  /** @type {number | null} */ lastWaiting: null,
+  /** A row to focus after the next render. @type {string | null} */ focusKey: null,
   queued: false,
 };
 
-/** @param {unknown} b @returns {b is StageSnapshot} */
-const looksLikeStage = (b) => {
-  const x = /** @type {any} */ (b);
-  return typeof x === 'object' && x !== null && x.v === 1 && x.kind === 'stage-preview' && Array.isArray(x.lanes);
-};
-
-function laneId() {
-  const lane = pickLane(state.snap, state.route.lane ?? getLane());
-  return lane === null ? null : lane.id;
-}
+const frozen = () => state.hover || state.focusIn || state.quiet !== null;
 
 function schedule() {
   if (state.queued || document.hidden) return;
@@ -48,70 +63,105 @@ function schedule() {
   });
 }
 
+/** The daemon's time now: its observedAt plus the monotonic time since that answer (T7). */
+function nowWall() {
+  if (state.snap === null || state.okMono === null) return 0;
+  return state.snap.meta.observedAt + (nowMono() - state.okMono);
+}
+
 function render() {
   const root = document.documentElement;
-  dom.paint(root, { data: { theme: state.theme, view: state.route.view, ready: state.snap === null ? '0' : '1' } });
-  dom.paintId('theme', { text: STAGE_TEXT[`theme.${state.theme}`] });
-  for (const v of ['stage', 'plan']) dom.paintId(`tab-${v}`, { attr: { 'aria-pressed': state.route.view === v ? 'true' : 'false' } });
+  const view = state.route.view === 'about' ? 'about' : state.route.node !== null ? 'node' : 'tower';
+  dom.paint(root, { data: { theme: state.theme, view, ready: state.snap === null ? '0' : '1', filter: state.filter ?? '' } });
   dom.paintId('alert', { text: state.error ?? '', data: { hide: state.error === null ? '1' : '0' } });
+  const ageMs = state.okMono === null ? null : nowMono() - state.okMono;
   const snap = state.snap;
+  dom.paintId('bar', describeBar(snap, { filter: state.filter, ageMs, stale: ageMs !== null && ageMs > STALE_MS, theme: state.theme, view }));
   if (snap === null) return;
-  const lane = laneId();
-  const stale = nowMono() - state.okMono > STALE_MS;
-  // The time shown is the daemon's own observedAt; it turns amber when no answer came for 15 s (T7).
-  const head = describeHeader(snap, lane, { stale, at: fmtClock(snap.observedAt) });
-  dom.title(head.title);
-  dom.paintId('bar', { slots: head.slots });
-  dom.select(/** @type {HTMLSelectElement} */ (dom.byId('lane')), head.laneIndex);
-  dom.paint(root, { data: { fresh: stale ? 'stale' : 'live' } });
-  dom.paintId('stage', { slots: describeScore(snap, lane, state.route.node) });
-  dom.paintId('plan', { slots: describePlan(snap, lane, state.chip, state.route.node, fmt).slots });
-  const dlg = /** @type {HTMLDialogElement} */ (dom.byId('drawer'));
-  const node = state.route.peek ? state.route.node : null;
-  const d = node === null ? null : describeDrawer(snap, lane, node, detailFor(node), fmt, nowMono() - state.okMono);
-  if (d !== null) dom.paint(dlg, { slots: d.slots });
-  dom.drawer(dlg, d !== null);
+  const waiting = snap.tally.waiting;
+  dom.title(waiting > 0 ? t('page.titleWait', { n: waiting }) : t('page.title'));
+
+  const fresh = buildRows(snap, { filter: state.filter, collapsed: state.collapsed, open: state.open });
+  let pending = 0;
+  let rows = fresh;
+  if (frozen() && state.held !== null) ({ rows, pending } = freeze(fresh, state.held));
+  state.held = frozen() ? rows : null;
+  state.rows = rows;
+
+  const wall = nowWall();
+  dom.paintId('pins', describePins(snap, { sel: state.sel, nowWall: wall }));
+  dom.paintId('tower', describeTower(rows, { filter: state.filter, pending, sel: state.sel, peek: state.peek, flash: state.flash }));
+  dom.paintId('detail', describeDetail(snap, state.sel, rows, detailFor(snap), { nowWall: wall, fmtIso }));
+  dom.paintId('dock', describeDock(snap, state.sel));
+  const about = dom.byId('about');
+  dom.paint(about, { data: { hide: view === 'about' ? '0' : '1' } });
+  if (view === 'about') dom.paint(about, describeAbout(snap));
+
+  if (state.focusKey !== null) {
+    const el = dom.keyed(treeEl, state.focusKey);
+    state.focusKey = null;
+    if (el !== null) /** @type {HTMLElement} */ (el).focus();
+  }
 }
 
-/** The session detail for the open drawer, read once per session and snapshot revision. @param {string} node */
-function detailFor(node) {
-  const snap = /** @type {StageSnapshot} */ (state.snap);
-  const d = describeDrawer(snap, laneId(), node, null, fmt, 0);
-  const id = d === null ? null : d.session;
+/**
+ * The selected node's session detail, read once per session and snapshot revision.
+ * @param {TowerSnapshot} snap @returns {Detail | null}
+ */
+function detailFor(snap) {
+  const hit = state.sel === null ? undefined : indexOf(snap).byId.get(state.sel);
+  const id = hit?.node.session ?? null;
   if (id === null) return null;
-  if (state.detail !== null && state.detail.id === id && state.detail.rev === snap.rev) return state.detail.body;
-  if (state.detail === null || state.detail.id !== id) state.detail = { id, rev: snap.rev, body: null };
-  else state.detail.rev = snap.rev;
+  if (state.detail !== null && state.detail.id === id && state.detailRev === snap.meta.rev) return state.detail;
+  if (state.detail === null || state.detail.id !== id) state.detail = { id, body: null };
+  state.detailRev = snap.meta.rev;
   void getSession(id).then((a) => {
     if (state.detail === null || state.detail.id !== id) return;
-    state.detail.body = a.ok ? a.body : { error: a.code };
+    state.detail = { id, body: a.ok ? /** @type {any} */ (a.body) : { error: a.code } };
     schedule();
   });
-  return state.detail.body;
+  return state.detail;
 }
 
-const stageOnce = oneAtATime(getStage);
+const towerOnce = oneAtATime(getTower);
 
 async function poll() {
-  const a = await stageOnce();
+  const a = await towerOnce();
   if (a === null) return;
   if (!a.ok) {
-    state.error = a.code === 'unpaired' ? STAGE_TEXT['err.unpaired'] : a.code === 'network' ? STAGE_TEXT['err.network'] : fill('err.http', { code: a.code });
+    state.error = a.code === 'unpaired' ? t('err.unpaired') : a.code === 'network' ? t('err.network') : t('err.http', { code: a.code });
     return schedule();
   }
-  if (!looksLikeStage(a.body)) {
-    state.error = STAGE_TEXT['err.shape'];
-    return schedule();
+  const body = /** @type {any} */ (a.body);
+  const same = state.snap !== null && body !== null && typeof body === 'object' && body.meta?.rev === state.snap.meta.rev;
+  if (!same) {
+    // A new revision is held to the contract before it is shown (T1-T3 travel with the payload).
+    const v = validateTower(body);
+    if (!v.ok) {
+      state.error = t('err.shape', { why: v.errors[0] ?? '' });
+      return schedule();
+    }
   }
+  const snap = /** @type {TowerSnapshot} */ (body);
   state.error = null;
   state.okMono = nowMono();
-  // The body is always 200; an unchanged rev keeps the rendered stage and only refreshes the time.
-  const changed = state.snap === null || state.snap.rev !== a.body.rev;
-  state.snap = a.body;
-  if (changed) {
-    const h = describeHeader(a.body, laneId(), { stale: false, at: '' }).counts;
-    dom.say(dom.byId('live'), fill('live.update', h));
+  // A state that changed lights its row once (the flash name is the new state, research §1.5).
+  /** @type {Map<string, string>} */
+  const seen = new Map();
+  for (const p of snap.projects) {
+    for (const n of p.nodes) {
+      const was = state.lastState.get(n.id);
+      if (was !== undefined && was !== n.state) state.flash.set(n.id, n.state);
+      seen.set(n.id, n.state);
+    }
   }
+  for (const id of state.flash.keys()) if (!seen.has(id)) state.flash.delete(id);
+  state.lastState = seen;
+  // The screen reader hears only how many things wait on you, and only when that number moves.
+  if (state.lastWaiting !== null && state.lastWaiting !== snap.tally.waiting) dom.say(dom.byId('live'), t('live.wait', { n: snap.tally.waiting }));
+  state.lastWaiting = snap.tally.waiting;
+  state.snap = snap;
+  if (state.route.node !== null && state.sel === null) select(state.route.node, false);
   schedule();
 }
 
@@ -125,68 +175,195 @@ function wake() {
   timers = [every(POLL_MS, () => void poll()), every(1000, schedule)];
 }
 
-/** @param {Partial<import('./route.js').Route>} change */
-const move = (change) => go({ ...state.route, lane: laneId(), ...change });
+/**
+ * Makes `key` visible and selected: its ancestors unfold, the group it sits in opens, and a filter it
+ * does not pass is dropped.
+ * @param {string} key @param {boolean} focus
+ */
+function select(key, focus) {
+  state.sel = key;
+  const snap = state.snap;
+  if (snap !== null) {
+    const ix = indexOf(snap);
+    const hit = ix.byId.get(key);
+    if (hit !== undefined) {
+      if (state.filter !== null && hit.node.state !== state.filter) state.filter = null;
+      state.collapsed.delete(projectKey(hit.project.id));
+      for (let n = hit.node; ;) {
+        const parentKey = n.parent ?? projectKey(hit.project.id);
+        const groups = n.parent === null ? hit.project.groups : (ix.byId.get(n.parent)?.node.groups ?? []);
+        for (const g of groups) if (g.ids.includes(n.id)) state.open.add(groupKey(parentKey, g));
+        if (n.parent === null) break;
+        state.collapsed.delete(n.parent);
+        const up = ix.byId.get(n.parent);
+        if (up === undefined) break;
+        n = up.node;
+      }
+      state.held = null;
+    }
+  }
+  if (focus) state.focusKey = key;
+  schedule();
+}
+
+/** Folds or unfolds a row: a project or node by its key, a group by its own. @param {string} key @param {boolean} open */
+function setOpen(key, open) {
+  const set = key.startsWith('g:') ? state.open : state.collapsed;
+  const add = key.startsWith('g:') ? open : !open;
+  if (add) set.add(key);
+  else set.delete(key);
+  state.held = null;
+  schedule();
+}
+
+/** @param {Row} r */
+const toggle = (r) => setOpen(r.key, !r.expanded);
+
+/** Opens a row: a node's page (its detail; full screen on a phone), else its fold. @param {Row} r */
+function openRow(r) {
+  if (r.kind === 'node') {
+    select(r.key, false);
+    go({ view: 'tower', node: r.key });
+  } else {
+    state.sel = r.key;
+    toggle(r);
+  }
+}
+
+// == freezing: the pointer or focus in the tree holds its order; leaving starts the quiet timer
+function hold() {
+  if (state.quiet !== null) {
+    state.quiet();
+    state.quiet = null;
+  }
+  // The layout on screen now is the one that holds (a fold or filter you choose lays out afresh).
+  if (state.held === null && state.rows.length > 0) state.held = state.rows;
+}
+function release() {
+  if (state.hover || state.focusIn || state.quiet !== null) return;
+  state.quiet = after(QUIET_MS, () => {
+    state.quiet = null;
+    if (!state.hover && !state.focusIn) {
+      state.held = null;
+      schedule();
+    }
+  });
+}
+towerEl.addEventListener('pointerenter', () => { state.hover = true; hold(); });
+towerEl.addEventListener('pointerleave', () => { state.hover = false; release(); });
+towerEl.addEventListener('focusin', () => { state.focusIn = true; hold(); });
+towerEl.addEventListener('focusout', (e) => {
+  if (e.relatedTarget instanceof Node && towerEl.contains(e.relatedTarget)) return;
+  state.focusIn = false;
+  release();
+});
 
 /** @param {Element} el */
 function act(el) {
-  const t = /** @type {HTMLElement} */ (el);
-  if (t.dataset.chip !== undefined) {
-    const c = /** @type {Chip} */ (t.dataset.chip);
-    state.chip = state.chip === c || !CHIPS.includes(c) ? null : c;
+  const t0 = /** @type {HTMLElement} */ (el);
+  const f = t0.dataset.filter;
+  if (f !== undefined) {
+    const want = /** @type {Filter} */ (f);
+    state.filter = state.filter === want || !FILTERS.includes(want) ? null : want;
+    state.held = null;
     return schedule();
   }
-  if (t.dataset.node !== undefined) return move({ node: t.dataset.node, peek: true });
-  const a = t.dataset.act;
+  const a = t0.dataset.act;
   if (a === 'theme') {
     state.theme = state.theme === 'auto' ? 'light' : state.theme === 'light' ? 'dark' : 'auto';
     setTheme(state.theme);
     return schedule();
   }
-  if (a === 'stage' || a === 'plan') return move({ view: a });
-  if (a === 'close') return move({ peek: false });
-  if (a === 'peek' && state.detail !== null) return openPeek(state.detail.id);
-  // A wait on the 你 line may sit in another lane: go there and open that player.
-  const id = t.dataset.wait;
-  if (id !== undefined && state.snap !== null) {
-    const lane = state.snap.lanes.find((l) => l.players.some((p) => p.id === id));
-    if (lane !== undefined) go({ ...state.route, lane: lane.id, node: id, peek: true });
+  if (a === 'about') return go({ view: state.route.view === 'about' ? 'tower' : 'about', node: null });
+  if (a === 'clear') {
+    state.filter = null;
+    state.held = null;
+    return schedule();
+  }
+  if (a === 'apply') {
+    state.held = null;
+    return schedule();
+  }
+  if (a === 'back') return go({ view: 'tower', node: null });
+  if (a === 'full') {
+    const hit = state.snap === null || state.sel === null ? undefined : indexOf(state.snap).byId.get(state.sel);
+    if (hit !== undefined && hit.node.session !== null) openFull(hit.node.session);
+    return;
+  }
+  const node = t0.dataset.node;
+  if (node !== undefined && t0.classList.contains('pin')) {
+    select(node, true);
+    return go({ view: 'tower', node });
   }
 }
 
-const target = (/** @type {EventTarget | null} */ e) => (e instanceof Element ? e.closest('[data-node],[data-chip],[data-act],[data-wait]') : null);
+/** The row element an event happened in, and its row. @param {EventTarget | null} target */
+function rowAt(target) {
+  const el = target instanceof Element ? target.closest('[data-key]') : null;
+  if (el === null || !treeEl.contains(el)) return null;
+  const key = /** @type {HTMLElement} */ (el).dataset.key;
+  const i = state.rows.findIndex((r) => r.key === key);
+  return i < 0 ? null : { el, i, row: /** @type {Row} */ (state.rows[i]) };
+}
 
 document.addEventListener('click', (e) => {
-  const dlg = dom.byId('drawer');
-  if (e.target === dlg) {
-    if (outsideBox(dlg.getBoundingClientRect(), e.clientX, e.clientY)) move({ peek: false });
-    return;
+  const hit = rowAt(e.target);
+  if (hit !== null) {
+    const onTwisty = e.target instanceof Element && e.target.closest('.tw') !== null;
+    if (onTwisty && hit.row.expandable) {
+      state.sel = hit.row.key;
+      return toggle(hit.row);
+    }
+    return openRow(hit.row);
   }
-  const el = target(e.target);
+  const el = e.target instanceof Element ? e.target.closest('[data-act],[data-filter],.pin') : null;
   if (el !== null) act(el);
 });
+
+treeEl.addEventListener('keydown', (e) => {
+  const hit = rowAt(e.target);
+  if (hit === null || e.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
+  const { row, i } = hit;
+  if (e.key === ' ') {
+    e.preventDefault();
+    if (row.kind === 'node') {
+      if (state.peek.has(row.key)) state.peek.delete(row.key);
+      else state.peek.add(row.key);
+      state.sel = row.key;
+      return schedule();
+    }
+    state.sel = row.key;
+    return toggle(row);
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    return openRow(row);
+  }
+  const to = navigate(state.rows, i, e.key);
+  if (to === null) return;
+  e.preventDefault();
+  if ('select' in to) {
+    const r = state.rows[to.select];
+    if (r === undefined) return;
+    state.sel = r.key;
+    state.focusKey = r.key;
+    return schedule();
+  }
+  setOpen(to.toggle, to.open);
+});
+
 document.addEventListener('keydown', (e) => {
   if (!activates(e)) return;
-  const el = target(e.target);
-  // Buttons click by themselves; SVG staff heads and phrases do not.
-  if (el !== null && el.localName !== 'button') {
+  const el = e.target instanceof Element ? e.target.closest('.pin') : null;
+  if (el !== null) {
     e.preventDefault();
     act(el);
   }
 });
-dom.byId('lane').addEventListener('change', (e) => {
-  const sel = /** @type {HTMLSelectElement} */ (e.target);
-  const id = sel.selectedOptions[0]?.dataset.lane;
-  if (id === undefined) return;
-  setLane(id);
-  go({ ...state.route, lane: id, node: null, peek: false });
-});
-dom.byId('drawer').addEventListener('close', () => {
-  if (state.route.peek) move({ peek: false });
-});
+
 window.addEventListener('hashchange', () => {
   state.route = parse(location.hash);
-  if (!state.route.peek) state.detail = null;
+  if (state.route.node !== null && state.route.node !== state.sel) select(state.route.node, false);
   schedule();
 });
 document.addEventListener('visibilitychange', wake);

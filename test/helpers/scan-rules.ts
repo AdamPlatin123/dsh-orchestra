@@ -20,11 +20,11 @@ export const EXEMPT_SCRIPTS: readonly string[] = [
   'scripts/procmon-check.ts',
   'scripts/rss-20.ts',
   'scripts/test-stage.ts',
-  // The stage preview's (0.1 alpha design §4, §9): stage-demo writes the synthetic fixture into a
+  // The tower page's demo (orchestra app plan §5): tower-demo writes the synthetic fixture into a
   // %TEMP%\orchestra-test-* dir; embed-ui reads the repo's ui/ and shared/ and writes the one generated
   // src/server/ui-assets.ts. Neither touches a harness root. stage-keys-sample reads real roots and so
   // stays scanned (plan step 1).
-  'scripts/stage-demo.ts',
+  'scripts/tower-demo.ts',
   'scripts/embed-ui.ts',
 ];
 

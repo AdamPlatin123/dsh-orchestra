@@ -45,6 +45,7 @@ export type TowerSnapshot = {
     v: 1; rev: string; observedAt: number; profile: 'test' | 'real';
     sources: Record<Harness, TowerSrc>;
     clipped: { projects: number; nodes: number; sessions: Record<Harness, number> };
+    rules: { id: string; hits: number; n: number; status: 'untested' | 'keys-mismatch' }[];
   };
   router: { kind: 'human'; dispatch: null };
   projects: Project[];
@@ -235,6 +236,8 @@ export function towerFromStage(stage: StageSnapshot): TowerSnapshot {
       v: 1 as const, rev: '', observedAt: stage.observedAt, profile: stage.profile,
       sources: { claude: src('claude'), dsh: src('dsh'), codex: src('codex') },
       clipped: { projects: stage.clipped.lanes, nodes: stage.clipped.players, sessions: { ...stage.clipped.sessions } },
+      // The stage's rules as they are, for the page's about view (T4: untested however often they fired).
+      rules: stage.rules.map((r) => ({ id: r.id, hits: r.hits, n: r.n, status: r.status })),
     },
     router: { kind: 'human' as const, dispatch: null },
     projects, waitingBar, tally,

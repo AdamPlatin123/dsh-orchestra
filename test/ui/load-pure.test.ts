@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-// Every ui/ module but app.js only defines things when imported (UID:164, 0.1 alpha design §5): no
+// Every ui/ module but app.js only defines things when imported (UID:164, orchestra app plan §5): no
 // document, window, location, storage, frame, fetch or clock is touched until a function runs. app.js
 // is the one module with top-level effects, so importing it does reach the document. Each test file
 // runs in its own process, so these imports are the first ones.
@@ -20,7 +20,7 @@ test('every ui module but app.js imports without touching the page, the network 
   }
   const mods = fs.readdirSync(UI).filter((f) => f.endsWith('.js')).sort();
   try {
-    assert.deepEqual(mods, ['api.js', 'app.js', 'clock.js', 'dom.js', 'layout.js', 'prefs.js', 'route.js', 'view.js']);
+    assert.deepEqual(mods, ['api.js', 'app.js', 'clock.js', 'dom.js', 'prefs.js', 'route.js', 'tree.js', 'view.js']);
     for (const f of mods.filter((m) => m !== 'app.js')) {
       await import(pathToFileURL(`${UI}${f}`).href);
       assert.deepEqual(touched, [], `${f} touched ${touched.join(', ')} on import`);
