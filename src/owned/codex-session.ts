@@ -1,13 +1,15 @@
 import * as path from 'node:path';
 import type { ChildPipe } from '../os/child-pipe.ts';
+import type { ClockHub } from '../runtime/clock.ts';
 import type { Answer, AnswerCause, ApprovalKind, ApprovalRisk, Approvals } from './approvals.ts';
 import type { RpcClient, RpcExit, RpcId, RpcStats } from './codex-rpc.ts';
 import type { FeedTokens } from './feed.ts';
 import type { Redact } from './text.ts';
-import { makeRpcClient } from './codex-rpc.ts';
+import { isWithin } from '../fs/paths.ts';
+import { RpcError, makeRpcClient } from './codex-rpc.ts';
 import { Feed } from './feed.ts';
 import { isOwnedModel } from './models.ts';
-import { OWNED_TEXT_LIMITS, shown, splitUtf8 } from './text.ts';
+import { OWNED_TEXT_LIMITS, liveTail, shown, splitUtf8 } from './text.ts';
 import { frozen } from '../../shared/frozen.js';
 
 const win = path.win32;
@@ -22,7 +24,21 @@ const win = path.win32;
 //              thread is still starting, or a turn/start is in flight, it waits here (at most 5).
 //   stop:      every open approval of the session is declined first, the waiting messages withdrawn,
 //              then turn/interrupt (sent as soon as the turn has an id, if it had none yet).
-//   end:       open approvals declined, then the child is stopped (stdin closed, then killed).
+//   end:       open approvals declined, then the child is stopped (stdin closed, then killed). Only
+//              codex.exe itself is killed: what its commands started may outlive it (no kill-on-close
+//              Job yet, D4's residual risk), and the feed says so (note children-may-remain).
+//   deadlines: initialize and thread/start get 60 s (then start-failed), turn/start and turn/steer 60 s
+//              (then the message is msg-unsure: sent, its fate unknown), turn/interrupt 10 s.
+//
+// Each message of yours carries the uuid of its human record, and its fate is a feed note with that
+// uuid as ref: msg-queued (live) while it waits here, then msg-sent (handed to codex), msg-not-sent
+// (codex refused it, with why), msg-withdrawn (a stop or the end took it back) or msg-unsure (no answer).
+//
+// Paths an approval names (a file change, a write root, a command's cwd) are resolved against the work
+// dir first, then judged by realpath (junctions followed) against the spawn gate's own cwd table: one
+// that hits a protected row (the data dir, a harness root, ~/.claude, ~/.dsh, the repository, AppData...)
+// is declined at once without a card (cause protected: an automatic refusal, which D8 allows); one only
+// outside the work dir is a card of risk protected, to be held (r4 §10.9).
 //
 // What codex sends becomes feed events: message deltas (one live event per message) and the final
 // message, a command's start, its output so far (live) and its end, file changes, turn start and end,
@@ -62,8 +78,19 @@ export const CODEX_CLIENT_INFO = frozen({ name: 'orchestra', title: 'Orchestra',
 /** The JSON-RPC error code a server request Orchestra does not answer gets: method not found. */
 export const UNANSWERED_REQUEST_CODE = -32601;
 
-export type CodexSessionState = 'starting' | 'idle' | 'running' | 'ended' | 'failed';
-export type CodexEndReason = 'you-ended' | 'exited' | 'start-failed' | 'policy-mismatch';
+export const CODEX_DEADLINES = frozen({ startMs: 60_000, turnMs: 60_000, interruptMs: 10_000 });
+
+/** unknown: a session an earlier orchestrad started (its registry entry outlived a restart); nobody here holds its child. */
+export type CodexSessionState = 'starting' | 'idle' | 'running' | 'ended' | 'failed' | 'unknown';
+export type CodexEndReason = 'you-ended' | 'exited' | 'start-failed' | 'policy-mismatch' | 'daemon-restart';
+/** No child of it runs here any more (or, unknown, none ever did in this orchestrad). */
+export const isOver = (state: CodexSessionState): boolean => state === 'ended' || state === 'failed' || state === 'unknown';
+
+/**
+ * Where a path an approval names really lies: its realpath (the nearest existing ancestor's, joined with
+ * the rest) and the protected row of the spawn gate's cwd table it hits, or null. src/os/cwd.ts CwdPolicy.place.
+ */
+export type PathJudge = (absPath: string) => { real: string | null; hit: string | null };
 
 export type CodexSessionOptions = {
   ownedId: string;
@@ -80,6 +107,10 @@ export type CodexSessionOptions = {
   onChange?: () => void;
   /** Tests only: a smaller line bound for the JSON-RPC client. */
   rpcLineMaxBytes?: number;
+  /** The Clock hub the request deadlines run on; without one no request has a deadline. */
+  hub?: ClockHub;
+  /** Judges the paths an approval names; without one only the lexical place in the work dir counts. */
+  judge?: PathJudge;
 };
 
 export type SendResult = { ok: true; via: 'turn/start' | 'turn/steer' | 'queued' } | { ok: false; reason: 'ended' | 'queue-full' };
@@ -111,7 +142,7 @@ type Obj = Record<string, unknown>;
 const obj = (v: unknown): Obj => (typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Obj) : {});
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 const id = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 && v.length <= CODEX_SESSION_LIMITS.idChars ? v : null);
-const int = (v: unknown): number => (Number.isSafeInteger(v) && (v as number) >= 0 ? (v as number) : 0);
+const count = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
 const rpcKey = (rid: RpcId) => (typeof rid === 'number' ? `n:${rid}` : `s:${rid}`);
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -135,7 +166,12 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   const L = CODEX_SESSION_LIMITS;
   const FEED = OWNED_TEXT_LIMITS.feedBytes;
   const feed = new Feed(opts.now);
-  const rpc: RpcClient = makeRpcClient(pipe, opts.rpcLineMaxBytes === undefined ? {} : { lineMaxBytes: opts.rpcLineMaxBytes });
+  const rpc: RpcClient = makeRpcClient(pipe, {
+    name: /^[0-9a-f]{1,40}$/.test(ownedId) ? ownedId : 'c',
+    ...(opts.rpcLineMaxBytes === undefined ? {} : { lineMaxBytes: opts.rpcLineMaxBytes }),
+    ...(opts.hub === undefined ? {} : { hub: opts.hub }),
+  });
+  const D = CODEX_DEADLINES;
 
   let state: CodexSessionState = 'starting';
   let endReason: CodexEndReason | null = null;
@@ -147,7 +183,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   let interruptWanted = false;
   let tokens: FeedTokens | null = null;
   let stderrTail = '';
-  const queue: string[] = [];
+  const queue: { text: string; uuid: string }[] = [];
   const items = new Map<string, Item>();
   /** Turns codex said ended, so a turn/start reply read after its own turn/completed does not revive it. */
   const endedTurns: string[] = [];
@@ -168,24 +204,67 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   };
   const terminal = () => state === 'ended' || state === 'failed';
   const shownFeed = (raw: string, keep: 'head' | 'tail') => shown(redact, raw, FEED, keep);
+  /** The work dir's own realpath, for the place of what lies below it. */
+  const realCwd = (() => {
+    try {
+      return opts.judge?.(cwd).real ?? cwd;
+    } catch {
+      return cwd;
+    }
+  })();
+  /**
+   * Where a path lies: resolved against the work dir first (a relative path, `..` included), then its
+   * realpath (a junction in the work dir that points out is outside); the protected row it hits, if any.
+   */
+  const place = (p: string): { abs: string; real: string; outside: boolean; hit: string | null } => {
+    const abs = win.resolve(cwd, p);
+    let j: { real: string | null; hit: string | null };
+    try {
+      j = opts.judge === undefined ? { real: abs, hit: null } : opts.judge(abs);
+    } catch (e) {
+      j = { real: null, hit: `unresolved: ${errText(e)}` };
+    }
+    const real = j.real ?? abs;
+    return { abs, real, outside: !isWithin(abs, cwd) || !isWithin(real, realCwd), hit: j.hit };
+  };
   /** A path as the feed shows it: relative inside the work dir, else only its last name (no absolute path in the feed). */
   const feedPath = (p: string) => {
-    const rel = win.isAbsolute(p) ? win.relative(cwd, p) : p;
-    return rel.startsWith('..') || win.isAbsolute(rel) ? `(outside the work dir) ${win.basename(p)}` : rel === '' ? '.' : rel;
+    const at = place(p);
+    const rel = win.relative(cwd, at.abs);
+    return at.outside ? `(outside the work dir) ${win.basename(at.abs)}` : rel === '' ? '.' : rel;
   };
-  /** A path as an approval shows it: relative inside the work dir, else whole, so the person sees where it goes. */
+  /** A path as an approval shows it: relative inside the work dir, else whole (and where it really goes), so the person sees it. */
   const askPath = (p: string) => {
-    const rel = win.isAbsolute(p) ? win.relative(cwd, p) : p;
-    return rel.startsWith('..') || win.isAbsolute(rel) ? `(outside the work dir) ${p}` : rel === '' ? '.' : rel;
-  };
-  const outside = (p: string) => {
-    const rel = win.isAbsolute(p) ? win.relative(cwd, p) : p;
-    return rel.startsWith('..') || win.isAbsolute(rel);
+    const at = place(p);
+    const rel = win.relative(cwd, at.abs);
+    if (!at.outside) return rel === '' ? '.' : rel;
+    return `(outside the work dir) ${at.abs}${at.real.toLowerCase() !== at.abs.toLowerCase() ? ` (really ${at.real})` : ''}`;
   };
   const note = (stateName: string, text: string | null = null) => {
     const s = text === null ? null : shownFeed(text, 'head');
     feed.push({ kind: 'note', ref: null, text: s?.text ?? null, state: stateName, redactions: s?.redactions ?? 0 });
   };
+  /** A message's fate, under its uuid: msg-queued is live (replaced), the rest are final. */
+  const fate = (uuid: string, stateName: 'msg-queued' | 'msg-sent' | 'msg-not-sent' | 'msg-withdrawn' | 'msg-unsure', text: string | null = null) => {
+    if (uuid === '') return;
+    const s = text === null ? null : shownFeed(text, 'head');
+    const ev = { kind: 'note' as const, ref: uuid, text: s?.text ?? null, state: stateName, redactions: s?.redactions ?? 0 };
+    if (stateName === 'msg-queued') {
+      feed.upsert(`msg:${uuid}`, ev);
+    } else {
+      feed.settle(`msg:${uuid}`);
+      feed.push(ev);
+    }
+  };
+  /** Every waiting message goes back: each says so under its uuid, and one note counts them. */
+  const withdrawAll = (): number => {
+    const lost = queue.splice(0, queue.length);
+    for (const m of lost) fate(m.uuid, 'msg-withdrawn');
+    if (lost.length > 0) note('withdrawn', `${lost.length}`);
+    return lost.length;
+  };
+  /** Only codex.exe is killed: what its commands started may outlive it (no kill-on-close Job yet). */
+  const residue = () => note('children-may-remain');
 
   // --- ending ----------------------------------------------------------------------------------------
 
@@ -196,15 +275,19 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     state = 'failed';
     endReason = reason;
     failure = detail;
-    queue.length = 0;
+    withdrawAll();
     turnId = null;
     feed.push({ kind: 'lifecycle', ref: null, text: shownFeed(detail, 'head').text, state: reason });
     rpc.stop();
+    residue();
     settleReady(false);
     changed();
   };
 
   rpc.onExit((exit: RpcExit) => {
+    // A pipe that failed may leave its child running (the client stops it too): stopped here whatever
+    // ended the session, so no codex.exe outlives it and holds a seat nobody can see (D4, D8's brake).
+    rpc.stop();
     if (terminal()) return;
     // Nobody can answer what the child asked any more.
     approvals.forgetOwned(ownedId);
@@ -213,11 +296,10 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     state = 'failed';
     endReason = 'exited';
     failure = what;
-    const lost = queue.length;
-    queue.length = 0;
     turnId = null;
     feed.push({ kind: 'lifecycle', ref: null, text: what, state: 'exited' });
-    if (lost > 0) note('withdrawn', `${lost}`);
+    withdrawAll();
+    residue();
     settleReady(false);
     changed();
   });
@@ -230,34 +312,46 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
 
   const input = (text: string) => [{ type: 'text', text }];
 
-  const startTurn = async (text: string) => {
+  /** A request that failed: refused (not sent), or unanswered by its deadline (sent, its fate unknown). */
+  const lost = (m: { uuid: string }, e: unknown) => {
+    if (e instanceof RpcError && e.reason === 'timeout') fate(m.uuid, 'msg-unsure', errText(e));
+    else fate(m.uuid, 'msg-not-sent', errText(e));
+  };
+
+  const startTurn = async (m: { text: string; uuid: string }) => {
     turnStarting = true;
     changed();
     try {
-      const r = obj(await rpc.request('turn/start', { threadId, input: input(text) }));
+      const r = obj(await rpc.request('turn/start', { threadId, input: input(m.text) }, D.turnMs));
       const tid = id(obj(r.turn).id);
       if (tid !== null && !terminal() && !endedTurns.includes(tid)) {
         turnId = tid;
         state = 'running';
       }
+      fate(m.uuid, 'msg-sent');
     } catch (e) {
-      if (!terminal()) note('not-sent', errText(e));
+      if (!terminal()) lost(m, e);
     } finally {
       turnStarting = false;
       afterTurnRequest();
     }
   };
 
-  const steer = async (text: string) => {
+  const steer = async (m: { text: string; uuid: string }) => {
     const expected = turnId;
     steering = true;
     try {
-      await rpc.request('turn/steer', { threadId, expectedTurnId: expected, input: input(text) });
+      await rpc.request('turn/steer', { threadId, expectedTurnId: expected, input: input(m.text) }, D.turnMs);
+      fate(m.uuid, 'msg-sent');
     } catch (e) {
       if (terminal()) return;
       // The turn ended under the steer: the message opens the next turn instead.
-      if (turnId !== expected) queue.unshift(text);
-      else note('not-sent', errText(e));
+      if (turnId !== expected && !(e instanceof RpcError && e.reason === 'timeout')) {
+        queue.unshift(m);
+        fate(m.uuid, 'msg-queued');
+      } else {
+        lost(m, e);
+      }
     } finally {
       steering = false;
       pump();
@@ -275,14 +369,14 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   const pump = () => {
     changed();
     if (terminal() || threadId === null || queue.length === 0 || turnStarting || steering) return;
-    const text = queue.shift()!;
-    if (turnId === null) void startTurn(text);
-    else void steer(text);
+    const m = queue.shift()!;
+    if (turnId === null) void startTurn(m);
+    else void steer(m);
   };
 
   const sendInterrupt = async (tid: string) => {
     try {
-      await rpc.request('turn/interrupt', { threadId, turnId: tid });
+      await rpc.request('turn/interrupt', { threadId, turnId: tid }, D.interruptMs);
     } catch (e) {
       if (!terminal()) note('interrupt-failed', errText(e));
     }
@@ -374,14 +468,14 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   const messageDelta = (iid: string, delta: string) => {
     const it = itemOf(iid, 'agentMessage');
     if (it.msg.length < L.messageChars) it.msg += delta.slice(0, L.messageChars - it.msg.length);
-    const s = shownFeed(it.msg.slice(-L.liveChars), 'tail');
+    const s = liveTail(redact, it.msg, L.liveChars, FEED);
     feed.upsert(`text:${iid}`, { kind: 'text', ref: iid, text: s.text, state: 'partial', redactions: s.redactions });
   };
 
   const outputDelta = (iid: string, delta: string) => {
     const it = itemOf(iid, 'commandExecution');
     it.out = (it.out + delta).slice(-L.outputChars);
-    const s = shownFeed(it.out.slice(-L.liveChars), 'tail');
+    const s = liveTail(redact, it.out, L.liveChars, FEED);
     feed.upsert(`out:${iid}`, { kind: 'tool-result', ref: iid, text: s.text, state: 'running', redactions: s.redactions });
   };
 
@@ -447,7 +541,10 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       }
       case 'thread/tokenUsage/updated': {
         const total = obj(obj(p.tokenUsage).total);
-        tokens = Object.freeze({ input: int(total.inputTokens), cachedInput: int(total.cachedInputTokens), output: int(total.outputTokens), total: int(total.totalTokens) });
+        const { inputTokens: i, cachedInputTokens: c, outputTokens: o, totalTokens: t } = total;
+        // T1: a count codex did not report whole is not a 0; the last whole report stands (null before any).
+        if (!count(i) || !count(c) || !count(o) || !count(t)) return;
+        tokens = Object.freeze({ input: i, cachedInput: c, output: o, total: t });
         feed.upsert('tokens', { kind: 'note', ref: null, text: null, state: 'tokens', tokens });
         changed();
         return;
@@ -483,6 +580,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     risk: ApprovalRisk;
     canAccept: boolean;
     canText: boolean;
+    /** The protected row a path of the request hits: then it is declined at once, without a card. */
+    refuse: string | null;
     reply(a: Answer): unknown;
   };
 
@@ -515,16 +614,17 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   const askCommand = (p: Obj): Ask => {
     const command = str(p.command) ?? '';
     const net = p.networkApprovalContext;
+    const at = str(p.cwd) ?? cwd;
     const lines = [
       `command: ${command}`,
-      `cwd: ${askPath(str(p.cwd) ?? cwd)}`,
+      `cwd: ${askPath(at)}`,
       ...(str(p.reason) !== null ? [`reason: ${str(p.reason)}`] : []),
       ...(net !== undefined && net !== null ? [`network: ${JSON.stringify(net)}`] : []),
       ...(str(p.kind) !== null && p.kind !== 'command' ? [`kind: ${str(p.kind)}`] : []),
     ];
     return {
       kind: 'command', title: command.split('\n', 1)[0] ?? '', preview: lines.join('\n'), risk: net !== undefined && net !== null ? 'net' : 'shell',
-      canAccept: true, canText: false, reply: decide,
+      canAccept: true, canText: false, refuse: place(at).hit, reply: decide,
     };
   };
 
@@ -537,10 +637,12 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     if (grantRoot !== null) lines.push(`asks to write under ${askPath(grantRoot)} for the rest of the session: only a refusal is offered`);
     if (changes === null) lines.push('the changes were not announced before this request: only a refusal is offered');
     for (const c of changes ?? []) lines.push(`--- ${c.kind} ${askPath(c.path)}`, c.diff);
-    const away = (changes ?? []).some((c) => outside(c.path)) || (grantRoot !== null && outside(grantRoot));
+    const places = [...(changes ?? []).map((c) => place(c.path)), ...(grantRoot === null ? [] : [place(grantRoot)])];
+    const away = places.some((x) => x.outside);
     return {
       kind: 'file-change', title: changes === null ? 'file change' : `${changes.length} file change${changes.length === 1 ? '' : 's'}`, preview: lines.join('\n'),
-      risk: away ? 'protected' : 'write', canAccept: changes !== null && grantRoot === null, canText: false, reply: decide,
+      risk: away ? 'protected' : 'write', canAccept: changes !== null && grantRoot === null, canText: false,
+      refuse: places.find((x) => x.hit !== null)?.hit ?? null, reply: decide,
     };
   };
 
@@ -549,7 +651,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     const lines = [...(str(p.reason) !== null ? [`reason: ${str(p.reason)}`] : []), `permissions: ${JSON.stringify(requested)}`, 'granted for this turn only'];
     const net = obj(requested.network).enabled === true;
     return {
-      kind: 'permissions', title: str(p.reason) ?? 'more permissions', preview: lines.join('\n'), risk: net ? 'net' : 'protected', canAccept: true, canText: false,
+      kind: 'permissions', title: str(p.reason) ?? 'more permissions', preview: lines.join('\n'), risk: net ? 'net' : 'protected', canAccept: true, canText: false, refuse: null,
       reply: (a) => (a.decision === 'accept' ? { permissions: requested, scope: 'turn' } : { permissions: {}, scope: 'turn' }),
     };
   };
@@ -564,7 +666,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     const qid = one === null ? null : str(one.id);
     return {
       kind: 'question', title: str(one?.question) ?? `${questions.length} questions`, preview: lines.join('\n'), risk: 'other', canAccept: false,
-      canText: qid !== null && one!.isSecret !== true,
+      canText: qid !== null && one!.isSecret !== true, refuse: null,
       reply: (a) => (a.decision === 'text' && qid !== null ? { answers: { [qid]: { answers: [a.text] } } } : { answers: {} }),
     };
   };
@@ -573,7 +675,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     const lines = [`server: ${str(p.serverName) ?? '?'}`, `message: ${str(p.message) ?? ''}`, ...(str(p.url) !== null ? [`url: ${str(p.url)}`] : []), 'only a refusal is offered'];
     return {
       kind: 'elicitation', title: str(p.message) ?? 'an MCP server asks', preview: lines.join('\n'), risk: str(p.url) !== null ? 'net' : 'other',
-      canAccept: false, canText: false, reply: () => ({ action: 'decline', content: null }),
+      canAccept: false, canText: false, refuse: null, reply: () => ({ action: 'decline', content: null }),
     };
   };
 
@@ -599,6 +701,14 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       rpc.respond(rid, ask.reply({ decision: 'decline' }));
       return;
     }
+    // A protected path: declined at once, no card (slice design §2.2: an automatic refusal; D8 forbids only automatic allows).
+    if (ask.refuse !== null) {
+      rpc.respond(rid, ask.reply({ decision: 'decline' }));
+      const s = shownFeed(`${ask.title} (${ask.refuse})`, 'head');
+      feed.push({ kind: 'auto-denied', ref: null, text: s.text, state: 'protected', redactions: s.redactions });
+      changed();
+      return;
+    }
     queueAsk(rid, ask);
   });
 
@@ -606,9 +716,9 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
 
   void (async () => {
     try {
-      await rpc.request('initialize', { clientInfo: { ...CODEX_CLIENT_INFO } });
+      await rpc.request('initialize', { clientInfo: { ...CODEX_CLIENT_INFO } }, D.startMs);
       rpc.notify('initialized');
-      const r = obj(await rpc.request('thread/start', { cwd, model, approvalPolicy: 'on-request', sandbox: 'workspace-write' }));
+      const r = obj(await rpc.request('thread/start', { cwd, model, approvalPolicy: 'on-request', sandbox: 'workspace-write' }, D.startMs));
       if (terminal()) return;
       const tid = id(obj(r.thread).id);
       const sandbox = str(obj(r.sandbox).type);
@@ -663,19 +773,19 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       if (!now && queue.length >= L.queue) return { ok: false, reason: 'queue-full' };
       const s = shownFeed(text, 'head');
       feed.push({ kind: 'you', ref: null, uuid, text: s.text, state: s.cut ? 'cut' : null, redactions: s.redactions });
-      queue.push(text);
+      queue.push({ text, uuid });
       const via = !now ? 'queued' : turnId === null ? 'turn/start' : 'turn/steer';
+      if (!now) fate(uuid, 'msg-queued');
       pump();
       return { ok: true, via };
     },
     async interrupt() {
       if (terminal()) return { withdrawn: 0, denied: 0 };
-      // Slice design §2.5: the approvals first, then the waiting messages, then the turn.
+      // Slice design §2.5: the approvals first, then the waiting messages, then the turn. The turn's
+      // interrupt is sent, not awaited: its outcome is the feed's (turn-interrupted, or interrupt-failed).
       const denied = approvals.declineOwned(ownedId, 'interrupt');
-      const withdrawn = queue.length;
-      queue.length = 0;
-      if (withdrawn > 0) note('withdrawn', `${withdrawn}`);
-      if (turnId !== null) await sendInterrupt(turnId);
+      const withdrawn = withdrawAll();
+      if (turnId !== null) void sendInterrupt(turnId);
       else if (turnStarting) interruptWanted = true;
       changed();
       return { withdrawn, denied };
@@ -683,14 +793,13 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     end() {
       if (terminal()) return { denied: 0 };
       const denied = approvals.declineOwned(ownedId, 'end');
-      const lost = queue.length;
-      queue.length = 0;
       state = 'ended';
       endReason = 'you-ended';
       turnId = null;
-      if (lost > 0) note('withdrawn', `${lost}`);
+      withdrawAll();
       feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'ended' });
       rpc.stop();
+      residue();
       settleReady(false);
       changed();
       return { denied };

@@ -91,7 +91,7 @@ export const MAGPIE_BASE_URL = 'http://127.0.0.1:3425/v1';
  * the private CODEX_HOME, the work root or the gate could not be set up.
  */
 export type OwnedCodexStatus =
-  | { on: true; exe: string; codexHome: string; workRoot: string; model: string; gateway: string }
+  | { on: true; exe: string; codexHome: string; workRoot: string; model: string; gateway: string; restored: number }
   | { on: false; why: 'not-asked' | 'codex-appdata-unset' | 'codex-appdata-bad-path' | 'codex-missing' | 'codex-reparsed' | 'no-spawn-gate' | 'setup-failed'; detail: string | null };
 
 export type WorkingOutcome =
@@ -269,12 +269,13 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   let codexOwned: CodexOwned | null = null;
   let ownedCodex: OwnedCodexStatus = { on: false, why: 'not-asked', detail: null };
   if (ctx.owned === true) {
-    const set = await setUpOwnedCodex(ctx, fence, home);
+    const set = await setUpOwnedCodex(ctx, fence, gate, home);
     ownedCodex = set.status;
     codexOwned = set.owned;
     if (ownedCodex.on) {
       log.info('owned-codex', { on: true, exe: ownedCodex.exe, model: ownedCodex.model });
       ctx.console.out(`orchestrad: owned Codex sessions on (model ${ownedCodex.model} through ${ownedCodex.gateway}; work dirs in ${ownedCodex.workRoot})`);
+      if (ownedCodex.restored > 0) ctx.console.out(`orchestrad: ${ownedCodex.restored} owned session(s) from before the restart are listed again (not resumed; those that had not ended show as unknown)`);
     } else {
       log.warn('owned-codex', { on: false, why: ownedCodex.why, detail: ownedCodex.detail });
       ctx.console.out(`orchestrad: owned Codex sessions are off: ${ownedCodex.why}${ownedCodex.detail === null ? '' : ` (${ownedCodex.detail})`}`);
@@ -352,7 +353,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
  * codex-app-server, with CODEX_HOME as its one extra and a cwd policy whose only allowed root is the
  * work root (r4 §5.3's protected dirs: the data dir and every harness root).
  */
-async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: string): Promise<{ status: OwnedCodexStatus; owned: CodexOwned | null }> {
+async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, gate: ReadGate, home: string): Promise<{ status: OwnedCodexStatus; owned: CodexOwned | null }> {
   const off = (why: Extract<OwnedCodexStatus, { on: false }>['why'], detail: string | null = null) => ({ status: { on: false as const, why, detail }, owned: null });
   const { CODEX_APP_SERVER_ARGV, resolveCodexExe, resolveSystemRoot } = await import('../os/spawn.ts');
   const exe = resolveCodexExe(ctx.env, ctx.realpath);
@@ -364,12 +365,17 @@ async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: str
     const { DEFAULT_CODEX_MODEL } = await import('../owned/models.ts');
     const { Approvals } = await import('../owned/approvals.ts');
     const { CodexOwned: Owned } = await import('../owned/codex-owned.ts');
+    const { REGISTRY_DIR, makeOwnedRegistry } = await import('../owned/registry.ts');
+    const { CwdPolicy } = await import('../os/cwd.ts');
     const sys = resolveSystemRoot(ctx.env, ctx.realpath);
     if (!sys.ok) return off('setup-failed', `SystemRoot ${sys.reason}`);
     const codexHome = writeCodexHome(fence, home, { model: DEFAULT_CODEX_MODEL, gatewayBaseUrl: MAGPIE_BASE_URL });
     const workRoot = win.join(home, OWNED_DIRS.work);
     fence.mkdirp(workRoot);
-    const gate = ctx.makeSpawnGate({
+    const registryDir = win.join(home, REGISTRY_DIR);
+    fence.mkdirp(registryDir);
+    const cwdSpec = { allowedRoots: [workRoot], protectedDirs: [home, ...ctx.roots.map((r) => r.path)], userHome: ctx.userHome, ownedWorkRoot: workRoot };
+    const spawnGate = ctx.makeSpawnGate({
       systemRoot: sys,
       rules: ['codex-app-server'],
       record: (e) => ctx.pidLog.record(e),
@@ -377,8 +383,10 @@ async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: str
       clock: ctx.clock,
       env: ctx.env,
       envExtra: { 'codex-app-server': { CODEX_HOME: codexHome } },
-      cwd: { allowedRoots: [workRoot], protectedDirs: [home, ...ctx.roots.map((r) => r.path)], userHome: ctx.userHome, ownedWorkRoot: workRoot },
+      cwd: cwdSpec,
     });
+    // The same table the gate checks a cwd against judges the paths an approval names (orchestra app plan §4).
+    const places = new CwdPolicy({ spec: cwdSpec, env: ctx.env, systemRoot: sys.path, realpath: ctx.realpath });
     const redactor = makeRedactor({ env: ctx.env });
     const wall = ctx.clock.port(null);
     const owned = new Owned({
@@ -394,7 +402,15 @@ async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: str
         fence.mkdirp(dir);
         return dir;
       },
-      launch: (cwd) => childPipe(gate.start({ exe: exe.path, argv: CODEX_APP_SERVER_ARGV, cwd })),
+      launch: (cwd) => childPipe(spawnGate.start({ exe: exe.path, argv: CODEX_APP_SERVER_ARGV, cwd })),
+      hub: ctx.clock,
+      judge: (p) => places.place(p),
+      registry: makeOwnedRegistry({
+        dir: registryDir,
+        writeAtomic: (file, text) => fence.writeAtomic(file, text),
+        readdir: (dir) => gate.readdir(dir),
+        readFile: (file) => gate.readFile(file).toString('utf8'),
+      }),
       now: () => wall.nowWall(),
       redact: (text) => {
         const r = redactor.redact({ text });
@@ -402,7 +418,7 @@ async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: str
         return { text: r.text, count: v.known + v.entropy + Object.values(v.format).reduce((a, b) => a + b, 0) + (v.dropped === null ? 0 : 1) };
       },
     });
-    return { status: { on: true, exe: exe.path, codexHome, workRoot, model: DEFAULT_CODEX_MODEL, gateway: MAGPIE_BASE_URL }, owned };
+    return { status: { on: true, exe: exe.path, codexHome, workRoot, model: DEFAULT_CODEX_MODEL, gateway: MAGPIE_BASE_URL, restored: owned.restored }, owned };
   } catch (e) {
     return off('setup-failed', describe(e));
   }

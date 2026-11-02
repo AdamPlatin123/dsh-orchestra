@@ -320,7 +320,7 @@ test('messages: at most 2048 bytes of UTF-8, else 422 text-too-long; one startin
   const { cookie, csrf } = await unlocked(fx);
   const ok: OwnedHandler = () => ({ ok: true, reply: { ownedId: OID }, targetId: OID });
   fx.handlers.register('POST', '/api/owned/new', ok);
-  fx.handlers.register('POST', '/api/owned/:id/message', () => ({ ok: true, reply: { uuid: uuid(), queued: 0 } }));
+  fx.handlers.register('POST', '/api/owned/:id/message', () => ({ ok: true, reply: { uuid: uuid(), queued: 0, via: 'turn/start' } }));
   for (const path of ['/api/owned/new', `/api/owned/${OID}/message`]) {
     const extra = path === '/api/owned/new' ? { harness: 'codex' } : {};
     const send = (text: string) => request(fx, 'POST', path, page(fx, cookie, csrf), JSON.stringify({ actionId: uuid(), text, ...extra }));
@@ -423,7 +423,7 @@ test('while the handler awaits: the same actionId is 409 in-flight, with another
     if (mode === 'refuse') return { ok: false, error: 'item-unknown' };
     if (mode === 'throw') throw new Error('boom');
     if (mode === 'bad-error') return { ok: false, error: 'plan-expired' };
-    return { ok: true, reply: { uuid: '0e0f3a52-7b1c-4d2e-9f00-1234567890ab', queued: 2 } };
+    return { ok: true, reply: { uuid: '0e0f3a52-7b1c-4d2e-9f00-1234567890ab', queued: 2, via: 'queued' } };
   });
   const P = `/api/owned/${OID}/message`;
   const actionId = uuid();
@@ -438,7 +438,7 @@ test('while the handler awaits: the same actionId is 409 in-flight, with another
   const done = await slow;
   assert.equal(done.status, 200, done.body);
   const doneReply = JSON.parse(done.body) as Record<string, unknown>;
-  assert.deepEqual(doneReply, { actionId, accepted: true, jseq: doneReply.jseq, uuid: '0e0f3a52-7b1c-4d2e-9f00-1234567890ab', queued: 2 });
+  assert.deepEqual(doneReply, { actionId, accepted: true, jseq: doneReply.jseq, uuid: '0e0f3a52-7b1c-4d2e-9f00-1234567890ab', queued: 2, via: 'queued' });
   assert.deepEqual(humans(fx).map((r) => [r.kind, r.body.verb, r.body.targetId]), [['human', 'owned-message', OID], ['human.result', 'owned-message', OID]]);
 
   for (const [m, status] of [['refuse', 404], ['throw', 500], ['bad-error', 500]] as const) {

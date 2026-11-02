@@ -1,13 +1,10 @@
 // @ts-check
-// The tower's rows (orchestra app plan §5, tower panel research §1.3, §1.5): a pure function from a
-// TowerSnapshot and the page's choices (filter, folds, opened groups) to the flat treeitems in tree
-// order, one row format for every layer. ui/view.js paints them; ui/app.js holds the state.
-// - Counts are filters (T3): under a filter the rows that match are exactly the nodes in that state, so
-//   their number is the top bar's count; their ancestors show as signposts only.
-// - A group row stands where its first member would and opens in place; running, waiting and failed
-//   nodes never fold (the contract checks it), so a filter needs no group.
-// - Freezing (§1.5): while the pointer or focus is in the tree the order holds; fresh data reaches the
-//   rows that stay, and what would appear, go or move is counted, not shown.
+// The tower's rows (orchestra app plan §5, research §1.3, §1.5): snapshot + choices (filter, folds) ->
+// flat treeitems in tree order, one row format for every layer.
+// - Counts are filters (T3): under a filter the matching rows are exactly the nodes in that state;
+//   their ancestors are signposts only.
+// - A group row stands where its first member would; running, waiting, failed nodes never fold.
+// - Freezing (§1.5): under the pointer or focus the order holds; what would appear, go or move is counted.
 
 /**
  * @typedef {import('../shared/tower-contract.js').TowerSnapshot} TowerSnapshot
@@ -75,11 +72,7 @@ export function pathOf(snap, id) {
   return out;
 }
 
-/**
- * The rows the tree shows for these choices.
- * @param {TowerSnapshot} snap @param {TreeUi} ui
- * @returns {Row[]}
- */
+/** The rows the tree shows for these choices. @param {TowerSnapshot} snap @param {TreeUi} ui @returns {Row[]} */
 export function buildRows(snap, ui) {
   const ix = indexOf(snap);
   const f = ui.filter;
@@ -137,7 +130,7 @@ export function buildRows(snap, ui) {
   const one = (project, n, parentKey, level) => {
     const kids = ix.kids.get(n.id) ?? [];
     const expanded = kids.length > 0 && (f !== null || !ui.collapsed.has(n.id));
-    // Under a filter every signpost stays open: it does not fold, so it does not offer to.
+    // Under a filter a signpost stays open and offers no fold.
     push({ key: n.id, kind: 'node', level, parentKey, project, node: n, expandable: kids.length > 0 && f === null, expanded, match: f !== null && n.state === f });
     if (expanded) list(project, kids, n.groups, n.id, level + 1);
   };
@@ -168,9 +161,8 @@ function numberSiblings(rows) {
 }
 
 /**
- * The frozen layout: `held` in its order with fresh data where the key remains (a vanished node stays,
- * marked gone), and how many rows would appear, go or move.
- * @param {readonly Row[]} fresh @param {readonly Row[]} held
+ * The frozen layout: `held`'s order, fresh data where a key remains (a vanished node stays, gone), and the
+ * count of rows that would appear, go or move. @param {readonly Row[]} fresh @param {readonly Row[]} held
  * @returns {{ rows: Row[], pending: number }}
  */
 export function freeze(fresh, held) {
@@ -186,11 +178,7 @@ export function freeze(fresh, held) {
   return { rows, pending: added + removed + moved };
 }
 
-/**
- * Where a key on row `i` leads (tree view pattern): an index to select, or a fold change.
- * @param {readonly Row[]} rows @param {number} i @param {string} key
- * @returns {{ select: number } | { toggle: string, open: boolean } | null}
- */
+/** Where a key on row `i` leads (tree view pattern). @param {readonly Row[]} rows @param {number} i @param {string} key @returns {{ select: number } | { toggle: string, open: boolean } | null} */
 export function navigate(rows, i, key) {
   const r = rows[i];
   if (r === undefined) return rows.length > 0 && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(key) ? { select: 0 } : null;

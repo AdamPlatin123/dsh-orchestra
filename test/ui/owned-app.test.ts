@@ -6,7 +6,7 @@ import { FakeElement, parseHtml, type FakeDocument } from '../helpers/fake-dom.t
 import { TOWER_TEXT } from '../../shared/strings.js';
 import { towerFromStage, type OwnedSeat } from '../../src/sources/tower.ts';
 import { busyStage } from '../helpers/tower-fixture.ts';
-import { apprActs, describeChat, mergeFeed, msgError, notifyText, pinExtra, type Approval, type Guard } from '../../ui/owned.js';
+import { apprActs, describeChat, describeNew, describeOwned, describeOwnedDock, errText, mergeFeed, msgError, notifyText, pinExtra, type Approval, type Guard } from '../../ui/owned.js';
 
 // Orchestra's own sessions on the tower page (orchestra app plan §2-§5): ui/app.js booted against the
 // real ui/tower.html in the fake DOM, with the network, the clock, the timers, session storage and
@@ -55,6 +55,8 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
   const timeouts: { fn: () => void; ms: number; off: boolean }[] = [];
   const requests: { method: string; url: string; headers: Record<string, string>; body: any }[] = [];
   const notes: { title: string; body: string }[] = [];
+  const prompts: string[] = [];
+  let promptAnswer: string | null = null;
   const store = new Map<string, string>();
   let mono = 1000;
   let seats: OwnedSeat[] = [seat(ID.a, 'fix the css', 'running', OBSERVED + 20 * MIN), seat(ID.b, 'run tests', 'idle', OBSERVED + 10 * MIN), seat(ID.c, 'refactor', 'idle', OBSERVED + 25 * MIN)];
@@ -95,7 +97,10 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
   const define = (k: string, v: unknown) => Object.defineProperty(g, k, { configurable: true, writable: true, value: v });
   define('document', doc);
   define('location', loc);
-  define('window', { addEventListener: (t: string, fn: Listener) => on(win, t, fn), matchMedia: () => ({ matches: false }) });
+  define('window', {
+    addEventListener: (t: string, fn: Listener) => on(win, t, fn), matchMedia: () => ({ matches: false }),
+    prompt: (m: string) => { prompts.push(m); return promptAnswer; },
+  });
   define('performance', { now: () => mono });
   define('requestAnimationFrame', (fn: () => void) => { frames.push(fn); return frames.length; });
   define('setInterval', (fn: () => void, ms: number) => { intervals.push({ fn, ms }); return intervals.length; });
@@ -202,10 +207,19 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     assert.equal(sent[0]!.headers['x-orchestra-csrf'], CSRF);
     assert.equal(sent[0]!.headers['content-type'], 'application/json');
 
-    // A high-risk allow: a click does nothing; let go early and nothing goes; held 1 s (pointer or Enter) it goes.
+    // A high-risk allow: a click asks for the typed word (r4 §10.9's typed way); cancelled or wrong, nothing
+    // goes; let go early and nothing goes; held 1 s (pointer or Enter) it goes.
     const allowB = act(pinOf(ID.b), 'allow')!;
+    assert.equal(allowB.getAttribute('aria-label'), `${TOWER_TEXT['appr.holdLabel']!.replace('{t}', 'req')}`, 'the button names its request');
+    assert.equal(act(pinOf(ID.b), 'deny')!.getAttribute('aria-label'), '拒绝：req');
     await click(allowB);
-    assert.equal(posts(`/api/approvals/${AP.b}/allow`).length, 0);
+    assert.equal(prompts.length, 1);
+    assert.ok(prompts[0]!.includes('req') && prompts[0]!.includes(TOWER_TEXT['appr.typeWord']!), prompts[0]);
+    assert.equal(posts(`/api/approvals/${AP.b}/allow`).length, 0, 'cancelled: nothing is sent');
+    promptAnswer = '好';
+    await click(allowB);
+    assert.equal(posts(`/api/approvals/${AP.b}/allow`).length, 0, 'a wrong word: nothing is sent');
+    assert.equal(doc.getElementById('note')!.textContent, TOWER_TEXT['appr.typeWrong']);
     fire(doc, 'pointerdown', { target: allowB });
     await flush();
     assert.equal(allowB.getAttribute('data-hold'), '1');
@@ -223,6 +237,16 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     assert.equal(held.length, 1);
     assert.deepEqual([held[0]!.body.digest, held[0]!.body.rev], [list.approvals[1].digest, list.rev]);
     fire(doc, 'keyup', { target: allowB, key: 'Enter' });
+    // The click that ends a hold is the hold's own (no second allow, no prompt); the next click asks again.
+    const asked = prompts.length;
+    await click(allowB);
+    assert.equal(prompts.length, asked);
+    promptAnswer = ` ${TOWER_TEXT['appr.typeWord']} `;
+    await click(allowB);
+    assert.equal(prompts.length, asked + 1);
+    const typedAllow = posts(`/api/approvals/${AP.b}/allow`);
+    assert.equal(typedAllow.length, 2, 'the typed word lets it go');
+    assert.deepEqual([typedAllow[1]!.body.digest, typedAllow[1]!.body.rev], [list.approvals[1].digest, list.rev]);
 
     // A deny is one request about one approval: no batch.
     await click(act(pinOf(ID.c), 'deny'));
@@ -359,4 +383,50 @@ test('owned descriptors: no allow for a cut request or a native wait, words for 
   const c = describeChat(f);
   assert.equal(c.kids.length, 2);
   assert.ok(c.note.includes(TOWER_TEXT['chat.clipped']!), 'T1: what the daemon no longer holds is said');
+});
+
+test('owned descriptors (review fixes): words for notes and fates, unknown outcomes, why off, busy keeps the focus, unique ids', () => {
+  const g: Guard = { unlocked: true, settle: '', hold: null, busy: false, nowWall: 0 };
+  const ev = (seq: number, kind: string, ref: string | null, state: string | null, text: string | null = null, uuid: string | null = null) => ({ seq, kind, ref, uuid, text, state, live: false, exitCode: null });
+  const U1 = '11111111-1111-4111-8111-111111111111';
+  const U2 = '22222222-2222-4222-8222-222222222222';
+  const chat = describeChat({ clipped: false, events: [
+    ev(1, 'you', null, null, 'first', U1), ev(2, 'you', null, null, 'second', U2),
+    ev(3, 'note', U1, 'msg-sent'), ev(4, 'note', U2, 'msg-not-sent', 'no active turn'),
+    ev(5, 'note', null, 'not-sent', 'gateway down'), ev(6, 'note', null, 'mystery-code', 'raw words'),
+    ev(7, 'auto-denied', null, 'protected', 'edit (protected)'), ev(8, 'auto-denied', 'a', 'mismatch'), ev(9, 'note', null, 'children-may-remain'),
+  ] });
+  const lines = chat.kids.map((k: any) => `${k.slots.who.text}|${k.slots.tx.text}`);
+  assert.deepEqual(lines, [
+    `你 · ${TOWER_TEXT['msgst.msg-sent']}|first`,
+    `你 · 没发出去：no active turn|second`,
+    '|这条消息没有发给它：gateway down',
+    '|提示 mystery-code：raw words',
+    '|碰到受保护的位置，Orchestra 直接拒绝了：edit (protected)',
+    `|${TOWER_TEXT['chat.mismatch']}`,
+    `|${TOWER_TEXT['fnote.children-may-remain']}`,
+  ], 'each message says its fate; no note is a bare code; the fallback keeps the words');
+  // A 5xx may come after the effect: the outcome is unknown, never "not done" (T1); a 501 is a refusal.
+  assert.equal(errText('http-500'), TOWER_TEXT['op.unknown']);
+  assert.equal(errText('network'), TOWER_TEXT['op.unknown']);
+  assert.equal(errText('http-501'), '没办成：http-501');
+  // Why a session cannot start, in words; an unknown code says so.
+  const off = { kind: 'owned-list', rev: 0, enabled: false, disabledWhy: 'not-asked', harnesses: { codex: false, claude: false }, owned: [], approvals: [] };
+  assert.ok(describeNew(off, 'codex', false).why.text.includes(TOWER_TEXT['why.not-asked']!));
+  assert.ok(describeNew({ ...off, disabledWhy: 'brand-new' }, 'codex', false).why.text.includes('原因未知：brand-new'));
+  // Busy buttons are aria-disabled (a disabled one drops the focus); a queue ahead is said; an unknown session takes nothing.
+  const o = { ownedId: 'a'.repeat(20), model: 'codex/gpt-6.1-sol', title: 't', state: 'running', endReason: null, waiting: null, queued: 1, tokens: null };
+  const list = { ...off, enabled: true, disabledWhy: null, owned: [o] };
+  const dock = describeOwnedDock({ id: o.ownedId }, list, { ...g, busy: true }, false, false) as any;
+  assert.deepEqual(dock.btns.kids.map((b: any) => [b.data.act, b.attr.disabled, b.attr['aria-disabled']]), [['send', undefined, 'true'], ['interrupt', undefined, 'true'], ['end', undefined, 'true']]);
+  assert.ok(dock.st.text.startsWith(TOWER_TEXT['dock.afterQueue']!));
+  const deny = apprActs(approval(AP.a, ID.a, { rev: 1 }) as Approval, { ...g, busy: true }, 'card')[0]!;
+  assert.deepEqual([deny.attr!.disabled, deny.attr!['aria-disabled']], [undefined, 'true']);
+  const gone = describeOwnedDock({ id: o.ownedId }, { ...list, owned: [{ ...o, state: 'unknown', endReason: 'daemon-restart' }] }, g, false, false) as any;
+  assert.equal(gone.note.text, TOWER_TEXT['dock.unknown']);
+  assert.ok((describeOwned(o.ownedId, { ...list, owned: [{ ...o, state: 'unknown', endReason: 'daemon-restart' }] }, undefined, g) as any).ownSt.text.includes(TOWER_TEXT['life.daemon-restart']!));
+  // Every id in the page is one element's: a label names the control it is for.
+  const ids = [...HTML.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(ids.filter((x, i) => ids.indexOf(x) !== i), [], 'no id twice');
+  for (const m of HTML.matchAll(/<label[^>]*\bfor="([^"]+)"/g)) assert.match(HTML, new RegExp(`<(?:select|input|textarea)[^>]*\\bid="${m[1]}"`), `label for ${m[1]} names a control`);
 });

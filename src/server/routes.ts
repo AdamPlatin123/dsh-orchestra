@@ -261,6 +261,8 @@ const owned = (verb: HumanVerb, target: Route['target'], body: Record<string, Sh
 });
 /** The harnesses a new owned session may run on (orchestra app plan section 2): Codex over app-server, Claude over its host. */
 export const OWNED_HARNESSES: readonly ['codex', 'claude'] = frozen(['codex', 'claude'] as const);
+/** What became of a message at once (POST /api/owned/:id/message's via): handed to codex, or waiting in orchestrad. */
+export const MESSAGE_VIA: readonly ['turn/start', 'turn/steer', 'queued'] = frozen(['turn/start', 'turn/steer', 'queued'] as const);
 /** What GET /api/import/:id/check finds the stage session can be: resumed, forked, copied as a DSH snapshot, or nothing. */
 export const IMPORT_CAN: readonly ['resume', 'fork', 'dsh-snapshot', 'none'] = frozen(['resume', 'fork', 'dsh-snapshot', 'none'] as const);
 /** How POST /api/import/claude takes a Claude session: resumed (it has ended) or forked (it may still be live). */
@@ -326,7 +328,8 @@ export const ROUTES: readonly Route[] = Object.freeze([
     'owned-new', null, { text: message, harness: en(OWNED_HARNESSES), model: re(OWNED_MODEL_RE, 'model') }, accepted({ ownedId: id }),
     ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command'], NEW_FAILS,
   ),
-  owned('owned-message', 'owned', { text: message }, accepted({ uuid, queued: count }), ['text-too-long', 'slash-command', 'owned-ended', 'queue-full']),
+  // via: what became of it at once: handed to codex (turn/start, turn/steer) or waiting here (queued).
+  owned('owned-message', 'owned', { text: message }, accepted({ uuid, queued: count, via: en(MESSAGE_VIA) }), ['text-too-long', 'slash-command', 'owned-ended', 'queue-full']),
   owned('owned-interrupt', 'owned', {}, accepted({ withdrawn: count, denied: count })),
   owned('owned-end', 'owned', {}, accepted()),
   owned('owned-retry', 'owned', { confirmGone: konst(true) }, accepted(), ['owned-disabled', 'owned-limit', 'still-running', 'cwd-gone', 'cwd-forbidden'], SPAWN_FAILS),

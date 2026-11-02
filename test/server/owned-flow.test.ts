@@ -320,7 +320,7 @@ test('the tower draws the owned session under its own project, waiting on Orches
   assert.equal(node.activity, 'echo tower');
   assert.deepEqual(tower.waitingBar, [{ node: `n:${ownedId}`, kind: 'approval', source: 'orchestra', deadline: approval.deadline }]);
   assert.equal(tower.tally.waiting, 1);
-  // Answered, it runs on and then goes idle; ended, it stays as idle with why it ended (never done).
+  // Answered, it runs on and then goes idle; ended, it is ended (never idle, never done) with why it ended.
   await post(r, p, `/api/approvals/${approval.approvalId}/deny`, { actionId: uuid() });
   await until('idle', () => r.owned.get(ownedId)!.state === 'idle');
   const idle = (await request(r, 'GET', '/api/tower', { cookie: p.cookie })).json;
@@ -330,7 +330,7 @@ test('the tower draws the owned session under its own project, waiting on Orches
   assert.equal(end.status, 200, end.body);
   const ended = (await request(r, 'GET', '/api/tower', { cookie: p.cookie })).json;
   assert.ok(validateTower(ended).ok, validateTower(ended).errors.join('\n'));
-  assert.deepEqual([ended.projects[0].nodes[0].state, ended.projects[0].nodes[0].activity], ['idle', '已结束：你结束的']);
+  assert.deepEqual([ended.projects[0].nodes[0].state, ended.projects[0].nodes[0].activity], ['ended', '已结束：你结束的']);
   const after = await post(r, p, `/api/owned/${ownedId}/message`, { actionId: uuid(), text: 'say more' });
   assert.deepEqual([after.status, after.json], [409, { error: 'owned-ended' }]);
 });

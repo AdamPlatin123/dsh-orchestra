@@ -27,13 +27,12 @@ export function parse(hash) {
 /** @param {Route} r */
 export function format(r) {
   if (r.view === 'about') return '#/about';
-  // A node id is 'n:' + 20 hex (NODE_ID_RE): nothing in it needs escaping; anything else is the tower.
+  // A node id is 'n:' + 20 hex (no escaping); anything else is the tower.
   return r.node !== null && NODE_ID_RE.test(r.node) ? `#/n/${r.node}` : '#/';
 }
 
 /**
- * Writes the route into the hash (hashchange brings it back): a history entry, so Back closes a node
- * page; with `replace`, none (a wide-screen selection opens no page). @param {Route} r @param {boolean} [replace]
+ * Writes the route into the hash: a history entry (Back closes a node page), none with `replace`. @param {Route} r @param {boolean} [replace]
  */
 export function go(r, replace = false) {
   const h = format(r);

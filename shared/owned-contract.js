@@ -4,9 +4,11 @@
 // reply against it before it goes out (src/server/owned.ts) and answers 500 when one does not fit.
 //
 // The truthfulness rules a payload can carry by itself:
-// - T1: a session's state is what its driver knows (starting, idle, running) or that it ended or failed;
-//   there is no unknown here because Orchestra holds the child. A token count nobody reported is null,
-//   never 0. Why the feature is off is said (disabledWhy), never a bare false.
+// - T1: a session's state is what its driver knows (starting, idle, running) or that it ended or failed,
+//   as long as this orchestrad holds the child. A session an earlier orchestrad started (its registry
+//   entry outlived a restart, src/owned/registry.ts) is unknown with endReason daemon-restart: whether
+//   its child still runs nobody here knows. A token count nobody reported is null, never 0. Why the
+//   feature is off is said (disabledWhy), never a bare false.
 // - T2: no state is done: a turn's end is a feed event (turn-ended), a session's end is ended or failed.
 // - T3: every count equals the list it stands for: limits.active is the number of sessions still
 //   running a child; a session's `waiting` names one of its open approvals (the one with the earliest
@@ -24,9 +26,12 @@ export const OWNED_V = 1;
 /** The enums, each in its documented order. */
 export const OWNED_ENUMS = frozen({
   harness: ['codex', 'claude'],
-  state: ['starting', 'idle', 'running', 'ended', 'failed'],
-  /** you-ended: a person ended it; exited: the child went away; start-failed, policy-mismatch: it never started work. */
-  endReason: ['you-ended', 'exited', 'start-failed', 'policy-mismatch'],
+  state: ['starting', 'idle', 'running', 'ended', 'failed', 'unknown'],
+  /**
+   * you-ended: a person ended it; exited: the child went away; start-failed, policy-mismatch: it never
+   * started work; daemon-restart: an earlier orchestrad held it (state unknown).
+   */
+  endReason: ['you-ended', 'exited', 'start-failed', 'policy-mismatch', 'daemon-restart'],
   approvalKind: ['command', 'file-change', 'permissions', 'question', 'elicitation'],
   risk: ['shell', 'write', 'net', 'protected', 'other'],
   feedKind: ['you', 'text', 'tool', 'tool-result', 'ask', 'answer', 'auto-denied', 'lifecycle', 'result', 'note'],
@@ -58,6 +63,7 @@ export const OWNED_TOWER_TEXT = frozen({
   'end.exited': '已结束：进程退出了',
   'end.start-failed': '已结束：没能启动',
   'end.policy-mismatch': '已结束：审批或沙箱设置和要求不符，Orchestra 停了它',
+  'end.daemon-restart': 'orchestrad 重启过：之前开的这个会话现在怎样不知道',
   'end.unknown': '已结束',
 });
 
@@ -216,9 +222,11 @@ export function validateOwnedList(x) {
     c.re(o.model, `${at}.model`, OWNED_MODEL_NAME_RE, 'model of the owned list');
     c.text(o.title, `${at}.title`, OWNED_BOUNDS.titleBytes);
     c.en(o.state, `${at}.state`, OWNED_ENUMS.state);
-    const over = o.state === 'ended' || o.state === 'failed';
+    const over = o.state === 'ended' || o.state === 'failed' || o.state === 'unknown';
     if (o.endReason !== null) c.en(o.endReason, `${at}.endReason`, OWNED_ENUMS.endReason);
-    if (over !== (o.endReason !== null)) c.bad(`${at}.endReason`, 'set exactly when the session ended or failed');
+    if (over !== (o.endReason !== null)) c.bad(`${at}.endReason`, 'set exactly when the session ended, failed or is unknown');
+    // T1: daemon-restart is exactly the unknown state's reason.
+    if ((o.state === 'unknown') !== (o.endReason === 'daemon-restart')) c.bad(`${at}.endReason`, 'daemon-restart exactly when the state is unknown');
     if (o.waiting !== null) c.re(o.waiting, `${at}.waiting`, APPROVAL_ID_RE, 'approval id');
     c.int(o.queued, `${at}.queued`);
     if (over && o.queued !== 0) c.bad(`${at}.queued`, 'an ended session holds no waiting message');
@@ -240,7 +248,7 @@ export function validateOwnedList(x) {
     c.re(a.ownedId, `${at}.ownedId`, OWNED_ID_RE, 'owned id');
     const owner = sessions.get(a.ownedId);
     if (owner === undefined) c.bad(`${at}.ownedId`, `${String(a.ownedId)} is no listed session`);
-    else if (owner.state === 'ended' || owner.state === 'failed') c.bad(`${at}.ownedId`, 'an approval open on a session that ended');
+    else if (owner.state === 'ended' || owner.state === 'failed' || owner.state === 'unknown') c.bad(`${at}.ownedId`, 'an approval open on a session that ended (or that this orchestrad does not hold)');
     byOwned.set(a.ownedId, [...(byOwned.get(a.ownedId) ?? []), a]);
     c.en(a.kind, `${at}.kind`, OWNED_ENUMS.approvalKind);
     c.text(a.title, `${at}.title`, OWNED_BOUNDS.approvalTitleBytes);
@@ -277,7 +285,7 @@ export function validateOwnedList(x) {
     c.int(limits.maxOwned, '$.limits.maxOwned');
     c.int(limits.active, '$.limits.active');
     let k = 0;
-    for (const o of sessions.values()) if (o.state !== 'ended' && o.state !== 'failed') k++;
+    for (const o of sessions.values()) if (o.state !== 'ended' && o.state !== 'failed' && o.state !== 'unknown') k++;
     if (limits.active !== k) c.bad('$.limits.active', `${String(limits.active)}, but ${k} listed sessions still run`);
   }
   return { ok: c.errors.length === 0, errors: c.errors };

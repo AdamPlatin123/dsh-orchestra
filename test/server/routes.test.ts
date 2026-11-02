@@ -343,8 +343,10 @@ test('new and message: text up to the body cap as a shape, the 2 KB limit and th
   const msg = owned('POST', '/api/owned/:id/message');
   assert.equal(msg.target, 'owned');
   assert.deepEqual([...msg.own], ['text-too-long', 'slash-command', 'owned-ended', 'queue-full']);
-  assert.equal(why(msg.reply!, { actionId: ACT, accepted: true, jseq: 4, uuid: TAB, queued: 2 }), 'ok');
-  assert.equal(why(msg.reply!, { actionId: ACT, accepted: true, jseq: 4, uuid: 'm-1', queued: 2 }), 'grammar $.uuid', 'orchestrad makes the uuid with randomUUID');
+  assert.equal(why(msg.reply!, { actionId: ACT, accepted: true, jseq: 4, uuid: TAB, queued: 2, via: 'queued' }), 'ok');
+  assert.equal(why(msg.reply!, { actionId: ACT, accepted: true, jseq: 4, uuid: TAB, queued: 0 }), 'missing $.via', 'the reply says what became of the message at once');
+  assert.equal(why(msg.reply!, { actionId: ACT, accepted: true, jseq: 4, uuid: TAB, queued: 0, via: 'done' }), 'enum $.via');
+  assert.equal(why(msg.reply!, { actionId: ACT, accepted: true, jseq: 4, uuid: 'm-1', queued: 2, via: 'turn/start' }), 'grammar $.uuid', 'orchestrad makes the uuid with randomUUID');
 });
 
 test('interrupt, end, retry: an actionId (retry may confirm the old process is gone); interrupt says how much it withdrew and denied', () => {

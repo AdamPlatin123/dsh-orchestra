@@ -1,6 +1,7 @@
 import type { ApprovalView } from '../owned/approvals.ts';
 import type { CodexOwned } from '../owned/codex-owned.ts';
 import type { CodexSession } from '../owned/codex-session.ts';
+import { isOver } from '../owned/codex-session.ts';
 import type { FeedEvent } from '../owned/feed.ts';
 import type { Log } from '../runtime/log.ts';
 import type { OwnedCall, OwnedHandlers, OwnedOutcome } from './owned.ts';
@@ -15,10 +16,12 @@ import { makeOwnedHandlers } from './owned.ts';
 //
 //   POST /api/owned/new                 {text, harness, model?}: a new session; codex now, claude only
 //                                       once its host is wired (owned-disabled until then).
-//   POST /api/owned/:id/message         {text}: turn/start, turn/steer, or waits (queued); the uuid of
-//                                       the message in the feed is the actionId of its human record.
+//   POST /api/owned/:id/message         {text}: turn/start, turn/steer, or waits (queued); the reply says
+//                                       which (via), and the uuid of the message in the feed is the
+//                                       actionId of its human record (its fate follows as msg-* notes).
 //   POST /api/owned/:id/interrupt       declines the session's open approvals, withdraws its waiting
-//                                       messages, then interrupts the turn.
+//                                       messages, then sends the turn's interrupt (not awaited: its
+//                                       outcome is the feed's).
 //   POST /api/owned/:id/end             declines the open approvals, then stops the child.
 //   POST /api/approvals/:id/allow       {digest, rev}: D8, only here and only by a person. Another
 //                                       digest is declined (digest-mismatch), another rev or a list
@@ -39,7 +42,8 @@ export type OwnedRoutesDeps = {
   log: Log;
 };
 
-const FINAL = (s: CodexSession) => s.state === 'ended' || s.state === 'failed';
+/** No child of it runs here: ended, failed, or left by an earlier orchestrad (unknown). */
+const FINAL = (s: CodexSession) => isOver(s.state);
 
 /** Whether any harness can start an owned session now: what the check chain's owned-disabled step reads. */
 export const ownedEnabled = (deps: Pick<OwnedRoutesDeps, 'codex' | 'claude'>): boolean => deps.codex !== null || deps.claude !== null;
@@ -122,7 +126,7 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     if (s === null) return refuse('item-unknown');
     const sent = s.send(String(call.body!.text), call.actionId!);
     if (!sent.ok) return refuse(sent.reason === 'ended' ? 'owned-ended' : 'queue-full');
-    return { ok: true, reply: { uuid: call.actionId!, queued: s.queued } };
+    return { ok: true, reply: { uuid: call.actionId!, queued: s.queued, via: sent.via } };
   });
 
   handlers.register('POST', '/api/owned/:id/interrupt', async (call) => {

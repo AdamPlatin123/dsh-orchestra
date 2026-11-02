@@ -11,7 +11,10 @@
 //   has no node with basis registry or a native wait. With meta.detects.error false, no node is error:
 //   an error count of 0 then means "not looked", and the page does not show one.
 // - T2: no node is ever done: the furthest a subagent gets is `returned` (it sent its report back).
-// - Basis owned only on an owned node; one owned project, of owned nodes only.
+//   An owned session whose child is gone (ended, or failed and exited) is `ended`, never idle: idle
+//   would claim it can take a message. Only an owned node can be ended (Orchestra saw its child go).
+// - Basis owned only on an owned node; one owned project, of owned nodes only. An owned node that waits
+//   waits on Orchestra's own queue (source orchestra), never on a native or inferred wait.
 // - T3: every count equals the length of the list it links to: tally against the nodes, a group's
 //   count against its ids, a node's subtree counts against its descendants, the waiting bar against
 //   the nodes that wait, clipped sessions against total - shown per source.
@@ -44,8 +47,8 @@ export const TOWER_ENUMS = frozen({
   harness: ['claude', 'dsh', 'codex'],
   ownership: ['observed', 'owned', 'foreign'],
   layer: ['agent', 'subagent'],
-  /** In sibling order: waits on you, failed, runs, unknown, returned, idle. */
-  state: ['waiting', 'error', 'running', 'unknown', 'returned', 'idle'],
+  /** In sibling order: waits on you, failed, runs, unknown, returned, idle, ended (an owned session whose child is gone). */
+  state: ['waiting', 'error', 'running', 'unknown', 'returned', 'idle', 'ended'],
   /** registry: reported; log: read off its events; mtime: guessed from the last write; none: unknown; owned: its driver knows. */
   basis: ['registry', 'log', 'mtime', 'none', 'owned'],
   waitingKind: ['approval', 'question', 'route'],
@@ -82,7 +85,7 @@ export const TOWER_BOUNDS = frozen({
  * @typedef {string} Hex20
  * @typedef {string} NodeId 'n:' + Hex20
  * @typedef {'claude' | 'dsh' | 'codex'} Harness
- * @typedef {'waiting' | 'error' | 'running' | 'unknown' | 'returned' | 'idle'} NodeState
+ * @typedef {'waiting' | 'error' | 'running' | 'unknown' | 'returned' | 'idle' | 'ended'} NodeState
  * @typedef {{
  *   meta: Meta,
  *   router: Router,
@@ -270,11 +273,13 @@ function checkNode(c, v, at) {
   // T2: returned is a subagent's word; an agent is never reported back to anyone.
   if (n.state === 'returned' && n.layer !== 'subagent') c.bad(`${at}.state`, 'only a subagent returns');
   if (n.basis === 'owned' && n.ownership !== 'owned') c.bad(`${at}.basis`, 'owned on a node not owned');
+  if (n.state === 'ended' && (n.ownership !== 'owned' || n.basis !== 'owned')) c.bad(`${at}.state`, 'ended only on an owned node whose driver saw its child go');
   if (n.ownership === 'owned' && n.basis !== 'owned' && n.basis !== 'none') c.bad(`${at}.basis`, `${String(n.basis)} on an owned node`);
   if (n.waiting !== null) {
     const w = checkWaiting(c, n.waiting, `${at}.waiting`);
     if (w !== null) {
       if (w.source === 'orchestra' && n.ownership !== 'owned') c.bad(`${at}.waiting.source`, 'orchestra waits only on an owned session');
+      if (n.ownership === 'owned' && w.source !== 'orchestra') c.bad(`${at}.waiting.source`, "an owned session waits only on Orchestra's queue");
       if (w.source === 'inferred' && n.basis === 'registry') c.bad(`${at}.waiting.source`, 'inferred, but the state has a registry basis');
       if (w.source === 'native' && n.basis !== 'registry' && n.basis !== 'log') c.bad(`${at}.waiting.source`, `native, but the state is guessed (${String(n.basis)})`);
     }

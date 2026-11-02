@@ -1,6 +1,6 @@
 // @ts-check
-// Per-viewer conveniences in localStorage (orchestra app plan §5): the theme; and the controller token in
-// sessionStorage. Every access is in try/catch; the page works the same when storage is blocked or empty.
+// Per-viewer storage (orchestra app plan §5): the theme (localStorage), the token (sessionStorage). All in
+// try/catch: blocked or empty storage changes nothing else.
 
 const THEMES = ['auto', 'light', 'dark'];
 const KEY = 'orchestra.tower.theme';
@@ -25,7 +25,7 @@ export function setTheme(theme) {
   }
 }
 
-// The controller token (slice design §2.7): this tab's session storage, per origin (port included).
+// The token (slice design §2.7): this tab's session storage, per origin and port.
 /** @returns {string | null} */
 export function getCsrf() {
   try {

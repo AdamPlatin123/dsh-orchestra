@@ -166,6 +166,10 @@ test('cwd: the owned work root is exempt from the AppData row and from the data 
   const d = policy(dot, { ownedWorkRoot: `${dot}\\work`, protectedDirs: [dot, `${user}\\.ssh`] });
   assert.equal(verdict(d, `${user}\\.ssh\\x`), 'protected:user-profile\\.ssh');
   // An exempt root that is not one of the allowed roots refuses the policy.
-  assert.throws(() => policy(dot, { ownedWorkRoot: `${dot}\\elsewhere` }), /must be one of allowedRoots/);
+  assert.throws(() => policy(dot, { ownedWorkRoot: `${dot}\\work`, allowedRoots: [`${dot}\\other`] }), /must be one of allowedRoots/);
+  // Only orchestrad's own work dir is exempt: named work, directly in a protected dir (the data dir).
+  assert.throws(() => policy(dot, { ownedWorkRoot: `${dot}\\elsewhere`, allowedRoots: [`${dot}\\elsewhere`] }), /must be named work/);
+  const roaming = `${user}\\AppData\\Roaming\\work`;
+  assert.throws(() => policy(dot, { ownedWorkRoot: roaming, allowedRoots: [roaming] }), /sit directly in a protected dir/);
   assert.throws(() => policy(dot, { ownedWorkRoot: 'C:\\', allowedRoots: ['C:\\'] }), /drive root/);
 });

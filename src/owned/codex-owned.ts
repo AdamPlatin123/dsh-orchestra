@@ -1,11 +1,15 @@
 import * as crypto from 'node:crypto';
 import type { ChildPipe } from '../os/child-pipe.ts';
+import type { ClockHub } from '../runtime/clock.ts';
 import type { OwnedSeat } from '../sources/tower.ts';
 import type { Approvals } from './approvals.ts';
-import type { CodexSession } from './codex-session.ts';
+import type { CodexEndReason, CodexSession, CodexSessionState, PathJudge } from './codex-session.ts';
+import type { OwnedRecord, OwnedRegistry } from './registry.ts';
 import type { Redact } from './text.ts';
-import { startCodexSession } from './codex-session.ts';
+import { isOver, startCodexSession } from './codex-session.ts';
+import { Feed } from './feed.ts';
 import { DEFAULT_CODEX_MODEL, isOwnedModel } from './models.ts';
+import { afterRestart } from './registry.ts';
 import { shown } from './text.ts';
 import { frozen, frozenClass } from '../../shared/frozen.js';
 
@@ -13,6 +17,10 @@ import { frozen, frozenClass } from '../../shared/frozen.js';
 // lowercase hex digits from node:crypto, slice design §2.4), has its work dir made, starts it, and keeps
 // it for the routes to find. It holds no gate and no fence of its own: the composition root hands it
 // makeWorkDir (the write fence) and launch (the spawn gate, rule codex-app-server, cwd checked there).
+//
+// With a registry (src/owned/registry.ts) each session's state is kept on disk as it changes, and the
+// sessions an earlier orchestrad left are listed again at start: those that had not ended as unknown
+// (daemon-restart), never resumed. They hold no child and no seat here; their feed says only that.
 
 export const CODEX_OWNED_LIMITS = frozen({
   /** Sessions running at once (slice design §2.4's suggested 3). */
@@ -38,6 +46,12 @@ export type CodexOwnedOptions = {
   maxActive?: number;
   /** Tests only: a smaller line bound for the JSON-RPC client. */
   rpcLineMaxBytes?: number;
+  /** The Clock hub the sessions' request deadlines run on. */
+  hub?: ClockHub;
+  /** Judges the paths an approval names (the spawn gate's cwd table, src/os/cwd.ts CwdPolicy.place). */
+  judge?: PathJudge;
+  /** Where each session's state is kept across a restart; without one nothing outlives this orchestrad. */
+  registry?: OwnedRegistry;
 };
 
 export type NewOwned =
@@ -53,6 +67,45 @@ export class CodexOwned {
   constructor(opts: CodexOwnedOptions) {
     this.#opts = opts;
     this.#max = opts.maxActive ?? CODEX_OWNED_LIMITS.active;
+    if (opts.registry !== undefined) {
+      const all = this.#load(opts.registry);
+      // The newest kept, as #trim keeps them; older files stay on disk unread.
+      for (const was of all.slice(-CODEX_OWNED_LIMITS.ended)) {
+        const r = afterRestart(was);
+        if (r !== was) this.#save(r);
+        this.#sessions.set(r.ownedId, restoredSession(r, opts.now));
+        this.#meta.set(r.ownedId, Object.freeze({ ownedId: r.ownedId, harness: 'codex', title: r.title, createdAt: r.createdAt }));
+      }
+    }
+  }
+
+  /** How many sessions an earlier orchestrad left that this one lists again. */
+  get restored(): number {
+    return [...this.#sessions.values()].filter((s) => s.endReason === 'daemon-restart' || s.stats().failure === RESTORED).length;
+  }
+
+  #load(registry: OwnedRegistry): OwnedRecord[] {
+    try {
+      return registry.load();
+    } catch {
+      return [];
+    }
+  }
+
+  /** Keeps a session's state on disk; a failed write leaves the last one there (logged by whoever watches onChange). */
+  #save(r: OwnedRecord): void {
+    try {
+      this.#opts.registry?.save(r);
+    } catch {
+      this.#saveFailures++;
+    }
+  }
+
+  #saveFailures = 0;
+
+  /** Registry writes that failed since start. */
+  get saveFailures(): number {
+    return this.#saveFailures;
   }
 
   get approvals(): Approvals {
@@ -66,7 +119,7 @@ export class CodexOwned {
 
   /** Sessions whose child still runs. */
   active(): number {
-    return [...this.#sessions.values()].filter((s) => s.state !== 'ended' && s.state !== 'failed').length;
+    return [...this.#sessions.values()].filter((s) => !isOver(s.state)).length;
   }
 
   /** A new session; `text` (with the uuid of its human record) is its first message. The model is checked before anything is made. */
@@ -82,16 +135,34 @@ export class CodexOwned {
       return { ok: false, reason: 'cwd-failed', detail: e instanceof Error ? e.message : String(e) };
     }
     const o = this.#opts;
-    const started = startCodexSession({
-      ownedId, cwd, model, launch: () => o.launch(cwd), approvals: o.approvals, now: o.now, redact: o.redact,
-      ...(o.onChange !== undefined ? { onChange: o.onChange } : {}),
-      ...(o.rpcLineMaxBytes !== undefined ? { rpcLineMaxBytes: o.rpcLineMaxBytes } : {}),
-    });
-    if (!started.ok) return started;
     const first = (req.text ?? '').trim().split('\n', 1)[0] ?? '';
     const title = first === '' ? '' : shown(o.redact, first, CODEX_OWNED_LIMITS.titleBytes, 'head').text;
+    const createdAt = o.now();
+    // The registry entry follows the state: written when the session is made and whenever its state moves.
+    let mine: CodexSession | null = null;
+    let kept = '';
+    const keep = () => {
+      if (mine === null || o.registry === undefined) return;
+      const key = `${mine.state}|${String(mine.endReason)}`;
+      if (key === kept) return;
+      kept = key;
+      this.#save({ v: 1, ownedId, harness: 'codex', model, title, createdAt, state: mine.state, endReason: mine.endReason });
+    };
+    const started = startCodexSession({
+      ownedId, cwd, model, launch: () => o.launch(cwd), approvals: o.approvals, now: o.now, redact: o.redact,
+      onChange: () => {
+        keep();
+        o.onChange?.();
+      },
+      ...(o.rpcLineMaxBytes !== undefined ? { rpcLineMaxBytes: o.rpcLineMaxBytes } : {}),
+      ...(o.hub !== undefined ? { hub: o.hub } : {}),
+      ...(o.judge !== undefined ? { judge: o.judge } : {}),
+    });
+    if (!started.ok) return started;
+    mine = started.session;
+    keep();
     this.#sessions.set(ownedId, started.session);
-    this.#meta.set(ownedId, Object.freeze({ ownedId, harness: 'codex', title, createdAt: o.now() }));
+    this.#meta.set(ownedId, Object.freeze({ ownedId, harness: 'codex', title, createdAt }));
     this.#trim();
     if (req.text !== undefined) started.session.send(req.text, req.uuid ?? '');
     return { ok: true, ownedId, session: started.session };
@@ -127,7 +198,7 @@ export class CodexOwned {
   endAll(): number {
     let n = 0;
     for (const s of this.#sessions.values()) {
-      if (s.state === 'ended' || s.state === 'failed') continue;
+      if (isOver(s.state)) continue;
       s.end();
       n++;
     }
@@ -135,7 +206,7 @@ export class CodexOwned {
   }
 
   #trim(): void {
-    const ended = [...this.#sessions.values()].filter((s) => s.state === 'ended' || s.state === 'failed');
+    const ended = [...this.#sessions.values()].filter((s) => isOver(s.state));
     for (const s of ended.slice(0, Math.max(0, ended.length - CODEX_OWNED_LIMITS.ended))) {
       this.#sessions.delete(s.ownedId);
       this.#meta.delete(s.ownedId);
@@ -143,3 +214,25 @@ export class CodexOwned {
   }
 }
 frozenClass(CodexOwned);
+
+/** The failure text of a session listed again after a restart. */
+const RESTORED = 'listed again after a restart';
+
+/**
+ * A session an earlier orchestrad left, as the routes and the tower see it: no child, no seat, nothing
+ * sent to it; its feed says only that orchestrad restarted (the conversation stayed with the old one).
+ */
+function restoredSession(r: OwnedRecord, now: () => number): CodexSession {
+  const feed = new Feed(now);
+  feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'daemon-restart' });
+  const state = r.state as CodexSessionState;
+  const endReason = r.endReason as CodexEndReason | null;
+  return Object.freeze({
+    ownedId: r.ownedId, model: r.model, cwd: '', state, endReason, threadId: null, turnId: null, tokens: null, queued: 0, feed,
+    ready: Promise.resolve(false),
+    send: () => ({ ok: false as const, reason: 'ended' as const }),
+    interrupt: async () => ({ withdrawn: 0, denied: 0 }),
+    end: () => ({ denied: 0 }),
+    stats: () => ({ rpc: null, stderrTail: '', failure: RESTORED }),
+  });
+}

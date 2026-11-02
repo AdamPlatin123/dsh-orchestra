@@ -27,13 +27,16 @@ import { frozen } from '../../shared/frozen.js';
 // of their own, first, basis 'owned' (one project, not one per cwd: each owned session works in its own
 // ORCHESTRA_HOME\work\<ownedId>, so a project per cwd would be a project per session). Their state is
 // what the driver knows of its own child (basis 'owned'): a turn running, idle between turns, waiting on
-// an approval of Orchestra's queue (source orchestra, with the deadline the queue denies it at), or ended;
-// an ended session is idle with its end reason as its activity, never done (T2), never error (this
-// build shows no error state: meta.detects.error is false for the observed sources).
+// an approval of Orchestra's queue (source orchestra, with the deadline the queue denies it at), or ended
+// (its child is gone: ended by you, exited, never started), with its end reason as its activity; never
+// idle (it takes no message), never done (T2), never error (this build reads no failure: meta.detects.error
+// is false). A session an earlier orchestrad left (registry, state unknown) is unknown with basis none.
+// With owned sessions the snapshot's observedAt is the driver's wall clock now, not the stage's (which
+// its throttle may hold up to 2 s back): the page counts the queue's deadlines down from it.
 // Then the tree is ordered (waits on you, failed, runs, unknown, returned, idle), counted per
 // subtree so a wait bubbles up through its ancestors, and folded by the research's rules.
 
-export type TowerState = 'waiting' | 'error' | 'running' | 'unknown' | 'returned' | 'idle';
+export type TowerState = 'waiting' | 'error' | 'running' | 'unknown' | 'returned' | 'idle' | 'ended';
 export type TowerBasis = 'registry' | 'log' | 'mtime' | 'none' | 'owned';
 export type Waiting = { kind: 'approval' | 'question' | 'route'; source: 'orchestra' | 'native' | 'inferred'; deadline: number | null };
 export type Group = { kind: 'same-type' | 'returned' | 'idle'; label: string | null; count: number; ids: string[] };
@@ -60,7 +63,7 @@ export type OwnedSeat = {
   ownedId: string;
   harness: Harness;
   title: string;
-  state: 'starting' | 'idle' | 'running' | 'ended' | 'failed';
+  state: 'starting' | 'idle' | 'running' | 'ended' | 'failed' | 'unknown';
   endReason: string | null;
   /** The earliest open approval of the session, with the wall time the queue declines it at. */
   waiting: { kind: 'approval' | 'question'; deadline: number; title: string } | null;
@@ -242,16 +245,20 @@ const text = (key: string, fallback: string): string => (Object.hasOwn(OWNED_TOW
 /** One owned session as a node: the driver's word, basis owned. */
 export function ownedNode(seat: OwnedSeat, nowWall: number): TowerNode {
   const waiting: Waiting | null = seat.waiting === null ? null : { kind: seat.waiting.kind, source: 'orchestra', deadline: seat.waiting.deadline };
-  const state: TowerState = waiting !== null ? 'waiting' : seat.state === 'starting' || seat.state === 'running' ? 'running' : 'idle';
+  const over = seat.state === 'ended' || seat.state === 'failed';
+  const state: TowerState = waiting !== null ? 'waiting'
+    : seat.state === 'starting' || seat.state === 'running' ? 'running'
+      : seat.state === 'unknown' ? 'unknown'
+        : over ? 'ended' : 'idle';
   let activity: string | null = null;
   if (seat.waiting !== null && seat.waiting.title !== '') activity = seat.waiting.title;
   else if (seat.state === 'starting') activity = text('starting', 'starting');
-  else if (seat.state === 'ended' || seat.state === 'failed') activity = text(`end.${seat.endReason ?? 'unknown'}`, text('end.unknown', 'ended'));
+  else if (over || seat.state === 'unknown') activity = text(`end.${seat.endReason ?? 'unknown'}`, text('end.unknown', 'ended'));
   const title = seat.title === '' ? text('untitled', 'owned session') : seat.title;
   return {
     id: `n:${seat.ownedId}`, session: null, harness: seat.harness, ownership: 'owned', layer: 'agent', parent: null, depth: 0,
     title: clipCp(title, TOWER_BOUNDS.titleCp), activity: activity === null ? null : clipCp(activity, TOWER_BOUNDS.activityCp),
-    state, basis: 'owned', waiting,
+    state, basis: state === 'unknown' ? 'none' : 'owned', waiting,
     counts: { children: 0, errors: 0, waiting: 0 }, groups: [],
     ageMs: seat.lastAt === null ? null : Math.max(0, nowWall - seat.lastAt), agentType: null,
   };
@@ -290,7 +297,7 @@ export function towerFromStage(stage: StageSnapshot, owned: { seats: readonly Ow
       return sourceRank[a.n.waiting!.source] - sourceRank[b.n.waiting!.source] || a.i - b.i;
     })
     .map(({ n }) => ({ node: n.id, kind: n.waiting!.kind, source: n.waiting!.source, deadline: n.waiting!.deadline }));
-  const tally: Record<TowerState, number> = { waiting: 0, error: 0, running: 0, unknown: 0, returned: 0, idle: 0 };
+  const tally: Record<TowerState, number> = { waiting: 0, error: 0, running: 0, unknown: 0, returned: 0, idle: 0, ended: 0 };
   for (const n of all) tally[n.state]++;
   const src = (h: Harness): TowerSrc => {
     const s = stage.sources[h];
@@ -298,7 +305,7 @@ export function towerFromStage(stage: StageSnapshot, owned: { seats: readonly Ow
   };
   const body = {
     meta: {
-      v: 1 as const, rev: '', observedAt: stage.observedAt, profile: stage.profile,
+      v: 1 as const, rev: '', observedAt: owned === null ? stage.observedAt : owned.nowWall, profile: stage.profile,
       // No rule reads a failure yet (a Codex turn_aborted is unknown: interrupted or failed, the rollout
       // does not say), so no node is ever error and an error count of 0 would only mean "not looked".
       detects: { error: false },

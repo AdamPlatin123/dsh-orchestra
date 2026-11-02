@@ -446,6 +446,7 @@
     "running": 5,
     "unknown": 1,
     "returned": 2,
-    "idle": 1
+    "idle": 1,
+    "ended": 0
   }
 }

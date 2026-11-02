@@ -648,6 +648,10 @@ const hostNoDynamicCode = ban('hosts:no-dynamic-code', hosts, /\beval\s*\(/, /\b
 // only under the test runner); a composition root that named them would hand the daemon a node.exe child.
 const fakeCodexOnlyInTests = ban('fake-codex-only-in-tests', except(code, 'src/os/spawn.ts'), /codex-app-server-fake/, /\bfakeCodexNode\b/, /\bFAKE_CODEX_SCRIPT\b/);
 
+// The cwd policy's one exemption (src/os/cwd.ts): only the composition root names the owned work root,
+// and the policy itself checks it is ORCHESTRA_HOME's own work dir. Nowhere else may hand one in.
+const ownedWorkRootOnlyInWorking = ban('owned-work-root-only-in-working', except(code, 'src/runtime/working.ts', 'src/os/cwd.ts'), /\bownedWorkRoot\b/);
+
 export const RULES: readonly Rule[] = [
   builtinPolicy,
   builtinOnlyNames,
@@ -708,6 +712,7 @@ export const RULES: readonly Rule[] = [
   inProcessStart,
   handleKill,
   fakeCodexOnlyInTests,
+  ownedWorkRootOnlyInWorking,
   mintedImport,
   workingImport,
   launcherRootFsUse,

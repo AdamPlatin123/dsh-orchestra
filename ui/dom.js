@@ -1,7 +1,6 @@
 // @ts-check
-// The page's one DOM writer (orchestra app plan §5): a keyed patcher of <template> clones. A write is
-// skipped when the value is there (an identical render writes nothing); no markup is parsed. A keyed
-// node keeps its identity (focus, animations) and moves only when its place changed.
+// The page's one DOM writer (orchestra app plan §5): a keyed patcher of <template> clones. An identical
+// render writes nothing; no markup is parsed; a keyed node keeps its identity (focus) and moves only if it must.
 import { frozen } from '../shared/frozen.js';
 import { TOWER_TEXT } from '../shared/strings.js';
 
@@ -17,11 +16,6 @@ export const ATTRS = frozen([
   'aria-pressed', 'aria-current', 'aria-level', 'aria-expanded', 'aria-selected', 'aria-setsize', 'aria-posinset',
   'aria-busy', 'aria-label', 'aria-disabled', 'tabindex', 'title', 'disabled', 'value',
 ]);
-
-/** @param {{ key: string, isComposing?: boolean }} e */
-export function activates(e) {
-  return !e.isComposing && (e.key === 'Enter' || e.key === ' ');
-}
 
 /**
  * @param {Document} doc
@@ -101,7 +95,7 @@ export function makePatcher(doc) {
     const had = lists.get(parent) ?? new Map();
     /** @type {Map<string, Element>} */
     const next = new Map();
-    // Stale nodes go first, so the ones after them are still in place and need no move.
+    // Stale nodes go first: the rest stay in place.
     const keep = new Set(descs.map((d) => d.key));
     for (const [k, n] of had) if (!keep.has(k)) n.remove();
     let ref = parent.firstElementChild;

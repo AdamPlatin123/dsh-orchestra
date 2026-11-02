@@ -1,7 +1,6 @@
 // @ts-check
-// The tower page's descriptors (orchestra app plan §5, tower panel research §1-§3): pure functions to the
-// Paint values ui/dom.js writes. Every word comes from shared/strings.js through t(); source strings are
-// written as text, never parsed; time arrives as arguments (the clock is ui/clock.js).
+// The tower page's descriptors (orchestra app plan §5, research §1-§3): pure functions to ui/dom.js Paint
+// values. Words come from shared/strings.js via t(); source strings are text, never parsed; time is an argument.
 
 import { TOWER_TEXT } from '../shared/strings.js';
 import { indexOf, pathOf } from './tree.js';
@@ -17,6 +16,7 @@ import { indexOf, pathOf } from './tree.js';
  * @typedef {'claude' | 'dsh' | 'codex'} Harness
  * @typedef {{ session: { id: string }, events: { at: string | null, type: string, text: string }[], unparsed: number, note: string | null }} SessionDetail
  * @typedef {{ id: string, body: SessionDetail | { error: string } | null }} Detail
+ * @typedef {{ sel: string | null, peek: ReadonlySet<string>, flash: ReadonlyMap<string, string>, detectsError?: boolean }} RowCtx
  */
 
 export const HARNESSES = Object.freeze(/** @type {const} */ (['claude', 'dsh', 'codex']));
@@ -72,12 +72,11 @@ export function activityOf(n) {
 }
 
 /** States in sibling order, for a breakdown. */
-const STATES = Object.freeze(/** @type {const} */ (['waiting', 'error', 'running', 'unknown', 'returned', 'idle']));
+const STATES = Object.freeze(/** @type {const} */ (['waiting', 'error', 'running', 'unknown', 'returned', 'idle', 'ended']));
 
 /**
- * A folded row's text. A same-type group says how its members stand (research §1.3: ×12 Explore ·
- * 9 已回报), so a fold never hides that most of them are unknown (T1).
- * @param {Group} g @param {readonly Node[]} [nodes] the project's nodes, where the members are
+ * A folded row's text; a same-type group says how its members stand (×12 Explore · 9 已回报), so a fold
+ * never hides unknowns (T1). @param {Group} g @param {readonly Node[]} [nodes] the project's nodes, where the members are
  */
 export function groupText(g, nodes = []) {
   if (g.kind !== 'same-type') return t(`group.${g.kind}`, { n: g.count });
@@ -90,13 +89,10 @@ export function groupText(g, nodes = []) {
   return [head, ...parts].join(t('sep.parts'));
 }
 
-/** The subtree box, read aloud: errors only when this build reads failures (meta.detects.error). @param {Node['counts']} c @param {boolean} detectsError */
+/** The subtree box, read aloud (errors only if the build reads failures). @param {Node['counts']} c @param {boolean} detectsError */
 const kidsSr = (c, detectsError) => (detectsError ? t('kids.sr', { c: c.children, e: c.errors, w: c.waiting }) : t('kids.srNoErr', { c: c.children, w: c.waiting }));
 
-/**
- * The text of a waiting source; an Orchestra wait counts down against the daemon's time.
- * @param {NonNullable<Node['waiting']>} w @param {string} harness @param {number} nowWall
- */
+/** A waiting source's text; Orchestra's counts down on the daemon's time. @param {NonNullable<Node['waiting']>} w @param {string} harness @param {number} nowWall */
 function clockOf(w, harness, nowWall) {
   if (w.source === 'orchestra' && w.deadline !== null) {
     const left = w.deadline - nowWall;
@@ -106,13 +102,12 @@ function clockOf(w, harness, nowWall) {
   return '';
 }
 
-/** Whether the snapshot's build reads failures at all; a snapshot that does not say is taken at its word (true). @param {TowerSnapshot | null} snap */
+/** Whether the build reads failures (unsaid: true). @param {TowerSnapshot | null} snap */
 export const detectsError = (snap) => snap === null || snap.meta.detects?.error !== false;
 
 /**
- * The top bar: counts that are filters, a source only when it failed (research §1.2), freshness. With no
- * rule that reads a failure no error count shows: 出错 0 would read "none" for "not looked" (T1).
- * @param {TowerSnapshot | null} snap
+ * The top bar: counts that filter, a source only when it failed (research §1.2), freshness. No failure
+ * rule, no error count: 出错 0 would say "none" for "not looked" (T1). @param {TowerSnapshot | null} snap
  * @param {{ filter: Filter | null, ageMs: number | null, stale: boolean, theme: string, view: string }} ctx
  * @returns {Paint}
  */
@@ -142,13 +137,13 @@ export function describeBar(snap, ctx) {
   };
 }
 
-/** One source's sentence: what it holds and how much of it shows (T1: clipped is never empty). @param {TowerSnapshot} snap @param {Harness} h */
+/** One source's sentence (T1: clipped is never empty). @param {TowerSnapshot} snap @param {Harness} h */
 export function srcText(snap, h) {
   const s = snap.meta.sources[h];
   const name = harnessName(h);
   if (s.state === 'error') return t('src.error', { h: name, code: s.error ?? '' });
   if (s.state === 'empty') return t('src.empty', { h: name });
-  // What a total counts differs: Claude's main sessions only; every DSH or Codex subagent is a file of its own.
+  // Claude counts main sessions only; a DSH or Codex subagent is a file of its own.
   const unit = t(`unit.${h}`);
   if (s.shown < s.total) return t('src.clipped', { h: name, total: s.total, unit, shown: s.shown });
   return t('src.ok', { h: name, total: s.total, unit });
@@ -167,9 +162,8 @@ function describeSrc(snap, h) {
 }
 
 /**
- * The waiting bar in the snapshot's order (ctx.bar's while held); an entry opens its node. A native or
- * inferred one only says where to go (research §1.5); Orchestra's own adds ctx.extra (ui/owned.js
- * pinExtra). @param {TowerSnapshot} snap @param {any} ctx @returns {Paint}
+ * The waiting bar (ctx.bar's order while held); an entry opens its node. A native or inferred one only says
+ * where to go (§1.5); Orchestra's own adds ctx.extra (owned.js pinExtra). @param {TowerSnapshot} snap @param {any} ctx @returns {Paint}
  */
 export function describePins(snap, ctx) {
   const ix = indexOf(snap);
@@ -205,12 +199,7 @@ export function describePins(snap, ctx) {
   };
 }
 
-/**
- * The tree's rows. One row keeps the roving tabindex: the selected one, else the first.
- * @param {readonly Row[]} rows
- * @param {{ sel: string | null, peek: ReadonlySet<string>, flash: ReadonlyMap<string, string>, detectsError?: boolean }} ctx
- * @returns {Desc[]}
- */
+/** The tree's rows; the roving tabindex is the selected row's, else the first's. @param {readonly Row[]} rows @param {RowCtx} ctx @returns {Desc[]} */
 export function describeRows(rows, ctx) {
   const focus = rows.some((r) => r.key === ctx.sel) ? ctx.sel : (rows[0]?.key ?? null);
   return rows.map((r) => {
@@ -235,7 +224,7 @@ function projectRow(r, attr, base) {
   const p = r.project;
   const errors = p.nodes.filter((n) => n.state === 'error').length;
   const waiting = p.nodes.filter((n) => n.state === 'waiting').length;
-  // What the box shows, said aloud too (the box itself is hidden from a screen reader).
+  // The box, said aloud (it is hidden from a screen reader).
   const parts = [...(errors > 0 ? [t('kids.srErr', { n: errors })] : []), ...(waiting > 0 ? [t('kids.srWait', { n: waiting })] : [])];
   return {
     key: r.key, tpl: 'tpl-proj', data: { ...base, kind: 'project' }, attr,
@@ -263,10 +252,7 @@ function groupRow(r, attr, base) {
   };
 }
 
-/**
- * @param {Row} r @param {Record<string, string | null>} attr @param {Record<string, string>} base
- * @param {{ peek: ReadonlySet<string>, flash: ReadonlyMap<string, string>, detectsError?: boolean }} ctx @returns {Desc}
- */
+/** @param {Row} r @param {Record<string, string | null>} attr @param {Record<string, string>} base @param {RowCtx} ctx @returns {Desc} */
 function nodeRow(r, attr, base, ctx) {
   const n = /** @type {Node} */ (r.node);
   const c = n.counts;
@@ -297,18 +283,12 @@ function nodeRow(r, attr, base, ctx) {
       pkState: { text: t('peek.state', { s: state, b: t(`basis.${n.basis}`) }) },
       pkType: { text: n.agentType === null ? '' : t('peek.type', { t: n.agentType }) },
       pkAct: { text: n.activity === null ? '' : t('peek.act', { a: n.activity }) },
-      pkSession: { text: n.session === null ? t('detail.noSession') : t('peek.session', { id: n.session }) },
+      pkSession: { text: n.session === null ? t(n.ownership === 'owned' ? 'detail.ownedSession' : 'detail.noSession') : t('peek.session', { id: n.session }) },
     },
   };
 }
 
-/**
- * The tree's frame: filter line, pending changes, rows, empty line, and the sessions the limits left out
- * (T1: a session not drawn is said where the tree is).
- * @param {readonly Row[]} rows
- * @param {{ filter: Filter | null, pending: number, sel: string | null, peek: ReadonlySet<string>, flash: ReadonlyMap<string, string>, detectsError?: boolean, clipped?: number }} ctx
- * @returns {Paint}
- */
+/** The tree's frame: filter line, pending changes, rows, sessions the limits left out (T1). @param {readonly Row[]} rows @param {RowCtx & { filter: Filter | null, pending: number, clipped?: number }} ctx @returns {Paint} */
 export function describeTower(rows, ctx) {
   const f = ctx.filter;
   const n = rows.filter((r) => r.match).length;
@@ -332,11 +312,8 @@ export const clippedSessions = (snap) => HARNESSES.reduce((k, h) => k + snap.met
 const kv = (k, v) => ({ key: k, tpl: 'tpl-kv', slots: { k: { text: t(`detail.${k}`) }, v: { text: v } } });
 
 /**
- * The right pane (a phone's node page): the selected row's fields, basis and last events.
- * @param {TowerSnapshot} snap @param {string | null} sel @param {readonly Row[]} rows
- * @param {Detail | null} detail
- * @param {{ nowWall: number, fmtIso: (s: string) => string }} ctx
- * @returns {Paint}
+ * The right pane (a phone's node page): the selected row's fields, basis and last events. @param {TowerSnapshot} snap
+ * @param {string | null} sel @param {readonly Row[]} rows @param {Detail | null} detail @param {{ nowWall: number, fmtIso: (s: string) => string }} ctx @returns {Paint}
  */
 export function describeDetail(snap, sel, rows, detail, ctx) {
   const ix = indexOf(snap);
@@ -363,7 +340,7 @@ export function describeDetail(snap, sel, rows, detail, ctx) {
     facts.push(
       kv('kids', kidsSr(node.counts, detectsError(snap))),
       kv('age', fmtAge(node.ageMs, 'ago')),
-      kv('session', node.session ?? t('detail.noSession')),
+      kv('session', node.session ?? t(node.ownership === 'owned' ? 'detail.ownedSession' : 'detail.noSession')),
       kv('project', project?.name ?? t('dash')),
     );
     return {
@@ -405,11 +382,7 @@ export function describeDetail(snap, sel, rows, detail, ctx) {
   };
 }
 
-/**
- * The detail's last events of a session, newest first; the note says what was not read (T1).
- * @param {string | null} session @param {Detail | null} detail @param {(s: string) => string} fmtIso
- * @returns {Record<string, Paint>}
- */
+/** A session's last events, newest first; the note says what was not read (T1). @param {string | null} session @param {Detail | null} detail @param {(s: string) => string} fmtIso @returns {Record<string, Paint>} */
 function events(session, detail, fmtIso) {
   const box = { data: { hide: '0' } };
   if (session === null) return { evBox: box, evNote: { text: t('detail.noSession') }, events: { kids: [] }, full: { data: { hide: '1' } } };
@@ -429,21 +402,15 @@ function events(session, detail, fmtIso) {
   };
 }
 
-/**
- * The composer's recipient; ui/owned.js adds the rest for an owned session.
- * @param {TowerSnapshot} snap @param {string | null} sel @returns {Paint}
- */
+/** The composer's recipient (owned.js adds the rest). @param {TowerSnapshot} snap @param {string | null} sel @returns {Paint} */
 export function describeDock(snap, sel) {
   const hit = sel === null ? undefined : indexOf(snap).byId.get(sel);
-  // A project or a folded group is selected, not nothing: say why it cannot be a recipient.
+  // A project or a group is selected: say why it takes no message.
   const text = hit !== undefined ? t('dock.to', { who: hit.node.title }) : sel !== null && (sel.startsWith('p:') || sel.startsWith('g:')) ? t('dock.notNode') : t('dock.none');
   return { slots: { to: { text } } };
 }
 
-/**
- * The about view: every source's totals, what the limits clipped, the rules and their sample counts.
- * @param {TowerSnapshot} snap @returns {Paint}
- */
+/** The about view: sources' totals, what was clipped, the rules and their samples. @param {TowerSnapshot} snap @returns {Paint} */
 export function describeAbout(snap) {
   const { sources, clipped, rules } = snap.meta;
   return {

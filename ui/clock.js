@@ -1,7 +1,6 @@
 // @ts-check
-// The page's one clock (0.1 alpha design §5, T7; orchestra app plan §5): monotonic time, frames, timers
-// and wall-time formatting. A time shown is the daemon's observedAt plus a monotonic delta measured here;
-// the browser's wall clock is never set against the daemon's.
+// The page's one clock (alpha design §5, T7): monotonic time, frames, timers, formatting. A time shown is
+// the daemon's observedAt plus a monotonic delta; the browser's wall clock is never used against it.
 
 /** Monotonic milliseconds. */
 export const nowMono = () => performance.now();
@@ -9,21 +8,13 @@ export const nowMono = () => performance.now();
 /** Runs `fn` on the next frame. @param {() => void} fn */
 export const onFrame = (fn) => requestAnimationFrame(fn);
 
-/**
- * Calls `fn` every `ms` until the returned stop function runs.
- * @param {number} ms @param {() => void} fn
- * @returns {() => void}
- */
+/** Calls `fn` every `ms` until the returned stop runs. @param {number} ms @param {() => void} fn @returns {() => void} */
 export function every(ms, fn) {
   const id = setInterval(fn, ms);
   return () => clearInterval(id);
 }
 
-/**
- * Calls `fn` once after `ms`, unless the returned cancel runs first.
- * @param {number} ms @param {() => void} fn
- * @returns {() => void}
- */
+/** Calls `fn` once after `ms`, unless cancelled first. @param {number} ms @param {() => void} fn @returns {() => void} */
 export function after(ms, fn) {
   const id = setTimeout(fn, ms);
   return () => clearTimeout(id);

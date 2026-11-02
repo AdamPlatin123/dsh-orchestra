@@ -352,6 +352,10 @@ const CASES: readonly Case[] = [
   neg('fake-codex-only-in-tests', 'src/os/spawn.ts', "case 'codex-app-server-fake':"),
   neg('fake-codex-only-in-tests', 'src/runtime/working.ts', "rules: ['codex-app-server'],"),
   neg('fake-codex-only-in-tests', 'test/owned/codex-session.test.ts', 'fakeCodexNode: process.execPath,'),
+  pos('owned-work-root-only-in-working', 'src/owned/codex-owned.ts', 'cwd: { allowedRoots: [x], ownedWorkRoot: x }'),
+  pos('owned-work-root-only-in-working', 'src/os/spawn.ts', 'spec.ownedWorkRoot = dir;'),
+  neg('owned-work-root-only-in-working', 'src/runtime/working.ts', 'ownedWorkRoot: workRoot'),
+  neg('owned-work-root-only-in-working', 'test/os/spawn-codex.test.ts', 'ownedWorkRoot: work'),
 
 
   pos('working-wiring-only-from-main', 'src/model/x.ts', "import { runWorking } from '../runtime/working.ts';\nawait runWorking(ctx);"),

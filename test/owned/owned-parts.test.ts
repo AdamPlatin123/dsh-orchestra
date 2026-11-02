@@ -35,7 +35,7 @@ test('approvals: the revision moves with every change; allow needs the shown dig
   assert.equal(q.allow(a.approvalId, { digest: a.digest, rev: 1 }), 'stale-view');
   assert.deepEqual(answered, [], 'a stale view changes nothing');
   assert.equal(q.allow(a.approvalId, { digest: b.digest, rev: q.rev }), 'digest-mismatch');
-  assert.deepEqual(answered.map(([, x, c]) => [x.decision, c]), [['decline', 'human']], 'a wrong digest is a refusal');
+  assert.deepEqual(answered.map(([, x, c]) => [x.decision, c]), [['decline', 'mismatch']], 'a wrong digest is a refusal, not what the person said');
   assert.equal(q.deny(b.approvalId), 'ok');
   assert.equal(q.deny(b.approvalId), 'approval-gone');
   assert.equal(q.allow('f'.repeat(32), { digest: a.digest, rev: q.rev }), 'approval-gone');

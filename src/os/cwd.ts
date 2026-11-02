@@ -23,7 +23,13 @@ const win = path.win32;
 // orchestrad makes itself. A cwd inside it is not refused for lying inside AppData (the test profile's
 // data dir sits in %TEMP%, below %LOCALAPPDATA%; a real ORCHESTRA_HOME may sit there too), nor for lying
 // inside the protected dir that is the work root's own parent (the data dir). Every other row still
-// applies to it, and nowhere else is either row relaxed.
+// applies to it, and nowhere else is either row relaxed. The policy itself holds the exemption to that
+// one directory: the work root must be named `work` (src/owned/codex-home.ts OWNED_DIRS.work) and sit
+// directly in one of protectedDirs (the data dir), else the constructor throws.
+//
+// place() reads a path an owned session's approval names (a file it changes, a root it asks to write
+// under, a command's cwd) against the same table: what the gate would refuse as a cwd there, an owned
+// session may not touch either (orchestra app plan §4; slice design §2.2's protected paths).
 
 export const PROFILE_SUBDIRS: readonly string[] = Object.freeze(['AppData', '.ssh', '.aws', '.claude', '.dsh']);
 const PROGRAM_FILES_VARS: readonly string[] = Object.freeze(['ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432']);
@@ -42,6 +48,9 @@ export const MAIN_CHECKOUT: string | null = /^(.+?)\\\.claude\\worktrees\\[^\\]+
 
 /** %APPDATA% and %LOCALAPPDATA%: where a redirected AppData (and the browser profiles in it) really is. */
 const APPDATA_VARS: readonly string[] = Object.freeze(['APPDATA', 'LOCALAPPDATA']);
+
+/** The owned work root's own name (src/owned/codex-home.ts OWNED_DIRS.work; a test holds the two equal). */
+export const OWNED_WORK_NAME = 'work';
 
 export type CwdRejectReason = 'bad-path' | 'drive-root' | 'protected' | 'unresolved' | 'reparsed' | 'outside-allowed';
 export type CwdVerdict = { ok: true; path: string } | { ok: false; reason: CwdRejectReason; detail?: string };
@@ -151,6 +160,10 @@ export class CwdPolicy {
     if (s.ownedWorkRoot !== undefined) {
       const lexical = trimSep(mustPath(s.ownedWorkRoot, 'owned work root'));
       if (lexical.length === 3) throw new Error(`cwd policy: the owned work root is a drive root: ${lexical}`);
+      // Only the work dir orchestrad makes itself (ORCHESTRA_HOME\work) is exempt: not any allowed root a caller names.
+      if (win.basename(lexical).toLowerCase() !== OWNED_WORK_NAME) throw new Error(`cwd policy: the owned work root must be named ${OWNED_WORK_NAME}: ${lexical}`);
+      const parents = s.protectedDirs.map((d) => pathKey(trimSep(mustPath(d, 'protected dir'))));
+      if (!parents.includes(pathKey(win.dirname(lexical)))) throw new Error(`cwd policy: the owned work root must sit directly in a protected dir (the data dir): ${lexical}`);
       const real = trimSep(canonicalize(lexical, realpath));
       if (!this.#allowed.some((r) => pathKey(r) === pathKey(real))) throw new Error(`cwd policy: the owned work root must be one of allowedRoots: ${lexical}`);
       this.#work = Object.freeze([...new Set([lexical, real])]);
@@ -183,6 +196,25 @@ export class CwdPolicy {
     if (pathKey(real) !== pathKey(p)) return { ok: false, reason: 'reparsed', detail: real };
     if (!this.#allowed.some((root) => isWithin(p, root))) return { ok: false, reason: 'outside-allowed', detail: p };
     return { ok: true, path: p };
+  }
+
+  /**
+   * Where a path an owned session names lies, against the same table: its realpath (the nearest existing
+   * ancestor's, joined with the rest, so a junction is followed) and the label of the row its lexical or
+   * its real form hits, or null. Fails closed: a path that is no plain absolute path hits bad-path, one
+   * that cannot be resolved hits unresolved, a drive root hits drive-root.
+   */
+  place(p: string): { real: string | null; hit: string | null } {
+    const c = checkPath(p);
+    if (!c.ok) return { real: null, hit: `bad-path:${c.reason}` };
+    let real: string;
+    try {
+      real = trimSep(canonicalize(c.path, this.#realpath));
+    } catch (e) {
+      return { real: null, hit: `unresolved:${errCode(e)}` };
+    }
+    if (c.path.length === 3 || real.length === 3) return { real, hit: 'drive-root' };
+    return { real, hit: this.#hit(c.path) ?? this.#hit(real) };
   }
 
   #hit(p: string): string | null {

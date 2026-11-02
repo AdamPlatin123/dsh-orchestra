@@ -185,18 +185,28 @@ test('owned sessions: one project of their own, first; the driver state with bas
     seat(2, { state: 'running', waiting: { kind: 'approval', deadline: 2_000_000, title: 'rm synthetic' } }),
     seat(3, { state: 'ended', endReason: 'you-ended' }),
     seat(4, { state: 'starting', lastAt: null }),
+    seat(5, { state: 'failed', endReason: 'exited' }),
+    seat(7, { state: 'unknown', endReason: 'daemon-restart' }),
   ];
   const tower = towerFromStage(busyStage(), { seats, nowWall: now });
   const v = validateTower(tower);
   assert.ok(v.ok, v.errors.join('\n'));
   const p = tower.projects[0]!;
   assert.deepEqual([p.id, p.basis, p.name], [OWNED_PROJECT_ID, 'owned', 'Orchestra 自有']);
+  // A session whose child is gone is ended (never idle: it takes no message); one an earlier orchestrad left is unknown, basis none (T1).
   assert.deepEqual(p.nodes.map((n) => [n.id.slice(2, 3), n.state, n.basis, n.ownership, n.session]), [
-    ['2', 'waiting', 'owned', 'owned', null], ['1', 'running', 'owned', 'owned', null], ['4', 'running', 'owned', 'owned', null], ['3', 'idle', 'owned', 'owned', null],
+    ['2', 'waiting', 'owned', 'owned', null], ['1', 'running', 'owned', 'owned', null], ['4', 'running', 'owned', 'owned', null],
+    ['7', 'unknown', 'none', 'owned', null], ['3', 'ended', 'owned', 'owned', null], ['5', 'ended', 'owned', 'owned', null],
   ]);
+  assert.equal(tower.tally.ended, 2);
+  assert.equal(p.nodes[5]!.activity, '已结束：进程退出了');
+  assert.equal(p.nodes[3]!.activity, 'orchestrad 重启过：之前开的这个会话现在怎样不知道');
+  assert.deepEqual(p.groups, [], 'an ended session is never folded into idle');
+  // With owned sessions the snapshot's time is the driver's now, not the (throttled) stage's.
+  assert.equal(tower.meta.observedAt, now);
   assert.deepEqual(p.nodes[0]!.waiting, { kind: 'approval', source: 'orchestra', deadline: 2_000_000 });
   assert.equal(p.nodes[0]!.activity, 'rm synthetic');
-  assert.equal(p.nodes[3]!.activity, '已结束：你结束的', 'ended, never done');
+  assert.equal(p.nodes[4]!.activity, '已结束：你结束的', 'ended, never done');
   assert.equal(p.nodes[2]!.activity, '正在启动');
   assert.deepEqual([p.nodes[1]!.ageMs, p.nodes[2]!.ageMs], [60_000, null]);
   assert.deepEqual(tower.waitingBar[0], { node: p.nodes[0]!.id, kind: 'approval', source: 'orchestra', deadline: 2_000_000 });
@@ -223,6 +233,18 @@ test('owned sessions: the validator holds basis owned to owned nodes, owned node
   const logged = copy();
   logged.projects[0]!.nodes[0]!.basis = 'log';
   assert.ok(validateTower(logged).errors.some((e) => e.includes('log on an owned node')));
+  // An owned session waits only on Orchestra's queue: Orchestra knows it, it never guesses it.
+  const guessed = copy();
+  guessed.projects[0]!.nodes[0]!.waiting!.source = 'inferred';
+  guessed.projects[0]!.nodes[0]!.waiting!.deadline = null;
+  guessed.waitingBar[0]!.source = 'inferred';
+  guessed.waitingBar[0]!.deadline = null;
+  assert.ok(validateTower(guessed).errors.some((e) => e.includes("an owned session waits only on Orchestra's queue")), validateTower(guessed).errors.join('\n'));
+  // Ended is an owned node's word only.
+  const ended = copy();
+  const leaf = ended.projects[1]!.nodes.find((n) => n.state === 'idle')!;
+  leaf.state = 'ended';
+  assert.ok(validateTower(ended).errors.some((e) => e.includes('ended only on an owned node')), validateTower(ended).errors.join('\n'));
   const mixed = copy();
   mixed.projects[0]!.nodes.push({ ...mixed.projects[1]!.nodes.at(-1)!, id: 'n:ffffffffffffffffffff', parent: null, depth: 0, layer: 'agent' });
   assert.ok(validateTower(mixed).errors.some((e) => e.includes('not owned, in the owned project')));

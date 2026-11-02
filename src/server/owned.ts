@@ -223,7 +223,12 @@ export type OwnedApiOptions = {
   journal: HumanJournal;
   /** Prints an unlock code where the pairing code goes (the test profile: stdout); null when that console is off. */
   printUnlockCode: ((code: string) => void) | null;
-  /** Owned sessions may start (new, import, retry): only the test profile with a gateway (slice design §2.7; step 6c turns it on). */
+  /**
+   * Owned sessions may start (new, import, retry): in either profile, once orchestrad was started with
+   * --owned and found codex.exe (working.ts setUpOwnedCodex). Slice design §2.7 and its endpoint test
+   * (owned-disabled under the real profile) are superseded here by orchestra app plan §2, which runs real
+   * profile sessions in ORCHESTRA_HOME\work\<ownedId>; recorded in the plan's divergence notes.
+   */
   enabled?: boolean;
   handlers?: OwnedHandlers;
 };

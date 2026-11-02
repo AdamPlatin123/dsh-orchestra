@@ -1,7 +1,6 @@
 // @ts-check
-// The page's only network calls (orchestra app plan §5), each to a literal /api/ path; owned routes
-// carry the controller token (slice design §2.7). Every answer is a value: { ok, body } or { ok: false,
-// code }: the server's code, 'unpaired' for a bare 403, 'network' (for a POST: outcome unknown, T1).
+// The page's only network calls (orchestra app plan §5), to literal /api/ paths; owned ones carry the token
+// (§2.7). An answer: { ok, body } or { ok: false, code } ('unpaired': a bare 403; 'network': unknown, T1).
 
 import { deadline } from './clock.js';
 
@@ -54,11 +53,7 @@ async function read(go) {
 /** GET /api/tower: the whole tower snapshot (shared/tower-contract.js), always 200 when paired. */
 export const getTower = () => read(() => fetch('/api/tower', opts()));
 
-/**
- * GET /api/peek/session?id=: one session's last events. The id is checked before it goes into the URL.
- * @param {string} id
- * @returns {Promise<Answer>}
- */
+/** GET /api/peek/session?id= (the id checked first). @param {string} id @returns {Promise<Answer>} */
 export async function getSession(id) {
   if (!HEX20.test(id)) return { ok: false, code: 'bad-id' };
   return read(() => fetch('/api/peek/session?id=' + id, opts()));

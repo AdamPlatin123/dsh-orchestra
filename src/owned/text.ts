@@ -79,6 +79,23 @@ export function tailUtf8(text: string, max: number): { text: string; cut: boolea
 /** What a redactor tells a session: the text with suspected secrets replaced, and how many it replaced. */
 export type Redact = (text: string) => { text: string; count: number };
 
+/**
+ * The live view of a text still growing (a message streaming, a command's output so far): the tail of
+ * its last `window` characters, redacted as one piece, cut to `max` bytes. A window that cuts the text
+ * may cut a secret in two, and the half left at its head is one the redactor cannot know; so a cut window
+ * starts after the first line break past the cut when there is one within `edge` characters, else `edge`
+ * characters past the cut. Redaction still comes before the cut to `max`.
+ */
+export function liveTail(redact: Redact, text: string, window: number, max: number, edge = 512): { text: string; cut: boolean; redactions: number } {
+  if (text.length <= window) return shown(redact, text, max, 'tail');
+  let w = text.slice(-window);
+  const nl = w.indexOf('\n');
+  w = nl >= 0 && nl < edge ? w.slice(nl + 1) : w.slice(Math.min(edge, w.length));
+  // A lone low surrogate left at the head is written out by escapeInvisible, never shown raw.
+  const r = shown(redact, w, max, 'tail');
+  return { ...r, cut: true };
+}
+
 /** Redacted, invisible characters written out, then cut to `max` bytes keeping the head or the tail. */
 export function shown(redact: Redact, raw: string, max: number, keep: 'head' | 'tail'): { text: string; cut: boolean; redactions: number } {
   const r = redact(raw);

@@ -1,4 +1,5 @@
 import type { ChildPipe } from '../os/child-pipe.ts';
+import type { ClockHub, Fired } from '../runtime/clock.ts';
 import { frozen, frozenClass } from '../../shared/frozen.js';
 
 // The stdio JSON-RPC client of `codex app-server` (orchestra app plan §2, measured on codex-cli 0.165.0):
@@ -8,7 +9,13 @@ import { frozen, frozenClass } from '../../shared/frozen.js';
 //
 // Bounds: a line longer than lineMaxBytes is dropped whole (counted), and a line that is not one JSON
 // object, or not UTF-8, is dropped (counted); neither stops the stream. When the child exits, or its
-// pipe fails, every request still waiting is rejected with RpcError 'closed', and nothing more is sent.
+// pipe fails, every request still waiting is rejected with RpcError 'closed', and nothing more is sent;
+// a pipe that fails while its child may still run (a write that broke, a stream error) also stops the
+// child, so no codex.exe outlives the client that could steer it (D4: Orchestra takes back what it started).
+//
+// A request may carry a deadline (timeoutMs): with a Clock hub given, a request still unanswered then is
+// rejected with RpcError 'timeout' (the child is alive but says nothing). Its late answer, if one comes,
+// is a stray response. Time only through the Clock (plan invariant 21): no timer of the host's own.
 
 export const RPC_LIMITS = frozen({
   /** A codex line holds at most one item (a diff, a command's whole output): 8 MiB is far beyond any measured. */
@@ -30,11 +37,11 @@ export type RpcExit = { code: number | null; signal: string | null; error: strin
 
 export class RpcError extends Error {
   readonly code = 'ERR_ORCHESTRA_RPC';
-  /** 'remote': the server answered with an error; 'closed': the child is gone. */
-  readonly reason: 'remote' | 'closed';
+  /** 'remote': the server answered with an error; 'closed': the child is gone; 'timeout': no answer by the deadline. */
+  readonly reason: 'remote' | 'closed' | 'timeout';
   /** The server's error code, for 'remote'. */
   readonly rpcCode: number | null;
-  constructor(reason: 'remote' | 'closed', message: string, rpcCode: number | null = null) {
+  constructor(reason: 'remote' | 'closed' | 'timeout', message: string, rpcCode: number | null = null) {
     super(`[ERR_ORCHESTRA_RPC] ${reason}: ${message}`);
     this.reason = reason;
     this.rpcCode = rpcCode;
@@ -43,8 +50,8 @@ export class RpcError extends Error {
 frozenClass(RpcError);
 
 export type RpcClient = {
-  /** Sends a request; settles with its result, or rejects with RpcError ('remote' or 'closed'). */
-  request(method: string, params: unknown): Promise<unknown>;
+  /** Sends a request; settles with its result, or rejects with RpcError ('remote', 'closed', or 'timeout' past timeoutMs). */
+  request(method: string, params: unknown, timeoutMs?: number): Promise<unknown>;
   /** Sends a notification; false when the child is gone. */
   notify(method: string, params?: unknown): boolean;
   /** Answers a server request; false when the child is gone. */
@@ -76,12 +83,38 @@ function each<A extends unknown[]>(list: readonly ((...a: A) => void)[], ...a: A
   }
 }
 
-export function makeRpcClient(pipe: ChildPipe, opts: { lineMaxBytes?: number } = {}): RpcClient {
+export type RpcOptions = {
+  lineMaxBytes?: number;
+  /** The Clock hub request deadlines run on; without one a timeoutMs is ignored. */
+  hub?: ClockHub;
+  /** The deadline timers' entity prefix (an owned id): `deadline:rpc-<name>-<id>:0`. */
+  name?: string;
+};
+
+export function makeRpcClient(pipe: ChildPipe, opts: RpcOptions = {}): RpcClient {
   const lineMax = opts.lineMaxBytes ?? RPC_LIMITS.lineMaxBytes;
   if (!Number.isSafeInteger(lineMax) || lineMax < 16) throw new Error('rpc: lineMaxBytes must be an integer of at least 16');
+  const name = opts.name ?? 'c';
+  if (!/^[A-Za-z0-9]{1,40}$/.test(name)) throw new Error('rpc: name must be 1 to 40 letters or digits');
   const decoder = new TextDecoder('utf-8', { fatal: true });
   const stats: RpcStats = { badLines: 0, longLines: 0, strayResponses: 0 };
-  const waiting = new Map<string, { resolve(v: unknown): void; reject(e: RpcError): void }>();
+  const waiting = new Map<string, { resolve(v: unknown): void; reject(e: RpcError): void; timerId: string | null }>();
+  /** timerId -> the waiting key it ends. */
+  const deadlines = new Map<string, string>();
+  const clock = opts.hub === undefined ? null : opts.hub.port((f: Fired) => {
+    const key = deadlines.get(f.timerId);
+    if (key === undefined) return;
+    deadlines.delete(f.timerId);
+    const w = waiting.get(key);
+    if (w === undefined) return;
+    waiting.delete(key);
+    w.reject(new RpcError('timeout', 'no answer by the deadline'));
+  });
+  const unarm = (w: { timerId: string | null }) => {
+    if (w.timerId === null || clock === null) return;
+    deadlines.delete(w.timerId);
+    clock.cancel(w.timerId);
+  };
   const notes: ((method: string, params: unknown) => void)[] = [];
   const asks: ((id: RpcId, method: string, params: unknown) => void)[] = [];
   const exits: ((exit: RpcExit) => void)[] = [];
@@ -99,6 +132,15 @@ export function makeRpcClient(pipe: ChildPipe, opts: { lineMaxBytes?: number } =
     exitInfo = exit;
     const all = [...waiting.values()];
     waiting.clear();
+    for (const w of all) unarm(w);
+    // A pipe that broke leaves a child that may still run: it is stopped here (stop is idempotent).
+    if (exit.error !== null) {
+      try {
+        pipe.stop();
+      } catch {
+        // A handle that is gone already: nothing is left to stop.
+      }
+    }
     for (const w of all) w.reject(new RpcError('closed', exit.error ?? `exit ${String(exit.code ?? exit.signal)}`));
     each(exits, exit);
   };
@@ -164,6 +206,7 @@ export function makeRpcClient(pipe: ChildPipe, opts: { lineMaxBytes?: number } =
         return;
       }
       waiting.delete(keyOf(m.id));
+      unarm(w);
       if (has('error')) {
         const e = m.error as { code?: unknown; message?: unknown } | null;
         const code = typeof e?.code === 'number' ? e.code : null;
@@ -209,14 +252,21 @@ export function makeRpcClient(pipe: ChildPipe, opts: { lineMaxBytes?: number } =
   pipe.onError((code) => finish({ code: null, signal: null, error: code }));
 
   return Object.freeze({
-    request(method: string, params: unknown): Promise<unknown> {
+    request(method: string, params: unknown, timeoutMs?: number): Promise<unknown> {
       if (closed) return Promise.reject(new RpcError('closed', 'the child is gone'));
       const id = nextId++;
       return new Promise<unknown>((resolve, reject) => {
-        waiting.set(keyOf(id), { resolve, reject });
+        const timerId = clock !== null && timeoutMs !== undefined && Number.isSafeInteger(timeoutMs) && timeoutMs > 0 ? `deadline:rpc-${name}-${id}:0` : null;
+        const w = { resolve, reject, timerId };
+        waiting.set(keyOf(id), w);
         if (!send({ id, method, params })) {
           waiting.delete(keyOf(id));
           reject(new RpcError('closed', 'the request could not be written'));
+          return;
+        }
+        if (timerId !== null) {
+          deadlines.set(timerId, keyOf(id));
+          clock!.schedule({ timerId, class: 'deadline', clock: 'mono', due: clock!.nowMono() + timeoutMs! });
         }
       });
     },

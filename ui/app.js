@@ -1,11 +1,8 @@
 // @ts-check
-// The tower page's boot (orchestra app plan §5), the one module with top-level effects: the 2 s poll
-// (stopped while hidden), the hash route, clicks and keys, one render per frame. The tower is read only;
-// Orchestra's own sessions are driven from here once this tab is unlocked (slice design §2.7), each
-// allow under r4 §10.9's guards (D8). ui/owned.js says what shows.
-//
-// While the pointer or focus is in the tree its order holds (research §1.5): fresh data reaches the rows
-// that stay; what would appear, go or move is counted on "↻ N", applied on a click or 5 s after leaving.
+// The tower page's boot (orchestra app plan §5), the one module with effects: the 2 s poll (stopped while
+// hidden), the route, clicks and keys, one render per frame. Owned sessions are driven once this tab is
+// unlocked (slice design §2.7), each allow under r4 §10.9's guards (D8); ui/owned.js says what shows.
+// Under the pointer or focus the tree's order holds (research §1.5): changes count on "↻ N".
 import { getFeed, getOwned, getSession, getTower, oneAtATime, post } from './api.js';
 import { after, every, fmtIso, nowMono, onFrame } from './clock.js';
 import { makePatcher } from './dom.js';
@@ -64,13 +61,13 @@ const state = {
   /** @type {Detail | null} */ detail: null,
   detailRev: '',
   /** @type {Map<string, string>} */ lastState: new Map(),
-  /** A changed row's new state, lit until `until` (monotonic), once. @type {Map<string, { state: string, until: number }>} */ flash: new Map(),
+  /** A changed row's new state, lit once until `until`. @type {Map<string, { state: string, until: number }>} */ flash: new Map(),
   /** The last render's view, to move the focus when the node page opens or closes. */ lastView: 'tower',
   /** @type {number | null} */ lastWaiting: null,
   /** A row to focus after the next render. @type {string | null} */ focusKey: null,
   queued: false,
-  // Owned sessions. csrf: this tab's controller token, null while locked; pinSig: the waiting bar and
-  // queue as last drawn (a change starts the 750 ms); to: the recipient, held once you type (§1.5).
+  // csrf: this tab's token (null: locked); pinSig: bar and queue as drawn (a change starts the 750 ms);
+  // to: the recipient, held once you type (§1.5).
   csrf: getCsrf(),
   owned: null,
   /** @type {Map<string, any>} */ feeds: new Map(),
@@ -83,7 +80,9 @@ const state = {
   pinFocus: false,
   pinOrder: null,
   hold: null,
-  heldMono: -Infinity,
+  // Approvals: one a hold just allowed; one answered (the focus moves on).
+  justHeld: null,
+  apprFocus: null,
   busy: false,
   note: null,
   noteOff: null,
@@ -126,10 +125,10 @@ function render() {
   const snap = state.snap;
   const bar = describeBar(snap, { filter: state.filter, ageMs, stale: ageMs !== null && ageMs > STALE_MS, theme: state.theme, view });
   const open = state.csrf !== null;
-  Object.assign(/** @type {any} */ (bar.slots), { new: { text: t(open ? 'bar.new' : 'bar.newLocked') }, unlock: { text: t(open ? 'bar.unlocked' : 'bar.unlock'), attr: { 'aria-pressed': String(open) } } });
+  Object.assign(/** @type {any} */ (bar.slots), { new: { text: t(open ? 'bar.new' : 'bar.newLocked') }, unlock: { text: t(open ? 'bar.unlocked' : 'bar.unlock') } });
   dom.paintId('bar', bar);
   dom.paintId('note', { text: state.note ?? '', data: { hide: state.note === null ? '1' : '0' } });
-  dom.paintId('new-dlg', { slots: describeNew(state.owned, val('nw-h') || 'codex', state.busy) });
+  dom.paintId('new-dlg', { slots: describeNew(state.owned, val('nw-harness') || 'codex', state.busy) });
   if (snap === null) return;
   const waiting = snap.tally.waiting;
   dom.title(waiting > 0 ? t('page.titleWait', { n: waiting }) : t('page.title'));
@@ -157,6 +156,7 @@ function render() {
     state.pinSig = sig;
     state.changedMono = nowMono();
     state.settleTok = state.settleTok === 'a' ? 'b' : 'a';
+    if (state.hold !== null) say(t('appr.holdCancelled'));
     cancelHold();
     after(SETTLE_MS + 20, schedule);
   }
@@ -179,8 +179,7 @@ function render() {
   dom.paint(about, { data: { hide: view === 'about' ? '0' : '1' } });
   if (view === 'about') dom.paint(about, describeAbout(snap));
 
-  // On a narrow screen the node page replaces the tree: the focus goes to its title, and back to the
-  // row it came from when it closes (a hidden element cannot hold it).
+  // Narrow: the node page replaces the tree; the focus goes to its title, and back to its row on closing.
   const was = state.lastView;
   state.lastView = view;
   if (view === 'node' && was !== 'node' && narrow()) {
@@ -194,9 +193,28 @@ function render() {
     state.focusKey = null;
     if (el !== null) /** @type {HTMLElement} */ (el).focus();
   }
+  moveFocusOn();
 }
 
-/** The selected node's session detail, read once per session and revision. @param {TowerSnapshot} snap @returns {Detail | null} */
+/** An answered card or bar entry goes: a focus on it moves to the next there, else a heading (WCAG 2.4.3). */
+function moveFocusOn() {
+  const f = state.apprFocus;
+  if (!f || f.el.isConnected) return;
+  const list = f.list;
+  state.apprFocus = null;
+  const ae = document.activeElement;
+  if (ae && ae !== document.body && ae.isConnected) return;
+  /** @type {any} */ (list?.children[Math.min(f.i, list.children.length - 1)]?.querySelector('button') ?? dom.byId(f.card ? 'dt-title' : 'tower-h')).focus();
+}
+
+/** @param {Element} el @param {string} id */
+function answeredAt(el, id) {
+  const item = /** @type {any} */ (el.closest('.card') ?? el.closest('.pin'));
+  const list = item?.parentNode;
+  if (list) state.apprFocus = { id, el: item, list, card: item.classList.contains('card'), i: Array.from(list.children).indexOf(item) };
+}
+
+/** The selected node's session detail, read once per session and rev. @param {TowerSnapshot} snap @returns {Detail | null} */
 function detailFor(snap) {
   const hit = state.sel === null ? undefined : indexOf(snap).byId.get(state.sel);
   const id = hit?.node.session ?? null;
@@ -224,7 +242,7 @@ async function poll() {
   const body = /** @type {any} */ (a.body);
   const same = state.snap !== null && body !== null && typeof body === 'object' && body.meta?.rev === state.snap.meta.rev;
   if (!same) {
-    // The daemon holds each snapshot to its contract (src/server/http.ts); the page checks the frame it reads.
+    // The daemon holds the contract (src/server/http.ts); the page checks the frame.
     const why = towerFrame(body);
     if (why !== null) {
       state.error = t('err.shape', { why });
@@ -234,7 +252,7 @@ async function poll() {
   const snap = /** @type {TowerSnapshot} */ (body);
   state.error = null;
   state.okMono = nowMono();
-  // A state that changed lights its row once (the flash name is the new state, research §1.5).
+  // A changed state lights its row once (research §1.5).
   /** @type {Map<string, string>} */
   const seen = new Map();
   for (const p of snap.projects) {
@@ -246,7 +264,7 @@ async function poll() {
   }
   for (const id of state.flash.keys()) if (!seen.has(id)) state.flash.delete(id);
   state.lastState = seen;
-  // The screen reader hears only how many things wait on you, and only when that number moves.
+  // The screen reader hears the waiting count when it moves.
   if (state.lastWaiting !== null && state.lastWaiting !== snap.tally.waiting) dom.say(dom.byId('live'), t('live.wait', { n: snap.tally.waiting }));
   state.lastWaiting = snap.tally.waiting;
   state.snap = snap;
@@ -290,7 +308,7 @@ async function pollFeed() {
   schedule();
 }
 
-/** Notifies approvals that came while hidden, if granted; never an allow (r4 §10.9). @param {any} list @param {boolean} first */
+/** Notifies approvals that came while hidden; never an allow (r4 §10.9). @param {any} list @param {boolean} first */
 function tell(list, first) {
   for (const a of list.approvals) {
     if (!state.told.has(a.approvalId) && !first && document.hidden && globalThis.Notification?.permission === 'granted') {
@@ -328,7 +346,7 @@ function openDlg(id, focus) {
 }
 /** @param {string} id */
 const closeDlg = (id) => /** @type {any} */ (dom.byId(id)).close();
-/** A dialog's own line (the note under the bar sits behind a modal). @param {string} id @param {string} text */
+/** A dialog's own line (the note sits behind a modal). @param {string} id @param {string} text */
 const dlgSay = (id, text) => dom.paintId(id, { slots: { msg: { text } } });
 
 /** The daemon prints a code on its console (204: never in a reply). */
@@ -356,7 +374,7 @@ async function unlockGo() {
   pollFeed();
 }
 
-/** One owned POST at a time, on one thing (no batch). @param {string} path @param {object} body @returns {Promise<any>} */
+/** One owned POST at a time, on one thing. @param {string} path @param {object} body @returns {Promise<any>} */
 async function op(path, body) {
   if (state.busy || state.csrf === null) return null;
   state.busy = true;
@@ -375,7 +393,7 @@ const said = (a, ok) => a !== null && say(a.ok ? ok : errText(a.code));
 async function dispatch() {
   const text = val('nw-text');
   const why = msgError(text);
-  const a = why === null ? await op('owned/new', { text, harness: val('nw-h') || 'codex', model: val('nw-model') || MODELS[0] }) : null;
+  const a = why === null ? await op('owned/new', { text, harness: val('nw-harness') || 'codex', model: val('nw-model') || MODELS[0] }) : null;
   if (a?.ok !== true) return a === null && why === null ? undefined : dlgSay('new-dlg', why ?? errText(a.code));
   setVal('nw-text', '');
   closeDlg('new-dlg');
@@ -394,8 +412,9 @@ async function sendMsg() {
   if (a?.ok) {
     setVal('dock-in', '');
     state.to = null;
+    /** @type {HTMLElement} */ (dom.byId('dock-in')).focus();
   }
-  said(a, t('op.done', { what: to.title }));
+  said(a, t(a?.body?.via === 'queued' ? 'op.queued' : 'op.done', { what: to.title }));
 }
 
 /** Two stops; ending takes a second click within ARM_MS. @param {'interrupt' | 'end'} verb */
@@ -411,16 +430,25 @@ async function stop(verb) {
   said(await op(`owned/${to.id}/${verb}`, {}), t('op.done', { what: t(`dock.${verb}`) }));
 }
 
-/** An allow carries the shown request's digest and the queue revision. @param {string} id @param {boolean} held @param {boolean} inPin */
-async function allow(id, held, inPin) {
+/** An allow carries the shown digest and the queue rev; high risk only `sure` (held, typed). @param {string} id @param {boolean} sure @param {boolean} inPin @param {Element | null} el */
+async function allow(id, sure, inPin, el = null) {
   const list = state.owned;
   const a = list?.approvals.find((/** @type {any} */ x) => x.approvalId === id);
   if (!list || !a || !a.canAccept || a.tooLong || (inPin && !pinWhole(a))) return;
-  if (settling() || (a.high && !held)) return say(t(settling() ? 'appr.settling' : 'appr.holdHint'));
-  said(await op(`approvals/${id}/allow`, { digest: a.digest, rev: list.rev }), t('appr.allowed'));
+  if (settling() || (a.high && !sure)) return say(t(settling() ? 'appr.settling' : 'appr.holdHint'));
+  const r = await op(`approvals/${id}/allow`, { digest: a.digest, rev: list.rev });
+  if (r?.ok && el !== null) answeredAt(el, id);
+  said(r, t('appr.allowed'));
 }
 
-/** A high-risk allow is held HOLD_MS (pointer or Enter); letting go or a moving list cancels it. @param {any} el */
+/** r4 §10.9's typed way (browse-mode screen readers, phones). @param {HTMLElement} el @param {string} id */
+function typed(el, id) {
+  const a = state.owned?.approvals.find((/** @type {any} */ x) => x.approvalId === id);
+  const got = a && window.prompt(t('appr.typePrompt', { t: a.title }));
+  if (typeof got === 'string') return got.trim() === t('appr.typeWord') ? allow(id, true, el.closest('.pin') !== null, el) : say(t('appr.typeWrong'));
+}
+
+/** A high-risk allow held HOLD_MS (pointer or Enter); letting go or a moved list cancels. @param {any} el */
 function holdStart(el) {
   const rev = state.owned?.rev;
   if (state.hold !== null || rev === undefined || state.busy) return;
@@ -429,8 +457,8 @@ function holdStart(el) {
   const cancel = after(HOLD_MS, () => {
     if (state.hold?.id !== id) return;
     state.hold = null;
-    state.heldMono = nowMono();
-    if (state.owned?.rev === rev) void allow(id, true, el.closest('.pin') !== null);
+    state.justHeld = id;
+    if (state.owned?.rev === rev) void allow(id, true, el.closest('.pin') !== null, el);
     schedule();
   });
   state.hold = { id, cancel };
@@ -458,7 +486,7 @@ function holdPins(snap) {
   return out;
 }
 
-/** Makes `key` visible and selected: ancestors unfold, its group opens, a filter it fails drops. @param {string} key @param {boolean} focus */
+/** Selects `key` visibly: ancestors unfold, its group opens, a filter it fails drops. @param {string} key @param {boolean} focus */
 function select(key, focus) {
   state.sel = key;
   const snap = state.snap;
@@ -501,13 +529,13 @@ const toggle = (r) => {
   else schedule();
 };
 
-/** Opens a node: its detail beside the tree when wide (no history entry), its own page when narrow. @param {string} key */
+/** Opens a node: detail beside the tree when wide, its own page when narrow. @param {string} key */
 function openNode(key) {
   select(key, false);
   go({ view: 'tower', node: key }, !narrow());
 }
 
-/** Opens a row: a node's page (its detail; full screen on a phone), else its fold. @param {Row} r */
+/** Opens a row: a node's page, else its fold. @param {Row} r */
 function openRow(r) {
   if (r.kind === 'node') {
     openNode(r.key);
@@ -517,13 +545,12 @@ function openRow(r) {
   }
 }
 
-// == freezing: the pointer or focus in the tree holds its order; leaving starts the quiet timer
+// == freezing: the pointer or focus holds the tree's order; leaving starts the quiet timer
 function hold() {
   if (state.quiet !== null) {
     state.quiet();
     state.quiet = null;
   }
-  // The layout on screen holds (a fold or filter you choose lays out afresh).
   if (state.held === null && state.rows.length > 0) state.held = state.rows;
 }
 function release() {
@@ -557,6 +584,8 @@ function act(el) {
   }
   const a = t0.dataset.act;
   const appr = t0.dataset.appr ?? '';
+  // aria-disabled keeps the focus: the click does nothing (a void allow still says why).
+  if (t0.getAttribute('aria-disabled') === 'true' && a !== 'allow') return;
   if (a === 'unlock' || (a === 'new' && state.csrf === null)) return void unlockStart();
   if (a === 'unlockGo') return void unlockGo();
   if (a === 'close') return /** @type {any} */ (t0.closest('dialog')).close();
@@ -568,9 +597,19 @@ function act(el) {
   if (a === 'dispatch') return void dispatch();
   if (a === 'send') return void sendMsg();
   if (a === 'interrupt' || a === 'end') return void stop(a);
-  if (a === 'deny') return void op(`approvals/${appr}/deny`, {}).then((r) => said(r, t('appr.denied')));
-  // A high-risk allow goes by holding; the click ending a hold is its own.
-  if (a === 'allow') return t0.dataset.high !== '1' ? void allow(appr, false, t0.closest('.pin') !== null) : nowMono() - state.heldMono > 600 && say(t('appr.holdHint'));
+  if (a === 'deny') {
+    return void op(`approvals/${appr}/deny`, {}).then((r) => {
+      if (r?.ok) answeredAt(t0, appr);
+      said(r, t('appr.denied'));
+    });
+  }
+  // High risk: held or typed; the click a finished hold ends with is the hold's own.
+  if (a === 'allow') {
+    if (t0.dataset.high !== '1') return void allow(appr, false, t0.closest('.pin') !== null, t0);
+    if (state.justHeld !== appr) return void typed(t0, appr);
+    state.justHeld = null;
+    return;
+  }
   if (a === 'see') return openNode(/** @type {any} */ (t0.closest('.pin')).dataset.node);
   if (a === 'theme') {
     state.theme = state.theme === 'auto' ? 'light' : state.theme === 'light' ? 'dark' : 'auto';
@@ -593,7 +632,7 @@ function act(el) {
     if (hit !== undefined && hit.node.session !== null) openFull(hit.node.session);
     return;
   }
-  // A waiting-bar entry opens its node; when wide the focus follows to its row.
+  // A bar entry opens its node (wide: the focus follows).
   const pin = t0.classList.contains('pin-go') ? t0.closest('.pin') : null;
   const node = pin === null ? undefined : /** @type {HTMLElement} */ (pin).dataset.node;
   if (node !== undefined) {
@@ -661,7 +700,13 @@ pinsEl.addEventListener('pointerenter', () => { state.pinHover = true; });
 pinsEl.addEventListener('pointerleave', () => { state.pinHover = false; schedule(); });
 pinsEl.addEventListener('focusin', () => { state.pinFocus = true; });
 pinsEl.addEventListener('focusout', (e) => { if (!(e.relatedTarget instanceof Node && pinsEl.contains(e.relatedTarget))) state.pinFocus = false; schedule(); });
-document.addEventListener('pointerdown', (e) => { const el = holdBtn(e.target); if (el !== null) holdStart(el); });
+document.addEventListener('pointerdown', (e) => {
+  state.justHeld = null;
+  const el = holdBtn(e.target);
+  if (el !== null) holdStart(el);
+});
+// No long-press menu over a held allow: it would cancel the hold.
+document.addEventListener('contextmenu', (e) => { if (holdBtn(e.target) !== null) e.preventDefault(); });
 for (const ty of ['pointerup', 'pointercancel']) document.addEventListener(ty, cancelHold);
 document.addEventListener('pointerout', (e) => { if (holdBtn(e.target) !== null) cancelHold(); });
 document.addEventListener('keyup', (e) => { if (e.key === 'Enter') cancelHold(); });

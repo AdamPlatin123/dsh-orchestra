@@ -9,7 +9,8 @@ import { OWNED_TEXT_LIMITS, headUtf8, utf8Length } from './text.ts';
 //  - every entry has a deadline on the Clock (Q4: 30 minutes); when it fires the entry is declined (D8,
 //    timeout is a refusal), with cause 'clock';
 //  - allowing takes the digest of what the page showed and the list revision it was drawn from: another
-//    digest is declined and answered digest-mismatch; another revision changes nothing and is answered
+//    digest (or an allow of a card that offers none) is declined with cause mismatch, never as the
+//    person's own refusal, and answered digest-mismatch; another revision changes nothing and is answered
 //    stale-view (the server half of §10.9's freeze: the page knows when it drew, the server which list);
 //  - an allow that comes within 750 ms of a change of the list is stale-view too (r4 10.9: a list that just
 //    moved under the pointer takes no allow; the page freezes its own order, this is the server's half);
@@ -36,8 +37,11 @@ export type ApprovalRisk = (typeof APPROVAL_RISKS)[number];
 
 export type Answer = { readonly decision: 'accept' } | { readonly decision: 'decline' } | { readonly decision: 'text'; readonly text: string };
 
-/** Who answered: the person, the deadline, a stop of the turn, or the end of the session. */
-export type AnswerCause = 'human' | 'clock' | 'interrupt' | 'end';
+/**
+ * Who answered: the person, the deadline, a stop of the turn, the end of the session, or a mismatch (the
+ * person allowed, but not what the queue holds, or a card that offers no allow: declined, and not their word).
+ */
+export type AnswerCause = 'human' | 'clock' | 'interrupt' | 'end' | 'mismatch';
 
 export type ApprovalInput = {
   ownedId: string;
@@ -165,7 +169,7 @@ export class Approvals {
     // A card that offers no allow (too long, a question, a session-wide grant) is declined like a stale digest:
     // what would be allowed is not what the page could show.
     if (seen.digest !== e.view.digest || !e.view.canAccept) {
-      this.#answer(e, { decision: 'decline' }, 'human');
+      this.#answer(e, { decision: 'decline' }, 'mismatch');
       return 'digest-mismatch';
     }
     this.#answer(e, { decision: 'accept' }, 'human');
@@ -178,7 +182,7 @@ export class Approvals {
     if (e === undefined) return 'approval-gone';
     if (seen.rev !== this.#rev || this.settling) return 'stale-view';
     if (seen.digest !== e.view.digest || !e.view.canText || typeof text !== 'string') {
-      this.#answer(e, { decision: 'decline' }, 'human');
+      this.#answer(e, { decision: 'decline' }, 'mismatch');
       return 'digest-mismatch';
     }
     this.#answer(e, { decision: 'text', text }, 'human');

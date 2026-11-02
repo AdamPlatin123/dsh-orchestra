@@ -31,8 +31,8 @@ const shop = (s: Json): Json => s.projects.find((p: Json) => p.name === 'shop');
 test('the golden file and the busy synthetic tower pass; the tables are frozen', () => {
   assert.deepEqual(validateTower(golden()), { ok: true, errors: [] });
   assert.deepEqual(validateTower(busy()), { ok: true, errors: [] });
+  assert.deepEqual([...TOWER_ENUMS.state], ['waiting', 'error', 'running', 'unknown', 'returned', 'idle', 'ended'], 'returned is the furthest a node gets; ended is an owned session whose child is gone, never done (T2)');
   assert.ok(Object.isFrozen(TOWER_ENUMS) && Object.isFrozen(TOWER_ENUMS.state) && Object.isFrozen(TOWER_BOUNDS) && Object.isFrozen(STATE_RANK));
-  assert.deepEqual([...TOWER_ENUMS.state], ['waiting', 'error', 'running', 'unknown', 'returned', 'idle'], 'returned is the furthest a node gets');
   assert.ok(NODE_ID_RE.test('n:0123456789abcdef0123') && !NODE_ID_RE.test('p:0123456789abcdef0123'));
   assert.equal(validateTower(null).ok, false);
 });

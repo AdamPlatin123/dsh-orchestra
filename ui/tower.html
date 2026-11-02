@@ -36,7 +36,7 @@
 <div class="split">
 <section id="tower" class="tower" aria-labelledby="tower-h">
   <div class="tower-head">
-    <h2 id="tower-h" data-t="tree.title"></h2>
+    <h2 id="tower-h" tabindex="-1" data-t="tree.title"></h2>
     <p class="filter" data-slot="filterBox" data-hide="1"><span data-slot="filterT"></span><button type="button" class="link" data-act="clear" data-t="tree.clear"></button></p>
     <button type="button" class="changes" data-act="apply" data-slot="changes" data-hide="1" aria-describedby="changes-hint"></button><span id="changes-hint" class="sr" data-t="tree.changesHint"></span>
   </div>
@@ -111,8 +111,8 @@
   <h2 id="nw-h" data-t="new.title"></h2>
   <label class="dlg-l" for="nw-text" data-t="new.task"></label>
   <textarea id="nw-text" class="dlg-in" rows="3"></textarea>
-  <label class="dlg-l" for="nw-h" data-t="new.harness"></label>
-  <select id="nw-h" class="dlg-in"><option value="codex" data-slot="hCodex" data-t="harness.codex"></option><option value="claude" data-slot="hClaude" data-t="harness.claude"></option></select>
+  <label class="dlg-l" for="nw-harness" data-t="new.harness"></label>
+  <select id="nw-harness" class="dlg-in"><option value="codex" data-slot="hCodex" data-t="harness.codex"></option><option value="claude" data-slot="hClaude" data-t="harness.claude"></option></select>
   <p class="dlg-p" data-slot="why"></p>
   <label class="dlg-l" for="nw-model" data-t="new.model"></label>
   <select id="nw-model" class="dlg-in" data-slot="model"></select>
