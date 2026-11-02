@@ -11,11 +11,12 @@ import { ownEnv } from '../runtime/own.ts';
 // argv are spawn.ts's constants, built around it.
 
 /**
- * Spawns with options of its own making: a frozen object without a prototype holding the gate's cwd
- * and stdio, every other field fixed here, and an environment copied from this process's own
- * entries. Node enumerates the env object with for...in, so a plain process.env would carry an
- * enumerable key some module put on Object.prototype into the child (measured on 24.22; a
- * COR_PROFILER into csc, say).
+ * Spawns with options of its own making: a frozen object without a prototype holding the gate's cwd,
+ * stdio and env, every other field fixed here. The env is the gate's, built per rule from its whitelist
+ * and fixed extras (alpha 0.2 design §2.1), never this process's whole environment; it is copied again
+ * here, own string entries only. Node enumerates the env object with for...in, so an object with a
+ * prototype would carry an enumerable key some module put on Object.prototype into the child
+ * (measured on 24.22; a COR_PROFILER into csc, say).
  */
 const NODE_BACKEND: SpawnBackend = (exe, argv, gate) => {
   const options = Object.freeze(Object.assign(Object.create(null) as Record<string, unknown>, {
@@ -25,7 +26,7 @@ const NODE_BACKEND: SpawnBackend = (exe, argv, gate) => {
     shell: false,
     detached: false,
     windowsVerbatimArguments: false,
-    env: ownEnv(process.env),
+    env: ownEnv(gate.env),
   }));
   return spawn(exe, [...argv], options);
 };

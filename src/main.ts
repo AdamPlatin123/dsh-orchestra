@@ -139,7 +139,7 @@ async function measureIntegrity(d: StartDeps, pidLog: PidLog): Promise<Integrity
   const sys = resolveSystemRoot(d.env, d.realpath);
   if (!sys.ok) return { level: 'unknown', reason: 'system-root-unavailable', detail: sys.reason };
   // Before the plan exists the gate allows whoami and nothing else.
-  const gate = d.makeSpawnGate({ systemRoot: sys, rules: ['whoami'], record: (e) => pidLog.record(e), realpath: d.realpath, clock: d.clock });
+  const gate = d.makeSpawnGate({ systemRoot: sys, rules: ['whoami'], record: (e) => pidLog.record(e), realpath: d.realpath, clock: d.clock, env: d.env });
   return probeIntegrity(gate, sys.path);
 }
 

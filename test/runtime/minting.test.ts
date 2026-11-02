@@ -133,7 +133,7 @@ test('the minted modules export gate factories and the realpath port only; an io
   const spy = fakeSpawn();
   const sys = resolveSystemRoot(process.env, realpath);
   assert.ok(sys.ok);
-  const sg = makeSpawnGate({ systemRoot: sys, rules: ['whoami'], record: () => {}, realpath, clock: makeRealClock(), backend: spy.backend } as Parameters<typeof makeSpawnGate>[0]);
+  const sg = makeSpawnGate({ systemRoot: sys, rules: ['whoami'], record: () => {}, realpath, clock: makeRealClock(), env: process.env, backend: spy.backend } as Parameters<typeof makeSpawnGate>[0]);
   const r = await sg.run({ exe: path.join(sys.path, WHOAMI_REL), argv: WHOAMI_ARGV }, { timeoutMs: 10_000, maxBytes: 256 * 1024 });
   assert.equal(spy.calls.length, 0, 'the spec\'s backend was not used');
   assert.ok(r.ok && /S-1-16-\d+/.test(r.stdout.toString('latin1')) || (!r.ok && r.reason !== 'refused'), JSON.stringify(r));
@@ -178,7 +178,7 @@ test('realpath, io, backend and clock are required ports: nothing has a default 
   assert.throws(() => new WriteFence({ orchestraHome: path.join(dir, 'o'), harnessRoots: [], io: without(realWriteIo, 'ftruncateSync') }), /write fence: io\.ftruncateSync is required/);
   const sys = resolveSystemRoot(process.env, realpath);
   assert.ok(sys.ok);
-  const base = { systemRoot: sys, rules: ['whoami' as const], record: () => {}, backend: fakeSpawn().backend, realpath, clock: makeRealClock() };
+  const base = { systemRoot: sys, rules: ['whoami' as const], record: () => {}, backend: fakeSpawn().backend, realpath, clock: makeRealClock(), env: process.env };
   for (const k of ['backend', 'realpath', 'clock'] as const) assert.throws(() => new SpawnGate(without(base, k)), new RegExp(`spawn gate: ${k} is required`));
   // A clock that is no hub (a bare now function, as before step 3) is no clock either.
   assert.throws(() => new SpawnGate({ ...without(base, 'clock'), now: Date.now } as never), /spawn gate: clock is required/);
@@ -495,7 +495,7 @@ const LIMITS = { timeoutMs: 5000, maxBytes: 4096 };
 export async function start(_f: unknown, _fence: unknown, ports: { realpath(p: string): string; makeSpawnGate(s: unknown): Gate; clock: unknown }): Promise<unknown> {
   const p = JSON.parse(process.argv[2]!) as { dir: string };
   const id = (x: string) => x;
-  const handed = ports.makeSpawnGate({ systemRoot: resolveSystemRoot(process.env, ports.realpath), rules: ['whoami'], record: () => {}, realpath: ports.realpath, clock: ports.clock });
+  const handed = ports.makeSpawnGate({ systemRoot: resolveSystemRoot(process.env, ports.realpath), rules: ['whoami'], record: () => {}, realpath: ports.realpath, clock: ports.clock, env: process.env });
   const hash = 'a'.repeat(64);
   const pgExe = win.join(p.dir, 'runtime', 'procguard', hash, 'procguard.exe');
   const configs: Record<string, Record<string, unknown>> = {
@@ -521,7 +521,7 @@ export async function start(_f: unknown, _fence: unknown, ports: { realpath(p: s
         const sys = c.systemRoot as { ok: boolean; path: string };
         const results: string[] = [];
         try {
-          const g = build({ ...c, backend, record: () => {}, realpath: id, clock: ports.clock });
+          const g = build({ ...c, backend, record: () => {}, realpath: id, clock: ports.clock, env: {} });
           const whoami = await g.run({ exe: win.join(sys.path, 'System32', 'whoami.exe'), argv: WHOAMI_ARGV }, LIMITS);
           results.push('whoami:' + (whoami.ok ? 'ran' : whoami.reason));
           if (cname === 'csc-procguard') {
@@ -540,7 +540,7 @@ export async function start(_f: unknown, _fence: unknown, ports: { realpath(p: s
   // A subclass that overrides decide() does not steer run(): the gate decides privately.
   const steeredCalls: string[] = [];
   class Steered extends (SpawnGate as unknown as Ctor) { decide() { return { allow: true, rule: 'whoami', exe: 'C:\\\\orchestra-evil\\\\evil.exe', argv: [] }; } }
-  const steered = new Steered({ ...configs['real-root'], backend: (exe: string) => { steeredCalls.push(exe); return fakeChild(); }, record: () => {}, realpath: id, clock: ports.clock });
+  const steered = new Steered({ ...configs['real-root'], backend: (exe: string) => { steeredCalls.push(exe); return fakeChild(); }, record: () => {}, realpath: id, clock: ports.clock, env: {} });
   const s = await steered.run({ exe: 'C:\\\\orchestra-evil\\\\evil.exe', argv: [] }, LIMITS);
   let started: string;
   try { steered.start({ exe: 'C:\\\\orchestra-evil\\\\evil.exe', argv: [] }); started = 'reached'; } catch (e) { started = why(e); }

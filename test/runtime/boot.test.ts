@@ -689,6 +689,8 @@ const PRE_FENCE_GRAPH: readonly string[] = [
   'src/store/node-sqlite.ts',
   // Finding N3: the one deep freeze of every exported table (imports nothing, no side effect).
   'shared/frozen.js',
+  // alpha 0.2 step 1: spawn.ts's cwd policy. Imports only node:path and modules already listed; no side effect.
+  'src/os/cwd.ts',
 ];
 
 test('boot.ts\'s pre-fence module graph is a fixed set, and the static scan still guards it', () => {

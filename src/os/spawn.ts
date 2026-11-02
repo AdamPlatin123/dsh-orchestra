@@ -4,6 +4,8 @@ import type { RealpathFn } from '../fs/paths.ts';
 import type { Clock, ClockHub, Fired } from '../runtime/clock.ts';
 import { checkPath, pathKey } from '../fs/paths.ts';
 import { tableSeq } from '../runtime/clock.ts';
+import type { CwdPolicySpec } from './cwd.ts';
+import { CwdPolicy } from './cwd.ts';
 import { envGet, ownFields } from '../runtime/own.ts';
 import { frozenClass } from '../../shared/frozen.js';
 
@@ -32,6 +34,61 @@ export const TOAST_FLAGS: readonly string[] = Object.freeze(['-NoProfile', '-Non
 const TOAST_ENCODED: string | null = null;
 const PROTECT_LIST = /^[1-9]\d{0,9}:\d{1,20}(?:,[1-9]\d{0,9}:\d{1,20})*$/;
 const SOURCE_HASH = /^[0-9a-f]{64}$/;
+
+// The environment of a child (alpha 0.2 design §2.1, §5 "子进程环境"): never this process's whole env.
+// Each rule names the variables it gets; their values are copied from the gate's env source once, at
+// construction, and the composition root may add fixed extras per rule. Everything else (NODE_OPTIONS,
+// COR_PROFILER, COMPlus_*, LIB, PATH and its DLL search order, proxies, tokens) stays behind.
+/** Never handed to any child, by whitelist or extra: they load code into a node child before its own. */
+export const ENV_NEVER: readonly string[] = Object.freeze(['NODE_OPTIONS', 'NODE_PATH']);
+const SYSTEM_ENV = ['SystemRoot', 'SystemDrive', 'windir'] as const;
+export const ENV_WHITELIST: Readonly<Record<SpawnRule, readonly string[]>> = Object.freeze({
+  whoami: Object.freeze([...SYSTEM_ENV]),
+  // csc writes its intermediate files under %TEMP%.
+  csc: Object.freeze([...SYSTEM_ENV, 'TEMP', 'TMP']),
+  procguard: Object.freeze([...SYSTEM_ENV]),
+  // Not runnable before step 17 (TOAST_ENCODED); the list is checked against a real toast then.
+  'powershell-toast': Object.freeze([...SYSTEM_ENV, 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA']),
+});
+const isNever = (name: string) => ENV_NEVER.some((x) => x.toLowerCase() === name.toLowerCase());
+for (const names of Object.values(ENV_WHITELIST)) if (names.some(isNever)) throw new Error('spawn gate: a whitelist names NODE_OPTIONS or NODE_PATH');
+const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const PROXY_NAME = /^(?:https?|all)_proxy$/i;
+
+/** Fixed extras per rule, set once by the composition root (the claude-host rule's NO_PROXY and the like). */
+export type EnvExtra = Partial<Record<SpawnRule, Readonly<Record<string, string>>>>;
+
+function hasUserinfo(value: string): boolean {
+  try {
+    const u = new URL(value);
+    return u.username !== '' || u.password !== '';
+  } catch {
+    return value.includes('@');
+  }
+}
+
+/** One rule's child env: its whitelist read from the source, then its extras; frozen, without a prototype. */
+function ruleEnv(rule: SpawnRule, source: Readonly<Record<string, string | undefined>>, extraGiven: unknown): Readonly<Record<string, string>> {
+  const out = Object.create(null) as Record<string, string>;
+  const names = ENV_WHITELIST[rule];
+  for (const name of names) {
+    const v = envGet(source, name);
+    if (typeof v === 'string' && !v.includes('\0')) out[name] = v;
+  }
+  if (extraGiven !== undefined) {
+    if (typeof extraGiven !== 'object' || extraGiven === null) throw new Error(`spawn gate: envExtra.${rule} must be a record of strings`);
+    for (const key of Object.keys(extraGiven)) {
+      const value = (extraGiven as Record<string, unknown>)[key];
+      if (!ENV_NAME.test(key)) throw new Error(`spawn gate: envExtra.${rule}: bad variable name ${JSON.stringify(key)}`);
+      if (isNever(key)) throw new Error(`spawn gate: envExtra.${rule}: ${key} is never handed to a child`);
+      if (names.some((n) => n.toLowerCase() === key.toLowerCase())) throw new Error(`spawn gate: envExtra.${rule}: ${key} is already on the rule's whitelist`);
+      if (typeof value !== 'string' || value.includes('\0')) throw new Error(`spawn gate: envExtra.${rule}.${key} must be a string without NUL`);
+      if (PROXY_NAME.test(key) && hasUserinfo(value)) throw new Error(`spawn gate: envExtra.${rule}.${key}: a proxy URL with user:pass@ would reach the child's tools`);
+      out[key] = value;
+    }
+  }
+  return Object.freeze(out);
+}
 
 export const WHOAMI_REL = 'System32\\whoami.exe';
 export const CSC_REL = 'Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
@@ -153,6 +210,8 @@ frozenClass(PidLog);
 /** The spawn options the gate itself chooses; callers never pass any. */
 export type BackendOptions = {
   cwd: string;
+  /** The rule's whitelist plus its fixed extras, built by the gate; the backend hands exactly this to the child. */
+  env: Readonly<Record<string, string>>;
   windowsHide: true;
   shell: false;
   stdio: ['ignore' | 'pipe', 'pipe', 'pipe'];
@@ -242,6 +301,11 @@ function handleOf(child: ChildLike, failed: (code: string) => void): ProcHandle 
 export type SpawnRequest = {
   exe: string;
   argv: readonly string[];
+  /**
+   * The child's working directory, for a rule that takes one from its caller (none yet: the claude-host
+   * rule of step 3). Every other rule runs in its exe's directory and is refused a cwd (`cwd-not-allowed`).
+   */
+  cwd?: string;
   /** Present only so a caller asking for a shell or other options is refused with a reason. */
   options?: Readonly<Record<string, unknown>>;
 };
@@ -260,13 +324,17 @@ export type SpawnDenyReason =
   | 'argv-mismatch'
   | 'out-path-denied'
   | 'exe-unresolved'
-  | 'exe-reparsed';
+  | 'exe-reparsed'
+  | 'cwd-not-allowed'
+  | 'cwd-denied';
 
 /** The rules that run as a long-lived child, the only ones start() may launch; run-only rules stay run(). */
 const STARTABLE: readonly SpawnRule[] = ['procguard', 'powershell-toast'];
+/** The rules that run in a cwd their caller names, checked by the gate's CwdPolicy (none until step 3); the rest run in their exe's directory. */
+const CALLER_CWD: readonly SpawnRule[] = Object.freeze([]);
 
 export type SpawnDecision =
-  | { allow: true; rule: SpawnRule; exe: string; argv: readonly string[] }
+  | { allow: true; rule: SpawnRule; exe: string; argv: readonly string[]; cwd: string }
   | { allow: false; reason: SpawnDenyReason; exe: string; rule?: SpawnRule; detail?: string };
 
 export class SpawnRefusedError extends Error {
@@ -297,9 +365,18 @@ export type SpawnGateConfig = {
   realpath: RealpathFn;
   /** Required, no default: the hub the composition root holds. The gate mints its own Clock from it: pid entries read its wall clock, run() deadlines are its timers. */
   clock: ClockHub;
+  /**
+   * Required, no default: where the whitelisted variables' values come from (main.ts's `env`, which is
+   * process.env in orchestrad). Read once, at construction; a later change to it reaches no child.
+   */
+  env: Readonly<Record<string, string | undefined>>;
+  /** Fixed extras per rule, added after the whitelist; a name on the rule's whitelist or on ENV_NEVER is refused. */
+  envExtra?: EnvExtra;
+  /** Where a caller-chosen cwd may lie (CwdPolicy). Without it no rule may run in a caller's cwd. */
+  cwd?: CwdPolicySpec;
 };
 
-const CONFIG_KEYS = ['systemRoot', 'rules', 'csc', 'procguard', 'record', 'backend', 'realpath', 'clock'] as const;
+const CONFIG_KEYS = ['systemRoot', 'rules', 'csc', 'procguard', 'record', 'backend', 'realpath', 'clock', 'env', 'envExtra', 'cwd'] as const;
 
 /** timeoutMs is a positive integer (a Clock due time is whole milliseconds), at most 2^31 - 1. */
 export type RunLimits = { timeoutMs: number; maxBytes: number };
@@ -343,7 +420,7 @@ function procguardExe(given: ProcguardSite): string {
   throw new Error('spawn gate: a procguard site is { at: "runtime", homeReal, sourceHash } or { at: "build" }');
 }
 
-type RequestCopy = { ok: true; exe: string; argv: readonly string[]; options: readonly [string, unknown][] } | { ok: false; exe: string };
+type RequestCopy = { ok: true; exe: string; argv: readonly string[]; cwd: string | undefined; options: readonly [string, unknown][] } | { ok: false; exe: string };
 
 /**
  * Reads each field of a caller-owned request exactly once and copies it, so a getter or a Proxy
@@ -354,6 +431,7 @@ function copyRequest(req: unknown): RequestCopy {
   let exe: unknown;
   let argv: unknown;
   let options: unknown;
+  let cwd: unknown;
   try {
     // Own fields only, each read once: a field the caller did not set reads undefined, never one
     // some module put on Object.prototype (a poisoned `options` would otherwise refuse a bare whoami).
@@ -361,6 +439,7 @@ function copyRequest(req: unknown): RequestCopy {
     exe = Object.hasOwn(r, 'exe') ? r.exe : undefined;
     argv = Object.hasOwn(r, 'argv') ? r.argv : undefined;
     options = Object.hasOwn(r, 'options') ? r.options : undefined;
+    cwd = Object.hasOwn(r, 'cwd') ? r.cwd : undefined;
   } catch {
     return { ok: false, exe: '<unreadable>' };
   }
@@ -370,8 +449,9 @@ function copyRequest(req: unknown): RequestCopy {
     const copy: unknown[] = Array.from(argv as unknown[]);
     if (!copy.every((a) => typeof a === 'string')) return { ok: false, exe: exeText };
     if (options !== undefined && (typeof options !== 'object' || options === null)) return { ok: false, exe: exeText };
+    if (cwd !== undefined && typeof cwd !== 'string') return { ok: false, exe: exeText };
     const entries = options === undefined ? [] : Object.entries(options);
-    return { ok: true, exe, argv: Object.freeze(copy as string[]), options: entries };
+    return { ok: true, exe, argv: Object.freeze(copy as string[]), cwd, options: entries };
   } catch {
     return { ok: false, exe: exeText };
   }
@@ -385,6 +465,9 @@ export class SpawnGate {
   readonly #record: (e: PidEntry) => void;
   readonly #realpath: RealpathFn;
   readonly #clock: Clock;
+  /** Each rule's child env, built once at construction. */
+  readonly #env: ReadonlyMap<SpawnRule, Readonly<Record<string, string>>>;
+  readonly #cwd: CwdPolicy | null;
   /** run() deadlines by timerId; the Clock fires into #expire, which looks the run up here. */
   readonly #deadlines = new Map<string, () => void>();
 
@@ -420,6 +503,14 @@ export class SpawnGate {
     const outAllowed = ownFields(cfg.csc, ['outAllowed'] as const).outAllowed;
     this.#csc = typeof outAllowed === 'function' ? { outDirs: pgDirs, outAllowed } : null;
     if (this.#rules.has('csc') && (this.#csc === null || pgDirs.size === 0)) throw new Error('spawn gate: csc enabled without an /out: verdict and a procguard site to build into');
+    const source = cfg.env;
+    if (typeof source !== 'object' || source === null) throw new Error('spawn gate: env is required, there is no default');
+    const extra = cfg.envExtra;
+    if (extra !== undefined && (typeof extra !== 'object' || extra === null)) throw new Error('spawn gate: envExtra must be a record per rule');
+    for (const k of extra === undefined ? [] : Object.keys(extra)) if (!RULES.includes(k as SpawnRule)) throw new Error(`spawn gate: envExtra names an unknown rule ${k}`);
+    const extras = ownFields(extra, RULES);
+    this.#env = new Map(RULES.map((rule) => [rule, ruleEnv(rule, source, extras[rule])]));
+    this.#cwd = cfg.cwd === undefined ? null : new CwdPolicy({ spec: cfg.cwd, env: source, systemRoot: sys.path, realpath: cfg.realpath! });
     this.#backend = cfg.backend!;
     this.#record = cfg.record;
     this.#realpath = cfg.realpath!;
@@ -460,7 +551,17 @@ export class SpawnGate {
       return deny('exe-unresolved', { rule, detail: errCode(e) });
     }
     if (pathKey(real) !== pathKey(known.exe)) return deny('exe-reparsed', { rule, detail: real });
-    return { allow: true, rule, exe: known.exe, argv: r.argv };
+    let cwd = win.dirname(known.exe);
+    if (CALLER_CWD.includes(rule)) {
+      if (r.cwd === undefined) return deny('cwd-not-allowed', { rule, detail: 'required' });
+      if (this.#cwd === null) return deny('cwd-denied', { rule, detail: 'no-policy' });
+      const v = this.#cwd.check(r.cwd);
+      if (!v.ok) return deny('cwd-denied', { rule, detail: v.detail === undefined ? v.reason : `${v.reason}: ${v.detail}` });
+      cwd = v.path;
+    } else if (r.cwd !== undefined) {
+      return deny('cwd-not-allowed', { rule });
+    }
+    return { allow: true, rule, exe: known.exe, argv: r.argv, cwd };
   }
 
   #argvOk(rule: SpawnRule, argv: readonly string[]): SpawnDenyReason | null {
@@ -498,7 +599,7 @@ export class SpawnGate {
     const at = new Date(this.#clock.nowWall()).toISOString();
     let child: ChildLike;
     try {
-      child = this.#backend(d.exe, d.argv, { cwd: win.dirname(d.exe), windowsHide: true, shell: false, stdio: [stdin, 'pipe', 'pipe'] });
+      child = this.#backend(d.exe, d.argv, { cwd: d.cwd, env: this.#env.get(d.rule)!, windowsHide: true, shell: false, stdio: [stdin, 'pipe', 'pipe'] });
     } catch (e) {
       this.#record({ at, rule: d.rule, exe: d.exe, pid: null, error: errCode(e) });
       throw e;

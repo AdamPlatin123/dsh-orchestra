@@ -18,8 +18,15 @@ import { junction, put, withTmp } from '../helpers/tmp.ts';
 // the rig's realpath is the identity and the backend a spy, or one that fails the test when called:
 // no exe is looked at or run. The procguard sites live in a temp data dir.
 
-/** backend, realpath and clock are required; a gate that should never spawn gets this backend. */
-const NO_SPAWN = { backend: () => { throw new Error('rig: this gate must not spawn'); }, realpath: (p: string) => p, clock: makeRealClock() };
+/** A synthetic env source: the system variables, plus names no whitelist may let through. */
+const SOURCE_ENV: Readonly<Record<string, string>> = Object.freeze({
+  SystemRoot: 'C:\\Windows', SYSTEMDRIVE: 'C:', windir: 'C:\\Windows', TEMP: 'C:\\t', TMP: 'C:\\t', PATH: 'C:\\evil;C:\\Windows\\System32',
+  NODE_OPTIONS: '--require C:\\evil.js', node_path: 'C:\\evil', COR_PROFILER: '{00000000-0000-0000-0000-000000000000}', COMPlus_EnableDiagnostics: '1',
+  LIB: 'C:\\evil', HTTPS_PROXY: 'http://u:p@proxy:8080', ANTHROPIC_API_KEY: 'placeholder-not-a-key', USERPROFILE: 'C:\\Users\\someone',
+});
+
+/** backend, realpath, clock and env are required; a gate that should never spawn gets this backend. */
+const NO_SPAWN = { backend: () => { throw new Error('rig: this gate must not spawn'); }, realpath: (p: string) => p, clock: makeRealClock(), env: SOURCE_ENV };
 
 const HASH = 'a'.repeat(64);
 const OTHER_HASH = 'b'.repeat(64);
@@ -270,7 +277,9 @@ test('start(): refused requests throw a typed error; allowed ones reach the back
   assert.equal(spy.calls.length, 0);
   const child = g.start({ exe: r.pg, argv: ['--protect', '1:2'] });
   assert.equal(child.pid, 4242);
-  assert.deepEqual(spy.calls[0]!.opts, { cwd: path.dirname(r.pg), windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'] });
+  assert.deepEqual({ ...spy.calls[0]!.opts, env: { ...spy.calls[0]!.opts.env } }, {
+    cwd: path.dirname(r.pg), env: { SystemRoot: 'C:\\Windows', SystemDrive: 'C:', windir: 'C:\\Windows' }, windowsHide: true, shell: false, stdio: ['pipe', 'pipe', 'pipe'],
+  });
   assert.deepEqual(pids.entries(), [{ at: '2026-10-31T00:00:00.000Z', rule: 'procguard', exe: r.pg, pid: 4242 }]);
   child.kill();
 });
