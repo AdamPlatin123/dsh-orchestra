@@ -1,174 +1,160 @@
 // @ts-check
-// Seats on the stage (0.1 alpha design §6): pure geometry over one lane, in the 1200×920 viewBox.
-// Principals sit in front (row 0), clones on risers behind by depth (4 a riser, 12 a section; empty
-// risers are not built). Rows scale to fill the section's height, capped by width and by the row in
-// front; the rest become a `+n` badge. Cue lines run shoulder to shoulder; a report line carries its
-// compression label (48k→1.2k). Same lane in, same seats out.
+// The full score (总谱) of one group in one lane (0.1 alpha design §6, frontend-design pass 2): pure
+// geometry, same lane in, same marks out. One staff per player of the group, principals first and
+// members below in parent order, indented by depth. One column per work item handed out, in the
+// order the lane records them. A phrase sits on its executor's staff and grows with log2 of the
+// context the executor read (flow.childBytes); a dispatch cue draws a slur down from the owner's
+// staff, a report cue a tie back up whose weight grows with log2 of the report's bytes. No flow, no
+// length: the phrase is a short stub that says 未知.
 import { frozen } from '../shared/frozen.js';
 
 /** @typedef {import('../shared/stage-contract.js').Lane} Lane */
 /** @typedef {import('../shared/stage-contract.js').Player} Player */
-/** @typedef {{ id: string, x: number, y: number, s: number, w: number, section: 'claude' | 'dsh', row: number }} Seat */
-/** @typedef {{ x1: number, y1: number, x2: number, y2: number, kind: 'dispatch' | 'report', label: string, item: string }} CueLine */
-/** @typedef {{ section: 'claude' | 'dsh', n: number, x: number, y: number }} Overflow */
-/** @typedef {{ section: 'claude' | 'dsh', row: number, x: number, y: number, w: number, h: number }} Riser */
+/** @typedef {import('../shared/stage-contract.js').WorkItem} WorkItem */
+/** @typedef {{ id: string, player: Player | null, y: number, x: number }} Staff */
+/** @typedef {{ x: number, y: number, dx: number, dy: number }} Arc */
+/**
+ * @typedef {{ item: WorkItem, col: number, staff: string, y: number, x0: number, x1: number, x2: number,
+ *   kind: 'flow' | 'stub' | 'open', tail: number, slur: Arc | null, tie: (Arc & { w: number }) | null }} Phrase
+ */
 
-export const STAGE_GEOM = frozen({
-  w: 1200,
-  h: 920,
-  sections: { claude: { x0: 40, x1: 420 }, dsh: { x0: 430, x1: 770 } },
-  /** Feet line of row 0. DSH sits behind the podium, so its front row stands higher. */
-  base: { claude: 866, dsh: 700 },
-  /** No head rises above this line (the section plaques live there). */
-  top: 126,
-  /** Row weights, front to back: principals, risers 1–3. */
-  weight: [1, 0.76, 0.68, 0.6],
-  maxScale: { principal: 3, clone: 2.3 },
-  perRow: 4,
-  maxLeads: 2,
-  maxClones: 12,
-  /** A seat's box at s=1 around (x, y); the harp widens a principal's. */
-  box: { x0: -18, x0Lead: -32, x1: 44, top: -74, feet: 2 },
-  /** The nameplate's height under a seat, in viewBox units. */
-  label: 36,
-  /** Between a nameplate and the heads in front. */
-  rowGap: 8,
-  /** Deepest a riser's face drops toward the row in front. */
-  riser: 84,
-  /** Side padding of a seat inside its cell. */
-  pad: 6,
-  /** Where cue lines meet a figure, at s=1: shoulder height and the side offset clear of the hair. */
-  chest: 36,
-  shoulder: 22,
+export const SCORE = frozen({
+  /** Width of the staff-head column, its own SVG beside the scrolling music. */
+  head: 208,
+  row: 46,
+  /** Height of the ordinal row above the first staff. */
+  top: 28,
+  col: 124,
+  /** Music before the first column and after the last. */
+  lead: 14,
+  tail: 44,
+  /** From a column's start (where the slur leaves the owner) to its phrase. */
+  gap: 12,
+  stub: 18,
+  min: 14,
+  max: 96,
+  indent: 12,
+  /** Left edge of a depth-0 head, clear of the group's bracket. */
+  x: 16,
 });
 
-const G = STAGE_GEOM;
+const S = SCORE;
 
-/** Compact bytes for a cue label, ASCII only: 940, 1.2k, 48k, 3.1M. @param {number} n */
+/** Compact bytes for a caption, ASCII only: 940, 1.2k, 48k, 3.1M. @param {number} n */
 export function kb(n) {
   if (n < 1000) return String(n);
   if (n < 1e6) return `${n < 1e4 ? (n / 1e3).toFixed(1) : Math.round(n / 1e3)}k`;
   return `${(n / 1e6).toFixed(1)}M`;
 }
 
-/** @param {number} v */
-const round = (v) => Math.round(v * 10) / 10;
+/** Phrase length for the context a member read. @param {number} bytes */
+export function phraseLen(bytes) {
+  return Math.min(S.max, Math.max(S.min, Math.round(8 * Math.log2(Math.max(bytes, 1) / 64))));
+}
 
-/** Left edge of a seat's box at s=1. @param {boolean} lead */
-const left = (lead) => (lead ? G.box.x0Lead : G.box.x0);
+/** Tie weight 1..4 for a report's bytes. @param {number} bytes */
+export function tieWeight(bytes) {
+  return Math.min(4, Math.max(1, Math.round(Math.log2(Math.max(bytes, 1)) / 4)));
+}
 
-/** The box a seat covers, nameplate included, for the overlap test. @param {Seat} s @param {boolean} lead */
-export function seatBox(s, lead) {
-  return { x0: s.x + left(lead) * s.s, x1: s.x + G.box.x1 * s.s, y0: s.y + G.box.top * s.s, y1: s.y + G.box.feet * s.s + G.label };
+/** The players of one group, principals first, each member after its parent. @param {Lane} lane @param {string} harness */
+export function groupPlayers(lane, harness) {
+  const mine = lane.players.filter((p) => p.harness === harness);
+  const ids = new Set(mine.map((p) => p.id));
+  /** @type {Map<string | null, Player[]>} */
+  const kids = new Map();
+  for (const p of mine) {
+    const up = p.parent !== null && ids.has(p.parent) && p.parent !== p.id ? p.parent : null;
+    kids.set(up, [...(kids.get(up) ?? []), p]);
+  }
+  const roots = kids.get(null) ?? [];
+  /** @type {Player[]} */
+  const out = [];
+  const seen = new Set();
+  /** @param {Player} p */
+  const walk = (p) => {
+    if (seen.has(p.id)) return;
+    seen.add(p.id);
+    out.push(p);
+    for (const k of kids.get(p.id) ?? []) walk(k);
+  };
+  for (const p of [...roots.filter((r) => r.role === 'principal'), ...roots.filter((r) => r.role !== 'principal')]) walk(p);
+  // A parent loop leaves players unreached; they still get a staff.
+  for (const p of mine) walk(p);
+  return out;
+}
+
+/** The work items a group handed out (todos stay on the lead's desk), in record order. @param {Lane} lane @param {string} harness */
+export function groupItems(lane, harness) {
+  const of = new Map(lane.players.map((p) => [p.id, p.harness]));
+  return lane.items.filter((w) => w.source !== 'todo' && (of.get(w.owner) ?? (w.executor !== null ? of.get(w.executor) : undefined)) === harness);
 }
 
 /**
- * Scales of a section's rows for a fill factor k: each row k·weight, capped by its width, its kind and
- * the row in front of it.
- * @param {{ n: number, lead: boolean, wt: number }[]} rows @param {number} width @param {number} k
+ * What a member handed on that the records link to an executor: the one list behind 部门：下派 n, on
+ * the score and in 分谱 alike (T3). Items a member owns sit in its own group, so a lane's items and a
+ * group's give the same list.
+ * @param {readonly WorkItem[]} items @param {string | null} id
  */
-function scales(rows, width, k) {
-  let prev = Infinity;
-  return rows.map((r) => {
-    const cap = Math.min((width / r.n - 2 * G.pad) / (G.box.x1 - left(r.lead)), r.lead ? G.maxScale.principal : G.maxScale.clone, prev);
-    prev = Math.floor(Math.min(k * r.wt, cap) * 100) / 100;
-    return prev;
+export function handedOn(items, id) {
+  return id === null ? [] : items.filter((w) => w.source !== 'todo' && w.join !== null && w.owner === id && w.executor !== id);
+}
+
+/**
+ * @param {Lane} lane @param {string} harness @param {readonly string[]} fermatas
+ * @returns {{ w: number, h: number, staves: Staff[], phrases: Phrase[], cols: { n: number, x: number }[],
+ *   ferms: { id: string, x: number, y: number }[], depts: { id: string, x: number, y0: number, y1: number }[],
+ *   brace: { y0: number, y1: number } }}
+ */
+export function layoutScore(lane, harness, fermatas) {
+  const players = groupPlayers(lane, harness);
+  const items = groupItems(lane, harness);
+  const ids = new Set(players.map((p) => p.id));
+  const base = Math.min(...players.map((p) => p.depth), 4);
+  /** @type {Staff[]} */
+  const staves = players.map((p, i) => ({ id: p.id, player: p, y: S.top + S.row * i + S.row / 2, x: S.x + S.indent * Math.min(Math.max(p.depth - base, 0), 4) }));
+  // Items whose executor has no staff here sit on one grey 未关联 staff at the bottom.
+  if (items.some((w) => w.executor === null || !ids.has(w.executor))) staves.push({ id: `u:${harness}`, player: null, y: S.top + S.row * staves.length + S.row / 2, x: S.x });
+  const at = new Map(staves.map((s) => [s.id, s]));
+  const cue = (/** @type {string} */ item, /** @type {string} */ kind) => lane.cues.some((c) => c.item === item && c.kind === kind);
+  /** @type {Phrase[]} */
+  const phrases = items.map((w, col) => {
+    const st = /** @type {Staff} */ (at.get(w.executor !== null && ids.has(w.executor) ? w.executor : `u:${harness}`));
+    const owner = at.get(w.owner);
+    const x0 = S.lead + S.col * col;
+    const x1 = x0 + S.gap;
+    const kind = w.flow !== null ? 'flow' : w.state === 'working' ? 'open' : 'stub';
+    const x2 = x1 + (w.flow !== null ? phraseLen(w.flow.childBytes) : S.stub);
+    const linked = owner !== undefined && owner !== st;
+    const slur = linked && cue(w.id, 'dispatch') ? { x: x0, y: owner.y, dx: S.gap, dy: st.y - owner.y } : null;
+    const back = w.report !== null ? w.report.bytes : w.flow !== null ? w.flow.reportBytes : 1;
+    const tie = linked && cue(w.id, 'report') ? { x: x2, y: owner.y, dx: 22, dy: st.y - owner.y, w: tieWeight(back) } : null;
+    return { item: w, col, staff: st.id, y: st.y, x0, x1, x2, kind, tail: kind === 'open' ? x0 + S.col - 22 : x2, slur, tie };
   });
-}
-
-/** Height a stack of rows takes. @param {number[]} ss */
-const stackH = (ss) => ss.reduce((h, s) => h + (G.box.feet - G.box.top) * s + G.label, 0) + G.rowGap * Math.max(0, ss.length - 1);
-
-/**
- * @param {Lane} lane
- * @returns {{ seats: Seat[], cues: CueLine[], overflow: Overflow[], risers: Riser[] }}
- */
-export function layoutStage(lane) {
-  /** @type {Seat[]} */
-  const seats = [];
-  /** @type {Overflow[]} */
-  const overflow = [];
-  /** @type {Riser[]} */
-  const risers = [];
-  for (const section of /** @type {const} */ (['claude', 'dsh'])) {
-    const sec = G.sections[section];
-    const width = sec.x1 - sec.x0;
-    const mine = lane.players.filter((p) => p.harness === section);
-    const leads = mine.filter((p) => p.role === 'principal');
-    const clones = mine.filter((p) => p.role !== 'principal');
-    let more = Math.max(0, leads.length - G.maxLeads) + Math.max(0, clones.length - G.maxClones);
-    /** @type {Player[][]} */
-    const byRow = [[], [], [], []];
-    for (const p of clones.slice(0, G.maxClones)) {
-      // The riser of its depth, else the next free one behind it, else in front of it.
-      const want = Math.min(Math.max(p.depth, 1), 3);
-      const order = [want, ...[1, 2, 3].filter((r) => r > want), ...[3, 2, 1].filter((r) => r < want)];
-      const r = order.find((k) => byRow[k].length < G.perRow);
-      if (r === undefined) more++;
-      else byRow[r].push(p);
-    }
-    const rows = [
-      ...(leads.length > 0 ? [{ ps: leads.slice(0, G.maxLeads), lead: true, tier: 0 }] : []),
-      ...byRow.slice(1).filter((r) => r.length > 0).map((ps, i) => ({ ps, lead: false, tier: i + 1 })),
-    ];
-    if (rows.length === 0) continue;
-    const spec = rows.map((r) => ({ n: r.ps.length, lead: r.lead, wt: G.weight[r.tier] }));
-    // The front row's nameplate rests on the base line plus its label; find the largest k that fits.
-    const bottom = G.base[section] + G.label;
-    let lo = 0.2;
-    let hi = 8;
-    for (let i = 0; i < 32; i++) {
-      const mid = (lo + hi) / 2;
-      if (stackH(scales(spec, width, mid)) <= bottom - G.top) lo = mid;
-      else hi = mid;
-    }
-    const ss = scales(spec, width, lo);
-    let floor = bottom;
-    /** Feet line of the row in front, where a riser's face ends. */
-    let front = G.base[section];
-    rows.forEach((r, i) => {
-      const s = ss[i];
-      const y = round(floor - G.label - G.box.feet * s);
-      const cell = width / r.ps.length;
-      r.ps.forEach((p, j) => {
-        // Centre each box in its cell; the box sits right of the seat point (the stand), so shift it back.
-        const centre = sec.x0 + cell * (j + 0.5);
-        seats.push({ id: p.id, x: round(centre - ((G.box.x1 + left(r.lead)) / 2) * s), y, s, w: round(cell), section, row: r.tier });
-      });
-      if (!r.lead) risers.push({ section, row: r.tier, x: sec.x0, y, w: width, h: round(Math.min(Math.max(front - y, 0), G.riser)) });
-      front = y;
-      floor = y + G.box.top * s - G.rowGap;
+  const edge = S.lead + S.col * items.length + 10;
+  const ferms = staves
+    .filter((s) => s.player !== null && fermatas.includes(s.id))
+    .map((s) => {
+      const mine = phrases.filter((p) => p.staff === s.id);
+      return { id: s.id, x: mine.length > 0 ? Math.max(...mine.map((p) => p.tail)) + 14 : edge, y: s.y - 15 };
     });
-    if (more > 0) overflow.push({ section, n: more, x: sec.x1 - 30, y: round(Math.max(floor - 10, G.top - 16)) });
-  }
-  const at = new Map(seats.map((s) => [s.id, s]));
-  const items = new Map(lane.items.map((w) => [w.id, w]));
-  /** @type {CueLine[]} */
-  const cues = [];
-  for (const c of lane.cues) {
-    const a = at.get(c.from);
-    const b = at.get(c.to);
-    if (a === undefined || b === undefined) continue;
-    // A cue leaves and meets each figure at the shoulder facing the other, clear of the head.
-    /** @param {Seat} s @param {Seat} o */
-    const side = (s, o) => s.x + (o.x > s.x + 4 ? G.shoulder : -G.shoulder) * s.s;
-    const ax = side(a, b);
-    const bx = side(b, a);
-    const ay = a.y - G.chest * a.s;
-    const by = b.y - G.chest * b.s;
-    const len = Math.hypot(bx - ax, by - ay) || 1;
-    const ux = (bx - ax) / len;
-    const uy = (by - ay) / len;
-    // Dispatch and report between the same two players run side by side, 12 units apart: they run in
-    // opposite directions, so the same left-hand offset puts them on opposite sides.
-    const off = 6;
-    const w = items.get(c.item);
-    const label = c.kind !== 'report' || w === undefined ? '' : w.flow !== null ? `${kb(w.flow.childBytes)}→${kb(w.flow.reportBytes)}` : w.report !== null ? kb(w.report.bytes) : '';
-    cues.push({
-      x1: round(ax - uy * off), y1: round(ay + ux * off),
-      x2: round(bx - uy * off), y2: round(by + ux * off),
-      kind: c.kind, label, item: c.item,
+  // A member that hands work on is a department: a bracket from its staff to its last descendant's.
+  const depts = staves
+    .filter((s) => s.player !== null && s.player.role !== 'principal' && handedOn(items, s.id).length > 0)
+    .map((s) => {
+      let j = staves.indexOf(s);
+      while (j + 1 < staves.length && staves[j + 1].player !== null && staves[j + 1].x > s.x) j++;
+      return { id: s.id, x: s.x - 6, y0: s.y - 15, y1: staves[j].y + 15 };
     });
-  }
-  return { seats, cues, overflow, risers };
+  const last = staves.length > 0 ? staves[staves.length - 1].y : S.top;
+  return {
+    w: S.lead + S.col * Math.max(items.length, 1) + S.tail,
+    h: S.top + S.row * staves.length + 6,
+    staves,
+    phrases,
+    cols: items.map((_, i) => ({ n: i + 1, x: S.lead + S.col * i + S.gap })),
+    ferms,
+    depts,
+    brace: { y0: staves.length > 0 ? staves[0].y - 18 : S.top, y1: last + 18 },
+  };
 }

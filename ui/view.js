@@ -1,10 +1,10 @@
 // @ts-check
-// Pure descriptors of the stage preview (0.1 alpha design §6–§7): snapshot in, `{key, tpl, cls, data,
+// Pure descriptors of the stage preview's score and parts (0.1 alpha design §6–§7): snapshot in, `{key, tpl, cls, data,
 // attr, text, slots, kids}` out, for ui/dom.js to patch. Nothing here touches the DOM, the clock or
 // the network, so node:test drives every function with the sample JSON.
 // The truthfulness rules of §2 hold here: T1, T2 (D19), T3 (counts from view()), T4, T6.
 import { STAGE_TEXT } from '../shared/strings.js';
-import { kb, layoutStage } from './layout.js';
+import { SCORE, groupItems, groupPlayers, handedOn, kb, layoutScore } from './layout.js';
 
 /**
  * @typedef {import('../shared/stage-contract.js').StageSnapshot} StageSnapshot
@@ -34,7 +34,6 @@ const CHIP_TEST = Object.freeze({
 
 const PLAYING = ['busy', 'running', 'waiting'];
 const TODO_GLYPH = Object.freeze({ pending: '○', in_progress: '◐', completed: '☑', other: '?' });
-const DOT = Object.freeze({ pending: 'pending', in_progress: 'current', completed: 'selfchecked', other: 'other' });
 
 /**
  * A STAGE_TEXT entry with its `{name}` placeholders filled; an unknown key shows itself, raw.
@@ -91,15 +90,12 @@ const basisText = (p) => STAGE_TEXT[p.live.basis === 'registry' ? 'basis.registr
 const liveText = (p) => `${STAGE_TEXT[`live.${p.live.state}`]}（${basisText(p)}）`;
 /** The state, with what it waits for said once: 在等你：x（登记表）. @param {Player} p */
 const liveWait = (p) => (p.live.waitingFor !== null ? `${fill('player.waiting', { w: p.live.waitingFor })}（${basisText(p)}）` : liveText(p));
-/** @param {Player} p */
-const eyes = (p) => (PLAYING.includes(p.live.state) ? 'open' : 'shut');
+/** No player behind a mark: no lineage, no instrument. */
+const NOFIG = Object.freeze({ lineage: 'none', role: 'clone', look: 'ghost', instr: 'unknown', basis: 'none' });
 
-/** A figure with no player behind it: a ghost that plays nothing. */
-const NOFIG = Object.freeze({ lineage: 'none', shade: '0', role: 'clone', look: 'ghost', instr: 'unknown', eyes: 'shut', basis: 'none' });
-
-/** The figure's look, shared by stage seats, desk heads and row chibis. @param {Player} p */
+/** A player's marks, shared by staff heads, desks, rows and the drawer: each one a field (T1). @param {Player} p */
 function figure(p) {
-  return { lineage: p.harness, shade: String(p.shade), role: p.role, look: p.look, instr: p.instrument.class, eyes: eyes(p), basis: p.live.basis };
+  return { lineage: p.harness, role: p.role, look: p.look, instr: p.instrument.class, basis: p.live.basis };
 }
 
 /** What the music stand shows: the current todo, else the title, else why there is none. @param {Player} p */
@@ -149,7 +145,7 @@ export function describeHeader(snap, laneId, fresh) {
   };
 }
 
-// ---- stage
+// ---- score
 
 /**
  * Nameplate: the tag (harness and role, or role and agent type) and the label without the project,
@@ -163,79 +159,187 @@ export function nameplate(p, lane) {
   let name = p.label;
   if (cut > 0 && p.label.slice(0, cut) === lane.name) name = p.label.slice(cut + 3);
   else if (p.label === lane.name) name = p.session !== null ? fill('plate.session', { id: p.session.slice(0, 6) }) : STAGE_TEXT['dr.noSession'];
-  return { tag, short: p.agentType ?? tag, name };
+  return { tag, name };
 }
 
-/** @param {Player} p @param {Lane} lane @param {import('./layout.js').Seat} seat @param {string | null} sel @param {Set<string>} fermatas @returns {Desc} */
-function seatDesc(p, lane, seat, sel, fermatas) {
-  const instr = STAGE_TEXT[`instr.${p.instrument.class}`];
-  const plate = plateText(p);
-  const np = nameplate(p, lane);
-  // The nameplate is in viewBox units, so its width in columns follows the seat's cell.
-  const room = Math.max(seat.w, 70) - 12;
-  const tagW = Math.min(30, Math.floor(room / 6.6));
-  /** @type {Record<string, Paint>} */
-  const slots = {
-    title: { text: fill('player.title', { label: p.label, role: STAGE_TEXT[`role.${p.role}`], instr, live: liveWait(p), plate }) },
-    body: { attr: { transform: `scale(${seat.s})` } },
-    plate: { text: clipW(plate, 9) },
-    tag: { text: clipW(clipW(np.tag, tagW) === np.tag ? np.tag : np.short, tagW) },
-    name: { text: clipW(np.name, Math.min(24, Math.floor(room / 8.8))) },
+/** The harnesses that can have a system on the score; Codex is static and says 未接入. */
+export const GROUPS = /** @type {const} */ (['claude', 'dsh']);
+
+/**
+ * How one group works together, every number the length of a list returned beside it (T3). The form
+ * word comes from the players' roles: teammates make a team (团队), clones a chain of delegation
+ * (上下级委派), a lone principal plays solo (独奏).
+ * @param {Lane} lane @param {string} harness @param {readonly string[]} fermatas
+ */
+export function groupSummary(lane, harness, fermatas) {
+  const players = groupPlayers(lane, harness);
+  const sent = groupItems(lane, harness);
+  const clones = players.filter((p) => p.role === 'clone');
+  const teammates = players.filter((p) => p.role === 'teammate');
+  const depts = players.filter((p) => p.role !== 'principal' && handedOn(sent, p.id).length > 0);
+  /** @param {WorkItem['state']} s */
+  const by = (s) => sent.filter((w) => w.state === s);
+  const lists = {
+    players, clones, teammates, depts, sent,
+    working: by('working'), reported: by('reported'), orphan: by('orphan'), unknown: by('unknown'),
+    flows: sent.filter((w) => w.flow !== null),
+    waiting: players.filter((p) => fermatas.includes(p.id)),
   };
-  for (let i = 0; i < 12; i++) {
-    const it = p.stand.items[i];
-    slots[`d${i}`] = { data: { s: it === undefined ? 'off' : DOT[it.status] } };
-  }
+  const form = teammates.length > 0 ? 'team' : clones.length > 0 ? 'tree' : 'solo';
+  /** @param {string} k @param {readonly unknown[]} l */
+  const part = (k, l) => (l.length > 0 ? [fill(k, { n: l.length })] : []);
+  const crew = [...part('grp.teammates', teammates), ...part('grp.clones', clones), ...part('grp.depts', depts)];
+  const work = sent.length === 0 ? STAGE_TEXT['grp.noSent']
+    : [fill('grp.sent', { n: sent.length }), ...part('grp.working', lists.working), ...part('grp.reported', lists.reported), ...part('grp.orphan', lists.orphan), ...part('grp.unknown', lists.unknown)].join('，');
+  const child = lists.flows.reduce((s, w) => s + /** @type {{ childBytes: number }} */ (w.flow).childBytes, 0);
+  const back = lists.flows.reduce((s, w) => s + /** @type {{ reportBytes: number }} */ (w.flow).reportBytes, 0);
+  const flow = lists.flows.length > 0 ? [fill('grp.flow', { r: ratio(child / Math.max(back, 1)), n: lists.flows.length })] : [];
+  const text = [crew.length > 0 ? crew.join('，') : STAGE_TEXT['grp.alone'], work, ...flow, ...part('grp.wait', lists.waiting)].join('；');
+  return { form, lists, text };
+}
+
+/** A work item's state in a word, with no sizes. @param {WorkItem} w */
+const stateWord = (w) => STAGE_TEXT[w.state === 'reported' ? 'ph.reported' : w.state === 'working' ? 'rep.working' : w.state === 'orphan' ? 'rep.orphan' : w.state === 'self' ? 'rep.self' : 'rep.unknown'];
+
+/** What a phrase says under itself: the flow, else the report's size, else its state. @param {WorkItem} w */
+function caption(w) {
+  if (w.flow !== null) return `${kb(w.flow.childBytes)}→${kb(w.flow.reportBytes)}`;
+  if (w.state === 'reported' && w.report !== null) return fill('ph.report', { b: kb(w.report.bytes) });
+  return stateWord(w);
+}
+
+/** @param {number} x @param {number} y @param {number} [sx] @param {number} [sy] */
+const tf = (x, y, sx, sy) => `translate(${x} ${y})${sx === undefined ? '' : ` scale(${sx} ${sy})`}`;
+const HIDE = Object.freeze({ data: Object.freeze({ hide: '1' }) });
+
+/**
+ * The staff head of one player: glyph, name and tag; a department adds its bracket and says
+ * 部门：下派 n，深度 d in place of the tag.
+ * @param {import('./layout.js').Staff} st @param {Lane} lane @param {string | null} sel
+ * @param {{ x: number, y0: number, y1: number } | undefined} dept @param {number} n @returns {Desc}
+ */
+function headDesc(st, lane, sel, dept, n) {
+  if (st.player === null) return { key: st.id, tpl: 'tpl-uhead', text: STAGE_TEXT['join.none'], attr: { x: String(st.x + 22), y: String(st.y - 6) } };
+  const p = st.player;
+  const np = nameplate(p, lane);
+  const room = SCORE.head - st.x - 26;
+  const role = p.role === 'principal' ? np.tag : `${STAGE_TEXT[`role.${p.role}`]}${p.agentType !== null ? `（${p.agentType}）` : ''}`;
+  const tag = dept !== undefined ? fill('plan.dept', { n, d: p.depth }) : `${role}，${STAGE_TEXT[`live.${p.live.state}`]}`;
+  const on = sel === p.id;
+  const tx = String(st.x + 22);
   return {
     key: p.id,
-    tpl: 'tpl-player',
-    data: { node: p.id, ...figure(p), fermata: fermatas.has(p.id) ? '1' : '0', sel: sel === p.id ? '1' : '0' },
-    attr: { transform: `translate(${seat.x} ${seat.y})`, 'aria-current': sel === p.id ? 'true' : 'false' },
-    slots,
+    tpl: 'tpl-shead',
+    data: { node: p.id, ...figure(p), sel: on ? '1' : '0' },
+    attr: { 'aria-current': on ? 'true' : 'false' },
+    slots: {
+      title: { text: fill('player.title', { label: p.label, role: STAGE_TEXT[`role.${p.role}`], instr: STAGE_TEXT[`instr.${p.instrument.class}`], look: STAGE_TEXT[`look.${p.look}`], live: liveWait(p), plate: plateText(p) }) },
+      hit: { attr: { transform: tf(0, st.y - SCORE.row / 2, SCORE.head, SCORE.row) } },
+      ins: { attr: { transform: tf(st.x, st.y - 21) } },
+      name: { text: clipW(np.name, Math.floor(room / 6.8)), attr: { x: tx, y: String(st.y - 6) } },
+      tag: { text: clipW(tag, Math.floor(room / 5.6)), attr: { x: tx, y: String(st.y + 15) } },
+      hline: { attr: { x1: tx, y1: String(st.y), x2: String(SCORE.head), y2: String(st.y) } },
+      dept: dept !== undefined ? { data: { hide: '0' }, attr: { transform: tf(dept.x, dept.y0, 5, dept.y1 - dept.y0) } } : HIDE,
+    },
   };
 }
 
 /**
- * The stage of one lane: seats, cue lines, overflow badges and the podium line.
+ * One work item on the score: its phrase on the executor's staff, the slur that brought it there and
+ * the tie that carried its report back.
+ * @param {import('./layout.js').Phrase} ph @param {Map<string, Player>} byId @param {string} group @param {string | null} sel @returns {Desc}
+ */
+function phraseDesc(ph, byId, group, sel) {
+  const w = ph.item;
+  const ex = w.executor !== null ? byId.get(w.executor) ?? null : null;
+  const on = sel === w.id;
+  const y = String(ph.y);
+  const cap = caption(w);
+  return {
+    key: w.id,
+    tpl: 'tpl-phrase',
+    data: {
+      node: w.id, lineage: ex !== null ? ex.harness : group, state: w.state, kind: ph.kind, sel: on ? '1' : '0',
+      breathe: ph.kind === 'open' && ex !== null && ex.live.basis === 'registry' && ex.look === 'solid' ? '1' : '0',
+    },
+    attr: { 'aria-current': on ? 'true' : 'false' },
+    slots: {
+      title: { text: fill('ph.title', { brief: w.brief, state: stateWord(w), flow: flowText(w) }) },
+      hit: { attr: { transform: tf(ph.x1 - 7, ph.y - 13, Math.max(ph.tail - ph.x1, cap.length * 7) + 14, 36) } },
+      tail: ph.kind === 'open' ? { data: { hide: '0' }, attr: { x1: String(ph.x2), y1: y, x2: String(ph.tail), y2: y } } : HIDE,
+      body: { attr: { x1: String(ph.x1), y1: y, x2: String(ph.x2), y2: y } },
+      inner: { attr: { x1: String(ph.x1), y1: y, x2: String(ph.x2), y2: y } },
+      cap: { text: cap, attr: { x: String(ph.x1 - 3), y: String(ph.y + 19) } },
+      slur: ph.slur !== null ? { data: { hide: '0' }, attr: { transform: tf(ph.slur.x, ph.slur.y, ph.slur.dx, ph.slur.dy) } } : HIDE,
+      dot: ph.slur !== null ? { data: { hide: '0' }, attr: { transform: tf(ph.slur.x, ph.slur.y) } } : HIDE,
+      tie: ph.tie !== null ? { data: { hide: '0', w: String(ph.tie.w) }, attr: { transform: tf(ph.tie.x, ph.tie.y, ph.tie.dx, ph.tie.dy) } } : HIDE,
+    },
+  };
+}
+
+/**
+ * The score of one lane: the waits on the 你 line, then one system per group with players, each with
+ * its collaboration sentence, staff heads, staves, ordinals, phrases and fermatas.
  * @param {StageSnapshot} snap @param {string | null} laneId @param {string | null} sel
  * @returns {Record<string, Paint>}
  */
-export function describeStage(snap, laneId, sel) {
+export function describeScore(snap, laneId, sel) {
+  const f = snap.podium.fermatas;
+  const everyone = snap.lanes.flatMap((l) => l.players);
+  const waits = f.map((id) => {
+    const p = everyone.find((x) => x.id === id);
+    const text = p !== undefined ? fill('wait.one', { who: clipW(p.label, 40), w: clipW(p.live.waitingFor ?? STAGE_TEXT['live.unknown'], 40) }) : STAGE_TEXT['wait.lost'];
+    return { key: id, tpl: 'tpl-wait', data: { wait: p !== undefined ? id : '' }, slots: { t: { text } } };
+  });
+  const podium = { text: fill('podium', { n: f.length }), data: { n: String(f.length) } };
   const lane = pickLane(snap, laneId);
-  const podium = { text: fill('podium', { n: snap.podium.fermatas.length }), data: { n: String(snap.podium.fermatas.length) } };
-  if (lane === null) return { risers: { kids: [] }, players: { kids: [] }, cues: { kids: [] }, more: { kids: [] }, podium, nolanes: { text: STAGE_TEXT['plan.noLanes'], data: { hide: '0' } } };
-  const L = layoutStage(lane);
+  if (lane === null) return { waits: { kids: waits }, podium, systems: { kids: [] }, nolanes: { text: STAGE_TEXT['plan.noLanes'], data: { hide: '0' } } };
   const byId = new Map(lane.players.map((p) => [p.id, p]));
-  const fermatas = new Set(snap.podium.fermatas);
-  const selPlayer = sel !== null && sel.startsWith('w:') ? (lane.items.find((w) => w.id === sel)?.executor ?? null) : sel;
-  return {
-    // Back risers first, so the step in front paints over the one behind it.
-    risers: {
-      kids: [...L.risers].sort((x, y) => y.row - x.row).map((r) => ({
-        key: `${r.section}|${r.row}`,
-        tpl: 'tpl-riser',
-        data: { lineage: r.section },
-        slots: { face: { attr: { transform: `translate(${r.x} ${r.y}) scale(${r.w} ${r.h})` } }, lip: { attr: { transform: `translate(${r.x} ${r.y}) scale(${r.w} 1)` } } },
-      })),
-    },
-    // Back rows first, so a figure in front paints over the riser behind it.
-    players: { kids: [...L.seats].sort((x, y) => y.row - x.row).map((s) => seatDesc(/** @type {Player} */ (byId.get(s.id)), lane, s, selPlayer, fermatas)) },
-    cues: {
-      kids: L.cues.map((c) => ({
-        key: `${c.item}|${c.kind}`,
-        tpl: 'tpl-cue',
-        data: { kind: c.kind, sel: sel === c.item ? '1' : '0' },
-        slots: {
-          glow: { attr: { x1: String(c.x1), y1: String(c.y1), x2: String(c.x2), y2: String(c.y2) } },
-          line: { attr: { x1: String(c.x1), y1: String(c.y1), x2: String(c.x2), y2: String(c.y2) } },
-          label: { text: c.label, attr: { x: String(Math.round((c.x1 + c.x2) / 2 + 10)), y: String(Math.round((c.y1 + c.y2) / 2)) } },
+  const systems = GROUPS.filter((h) => lane.players.some((p) => p.harness === h)).map((h) => {
+    const L = layoutScore(lane, h, f);
+    const sum = groupSummary(lane, h, f);
+    const depts = new Map(L.depts.map((d) => [d.id, d]));
+    const box = (/** @type {number} */ w) => ({ attr: { width: String(w), height: String(L.h), viewBox: `0 0 ${w} ${L.h}` } });
+    /** @type {Desc} */
+    const desc = {
+      key: h,
+      tpl: 'tpl-system',
+      data: { lineage: h, form: sum.form },
+      slots: {
+        sysName: { text: STAGE_TEXT[`harness.${h}`] },
+        sysForm: { text: STAGE_TEXT[`grp.${sum.form}`] },
+        sysLine: { text: sum.text },
+        hsvg: box(SCORE.head),
+        msvg: box(L.w),
+        brace: { attr: { transform: tf(4, L.brace.y0, 1, L.brace.y1 - L.brace.y0) } },
+        heads: { kids: L.staves.map((st) => headDesc(st, lane, sel, depts.get(st.id), handedOn(lane.items, st.id).length)) },
+        staves: {
+          kids: L.staves.map((st) => {
+            const empty = st.player !== null && st.player.role !== 'principal' && !L.phrases.some((p) => p.staff === st.id);
+            return {
+              key: st.id,
+              tpl: 'tpl-staff',
+              data: { lineage: st.player !== null ? h : 'none', look: st.player !== null ? st.player.look : 'ghost', sel: sel === st.id ? '1' : '0' },
+              slots: {
+                line: { attr: { x1: '0', y1: String(st.y), x2: String(L.w), y2: String(st.y) } },
+                note: { text: empty ? STAGE_TEXT['plan.noBrief'] : '', data: { hide: empty ? '0' : '1' }, attr: { x: String(SCORE.lead), y: String(st.y - 7) } },
+              },
+            };
+          }),
         },
-      })),
-    },
-    more: { kids: L.overflow.map((o) => ({ key: o.section, tpl: 'tpl-more', attr: { transform: `translate(${o.x} ${o.y})` }, slots: { t: { text: fill('overflow', { n: o.n }) } } })) },
-    podium,
-    nolanes: { text: '', data: { hide: '1' } },
-  };
+        ords: { kids: L.cols.map((c) => ({ key: String(c.n), tpl: 'tpl-ord', text: String(c.n), attr: { x: String(c.x), y: '17' } })) },
+        phrases: { kids: L.phrases.map((ph) => phraseDesc(ph, byId, h, sel)) },
+        ferms: {
+          kids: L.ferms.map((m) => ({
+            key: m.id, tpl: 'tpl-ferm', data: { node: m.id }, attr: { transform: tf(m.x, m.y) },
+            slots: { title: { text: liveWait(/** @type {Player} */ (byId.get(m.id))) } },
+          })),
+        },
+      },
+    };
+    return desc;
+  });
+  return { waits: { kids: waits }, podium, systems: { kids: systems }, nolanes: { text: '', data: { hide: '1' } } };
 }
 
 // ---- plan
@@ -384,10 +488,10 @@ export function describePlan(snap, laneId, chip, sel, fmt) {
   } else {
     const sent = lane.items.filter((w) => w.source !== 'todo');
     const linked = sent.filter((w) => w.join !== null);
-    const ids = new Set(linked.map((w) => w.id));
     const seen = new Set();
+    // A row nests what its executor handed on, the same list the score counts (first row of that executor).
     /** @param {WorkItem} w */
-    const children = (w) => linked.filter((x) => !seen.has(x.id) && x.id !== w.id && (x.parent === w.id || (w.executor !== null && x.owner === w.executor && (x.parent === null || !ids.has(x.parent)))));
+    const children = (w) => handedOn(linked, w.executor).filter((x) => !seen.has(x.id) && x.id !== w.id);
     /** @param {WorkItem} w @param {number} depth */
     const emit = (w, depth) => {
       seen.add(w.id);
@@ -398,7 +502,7 @@ export function describePlan(snap, laneId, chip, sel, fmt) {
       for (const k of kids) emit(k, depth + 1);
     };
     const executors = new Set(linked.map((w) => w.executor));
-    for (const w of linked) if (!seen.has(w.id) && (w.parent === null || !ids.has(w.parent)) && !executors.has(w.owner)) emit(w, 0);
+    for (const w of linked) if (!seen.has(w.id) && !executors.has(w.owner)) emit(w, 0);
     for (const w of linked) if (!seen.has(w.id)) emit(w, 0);
     itemRows = rows.length;
     const loose = sent.filter((w) => w.join === null);

@@ -3,12 +3,12 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { validateStage } from '../../shared/stage-contract.js';
-import { CHIPS, describeDrawer, describeHeader, describePlan, describeRules, describeStage, view } from '../../ui/view.js';
+import { CHIPS, describeDrawer, describeHeader, describePlan, describeRules, describeScore, groupSummary, view } from '../../ui/view.js';
 
 // ui/view.js's descriptors over the daemon's golden snapshot (test/fixtures/stage-snapshot.json, what
 // src/sources/stage.ts builds from the stage fixture), beside view-stage.test.ts's hand-written sample:
 // the page and the builder must agree on real builder output, not only on the shared contract. Checked
-// here: every count is the length of its rows (T3), every seat's look and instrument come from its
+// here: every count is the length of its rows (T3), every staff head's look and instrument come from its
 // player's fields (T1), the word for "done" never appears (T2), every verdict reads 无复核者（M0）
 // (D19: only a non-author reviewer or you can call work done), every rule at N=0 reads 未测 (T4), and
 // the canary shows only as its redaction marker (T5).
@@ -47,7 +47,7 @@ test('the golden snapshot passes the contract and has something to draw', () => 
   assert.ok(s.lanes.length > 0 && s.lanes.some((l: Json) => l.items.length > 0 && l.players.length > 1));
 });
 
-test('golden: header, chip, plan, desk and stage counts are the lengths of their rows (T3)', () => {
+test('golden: header, chip, plan, desk and score counts are the lengths of their rows (T3)', () => {
   const s = golden();
   for (const lane of s.lanes) {
     const playing = lane.players.filter((p: Json) => ['busy', 'running', 'waiting'].includes(p.live.state));
@@ -80,18 +80,26 @@ test('golden: header, chip, plan, desk and stage counts are the lengths of their
       assert.equal(desk.slots.todo.kids.length, p.stand.items.length);
       assert.ok(desk.slots.todoHead.text.includes(`自报 ${p.stand.selfReported.checked}/${p.stand.selfReported.total}`), desk.slots.todoHead.text);
     }
-    // The stage seats every player once (or counts it in a +n badge) and draws every cue.
-    const st = describeStage(s as any, lane.id, null);
-    const seats = st.players.kids!;
-    const over = st.more.kids!.reduce((n, d) => n + Number(/\d+/.exec(d.slots!.t!.text!)![0]), 0);
-    assert.equal(seats.length + over, lane.players.length);
-    assert.equal(new Set(seats.map((d) => d.key)).size, seats.length);
-    if (over === 0) assert.equal(st.cues!.kids!.length, lane.cues.length);
-    assert.equal(st.podium!.data!.n, String(s.podium.fermatas.length));
-    for (const d of seats) {
+    // The score gives every player one staff head and every handed-out item one phrase, across its
+    // systems; each head is its player's fields, and each system's sentence counts its own lists.
+    const sc = describeScore(s as any, lane.id, null);
+    const systems = sc.systems!.kids!;
+    const heads = systems.flatMap((d) => d.slots!.heads!.kids!).filter((d) => d.tpl === 'tpl-shead');
+    assert.deepEqual(heads.map((d) => d.key).sort(), lane.players.map((p: Json) => p.id).sort());
+    const phrases = systems.flatMap((d) => d.slots!.phrases!.kids!);
+    assert.deepEqual(phrases.map((d) => d.key).sort(), sent);
+    assert.equal(sc.waits!.kids!.length, s.podium.fermatas.length);
+    assert.equal(sc.podium!.data!.n, String(s.podium.fermatas.length));
+    for (const d of heads) {
       const p = lane.players.find((x: Json) => x.id === d.key)!;
-      assert.deepEqual([d.data!.look, d.data!.instr, d.data!.role, d.data!.lineage], [p.look, p.instrument.class, p.role, p.harness], 'T1: the figure is its fields');
-      assert.equal(d.data!.fermata, s.podium.fermatas.includes(p.id) ? '1' : '0');
+      assert.deepEqual([d.data!.look, d.data!.instr, d.data!.role, d.data!.lineage], [p.look, p.instrument.class, p.role, p.harness], 'T1: the head is its fields');
+    }
+    for (const sys of systems) {
+      const g = groupSummary(lane, sys.key, s.podium.fermatas);
+      assert.equal(sys.slots!.sysLine!.text, g.text);
+      assert.equal(sys.slots!.phrases!.kids!.length, g.lists.sent.length);
+      assert.equal(sys.slots!.ferms!.kids!.length, g.lists.waiting.length);
+      assert.match(g.text, new RegExp(`派活 ${g.lists.sent.length}`));
     }
   }
 });
@@ -104,7 +112,7 @@ test('golden: every verdict reads 无复核者（M0）, every rule 未测（N=0�
   const all: string[] = [];
   for (const lane of s.lanes) {
     all.push(...texts(describeHeader(s as any, lane.id, { stale: false, at: '' })));
-    all.push(...texts(describeStage(s as any, lane.id, null)));
+    all.push(...texts(describeScore(s as any, lane.id, null)));
     for (const chip of [null, ...CHIPS]) {
       const p = describePlan(s as any, lane.id, chip, null, fmt);
       all.push(...texts(p));

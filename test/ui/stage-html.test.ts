@@ -45,12 +45,16 @@ test('stage.html holds every template ui/view.js names, with SVG templates in th
   const named = [...new Set([...view.matchAll(/tpl: '(tpl-[a-z]+)'/g)].map((m) => m[1]!))].sort();
   assert.ok(named.length >= 10);
   for (const id of named) assert.ok(doc.getElementById(id)?.content, `no <template id=${id}>`);
-  const seat = doc.getElementById('tpl-player')!.content!.firstElementChild!.firstElementChild!;
-  assert.deepEqual([seat.localName, seat.namespaceURI], ['g', 'http://www.w3.org/2000/svg']);
+  for (const id of ['tpl-shead', 'tpl-phrase', 'tpl-staff', 'tpl-ferm']) {
+    const g = doc.getElementById(id)!.content!.firstElementChild!.firstElementChild!;
+    assert.deepEqual([g.localName, g.namespaceURI], ['g', 'http://www.w3.org/2000/svg'], id);
+  }
+  // ui/dom.js copies the five instrument glyphs from tpl-glyph into every empty .ins at boot.
+  assert.equal(doc.getElementById('tpl-glyph')!.content!.firstElementChild!.firstElementChild!.children.length, 5);
   // Script never sets href: every <use> points at a symbol that the page defines.
   const symbols = new Set(doc.querySelectorAll('symbol').map((s) => s.getAttribute('id')));
   const uses = [...HTML.matchAll(/<use[^>]*href="#([\w-]+)"/g)].map((m) => m[1]!);
-  assert.ok(uses.length > 20);
+  assert.ok(uses.length >= 8);
   for (const u of uses) assert.ok(symbols.has(u), `#${u} is not a symbol`);
 });
 

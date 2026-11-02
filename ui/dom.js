@@ -11,10 +11,11 @@ import { STAGE_TEXT } from '../shared/strings.js';
 /** @typedef {import('./view.js').Desc} Desc */
 
 /**
- * The attributes setAttribute may write: SVG geometry, plus aria-pressed and aria-current, which no
- * dataset or class can carry to assistive tech. Never href, style or an on* handler.
+ * The attributes setAttribute may write: SVG geometry (a score's size and viewBox included), plus
+ * aria-pressed and aria-current, which no dataset or class can carry to assistive tech. Never href,
+ * style or an on* handler.
  */
-export const ATTRS = frozen(['transform', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'aria-pressed', 'aria-current']);
+export const ATTRS = frozen(['transform', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'width', 'height', 'viewBox', 'aria-pressed', 'aria-current']);
 
 /** @param {DOMRect} b @param {number} x @param {number} y */
 export function outsideBox(b, x, y) {
@@ -123,14 +124,14 @@ export function makePatcher(doc) {
 
   /**
    * Every [data-t] in the page and its templates takes its STAGE_TEXT, once at boot; every empty
-   * figure takes a copy of the seat's.
+   * instrument slot (.ins) takes a copy of the five glyphs, of which CSS shows the player's one.
    */
   function fillStatic() {
     const roots = [doc, ...Array.from(doc.querySelectorAll('template')).map((t) => /** @type {HTMLTemplateElement} */ (t).content)];
-    const fig = /** @type {Element} */ (clone('tpl-player').querySelector('.fig'));
+    const glyphs = clone('tpl-glyph');
     for (const r of roots) {
-      for (const el of Array.from(r.querySelectorAll('.fig'))) {
-        if (el.firstElementChild === null) for (const c of Array.from(fig.children)) el.insertBefore(c.cloneNode(true), null);
+      for (const el of Array.from(r.querySelectorAll('.ins'))) {
+        if (el.firstElementChild === null) for (const c of Array.from(glyphs.children)) el.insertBefore(c.cloneNode(true), null);
       }
       for (const el of Array.from(r.querySelectorAll('[data-t]'))) {
         const k = /** @type {string} */ (el.getAttribute('data-t'));

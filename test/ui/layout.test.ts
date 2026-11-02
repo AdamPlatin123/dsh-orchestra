@@ -2,98 +2,122 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { STAGE_GEOM, kb, layoutStage, seatBox } from '../../ui/layout.js';
+import { SCORE, groupItems, groupPlayers, kb, layoutScore, phraseLen, tieWeight } from '../../ui/layout.js';
 
-// ui/layout.js seats one lane on the 1200×920 stage (0.1 alpha design §6): deterministic, no two seats
-// overlap up to 12 clones in a section, the 13th clone becomes a `+n` badge, and every seat stays
-// inside its section and the viewBox.
+// ui/layout.js lays one group of one lane out as a full score (0.1 alpha design §6, frontend-design
+// pass 2): one staff per player, principals first and each member after its parent; one column per
+// work item handed out, in record order; a phrase on the executor's staff whose length follows the
+// context it read, a slur only where a dispatch cue says so, a tie only where a report cue says so.
+// Deterministic, and nothing drawn without a field behind it (T1).
 
 const SAMPLE = fileURLToPath(new URL('../fixtures/stage-ui-sample.json', import.meta.url));
+const GOLDEN = fileURLToPath(new URL('../fixtures/stage-snapshot.json', import.meta.url));
 type Json = Record<string, any>;
 const sample = (): Json => JSON.parse(fs.readFileSync(SAMPLE, 'utf8')) as Json;
-const hex = (n: number) => n.toString(16).padStart(20, '0');
+const golden = (): Json => JSON.parse(fs.readFileSync(GOLDEN, 'utf8')) as Json;
+const LEAD = 'p:fbeae7c18667b6987518';
 
-/** A lane of one principal per harness plus `n` clones each, the clones' depths cycling through `depths`. */
-function crowd(n: number, depths: number[] = [1]): Json {
-  const players: Json[] = [];
-  const base = sample().lanes[0].players[1];
-  for (const harness of ['claude', 'dsh']) {
-    const lead = { ...base, id: `p:${hex(players.length + 1)}`, harness, role: 'principal', parent: null, depth: 0 };
-    players.push(lead);
-    for (let i = 0; i < n; i++) players.push({ ...base, id: `p:${hex(players.length + 1)}`, harness, role: 'clone', parent: lead.id, depth: depths[i % depths.length] });
+test('layoutScore is deterministic; staves run principal first, each member after its parent, indented by depth', () => {
+  const s = sample();
+  const lane = s.lanes[0];
+  const a = layoutScore(lane, 'claude', s.podium.fermatas);
+  assert.deepEqual(layoutScore(sample().lanes[0], 'claude', s.podium.fermatas), a);
+  const ids = a.staves.map((st) => st.id);
+  assert.equal(ids[0], LEAD);
+  assert.deepEqual(new Set(ids), new Set(lane.players.filter((p: Json) => p.harness === 'claude').map((p: Json) => p.id)));
+  for (const st of a.staves) {
+    const p = st.player!;
+    if (p.parent !== null) assert.ok(ids.indexOf(p.parent) < ids.indexOf(p.id), `${p.label} sits below its parent`);
+    assert.equal(st.x, SCORE.x + SCORE.indent * p.depth);
   }
-  return { id: hex(999), name: 'crowd', basis: 'cwd', players, items: [], cues: [] };
-}
+  // Rows are evenly spaced, and the two SVGs share them: same height for heads and music.
+  a.staves.forEach((st, i) => assert.equal(st.y, SCORE.top + SCORE.row * i + SCORE.row / 2));
+  assert.equal(a.h, SCORE.top + SCORE.row * a.staves.length + 6);
+});
 
-function assertNoOverlap(lane: Json) {
-  const L = layoutStage(lane as any);
-  const lead = new Set(lane.players.filter((p: Json) => p.role === 'principal').map((p: Json) => p.id));
-  const boxes = L.seats.map((s) => ({ s, b: seatBox(s, lead.has(s.id)) }));
-  for (const { s, b } of boxes) {
-    const sec = STAGE_GEOM.sections[s.section];
-    assert.ok(b.x0 >= sec.x0 - 0.01 && b.x1 <= sec.x1 + 0.01, `${s.id} leaves the ${s.section} section: ${b.x0}..${b.x1}`);
-    assert.ok(b.y0 >= 0 && b.y1 <= STAGE_GEOM.h, `${s.id} leaves the stage`);
+test('one column per handed-out item in record order; todos stay off the score', () => {
+  const s = sample();
+  const lane = s.lanes[0];
+  for (const h of ['claude', 'dsh']) {
+    const L = layoutScore(lane, h, []);
+    const items = groupItems(lane, h);
+    assert.ok(items.every((w: Json) => w.source !== 'todo'));
+    assert.deepEqual(L.phrases.map((p) => p.item.id), items.map((w: Json) => w.id));
+    assert.deepEqual(L.phrases.map((p) => p.col), items.map((_: Json, i: number) => i));
+    assert.deepEqual(L.cols.map((c) => c.n), items.map((_: Json, i: number) => i + 1));
+    assert.equal(L.w, SCORE.lead + SCORE.col * Math.max(items.length, 1) + SCORE.tail);
+    for (const p of L.phrases) assert.equal(p.staff, p.item.executor, 'a phrase sits on its executor’s staff');
   }
-  for (let i = 0; i < boxes.length; i++) {
-    for (let j = i + 1; j < boxes.length; j++) {
-      const a = boxes[i]!.b;
-      const c = boxes[j]!.b;
-      const overlap = a.x0 < c.x1 && c.x0 < a.x1 && a.y0 < c.y1 && c.y0 < a.y1;
-      assert.ok(!overlap, `${boxes[i]!.s.id} overlaps ${boxes[j]!.s.id}`);
+  // Both groups together cover every handed-out item of the lane once.
+  const all = [...groupItems(lane, 'claude'), ...groupItems(lane, 'dsh')].map((w: Json) => w.id).sort();
+  assert.deepEqual(all, lane.items.filter((w: Json) => w.source !== 'todo').map((w: Json) => w.id).sort());
+});
+
+test('phrase length follows flow.childBytes; no flow is a stub, working is open; slurs and ties follow the cues', () => {
+  const s = sample();
+  const lane = s.lanes[0];
+  const L = layoutScore(lane, 'claude', []);
+  const by = (id: string) => L.phrases.find((p) => p.item.id === id)!;
+  const t1 = by('w:toolu_t1');
+  assert.equal(t1.kind, 'flow');
+  assert.equal(t1.x2 - t1.x1, phraseLen(48213));
+  assert.ok(t1.slur !== null && t1.tie !== null, 'dispatched and reported: slur down, tie back');
+  assert.equal(t1.tie!.w, tieWeight(1204));
+  const t2 = by('w:toolu_t2');
+  assert.deepEqual([t2.kind, t2.x2 - t2.x1, t2.tie], ['open', SCORE.stub, null], 'still working: no length claimed, no tie');
+  assert.ok(t2.tail > t2.x2);
+  const orphan = by('w:agent-a3');
+  assert.equal(orphan.kind, 'stub');
+  const cued = (id: string, kind: string) => lane.cues.some((c: Json) => c.item === id && c.kind === kind);
+  for (const p of L.phrases) {
+    assert.equal(p.slur !== null, cued(p.item.id, 'dispatch'), `${p.item.id}: slur iff a dispatch cue`);
+    assert.equal(p.tie !== null, cued(p.item.id, 'report'), `${p.item.id}: tie iff a report cue`);
+    if (p.slur !== null) assert.equal(p.slur.y + p.slur.dy, p.y, 'the slur lands on the phrase’s staff');
+  }
+  // The department's own dispatch leaves from its staff, not the principal's.
+  const t5 = by('w:toolu_t5');
+  const dept = L.staves.find((st) => st.id === 'p:2c3a4249d77070058649')!;
+  assert.equal(t5.slur!.y, dept.y);
+  assert.deepEqual(L.depts.map((d) => d.id), ['p:2c3a4249d77070058649']);
+  const d = L.depts[0]!;
+  const child = L.staves.find((st) => st.id === 'p:394e68839349a156b805')!;
+  assert.ok(d.y0 < dept.y && d.y1 > child.y, 'the department bracket spans its member');
+  assert.deepEqual([phraseLen(1), phraseLen(1e9)], [SCORE.min, SCORE.max]);
+  assert.deepEqual([tieWeight(21), tieWeight(1204), tieWeight(1e6)], [1, 3, 4]);
+});
+
+test('fermatas sit on the waiting players’ staves only; unlinked items get a grey 未关联 staff', () => {
+  const s = sample();
+  const lane = s.lanes[0];
+  const L = layoutScore(lane, 'claude', s.podium.fermatas);
+  assert.deepEqual(L.ferms.map((f) => f.id), s.podium.fermatas);
+  assert.deepEqual(layoutScore(lane, 'dsh', s.podium.fermatas).ferms, []);
+  assert.ok(!L.staves.some((st) => st.player === null));
+  const lost = sample().lanes[0];
+  lost.items.find((w: Json) => w.id === 'w:toolu_t2').executor = null;
+  const L2 = layoutScore(lost, 'claude', []);
+  const u = L2.staves[L2.staves.length - 1]!;
+  assert.deepEqual([u.id, u.player], ['u:claude', null]);
+  assert.equal(L2.phrases.find((p) => p.item.id === 'w:toolu_t2')!.staff, 'u:claude');
+});
+
+test('a parent loop or a missing parent still gives every player one staff; the golden lays out too', () => {
+  const s = sample();
+  const lane = s.lanes[0];
+  const a = lane.players.find((p: Json) => p.id === 'p:2c3a4249d77070058649');
+  const b = lane.players.find((p: Json) => p.id === 'p:394e68839349a156b805');
+  a.parent = b.id;
+  lane.players.find((p: Json) => p.id === 'p:f55ff16f66f43360266b').parent = 'p:ffffffffffffffffffff';
+  const ids = groupPlayers(lane, 'claude').map((p: Json) => p.id);
+  assert.equal(ids.length, new Set(ids).size);
+  assert.equal(ids.length, lane.players.filter((p: Json) => p.harness === 'claude').length);
+  const g = golden();
+  for (const l of g.lanes) {
+    for (const h of ['claude', 'dsh']) {
+      const L = layoutScore(l, h, g.podium.fermatas);
+      assert.equal(L.staves.filter((st) => st.player !== null).length, l.players.filter((p: Json) => p.harness === h).length);
+      assert.equal(L.phrases.length, groupItems(l, h).length);
     }
   }
-  return L;
-}
-
-test('layoutStage is deterministic and seats the sample with principals in front', () => {
-  const lane = sample().lanes[0];
-  const a = layoutStage(lane);
-  assert.deepEqual(layoutStage(sample().lanes[0]), a);
-  assert.equal(a.seats.length, lane.players.length);
-  const lead = a.seats.find((s) => s.id === 'p:fbeae7c18667b6987518')!;
-  assert.deepEqual([lead.row, lead.s, lead.section], [0, STAGE_GEOM.maxScale.principal, 'claude'], 'a lone principal takes the largest seat');
-  const dept = a.seats.find((s) => s.id === 'p:394e68839349a156b805')!;
-  const front = a.seats.find((s) => s.id === 'p:f55ff16f66f43360266b')!;
-  assert.equal(front.row, 1);
-  assert.ok(dept.row === 2 && dept.s <= front.s && dept.y < front.y, 'the depth-2 clone sits on the second riser, behind and no larger');
-  assert.ok(a.seats.filter((s) => s.row > 0).every((s) => s.s < lead.s), 'clones are smaller than their principal');
-  assert.deepEqual(a.risers.map((r) => [r.section, r.row]), [['claude', 1], ['claude', 2], ['dsh', 1]], 'only the risers in use are built');
-  assert.deepEqual(a.overflow, []);
-  assertNoOverlap(lane);
-});
-
-test('no seat overlaps for 0 to 12 clones per section, at any depth mix', () => {
-  for (let n = 0; n <= 12; n++) {
-    for (const depths of [[1], [2], [3], [1, 2], [1, 2, 3, 4], [4]]) {
-      const L = assertNoOverlap(crowd(n, depths));
-      assert.equal(L.seats.length, 2 + 2 * n, `n=${n} depths=${depths}`);
-      assert.deepEqual(L.overflow, []);
-    }
-  }
-});
-
-test('the 13th clone of a section becomes a +n badge, and so does a third principal', () => {
-  const L = assertNoOverlap(crowd(13));
-  assert.equal(L.seats.length, 2 + 24);
-  assert.deepEqual(L.overflow.map((o) => [o.section, o.n]), [['claude', 1], ['dsh', 1]]);
-  const lane = crowd(20, [1, 2]);
-  assert.deepEqual(layoutStage(lane as any).overflow.map((o) => o.n), [8, 8]);
-  const leads = crowd(0);
-  const extra = { ...leads.players[0], id: `p:${hex(500)}` };
-  const third = { ...leads.players[0], id: `p:${hex(501)}` };
-  leads.players.push(extra, third);
-  const L2 = assertNoOverlap(leads);
-  assert.deepEqual(L2.overflow.map((o) => [o.section, o.n]), [['claude', 1]]);
-});
-
-test('cue lines join seated players only; the report line carries the compression label', () => {
-  const lane = sample().lanes[0];
-  const L = layoutStage(lane);
-  assert.equal(L.cues.length, lane.cues.length);
-  const report = L.cues.find((c) => c.kind === 'report')!;
-  assert.equal(report.label, '48k→1.2k');
-  assert.ok(L.cues.filter((c) => c.kind === 'dispatch').every((c) => c.label === ''));
-  lane.cues.push({ from: lane.players[0].id, to: 'p:ffffffffffffffffffff', item: 'w:toolu_t1', kind: 'dispatch' });
-  assert.equal(layoutStage(lane).cues.length, L.cues.length, 'a cue to an unseated player is not drawn');
   assert.deepEqual([kb(940), kb(1204), kb(48213), kb(3_100_000)], ['940', '1.2k', '48k', '3.1M']);
 });

@@ -7,7 +7,7 @@ import { every, fmtClock, fmtIso, nowMono, onFrame } from './clock.js';
 import { activates, makePatcher, outsideBox } from './dom.js';
 import { getLane, getTheme, setLane, setTheme } from './prefs.js';
 import { go, openPeek, parse } from './route.js';
-import { CHIPS, describeDrawer, describeHeader, describePlan, describeStage, fill, pickLane } from './view.js';
+import { CHIPS, describeDrawer, describeHeader, describePlan, describeScore, fill, pickLane } from './view.js';
 import { STAGE_TEXT } from '../shared/strings.js';
 
 /** @typedef {import('../shared/stage-contract.js').StageSnapshot} StageSnapshot */
@@ -65,7 +65,7 @@ function render() {
   dom.paintId('bar', { slots: head.slots });
   dom.select(/** @type {HTMLSelectElement} */ (dom.byId('lane')), head.laneIndex);
   dom.paint(root, { data: { fresh: stale ? 'stale' : 'live' } });
-  dom.paintId('stage', { slots: describeStage(snap, lane, state.route.node) });
+  dom.paintId('stage', { slots: describeScore(snap, lane, state.route.node) });
   dom.paintId('plan', { slots: describePlan(snap, lane, state.chip, state.route.node, fmt).slots });
   const dlg = /** @type {HTMLDialogElement} */ (dom.byId('drawer'));
   const node = state.route.peek ? state.route.node : null;
@@ -147,14 +147,15 @@ function act(el) {
   if (a === 'stage' || a === 'plan') return move({ view: a });
   if (a === 'close') return move({ peek: false });
   if (a === 'peek' && state.detail !== null) return openPeek(state.detail.id);
-  if (a === 'podium' && state.snap !== null) {
-    const id = state.snap.podium.fermatas[0];
+  // A wait on the 你 line may sit in another lane: go there and open that player.
+  const id = t.dataset.wait;
+  if (id !== undefined && state.snap !== null) {
     const lane = state.snap.lanes.find((l) => l.players.some((p) => p.id === id));
-    if (id !== undefined && lane !== undefined) go({ ...state.route, lane: lane.id, node: id, peek: true });
+    if (lane !== undefined) go({ ...state.route, lane: lane.id, node: id, peek: true });
   }
 }
 
-const target = (/** @type {EventTarget | null} */ e) => (e instanceof Element ? e.closest('[data-node],[data-chip],[data-act]') : null);
+const target = (/** @type {EventTarget | null} */ e) => (e instanceof Element ? e.closest('[data-node],[data-chip],[data-act],[data-wait]') : null);
 
 document.addEventListener('click', (e) => {
   const dlg = dom.byId('drawer');
@@ -168,7 +169,7 @@ document.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   if (!activates(e)) return;
   const el = target(e.target);
-  // Buttons click by themselves; SVG seats and list rows do not.
+  // Buttons click by themselves; SVG staff heads and phrases do not.
   if (el !== null && el.localName !== 'button') {
     e.preventDefault();
     act(el);
