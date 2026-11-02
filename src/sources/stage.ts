@@ -5,7 +5,7 @@ import type { ReadGate } from '../fs/read-gate.ts';
 import type { Clock } from '../runtime/clock.ts';
 import type { PeekNote, PeekSession, Redact, SubagentFile } from './peek.ts';
 import { ReadGateError } from '../fs/read-gate.ts';
-import { eachRecord, findSession, keepPinned, listSessions, listSubagents, readSession, shown, sourceMs } from './peek.ts';
+import { eachRecord, fairShare, findSession, keepPinned, listSessions, listSubagents, readSession, shown, sourceMs } from './peek.ts';
 import { STAGE_RULE_IDS } from '../../shared/stage-contract.js';
 import { frozen } from '../../shared/frozen.js';
 
@@ -28,7 +28,7 @@ import { frozen } from '../../shared/frozen.js';
 const win = path.win32;
 
 export const STAGE_LIMITS = frozen({
-  /** Principals in one snapshot, newest first. */
+  /** Principals in one snapshot, newest first, shared between the harnesses (each gets a floor; peek.ts fairShare). */
   principals: 24,
   /** Subagent files read under one Claude transcript (newest first), so clones under any parent stay within 16. */
   clonesPerParent: 16,
@@ -160,8 +160,18 @@ export type WorkItem = {
 export type Cue = { from: string; to: string; item: string; kind: 'dispatch' | 'report' };
 export type Lane = { id: string; name: string; basis: 'cwd' | 'slug'; players: Player[]; items: WorkItem[]; cues: Cue[] };
 export type Rule = { id: string; hits: number; n: number; status: 'untested' | 'keys-mismatch' };
-export type Src = { state: 'ok' | 'empty' | 'error'; sessions: number; registry: number | null; error: string | null };
-export type Clipped = { lanes: number; players: number; items: number; standItems: number };
+/**
+ * One source: `sessions` is every session file it holds, before any cut (T1: a source whose sessions
+ * the limits pushed out is not empty); `shown` is how many of them play in this snapshot. empty only
+ * when it holds none at all.
+ */
+export type Src = { state: 'ok' | 'empty' | 'error'; sessions: number; shown: number; registry: number | null; error: string | null };
+/**
+ * What the limits left out. `sessions` is, per source, its session files that play in no lane
+ * (sources.<h>.sessions - sources.<h>.shown): a breakdown by source, mostly of what `players` counts
+ * already, never to be added to it.
+ */
+export type Clipped = { lanes: number; players: number; items: number; standItems: number; sessions: Record<Harness, number> };
 export type StageSnapshot = {
   v: 1; kind: 'stage-preview'; rev: string; observedAt: number; computedMs: number; profile: 'test' | 'real';
   sources: { claude: Src; dsh: Src; codex: Src };
@@ -821,7 +831,7 @@ type Assembled = { lanes: Lane[]; clipped: Clipped; rules: Rule[]; fermatas: str
  * clip counts and the rule hits. Pure: time is `nowWall`, and every string in `g` is shown() already.
  */
 export function assembleLanes(g: Gathered, nowWall: number, extraClipped = 0): Assembled {
-  const clipped: Clipped = { lanes: 0, players: extraClipped, items: 0, standItems: 0 };
+  const clipped: Clipped = { lanes: 0, players: extraClipped, items: 0, standItems: 0, sessions: { claude: 0, dsh: 0, codex: 0 } };
   const hits: Hits = Object.fromEntries(STAGE_RULE_IDS.map((id: string) => [id, 0]));
   const registry = new Map(g.registry.map((e) => [e.sessionKey, e]));
   const roots: Seat[] = [];
@@ -1144,10 +1154,11 @@ export function assembleLanes(g: Gathered, nowWall: number, extraClipped = 0): A
   };
   for (const seat of roots) if (seat.harness === 'codex') cxWalk(seat, 0);
 
-  // At most STAGE_LIMITS.principals, newest first, but one the registry says waits on you is always
-  // kept (its transcript ages while it waits); a dropped principal takes its tree with it.
+  // At most STAGE_LIMITS.principals, newest first but shared fairly between the harnesses (fairShare:
+  // each gets a floor), and one the registry says waits on you is always kept (its transcript ages
+  // while it waits); a dropped principal takes its tree with it.
   const ordered = sortNewest(roots.map((r) => ({ r, id: r.id, mtimeMs: r.session.mtimeMs })));
-  const keptSet = new Set(keepPinned(ordered, STAGE_LIMITS.principals, (o) => o.r.live.state === 'waiting' && o.r.live.basis === 'registry'));
+  const keptSet = new Set(fairShare(ordered, STAGE_LIMITS.principals, (o) => o.r.harness, (o) => o.r.live.state === 'waiting' && o.r.live.basis === 'registry'));
   const kept = ordered.filter((o) => keptSet.has(o)).map((o) => o.r);
   for (const o of ordered) if (!keptSet.has(o)) clipped.players += 1 + countBelow(o.r);
 
@@ -1393,14 +1404,32 @@ export function makeStageBuilder(deps: StageDeps): { snapshot(): StageSnapshot; 
     }
     const unread = listed.total - listed.sessions.length + (claudeListed.length - claudeRead.length);
     const a = assembleLanes(g, nowWall, unread);
-    const src = (harness: Harness, registry: number | null): Src => {
-      const sessions = listed.sessions.filter((s) => s.harness === harness).length;
-      const error = errors[harness];
-      return { state: error !== null ? 'error' : sessions > 0 ? 'ok' : 'empty', sessions, registry, error };
+    // A source counts every session it holds, before the listing's and the principals' cuts, and says
+    // how many of them play: a source the limits pushed out reads as clipped, never as empty (T1).
+    const listedById = new Map(listed.sessions.map((s) => [s.id, s.harness]));
+    const tally = (lanes: readonly Lane[]) => {
+      const shown: Record<Harness, number> = { claude: 0, dsh: 0, codex: 0 };
+      const seen = new Set<string>();
+      for (const lane of lanes) {
+        for (const p of lane.players) {
+          const h = p.session === null ? undefined : listedById.get(p.session);
+          if (h === undefined || seen.has(p.session!)) continue;
+          seen.add(p.session!);
+          shown[h]++;
+        }
+      }
+      const src = (harness: Harness, registry: number | null): Src => {
+        const sessions = listed.totals[harness];
+        const error = errors[harness];
+        return { state: error !== null ? 'error' : sessions > 0 ? 'ok' : 'empty', sessions, shown: shown[harness], registry, error };
+      };
+      const sources = { claude: src('claude', reg.entries.length), dsh: src('dsh', null), codex: src('codex', null) };
+      for (const h of ['claude', 'dsh', 'codex'] as const) a.clipped.sessions[h] = sources[h].sessions - sources[h].shown;
+      return sources;
     };
     const body = {
       v: 1 as const, kind: 'stage-preview' as const, profile,
-      sources: { claude: src('claude', reg.entries.length), dsh: src('dsh', null), codex: src('codex', null) },
+      sources: tally(a.lanes),
       rules: a.rules, podium: { fermatas: a.fermatas, inbox: null }, lanes: a.lanes, clipped: a.clipped,
     };
     // Past the body limit whole lanes go, the oldest first, and are counted; a lane with a player who
@@ -1416,6 +1445,7 @@ export function makeStageBuilder(deps: StageDeps): { snapshot(): StageSnapshot; 
       body.clipped.items += gone.items.length;
       const ids = new Set(gone.players.map((p) => p.id));
       body.podium.fermatas = body.podium.fermatas.filter((f) => !ids.has(f));
+      body.sources = tally(body.lanes);
     }
     return body;
   };

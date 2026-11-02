@@ -182,7 +182,7 @@ test('DSH: parentSession nests the children, team members are teammates, the lea
   assert.deepEqual([cat.source, cat.join, cat.state], ['subagent-catalog', 'parentSession', 'unknown']);
   // Both leads worked in G:\fx\shop: one lane, named by the cwd's last segment only.
   assert.deepEqual(s.lanes.map((l) => [l.name, l.basis]), [['shop', 'cwd']]);
-  assert.deepEqual(s.sources.codex, { state: 'ok', sessions: 3, registry: null, error: null });
+  assert.deepEqual(s.sources.codex, { state: 'ok', sessions: 3, shown: 3, registry: null, error: null });
 });
 
 test('a transcript read from its tail: a TodoWrite before it is a tail miss, and an unnamed subagent is unknown', (t) => {
@@ -534,3 +534,55 @@ test('F9: a DSH child whose parent log is not listed stays at the root, but as a
 function advance(hub: VirtualClock, ms: number): void {
   hub.advanceBy(ms);
 }
+
+test('a source the limits push out is counted, not empty: places are shared per harness (T1)', (t) => {
+  const uuid = (n: number, i: number) => `${String(n).repeat(8)}-0000-4000-8000-${String(i).padStart(12, '0')}`;
+  const frame = (rows: unknown[]) => zlib.zstdCompressSync(Buffer.from(`${rows.map((r) => JSON.stringify(r)).join('\n')}\n`));
+  const stamp = (f: string, sec: number) => fs.utimesSync(f, sec, sec);
+  const T = BASE / 1000;
+  const fx = fixture(t, (dir) => {
+    // Claude is busy: 40 transcripts, every one newer than any DSH or Codex session.
+    for (let i = 0; i < 40; i++) {
+      const f = put(path.join(dir, 'roots', 'claude', 'projects', `G--fx-c${i}`, `${uuid(1, i)}.jsonl`), `${JSON.stringify({ type: 'user', cwd: `G:\fx\c${i}`, message: { content: 'hi' } })}\n`);
+      stamp(f, T - i);
+    }
+    for (let i = 0; i < 30; i++) {
+      const id = uuid(2, i);
+      const f = put(path.join(dir, 'roots', 'dsh', 'sessions', `--G-fx-d${i}--`, id, 'session.v4.jsonl.zstd'),
+        frame([{ type: 'head', version: 4, id, createdAt: BASE, cwd: `G:\fx\d${i}`, isSeeded: false, delegationDepth: 0 }]));
+      stamp(f, T - 86_400 - i);
+    }
+    for (let i = 0; i < 30; i++) {
+      const id = uuid(3, i);
+      const meta = { timestamp: new Date(BASE).toISOString(), type: 'session_meta', payload: { id, timestamp: new Date(BASE).toISOString(), cwd: `G:\\fx\\k${i}`, source: 'exec' } };
+      const f = put(path.join(dir, 'roots', 'codex', 'sessions', '2026', '10', '01', `rollout-2026-10-01T00-00-00-${id}.jsonl`), `${JSON.stringify(meta)}\n`);
+      stamp(f, T - 2 * 86_400 - i);
+    }
+  });
+  const s = fx.build().snapshot();
+  ok(s);
+  // The listing gives each harness 20 of its 60 places; the 24 principals are 8 per harness.
+  const principals = (h: string) => players(s).filter((p) => p.harness === h && p.parent === null).length;
+  assert.deepEqual([principals('claude'), principals('dsh'), principals('codex')], [8, 8, 8]);
+  assert.deepEqual(s.sources.claude, { state: 'ok', sessions: 40, shown: 8, registry: 0, error: null });
+  assert.deepEqual(s.sources.dsh, { state: 'ok', sessions: 30, shown: 8, registry: null, error: null });
+  assert.deepEqual(s.sources.codex, { state: 'ok', sessions: 30, shown: 8, registry: null, error: null });
+  assert.deepEqual(s.clipped.sessions, { claude: 32, dsh: 22, codex: 22 });
+  // The shown DSH sessions are its newest: d0 to d7 (each lane is named after its cwd).
+  const dshShown = players(s).filter((p) => p.harness === 'dsh').map((p) => Number(/(\d+)$/.exec(p.label)?.[1])).sort((a, b) => a - b);
+  assert.deepEqual(dshShown, [0, 1, 2, 3, 4, 5, 6, 7]);
+  assert.equal(fx.gate.openHandles(), 0);
+});
+
+test('a source that holds no session at all is the only empty one', (t) => {
+  const fx = fixture(t, (dir) => {
+    const f = put(path.join(dir, 'roots', 'claude', 'projects', 'G--fx-one', `${'1'.repeat(8)}-0000-4000-8000-000000000000.jsonl`), `${JSON.stringify({ type: 'user', message: { content: 'hi' } })}\n`);
+    fs.utimesSync(f, BASE / 1000, BASE / 1000);
+  });
+  const s = fx.build().snapshot();
+  ok(s);
+  assert.deepEqual(s.sources.claude, { state: 'ok', sessions: 1, shown: 1, registry: 0, error: null });
+  assert.deepEqual(s.sources.dsh, { state: 'empty', sessions: 0, shown: 0, registry: null, error: null });
+  assert.deepEqual(s.sources.codex, { state: 'empty', sessions: 0, shown: 0, registry: null, error: null });
+  assert.deepEqual(s.clipped.sessions, { claude: 0, dsh: 0, codex: 0 });
+});

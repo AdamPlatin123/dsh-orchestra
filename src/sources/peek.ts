@@ -40,7 +40,7 @@ export type PeekView = {
 };
 
 export const PEEK_LIMITS = frozen({
-  /** Sessions the list shows, newest first. */
+  /** Sessions the list shows, newest first, shared between the harnesses (each gets a floor; see fairShare). */
   sessions: 60,
   /** Events a session view shows: the last ones. */
   events: 200,
@@ -180,13 +180,57 @@ export function keepPinned<T>(xs: readonly T[], n: number, pinned?: (x: T) => bo
 }
 
 /**
- * The sessions under the roots, newest first, at most PEEK_LIMITS.sessions of them. A session `pinned`
- * holds is listed whatever its age (the stage pins the ones its registry says wait on you).
+ * At most `n` of `xs` (already in order, newest first), shared fairly between the groups `groupOf`
+ * names, so one busy source cannot push the others out: every item `pinned` holds first (up to n), then
+ * each group up to its floor (n split evenly over the groups present, pinned ones counted in), then the
+ * rest in the order of `xs`. What is kept stays in the order of `xs`.
  */
-export function listSessions(gate: ReadGate, roots: readonly HarnessRoot[], redact: Redact, pinned?: (s: PeekSession) => boolean): { sessions: PeekSession[]; total: number } {
+export function fairShare<T>(xs: readonly T[], n: number, groupOf: (x: T) => string, pinned?: (x: T) => boolean): T[] {
+  const keep = new Set<T>(pinned === undefined ? [] : xs.filter(pinned).slice(0, Math.max(0, n)));
+  const groups = new Map<string, T[]>();
+  for (const x of xs) {
+    const g = groupOf(x);
+    const members = groups.get(g);
+    if (members === undefined) groups.set(g, [x]);
+    else members.push(x);
+  }
+  const floor = groups.size === 0 ? 0 : Math.floor(n / groups.size);
+  for (const members of groups.values()) {
+    let have = members.filter((x) => keep.has(x)).length;
+    for (const x of members) {
+      if (have >= floor || keep.size >= n) break;
+      if (keep.has(x)) continue;
+      keep.add(x);
+      have++;
+    }
+  }
+  for (const x of xs) {
+    if (keep.size >= n) break;
+    keep.add(x);
+  }
+  return xs.filter((x) => keep.has(x));
+}
+
+export type SessionList = {
+  /** At most PEEK_LIMITS.sessions, newest first, shared between the harnesses by fairShare(). */
+  sessions: PeekSession[];
+  /** Every session under the roots, before the cut. */
+  total: number;
+  /** The same, per harness: what the source holds, not what the list shows (T1). */
+  totals: Record<PeekHarness, number>;
+};
+
+/**
+ * The sessions under the roots, newest first, at most PEEK_LIMITS.sessions of them, shared fairly
+ * between the harnesses (fairShare). A session `pinned` holds is listed whatever its age (the stage
+ * pins the ones its registry says wait on you).
+ */
+export function listSessions(gate: ReadGate, roots: readonly HarnessRoot[], redact: Redact, pinned?: (s: PeekSession) => boolean): SessionList {
   const all = walkAll(gate, roots, redact);
   all.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-  return { sessions: keepPinned(all, PEEK_LIMITS.sessions, pinned), total: all.length };
+  const totals: Record<PeekHarness, number> = { claude: 0, dsh: 0, codex: 0 };
+  for (const s of all) totals[s.harness]++;
+  return { sessions: fairShare(all, PEEK_LIMITS.sessions, (s) => s.harness, pinned), total: all.length, totals };
 }
 
 /** The session with this id, looked up afresh: the page can name only what the roots hold now. */

@@ -124,6 +124,14 @@ export function plateText(p) {
 // ---- header
 
 /**
+ * What a source holds, and how many of them play when the limits left some out (T1: never as none).
+ * @param {string} h @param {StageSnapshot['sources']['claude']} src
+ */
+function srcCount(h, src) {
+  return src.shown < src.sessions ? fill('bar.srcShown', { h, n: src.sessions, s: src.shown }) : fill('bar.src', { h, n: src.sessions });
+}
+
+/**
  * @param {StageSnapshot} snap @param {string | null} laneId
  * @param {{ stale: boolean, at: string }} fresh
  */
@@ -147,7 +155,7 @@ export function describeHeader(snap, laneId, fresh) {
       sources: {
         text: errs.length > 0
           ? errs.map((h) => fill('bar.srcError', { h, code: snap.sources[h].error ?? '' })).join('；')
-          : fill('bar.sources', { c: snap.sources.claude.sessions, d: snap.sources.dsh.sessions, x: snap.sources.codex.sessions }),
+          : fill('bar.sources', { list: GROUPS.map((h) => srcCount(h, snap.sources[h])).join('、') }),
         data: { tone: errs.length > 0 ? 'warn' : '' },
       },
       fresh: { text: fill(fresh.stale ? 'bar.stale' : 'bar.fresh', { t: fresh.at }), data: { tone: fresh.stale ? 'warn' : '' } },

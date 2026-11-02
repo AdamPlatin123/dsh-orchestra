@@ -5,7 +5,7 @@ import type { HarnessRoot } from '../fs/harness-roots.ts';
 import type { ReadGate } from '../fs/read-gate.ts';
 import type { Clock } from '../runtime/clock.ts';
 import type { Log } from '../runtime/log.ts';
-import type { PeekEvent, PeekSession, PeekView, Redact } from '../sources/peek.ts';
+import type { PeekEvent, PeekView, Redact, SessionList } from '../sources/peek.ts';
 import { PEEK_LIMITS, findSession, listSessions, readSession } from '../sources/peek.ts';
 import { makeStageBuilder } from '../sources/stage.ts';
 import type { UiAsset } from './ui-assets.ts';
@@ -153,9 +153,11 @@ function pairPage(profile: 'real' | 'test', message: string | null, open: boolea
 const kib = (n: number) => (n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1024 / 1024).toFixed(1)} MiB`);
 const iso = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
 
-function listPage(profile: 'real' | 'test', list: { sessions: PeekSession[]; total: number }): string {
+function listPage(profile: 'real' | 'test', list: SessionList): string {
   const rows = list.sessions.map((s) => `<tr><td class="n">${s.harness}</td><td><a href="/session?id=${s.id}">${escapeHtml(s.project)}</a></td><td class="n">${iso(s.mtimeMs)} UTC</td><td class="n">${kib(s.size)}</td></tr>`).join('\n');
-  const more = list.total > list.sessions.length ? `<p class="sub">共 ${list.total} 个，只列最新的 ${list.sessions.length} 个。</p>` : '';
+  // Every harness keeps a floor of the places (fairShare), so the cut is said per harness (T1).
+  const per = (['claude', 'dsh', 'codex'] as const).map((h) => `${h} ${list.totals[h]}`).join('、');
+  const more = list.total > list.sessions.length ? `<p class="sub">共 ${list.total} 个（${per}），只列 ${list.sessions.length} 个：每个 harness 保底一份，其余按最新。</p>` : '';
   const empty = list.total === 0 ? '<p class="note">没在 harness 根下找到 Claude、DSH 或 Codex 会话文件。</p>' : '';
   return page('Orchestra · 会话', profile, `<h1>会话（只读）</h1><p class="sub">最薄通路：按修改时间排，刷新页面重读。正文经过脱敏，不落盘。</p>${empty}${more}
 <p><a href="/stage">Stage 预览（M2，只读）</a></p>

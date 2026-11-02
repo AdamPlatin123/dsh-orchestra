@@ -47,7 +47,7 @@ test('the hand-written UI sample passes validateStage and holds the demo scenari
   assert.equal(item(s, 'w:agent-a3').state, 'orphan');
   assert.equal(player(s, 'impl').instrument.class, 'strings');
   assert.equal(player(s, 'shop · DSH').stand.source, 'goal');
-  assert.deepEqual(s.sources.codex, { state: 'empty', sessions: 0, registry: null, error: null });
+  assert.deepEqual(s.sources.codex, { state: 'empty', sessions: 0, shown: 0, registry: null, error: null });
   const text = JSON.stringify(s);
   assert.ok(text.includes('[redacted:'), 'the canary shows as its redaction marker');
   assert.ok(!/sk-ant-api03-/.test(text) && !/[A-Za-z]:\\\\/.test(text), 'no key and no absolute path');
@@ -175,4 +175,20 @@ test('validateSession: a session detail with at most 50 events and peek\'s harne
   bad((d) => { d.events[0].at = 'yesterday'; }, '$.events[0].at');
   bad((d) => { d.note = 'gone'; }, '$.note');
   assert.equal(validateSession(null).ok, false);
+});
+
+test('a source counts what it holds before any cut: empty only with none, shown no more than held (T1, T3)', () => {
+  // The bug this guards: 92 DSH sessions on disk, none in the snapshot, reported as empty.
+  broken((s) => { s.sources.codex.sessions = 92; s.clipped.sessions.codex = 92; }, 'empty, but it holds 92 sessions');
+  broken((s) => { s.sources.claude.shown = 3; s.clipped.sessions.claude = -1; }, 'more shown than the source holds');
+  broken((s) => { s.sources.dsh.sessions = 5; }, '$.clipped.sessions.dsh: 0, not sources.dsh.sessions - shown (2)');
+  broken((s) => { s.sources.dsh.shown = 0; s.clipped.sessions.dsh = 3; }, 'of its sessions lead a tree');
+  broken((s) => { delete s.sources.dsh.shown; }, '$.sources.dsh: missing shown');
+  broken((s) => { delete s.clipped.sessions; }, '$.clipped: missing sessions');
+  broken((s) => { s.sources.codex.state = 'ok'; }, 'ok, but it holds no session');
+  // Pushed out by the limits, still held: ok, with what was left out counted per source.
+  const s = sample();
+  s.sources.codex = { state: 'ok', sessions: 92, shown: 0, registry: null, error: null };
+  s.clipped.sessions.codex = 92;
+  assert.deepEqual(validateStage(s).errors, []);
 });

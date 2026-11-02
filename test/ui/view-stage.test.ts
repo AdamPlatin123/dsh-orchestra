@@ -429,3 +429,12 @@ test('review fixes: sizes never invented, rules and waits in plain words, a clon
   assert.equal(plateText(clone), '自己的待办，自报 1/1');
   assert.equal(describeDrawer(c as any, SHOP, clone.id, null, fmt, 0)!.slots.standHead!.text, '自己的待办，自报 1/1');
 });
+
+test('the header counts every session a source holds, and says how many show when the limits left some out (T1)', () => {
+  const s = sample();
+  assert.equal(describeHeader(s as any, SHOP, { stale: false, at: '' }).slots.sources!.text, 'claude 2、dsh 3、codex 0 个会话');
+  s.sources.dsh = { state: 'ok', sessions: 92, shown: 3, registry: null, error: null };
+  s.clipped.sessions.dsh = 89;
+  assert.deepEqual(validateStage(s).errors, []);
+  assert.equal(describeHeader(s as any, SHOP, { stale: false, at: '' }).slots.sources!.text, 'claude 2、dsh 92（因上限只显示 3）、codex 0 个会话');
+});

@@ -9,18 +9,21 @@
     "claude": {
       "state": "ok",
       "sessions": 1,
+      "shown": 1,
       "registry": 1,
       "error": null
     },
     "dsh": {
       "state": "ok",
       "sessions": 3,
+      "shown": 3,
       "registry": null,
       "error": null
     },
     "codex": {
       "state": "ok",
       "sessions": 3,
+      "shown": 3,
       "registry": null,
       "error": null
     }
@@ -1035,6 +1038,11 @@
     "lanes": 0,
     "players": 0,
     "items": 0,
-    "standItems": 0
+    "standItems": 0,
+    "sessions": {
+      "claude": 0,
+      "dsh": 0,
+      "codex": 0
+    }
   }
 }

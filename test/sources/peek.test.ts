@@ -7,7 +7,7 @@ import type { TestContext } from 'node:test';
 import type { HarnessRoot } from '../../src/fs/harness-roots.ts';
 import { ReadGate } from '../../src/fs/read-gate.ts';
 import { makeRedactor } from '../../src/store/redact.ts';
-import { PEEK_LIMITS, claudeEvent, clip, dshEvent, findSession, listSessions, readSession } from '../../src/sources/peek.ts';
+import { PEEK_LIMITS, claudeEvent, clip, dshEvent, fairShare, findSession, listSessions, readSession } from '../../src/sources/peek.ts';
 import { realIo } from '../helpers/read-io.ts';
 import { put, withTmp } from '../helpers/tmp.ts';
 
@@ -131,4 +131,47 @@ test('single lines: what is no JSON object is null; clip never splits a surrogat
   assert.equal(claudeEvent('{"type":"x"}', redact)?.type, 'x');
   assert.equal(clip('ab\u{1F600}', 3), 'ab…');
   assert.equal(clip('abc', 3), 'abc');
+});
+
+test('fairShare: every group gets its floor before the newest take the rest; pinned first; order kept', () => {
+  // Newest first: ten of a, then three of b, then two of c, all older than every a.
+  const xs = [...Array.from({ length: 10 }, (_, i) => `a${i}`), 'b0', 'b1', 'b2', 'c0', 'c1'];
+  const group = (x: string) => x[0]!;
+  // n 6 over three groups: a floor of 2 each.
+  assert.deepEqual(fairShare(xs, 6, group), ['a0', 'a1', 'b0', 'b1', 'c0', 'c1']);
+  // n 9: floors of 3; c holds only two, so the one left goes to the newest, a.
+  assert.deepEqual(fairShare(xs, 9, group), ['a0', 'a1', 'a2', 'a3', 'b0', 'b1', 'b2', 'c0', 'c1']);
+  // A pinned item counts in its group's floor, whatever its age.
+  assert.deepEqual(fairShare(xs, 6, group, (x) => x === 'a9'), ['a0', 'a9', 'b0', 'b1', 'c0', 'c1']);
+  // One group: the newest n, as before.
+  assert.deepEqual(fairShare(xs.slice(0, 10), 3, group), ['a0', 'a1', 'a2']);
+  assert.deepEqual(fairShare(xs, 0, group), []);
+  assert.deepEqual(fairShare(xs, 100, group), xs);
+});
+
+test('the listing shares its places between the harnesses and counts every session before the cut (T1)', (t) => {
+  const base = fs.realpathSync.native(withTmp(t));
+  const roots: HarnessRoot[] = (['claude', 'dsh', 'codex'] as const).map((kind) => {
+    const p = path.join(base, 'roots', kind);
+    fs.mkdirSync(p, { recursive: true });
+    return { kind, path: p, real: p };
+  });
+  const gate = new ReadGate({ roots, io: realIo, testDirs: [base] });
+  const uuid = (n: number, i: number) => `${String(n).repeat(8)}-0000-4000-8000-${String(i).padStart(12, '0')}`;
+  const T = 1_700_000_000;
+  // Claude is busy: 80 transcripts, every one newer than any DSH or Codex session.
+  for (let i = 0; i < 80; i++) touch(put(path.join(roots[0]!.path, 'projects', 'G--fx', `${uuid(1, i)}.jsonl`), '{}\n'), T + 10_000 - i);
+  for (let i = 0; i < 30; i++) touch(put(path.join(roots[1]!.path, 'sessions', '--G-fx--', uuid(2, i), 'session.v4.jsonl.zstd'), frame([{ type: 'head' }])), T + 5_000 - i);
+  for (let i = 0; i < 25; i++) touch(put(path.join(roots[2]!.path, 'sessions', '2026', '10', '01', `rollout-2026-10-01T00-00-00-${uuid(3, i)}.jsonl`), '{}\n'), T - i);
+  const list = listSessions(gate, roots, redact);
+  const by = (h: string) => list.sessions.filter((s) => s.harness === h).length;
+  assert.equal(list.sessions.length, PEEK_LIMITS.sessions);
+  // 60 places over three harnesses: a floor of 20 each, so neither older source is pushed out.
+  assert.deepEqual([by('claude'), by('dsh'), by('codex')], [20, 20, 20]);
+  assert.deepEqual(list.totals, { claude: 80, dsh: 30, codex: 25 });
+  assert.equal(list.total, 135);
+  // Still newest first, and each harness keeps its newest.
+  assert.ok(list.sessions.every((s, i) => i === 0 || list.sessions[i - 1]!.mtimeMs >= s.mtimeMs));
+  assert.equal(Math.max(...list.sessions.filter((s) => s.harness === 'dsh').map((s) => s.mtimeMs)), (T + 5_000) * 1000);
+  assert.equal(gate.openHandles(), 0);
 });

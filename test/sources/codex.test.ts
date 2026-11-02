@@ -235,7 +235,7 @@ const named = (s: StageSnapshot, label: string): Player => {
 
 test('stage: the Codex lead, its subagents hung under it, and their work items joined by agent id and agent path', (t) => {
   const { snap } = stage(t);
-  assert.deepEqual(snap.sources.codex, { state: 'ok', sessions: 3, registry: null, error: null });
+  assert.deepEqual(snap.sources.codex, { state: 'ok', sessions: 3, shown: 3, registry: null, error: null });
   const lead = codexPlayers(snap).find((p) => p.role === 'principal')!;
   const ada = named(snap, 'Ada');
   const docs = named(snap, 'docs');

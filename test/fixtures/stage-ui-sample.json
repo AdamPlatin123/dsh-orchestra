@@ -6,9 +6,9 @@
   "computedMs": 14,
   "profile": "test",
   "sources": {
-    "claude": { "state": "ok", "sessions": 7, "registry": 2, "error": null },
-    "dsh": { "state": "ok", "sessions": 3, "registry": null, "error": null },
-    "codex": { "state": "empty", "sessions": 0, "registry": null, "error": null }
+    "claude": { "state": "ok", "sessions": 2, "shown": 2, "registry": 2, "error": null },
+    "dsh": { "state": "ok", "sessions": 3, "shown": 3, "registry": null, "error": null },
+    "codex": { "state": "empty", "sessions": 0, "shown": 0, "registry": null, "error": null }
   },
   "rules": [
     { "id": "claude.live.registry", "hits": 2, "n": 0, "status": "untested" },
@@ -401,5 +401,5 @@
       "cues": []
     }
   ],
-  "clipped": { "lanes": 0, "players": 0, "items": 0, "standItems": 0 }
+  "clipped": { "lanes": 0, "players": 0, "items": 0, "standItems": 0, "sessions": { "claude": 0, "dsh": 0, "codex": 0 } }
 }

@@ -100,9 +100,11 @@ export const STAGE_BOUNDS = frozen({
  *   rules: Rule[],
  *   podium: { fermatas: PlayerId[], inbox: null },
  *   lanes: Lane[],
- *   clipped: { lanes: number, players: number, items: number, standItems: number },
+ *   clipped: { lanes: number, players: number, items: number, standItems: number, sessions: { claude: number, dsh: number, codex: number } },
  * }} StageSnapshot
- * @typedef {{ state: 'ok' | 'empty' | 'error', sessions: number, registry: number | null, error: string | null }} Src
+ * @typedef {{ state: 'ok' | 'empty' | 'error', sessions: number, shown: number, registry: number | null, error: string | null }} Src
+ *   sessions: every session file the source holds, before any cut; shown: how many of them play in this
+ *   snapshot. empty only when sessions is 0 (T1: a source the limits pushed out is clipped, not empty).
  * @typedef {{ id: string, hits: number, n: number, status: 'untested' | 'keys-mismatch' }} Rule
  * @typedef {{ id: Hex20, name: string, basis: 'cwd' | 'slug', players: Player[], items: WorkItem[], cues: Cue[] }} Lane
  * @typedef {{
@@ -207,10 +209,15 @@ function checker() {
 
 /** @param {Checker} c @param {unknown} v @param {string} at */
 function checkSrc(c, v, at) {
-  const s = c.obj(v, at, ['state', 'sessions', 'registry', 'error']);
+  const s = c.obj(v, at, ['state', 'sessions', 'shown', 'registry', 'error']);
   if (s === null) return;
   c.en(s.state, `${at}.state`, STAGE_ENUMS.srcState);
   c.int(s.sessions, `${at}.sessions`);
+  c.int(s.shown, `${at}.shown`);
+  if (typeof s.sessions === 'number' && typeof s.shown === 'number' && s.shown > s.sessions) c.bad(`${at}.shown`, 'more shown than the source holds');
+  // T1: a source whose sessions the limits pushed out holds them still; empty means none at all.
+  if (s.state === 'empty' && s.sessions !== 0) c.bad(`${at}.state`, `empty, but it holds ${String(s.sessions)} sessions`);
+  if (s.state === 'ok' && s.sessions === 0) c.bad(`${at}.state`, 'ok, but it holds no session');
   if (s.registry !== null) c.int(s.registry, `${at}.registry`);
   if (s.error !== null) c.re(s.error, `${at}.error`, RULE_NAME_RE, 'error code');
   if ((s.state === 'error') !== (s.error !== null)) c.bad(`${at}.error`, 'set exactly when state is error');
@@ -459,8 +466,37 @@ export function validateStage(x) {
     if (podium.inbox !== null) c.bad('$.podium.inbox', 'null in the alpha: the inbox is not connected');
   }
 
-  const clipped = c.obj(s.clipped, '$.clipped', ['lanes', 'players', 'items', 'standItems']);
-  if (clipped !== null) for (const k of ['lanes', 'players', 'items', 'standItems']) c.int(clipped[k], `$.clipped.${k}`);
+  const clipped = c.obj(s.clipped, '$.clipped', ['lanes', 'players', 'items', 'standItems', 'sessions']);
+  if (clipped !== null) {
+    for (const k of ['lanes', 'players', 'items', 'standItems']) c.int(clipped[k], `$.clipped.${k}`);
+    const cs = c.obj(clipped.sessions, '$.clipped.sessions', ['claude', 'dsh', 'codex']);
+    for (const h of /** @type {const} */ (['claude', 'dsh', 'codex'])) {
+      if (cs === null) break;
+      const at = `$.clipped.sessions.${h}`;
+      c.int(cs[h], at);
+      // T3: what a source holds is what plays plus what was clipped, per source.
+      const one = src !== null && isRecord(src[h]) ? src[h] : null;
+      if (one !== null && typeof one.sessions === 'number' && typeof one.shown === 'number' && cs[h] !== one.sessions - one.shown) {
+        c.bad(at, `${String(cs[h])}, not sources.${h}.sessions - shown (${one.sessions - one.shown})`);
+      }
+    }
+  }
+  // A source shows at least the sessions its principals play, at most every session its players read.
+  if (src !== null) {
+    for (const h of /** @type {const} */ (['claude', 'dsh', 'codex'])) {
+      const one = isRecord(src[h]) ? src[h] : null;
+      if (one === null || typeof one.shown !== 'number') continue;
+      const roots = new Set();
+      const any = new Set();
+      for (const p of allPlayers.values()) {
+        if (p.harness !== h || p.session === null) continue;
+        any.add(p.session);
+        if (p.parent === null) roots.add(p.session);
+      }
+      if (one.shown < roots.size) c.bad(`$.sources.${h}.shown`, `${one.shown}, but ${roots.size} of its sessions lead a tree`);
+      if (one.shown > any.size) c.bad(`$.sources.${h}.shown`, `${one.shown}, but its players name ${any.size} sessions`);
+    }
+  }
   return { ok: c.errors.length === 0, errors: c.errors };
 }
 
