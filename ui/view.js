@@ -82,11 +82,27 @@ export function activityOf(n) {
   return n.state === 'unknown' ? t('state.unknown') : t('dash');
 }
 
-/** @param {Group} g */
-export function groupText(g) {
-  if (g.kind === 'same-type') return t('group.same', { label: g.label ?? '', n: g.count });
-  return t(`group.${g.kind}`, { n: g.count });
+/** States in sibling order, for a breakdown. */
+const STATES = Object.freeze(/** @type {const} */ (['waiting', 'error', 'running', 'unknown', 'returned', 'idle']));
+
+/**
+ * A folded row's text. A same-type group says how its members stand (research §1.3: ×12 Explore ·
+ * 9 已回报), so a fold never hides that most of them are unknown (T1).
+ * @param {Group} g @param {readonly Node[]} [nodes] the project's nodes, where the members are
+ */
+export function groupText(g, nodes = []) {
+  if (g.kind !== 'same-type') return t(`group.${g.kind}`, { n: g.count });
+  const head = t('group.same', { label: g.label ?? '', n: g.count });
+  const ids = new Set(g.ids);
+  /** @type {Map<string, number>} */
+  const by = new Map();
+  for (const n of nodes) if (ids.has(n.id)) by.set(n.state, (by.get(n.state) ?? 0) + 1);
+  const parts = STATES.filter((s) => by.has(s)).map((s) => t('group.part', { n: by.get(s) ?? 0, s: t(`state.${s}`) }));
+  return [head, ...parts].join(t('sep.parts'));
 }
+
+/** The subtree box, read aloud: errors only when this build reads failures (meta.detects.error). @param {Node['counts']} c @param {boolean} detectsError */
+const kidsSr = (c, detectsError) => (detectsError ? t('kids.sr', { c: c.children, e: c.errors, w: c.waiting }) : t('kids.srNoErr', { c: c.children, w: c.waiting }));
 
 /**
  * The text of a waiting source; an Orchestra wait counts down against the daemon's time.
@@ -101,8 +117,13 @@ function clockOf(w, harness, nowWall) {
   return '';
 }
 
+/** Whether the snapshot's build reads failures at all; a snapshot that does not say is taken at its word (true). @param {TowerSnapshot | null} snap */
+export const detectsError = (snap) => snap === null || snap.meta.detects?.error !== false;
+
 /**
- * The top bar: counts that are filters, the three sources, the freshness of the data.
+ * The top bar: counts that are filters, a source only when it failed (research §1.2: health takes no
+ * room; the about view has every source), the freshness of the data. With no rule that reads a
+ * failure, no error count is shown: 出错 0 would read as "none" where it means "not looked" (T1).
  * @param {TowerSnapshot | null} snap
  * @param {{ filter: Filter | null, ageMs: number | null, stale: boolean, theme: string, view: string }} ctx
  * @returns {Paint}
@@ -112,17 +133,19 @@ export function describeBar(snap, ctx) {
   /** @param {Filter} f @returns {Paint} */
   const count = (f) => ({
     text: t(`count.${f}`, { n: tally[f] }),
-    data: { n: tally[f] > 0 ? '1' : '0' },
+    data: { n: tally[f] > 0 ? '1' : '0', hide: f === 'error' && !detectsError(snap) ? '1' : '0' },
     attr: { 'aria-pressed': ctx.filter === f ? 'true' : 'false' },
   });
   const fresh = ctx.ageMs === null ? t('fresh.none') : ctx.stale ? t('fresh.stale', { n: Math.floor(ctx.ageMs / 1000) }) : t('fresh.live', { age: fmtAge(ctx.ageMs, 'ago') });
+  const failed = snap === null ? [] : HARNESSES.filter((h) => snap.meta.sources[h].state === 'error');
   return {
     slots: {
       test: { data: { hide: snap !== null && snap.meta.profile === 'test' ? '0' : '1' } },
       waiting: count('waiting'),
       error: count('error'),
       running: count('running'),
-      srcs: { kids: snap === null ? [] : HARNESSES.map((h) => describeSrc(snap, h)) },
+      srcBox: { data: { hide: failed.length === 0 ? '1' : '0' } },
+      srcs: { kids: snap === null ? [] : failed.map((h) => describeSrc(snap, h)) },
       fresh: { data: { fresh: ctx.ageMs === null ? 'none' : ctx.stale ? 'stale' : 'live' } },
       freshT: { text: fresh },
       about: { text: ctx.view === 'about' ? t('bar.tower') : t('bar.about'), attr: { 'aria-pressed': ctx.view === 'about' ? 'true' : 'false' } },
@@ -137,8 +160,10 @@ export function srcText(snap, h) {
   const name = harnessName(h);
   if (s.state === 'error') return t('src.error', { h: name, code: s.error ?? '' });
   if (s.state === 'empty') return t('src.empty', { h: name });
-  if (s.shown < s.total) return t('src.clipped', { h: name, total: s.total, shown: s.shown });
-  return t('src.ok', { h: name, total: s.total });
+  // What a total counts differs: Claude's main sessions only; every DSH or Codex subagent is a file of its own.
+  const unit = t(`unit.${h}`);
+  if (s.shown < s.total) return t('src.clipped', { h: name, total: s.total, unit, shown: s.shown });
+  return t('src.ok', { h: name, total: s.total, unit });
 }
 
 /** @param {TowerSnapshot} snap @param {Harness} h @returns {Desc} */
@@ -155,7 +180,8 @@ function describeSrc(snap, h) {
 
 /**
  * The waiting bar: one entry per waiting node, in the snapshot's order (deadlines first). In M0 every
- * entry is native or inferred: no button, only where to go (research §1.5).
+ * entry is native or inferred: nothing to approve or deny, only where to go (research §1.5); the
+ * entry itself is a button that opens its node.
  * @param {TowerSnapshot} snap @param {{ sel: string | null, nowWall: number }} ctx
  * @returns {Paint}
  */
@@ -194,7 +220,7 @@ export function describePins(snap, ctx) {
 /**
  * The tree's rows. One row keeps the roving tabindex: the selected one, else the first.
  * @param {readonly Row[]} rows
- * @param {{ sel: string | null, peek: ReadonlySet<string>, flash: ReadonlyMap<string, string> }} ctx
+ * @param {{ sel: string | null, peek: ReadonlySet<string>, flash: ReadonlyMap<string, string>, detectsError?: boolean }} ctx
  * @returns {Desc[]}
  */
 export function describeRows(rows, ctx) {
@@ -221,6 +247,8 @@ function projectRow(r, attr, base) {
   const p = r.project;
   const errors = p.nodes.filter((n) => n.state === 'error').length;
   const waiting = p.nodes.filter((n) => n.state === 'waiting').length;
+  // What the box shows, said aloud too (the box itself is hidden from a screen reader).
+  const parts = [...(errors > 0 ? [t('kids.srErr', { n: errors })] : []), ...(waiting > 0 ? [t('kids.srWait', { n: waiting })] : [])];
   return {
     key: r.key, tpl: 'tpl-proj', data: { ...base, kind: 'project' }, attr,
     slots: {
@@ -228,6 +256,7 @@ function projectRow(r, attr, base) {
       act: { text: t('project.n', { n: p.nodes.length }) },
       ke: { text: errors > 0 ? t('kids.err', { n: errors }) : '' },
       kw: { text: waiting > 0 ? t('kids.wait', { n: waiting }) : '' },
+      kidsSr: { text: parts.length === 0 ? '' : t('project.sr', { parts: parts.join(t('sep.list')) }) },
     },
   };
 }
@@ -240,7 +269,7 @@ function groupRow(r, attr, base) {
     slots: {
       ind: { data: { depth: String(Math.max(0, r.level - 2)) } },
       ico: { text: g.kind === 'same-type' ? '' : t(g.kind === 'returned' ? 'icon.returned' : 'icon.idle') },
-      name: { text: groupText(g) },
+      name: { text: groupText(g, r.project.nodes) },
       act: { text: t('group.note') },
     },
   };
@@ -248,13 +277,14 @@ function groupRow(r, attr, base) {
 
 /**
  * @param {Row} r @param {Record<string, string | null>} attr @param {Record<string, string>} base
- * @param {{ peek: ReadonlySet<string>, flash: ReadonlyMap<string, string> }} ctx @returns {Desc}
+ * @param {{ peek: ReadonlySet<string>, flash: ReadonlyMap<string, string>, detectsError?: boolean }} ctx @returns {Desc}
  */
 function nodeRow(r, attr, base, ctx) {
   const n = /** @type {Node} */ (r.node);
   const c = n.counts;
   const approx = guessed(n);
   const state = t(`state.${n.state}`);
+  const sr = c.children > 0 ? kidsSr(c, ctx.detectsError ?? true) : '';
   return {
     key: r.key, tpl: 'tpl-node',
     data: {
@@ -269,11 +299,11 @@ function nodeRow(r, attr, base, ctx) {
       approx: { text: approx ? t('mark.inferred') : '' },
       srState: { text: approx ? `${state}${t('mark.inferredSr')}` : state },
       act: { text: activityOf(n) },
-      kids: { data: { has: c.children > 0 ? '1' : '0' }, attr: { title: c.children > 0 ? t('kids.sr', { c: c.children, e: c.errors, w: c.waiting }) : null } },
+      kids: { data: { has: c.children > 0 ? '1' : '0' }, attr: { title: c.children > 0 ? sr : null } },
       kc: { text: c.children > 0 ? String(c.children) : '' },
       ke: { text: c.errors > 0 ? t('kids.err', { n: c.errors }) : '' },
       kw: { text: c.waiting > 0 ? t('kids.wait', { n: c.waiting }) : '' },
-      kidsSr: { text: c.children > 0 ? t('kids.sr', { c: c.children, e: c.errors, w: c.waiting }) : '' },
+      kidsSr: { text: sr },
       age: { text: fmtAge(n.ageMs) },
       own: { text: t(`own.${n.ownership}`), data: { own: n.ownership } },
       pkState: { text: t('peek.state', { s: state, b: t(`basis.${n.basis}`) }) },
@@ -285,14 +315,16 @@ function nodeRow(r, attr, base, ctx) {
 }
 
 /**
- * The tree's frame: the filter line, the pending changes of a frozen tree, the rows, the empty line.
+ * The tree's frame: the filter line, the pending changes of a frozen tree, the rows, the empty line,
+ * and how many sessions the limits left out (T1: a session not drawn is said, here where the tree is).
  * @param {readonly Row[]} rows
- * @param {{ filter: Filter | null, pending: number, sel: string | null, peek: ReadonlySet<string>, flash: ReadonlyMap<string, string> }} ctx
+ * @param {{ filter: Filter | null, pending: number, sel: string | null, peek: ReadonlySet<string>, flash: ReadonlyMap<string, string>, detectsError?: boolean, clipped?: number }} ctx
  * @returns {Paint}
  */
 export function describeTower(rows, ctx) {
   const f = ctx.filter;
   const n = rows.filter((r) => r.match).length;
+  const clipped = ctx.clipped ?? 0;
   return {
     slots: {
       filterBox: { data: { hide: f === null ? '1' : '0' } },
@@ -300,9 +332,13 @@ export function describeTower(rows, ctx) {
       changes: { text: ctx.pending > 0 ? t('tree.changes', { n: ctx.pending }) : '', data: { hide: ctx.pending > 0 ? '0' : '1' }, attr: { title: t('tree.changesHint') } },
       tree: { kids: describeRows(rows, ctx) },
       empty: { data: { hide: rows.length === 0 ? '0' : '1' }, text: f === null ? t('tree.empty') : t('tree.emptyFilter', { f: t(`state.${f}`) }) },
+      clipNote: { data: { hide: clipped > 0 ? '0' : '1' }, text: clipped > 0 ? t('tree.clipped', { n: clipped }) : '' },
     },
   };
 }
+
+/** Sessions the limits left out, over every source (each source's total - shown). @param {TowerSnapshot} snap */
+export const clippedSessions = (snap) => HARNESSES.reduce((k, h) => k + snap.meta.clipped.sessions[h], 0);
 
 /** @param {string} k @param {string} v @returns {Desc} */
 const kv = (k, v) => ({ key: k, tpl: 'tpl-kv', slots: { k: { text: t(`detail.${k}`) }, v: { text: v } } });
@@ -337,7 +373,7 @@ export function describeDetail(snap, sel, rows, detail, ctx) {
     facts.push(kv('harness', harnessName(node.harness)), kv('owner', t(`own.${node.ownership}Long`)), kv('layer', layer));
     if (node.layer === 'subagent') facts.push(kv('type', node.agentType ?? t('detail.noType')));
     facts.push(
-      kv('kids', t('kids.sr', { c: node.counts.children, e: node.counts.errors, w: node.counts.waiting })),
+      kv('kids', kidsSr(node.counts, detectsError(snap))),
       kv('age', fmtAge(node.ageMs, 'ago')),
       kv('session', node.session ?? t('detail.noSession')),
       kv('project', project?.name ?? t('dash')),
@@ -364,7 +400,7 @@ export function describeDetail(snap, sel, rows, detail, ctx) {
       data: { mode: 'project', state: '', harness: '', src: '' },
       slots: {
         ...blank, title: { text: p.name }, sub: { text: t('detail.projectSub', { n: p.nodes.length }) },
-        empty: { text: t('detail.counts', { r: k('running'), w: k('waiting'), e: k('error') }) },
+        empty: { text: detectsError(snap) ? t('detail.counts', { r: k('running'), w: k('waiting'), e: k('error') }) : t('detail.countsNoErr', { r: k('running'), w: k('waiting') }) },
       },
     };
   }
@@ -372,7 +408,7 @@ export function describeDetail(snap, sel, rows, detail, ctx) {
     const g = /** @type {Group} */ (shown.group);
     return {
       data: { mode: 'group', state: '', harness: '', src: '' },
-      slots: { ...blank, title: { text: t('detail.groupTitle', { n: g.count }) }, sub: { text: t('detail.groupSub', { label: groupText(g) }) }, empty: { text: t('group.note') } },
+      slots: { ...blank, title: { text: t('detail.groupTitle', { n: g.count }) }, sub: { text: t('detail.groupSub', { label: groupText(g, shown.project.nodes) }) }, empty: { text: t('group.note') } },
     };
   }
   return {
@@ -411,7 +447,9 @@ function events(session, detail, fmtIso) {
  */
 export function describeDock(snap, sel) {
   const hit = sel === null ? undefined : indexOf(snap).byId.get(sel);
-  return { slots: { to: { text: hit === undefined ? t('dock.none') : t('dock.to', { who: hit.node.title }) } } };
+  // A project or a folded group is selected, not nothing: say why it cannot be a recipient.
+  const text = hit !== undefined ? t('dock.to', { who: hit.node.title }) : sel !== null && (sel.startsWith('p:') || sel.startsWith('g:')) ? t('dock.notNode') : t('dock.none');
+  return { slots: { to: { text } } };
 }
 
 /**

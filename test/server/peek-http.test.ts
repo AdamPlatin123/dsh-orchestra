@@ -116,6 +116,10 @@ test('paired: home is the tower page, the tower names the session and its full r
   assert.equal(s.body.includes('<img src=x'), false);
   assert.ok(s.body.includes(escapeHtml(CANARY)));
   assert.equal(s.body.includes(SECRET), false);
+  // Times in this machine's local time, as the tower's detail shows the same events (no UTC beside local).
+  assert.ok(s.body.includes('<th>时间（本机）</th>'));
+  assert.equal(s.body.includes('UTC'), false);
+  assert.match(s.body, /修改于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}（本机时间）/);
   assert.equal((await request(fx, 'GET', `/session?id=${'0'.repeat(20)}`, { cookie })).status, 404);
   assert.equal((await request(fx, 'GET', '/', { cookie: 'orchestra_sid=forged' })).body.includes('G--proj'), false);
   assert.equal((await request(fx, 'POST', '/', { cookie })).status, 405);

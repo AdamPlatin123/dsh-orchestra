@@ -30,10 +30,17 @@ export function format(r) {
   return r.node !== null && NODE_ID_RE.test(r.node) ? `#/n/${r.node}` : '#/';
 }
 
-/** Writes the route into the hash (a history entry, so Back closes a node page); hashchange brings it back. @param {Route} r */
-export function go(r) {
+/**
+ * Writes the route into the hash; hashchange brings it back. A history entry, so Back closes a node
+ * page; with `replace`, none (a selection on a wide screen, where no page opens: ten clicks in the tree
+ * are not ten presses of Back).
+ * @param {Route} r @param {boolean} [replace]
+ */
+export function go(r, replace = false) {
   const h = format(r);
-  if (location.hash !== h && !(h === '#/' && location.hash === '')) location.hash = h;
+  if (location.hash === h || (h === '#/' && location.hash === '')) return;
+  if (replace) location.replace(location.pathname + location.search + h);
+  else location.hash = h;
 }
 
 /** Leaves for the full record of a session (the server-rendered /session page). @param {string} id */

@@ -7,7 +7,9 @@
 // Beside the shapes, the checks hold the truthfulness rules a payload can carry by itself:
 // - T1: what is not known says unknown. A state nobody reported is `unknown` with basis `none`; a
 //   state read off a log or guessed from a file's last write carries that basis (log, mtime), so an
-//   inferred state never reads like one a registry reported.
+//   inferred state never reads like one a registry reported. A source without a registry (DSH, Codex)
+//   has no node with basis registry or a native wait. With meta.detects.error false, no node is error:
+//   an error count of 0 then means "not looked", and the page does not show one.
 // - T2: no node is ever done: the furthest a subagent gets is `returned` (it sent its report back).
 // - T3: every count equals the length of the list it links to: tally against the nodes, a group's
 //   count against its ids, a node's subtree counts against its descendants, the waiting bar against
@@ -91,10 +93,13 @@ export const TOWER_BOUNDS = frozen({
  *   waiting bar's length).
  * @typedef {{
  *   v: 1, rev: string, observedAt: number, profile: 'test' | 'real',
+ *   detects: { error: boolean },
  *   sources: { claude: Src, dsh: Src, codex: Src },
  *   clipped: { projects: number, nodes: number, sessions: { claude: number, dsh: number, codex: number } },
  *   rules: Rule[],
  * }} Meta
+ *   detects.error: whether any rule of this build reads a failure; false means no node is error and
+ *   the error count is not shown (T1: not looked is not none).
  *   clipped.sessions: per source, total - shown (a breakdown, never added to clipped.nodes).
  *   rules: the derivation rules the states and links were read with, for the page's about view.
  * @typedef {{ id: string, hits: number, n: number, status: 'untested' | 'keys-mismatch' }} Rule
@@ -363,7 +368,9 @@ function checkTree(c, project, checked, at) {
       if (typeof parent.depth === 'number' && n.depth !== parent.depth + 1) c.bad(`${nat}.depth`, `${String(n.depth)}, its parent's is ${parent.depth}`);
       if (n.harness !== parent.harness) c.bad(`${nat}.harness`, `${String(n.harness)} under a ${String(parent.harness)} parent`);
       while (stack.length > 0 && stack[stack.length - 1] !== parent) stack.pop();
-      if (stack.length === 0) c.bad(nat, 'not in tree order: its parent is not on the path above it');
+      // A parent off the path above (later in the list, or in a loop of parents): reported and not
+      // linked, so every link goes from an earlier node to a later one and the walk below ends.
+      if (stack.length === 0) { c.bad(nat, 'not in tree order: its parent is not on the path above it'); return; }
       const list = kids.get(n.parent) ?? [];
       list.push(n);
       kids.set(n.parent, list);
@@ -381,17 +388,22 @@ function checkTree(c, project, checked, at) {
   ordered(roots, `${at}.nodes (roots)`);
   for (const [p, list] of kids) ordered(list, `${at}.nodes (children of ${String(p)})`);
   // T3 for the subtree counts: recomputed from the descendants, so the waiting count bubbles up.
-  /** @param {Record<string, unknown>} n @returns {{ children: number, errors: number, waiting: number }} */
-  const below = (n) => {
+  // Children before parents (the reverse of the list, whose links all point forward), each node once.
+  /** @type {Map<unknown, { children: number, errors: number, waiting: number }>} */
+  const sums = new Map();
+  for (let i = nodes.length - 1; i >= 0; i--) {
+    const n = /** @type {Record<string, unknown>} */ (nodes[i]);
     const out = { children: 0, errors: 0, waiting: 0 };
     for (const k of kids.get(n.id) ?? []) {
-      const sub = below(k);
+      const sub = sums.get(k.id) ?? { children: 0, errors: 0, waiting: 0 };
       out.children += 1 + sub.children;
       out.errors += (k.state === 'error' ? 1 : 0) + sub.errors;
       out.waiting += (k.state === 'waiting' ? 1 : 0) + sub.waiting;
     }
-    return out;
-  };
+    if (!sums.has(n.id)) sums.set(n.id, out);
+  }
+  /** @param {Record<string, unknown>} n */
+  const below = (n) => sums.get(n.id) ?? { children: 0, errors: 0, waiting: 0 };
   checked.forEach(({ n, groups }, i) => {
     const want = below(n);
     if (isRecord(n.counts)) {
@@ -416,19 +428,29 @@ export function validateTower(x) {
   const s = c.obj(x, '$', ['meta', 'router', 'projects', 'waitingBar', 'tally']);
   if (s === null) return { ok: false, errors: c.errors };
 
-  const meta = c.obj(s.meta, '$.meta', ['v', 'rev', 'observedAt', 'profile', 'sources', 'clipped', 'rules']);
+  const meta = c.obj(s.meta, '$.meta', ['v', 'rev', 'observedAt', 'profile', 'detects', 'sources', 'clipped', 'rules']);
   /** @type {Record<string, unknown> | null} */
   let src = null;
+  /** Whether this build reads failures at all; true when the payload does not say (each node is then held to nothing more). */
+  let detectsError = true;
   if (meta !== null) {
     if (meta.v !== TOWER_V) c.bad('$.meta.v', `${JSON.stringify(meta.v)}, not ${TOWER_V}`);
     c.re(meta.rev, '$.meta.rev', TOWER_REV_RE, 'rev (16 hex)');
     c.int(meta.observedAt, '$.meta.observedAt');
     c.en(meta.profile, '$.meta.profile', TOWER_ENUMS.profile);
+    const detects = c.obj(meta.detects, '$.meta.detects', ['error']);
+    if (detects !== null) {
+      if (typeof detects.error !== 'boolean') c.bad('$.meta.detects.error', `${JSON.stringify(detects.error)} is not a boolean`);
+      else detectsError = detects.error;
+    }
     src = c.obj(meta.sources, '$.meta.sources', HARNESSES);
     if (src !== null) {
       for (const h of HARNESSES) checkSrc(c, src[h], `$.meta.sources.${h}`);
-      const cx = isRecord(src.codex) ? src.codex : null;
-      if (cx !== null && cx.registry !== null) c.bad('$.meta.sources.codex.registry', 'null: Codex has no registry');
+      // Neither DSH nor Codex keeps a registry Orchestra reads: what their nodes say is read off a log or guessed.
+      for (const h of /** @type {const} */ (['dsh', 'codex'])) {
+        const one = isRecord(src[h]) ? src[h] : null;
+        if (one !== null && one.registry !== null) c.bad(`$.meta.sources.${h}.registry`, `null: ${h === 'dsh' ? 'DSH' : 'Codex'} has no registry`);
+      }
     }
     const clipped = c.obj(meta.clipped, '$.meta.clipped', ['projects', 'nodes', 'sessions']);
     if (clipped !== null) {
@@ -511,6 +533,17 @@ export function validateTower(x) {
     prev = d;
   });
   for (const [id, n] of all) if (n.waiting !== null && !listed.has(id)) c.bad('$.waitingBar', `${String(id)} waits but is not listed`);
+
+  // T1: a state from a source with no registry never reads as one a registry reported, and nothing is
+  // error in a build that reads no failure.
+  for (const [id, n] of all) {
+    const one = src !== null && typeof n.harness === 'string' && isRecord(src[n.harness]) ? /** @type {Record<string, unknown>} */ (src[n.harness]) : null;
+    if (one !== null && one.registry === null) {
+      if (n.basis === 'registry') c.bad(`$.projects: ${String(id)}.basis`, `registry, but ${String(n.harness)} has no registry`);
+      if (isRecord(n.waiting) && n.waiting.source === 'native') c.bad(`$.projects: ${String(id)}.waiting.source`, `native, but ${String(n.harness)} has no registry`);
+    }
+    if (!detectsError && n.state === 'error') c.bad(`$.projects: ${String(id)}.state`, 'error, but meta.detects.error is false');
+  }
 
   // T3 for the top bar: each count is the number of nodes in that state.
   const tally = c.obj(s.tally, '$.tally', TOWER_ENUMS.state);

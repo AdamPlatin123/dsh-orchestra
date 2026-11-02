@@ -40,7 +40,13 @@ export type PeekView = {
 };
 
 export const PEEK_LIMITS = frozen({
-  /** Sessions the list shows, newest first, shared between the harnesses (each gets a floor; see fairShare). */
+  /**
+   * Sessions the list shows, newest first, shared between the harnesses (each gets a floor; see fairShare).
+   * The list is cut before any file is read, so only a wait the Claude registry reports can pin a session
+   * here: a Codex session that may wait on you (inferred from its rollout) ages like any other and can
+   * fall out of the list; the tower's about view says so. A Codex or DSH subagent is a session file of its
+   * own and takes a place here; a Claude subagent does not (it lives under its parent's transcript).
+   */
   sessions: 60,
   /** Events a session view shows: the last ones. */
   events: 200,
@@ -60,6 +66,8 @@ export const PEEK_LIMITS = frozen({
   codexHeadDecodedBytes: 4 * 1024 * 1024,
   /** A Codex .zst rollout (one frame of the whole session) is decoded whole only up to this size; past it, its head only. */
   codexMaxBytes: 32 * 1024 * 1024,
+  /** What a Codex rollout may decode to (a .zst whole); past it, its head only, noted too-large. */
+  codexMaxDecodedBytes: 16 * 1024 * 1024,
 });
 
 export type Redact = (text: string) => string;
@@ -256,7 +264,7 @@ const own = (o: Record<string, unknown>, k: string): unknown => (Object.hasOwn(o
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 
 /** The readable part of one Claude content block. */
-function claudeBlock(b: unknown): string {
+function claudeBlock(b: unknown, redact: Redact): string {
   if (typeof b === 'string') return b;
   if (!isObject(b)) return '';
   switch (own(b, 'type')) {
@@ -272,11 +280,12 @@ function claudeBlock(b: unknown): string {
       } catch {
         input = '';
       }
-      return `[tool_use ${str(own(b, 'name'))}] ${clip(input, 600)}`;
+      // Redacted before it is clipped: a secret the cut ran through would leave its prefix unredacted.
+      return `[tool_use ${str(own(b, 'name'))}] ${shown(input, redact, 600)}`;
     }
     case 'tool_result': {
       const c = own(b, 'content');
-      const body = Array.isArray(c) ? c.map(claudeBlock).join('\n') : str(c);
+      const body = Array.isArray(c) ? c.map((x) => claudeBlock(x, redact)).join('\n') : str(c);
       return `[tool_result] ${body}`;
     }
     case 'image':
@@ -300,7 +309,7 @@ export function claudeEvent(line: string, redact: Redact): PeekEvent | null {
   const message = own(o, 'message');
   if ((type === 'user' || type === 'assistant') && isObject(message)) {
     const content = own(message, 'content');
-    text = Array.isArray(content) ? content.map(claudeBlock).filter((s) => s !== '').join('\n') : str(content);
+    text = Array.isArray(content) ? content.map((x) => claudeBlock(x, redact)).filter((s) => s !== '').join('\n') : str(content);
   } else if (type === 'summary') {
     text = str(own(o, 'summary'));
   } else if (type === 'system') {
@@ -372,7 +381,8 @@ export function codexEvent(line: string, redact: Redact): PeekEvent | null {
     text = `${str(own(p, 'role'))}: ${codexContent(own(p, 'content'))}`;
   } else if (sub === 'function_call' || sub === 'custom_tool_call') {
     const args = own(p, 'arguments') ?? own(p, 'input');
-    text = `[${sub} ${str(own(p, 'name'))}] ${clip(typeof args === 'string' ? args : '', 600)}`;
+    // Redacted before it is clipped: a secret the cut ran through would leave its prefix unredacted.
+    text = `[${sub} ${str(own(p, 'name'))}] ${typeof args === 'string' ? shown(args, redact, 600) : ''}`;
   } else if (sub === 'function_call_output' || sub === 'custom_tool_call_output') {
     const out = own(p, 'output');
     text = `[output] ${typeof out === 'string' ? out : isObject(out) ? str(own(out, 'content')) : ''}`;
@@ -398,7 +408,7 @@ export type PeekNote = NonNullable<PeekView['note']>;
  */
 function eachLine(gate: ReadGate, s: PeekSession, each: (line: string) => void, decoded: number = PEEK_LIMITS.dshMaxDecodedBytes): PeekNote | null {
   let note: PeekNote | null = null;
-  if (s.harness === 'codex') return codexLines(gate, s, each, decoded);
+  if (s.harness === 'codex') return codexLines(gate, s, each, Math.min(decoded, PEEK_LIMITS.codexMaxDecodedBytes));
   if (s.harness === 'claude') {
     const start = Math.max(0, s.size - PEEK_LIMITS.claudeTailBytes);
     const text = gate.readRange(s.file, start, s.size - start).toString('utf8');
@@ -413,7 +423,18 @@ function eachLine(gate: ReadGate, s: PeekSession, each: (line: string) => void, 
     return note;
   }
   if (s.size > PEEK_LIMITS.dshMaxBytes) return 'too-large';
-  return frameLines(gate.readFile(s.file), each, decoded).note;
+  const b = boundedRead(gate, s, PEEK_LIMITS.dshMaxBytes);
+  return b === null ? 'too-large' : frameLines(b, each, decoded).note;
+}
+
+/**
+ * A file read from byte 0, never more than `max` bytes: the size the listing saw, plus one byte that
+ * tells a file grown since then; null when that is past `max`. The bound holds whatever the file
+ * became between the listing and the read (the gate checks only that it opened the file it decided on).
+ */
+function boundedRead(gate: ReadGate, s: PeekSession, max: number): Buffer | null {
+  const b = gate.readRange(s.file, 0, Math.min(s.size, max) + 1);
+  return b.length > max ? null : b;
 }
 
 const tooLarge = (e: unknown) => e instanceof RangeError && (e as { code?: unknown }).code === 'ERR_BUFFER_TOO_LARGE';
@@ -470,8 +491,9 @@ const isZlibError = (e: unknown) => e instanceof Error && typeof (e as { code?: 
 function codexLines(gate: ReadGate, s: PeekSession, each: (line: string) => void, decoded: number): PeekNote | null {
   const L = PEEK_LIMITS;
   if (/\.zst$/i.test(s.file)) {
-    if (s.size <= L.codexMaxBytes) {
-      const got = frameLines(gate.readFile(s.file), each, decoded);
+    const whole = s.size <= L.codexMaxBytes ? boundedRead(gate, s, L.codexMaxBytes) : null;
+    if (whole !== null) {
+      const got = frameLines(whole, each, decoded);
       if (got.note !== 'too-large' || got.lines > 0) return got.note;
     }
     // Its own small ceiling, not what is left of `decoded`: a prefix that decodes past it is cut to a
@@ -538,11 +560,14 @@ export function readSession(gate: ReadGate, s: PeekSession, redact: Redact): Pee
  * Hands each JSON object of a session to `each`, in file order, as it is parsed, through the same
  * reader and limits as readSession; nothing is collected, so a caller holds only what it keeps. They are
  * raw source values: a caller sends every string it keeps through shown(). `decoded` is the DSH
- * decoded-text ceiling (PEEK_LIMITS.dshMaxDecodedBytes unless a test sets a smaller one).
+ * decoded-text ceiling (PEEK_LIMITS.dshMaxDecodedBytes unless a test sets a smaller one; a Codex
+ * rollout never past PEEK_LIMITS.codexMaxDecodedBytes). `chars` is the text it handed over, lines and all.
  */
-export function eachRecord(gate: ReadGate, s: PeekSession, each: (record: Record<string, unknown>) => void, decoded: number = PEEK_LIMITS.dshMaxDecodedBytes): { unparsed: number; note: PeekNote | null } {
+export function eachRecord(gate: ReadGate, s: PeekSession, each: (record: Record<string, unknown>) => void, decoded: number = PEEK_LIMITS.dshMaxDecodedBytes): { unparsed: number; note: PeekNote | null; chars: number } {
   let unparsed = 0;
+  let chars = 0;
   const note = eachLine(gate, s, (line) => {
+    chars += line.length;
     if (line.trim() === '') return;
     let o: unknown;
     try {
@@ -554,7 +579,7 @@ export function eachRecord(gate: ReadGate, s: PeekSession, each: (record: Record
     if (isObject(o)) each(o);
     else unparsed++;
   }, decoded);
-  return { unparsed, note };
+  return { unparsed, note, chars };
 }
 
 /**

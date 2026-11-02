@@ -35,8 +35,9 @@ test('the page boots, renders the fetched tower, and drives selection, keys, fil
   const fetched: string[] = [];
   let mono = 1000;
   let tower: Record<string, any> = structuredClone(GOLDEN);
-  const loc = { hash: '', href: '' };
+  const loc = { hash: '', href: '', pathname: '/', search: '', replaced: [] as string[], replace(u: string) { this.replaced.push(u); this.hash = u.slice(u.indexOf('#')); } };
   const win = {};
+  let narrow = false;
   Object.assign(doc, { hidden: false, addEventListener: (t: string, fn: Listener) => on(doc, t, fn) });
   (FakeElement.prototype as any).addEventListener = function (this: object, t: string, fn: Listener) { on(this, t, fn); };
   const g = globalThis as any;
@@ -45,7 +46,7 @@ test('the page boots, renders the fetched tower, and drives selection, keys, fil
   const define = (k: string, v: unknown) => Object.defineProperty(g, k, { configurable: true, writable: true, value: v });
   define('document', doc);
   define('location', loc);
-  define('window', { addEventListener: (t: string, fn: Listener) => on(win, t, fn) });
+  define('window', { addEventListener: (t: string, fn: Listener) => on(win, t, fn), matchMedia: (q: string) => ({ matches: q === '(max-width: 899px)' && narrow }) });
   define('performance', { now: () => mono });
   define('requestAnimationFrame', (fn: () => void) => { frames.push(fn); return frames.length; });
   define('setInterval', (fn: () => void) => { intervals.push(fn); return intervals.length; });
@@ -80,6 +81,7 @@ test('the page boots, renders the fetched tower, and drives selection, keys, fil
     const row = rows().find((r) => r.getAttribute('data-key') === claude.id)!;
     fire(doc, 'click', { target: row.querySelector('[data-slot=act]') });
     assert.equal(loc.hash, `#/n/${claude.id}`);
+    assert.deepEqual(loc.replaced, [`/#/n/${claude.id}`], 'a wide-screen selection replaces the entry: no page opened, nothing for Back to close');
     fire(win, 'hashchange');
     await flush();
     assert.equal(doc.documentElement!.getAttribute('data-view'), 'node');
@@ -147,6 +149,62 @@ test('the page boots, renders the fetched tower, and drives selection, keys, fil
     await flush();
     assert.notDeepEqual(rows().map((r) => r.getAttribute('data-key')), order);
     assert.equal(apply.getAttribute('data-hide'), '1');
+
+    // On a narrow screen a node opens a page of its own: back on the tree the focus returns to the row
+    // it came from; a waiting-bar entry (a button) opens its node's page with a history entry, and the
+    // focus moves to the page's title, never staying on a hidden element.
+    narrow = true;
+    fire(doc, 'click', { target: doc.querySelector('[data-act=back]') });
+    assert.equal(loc.hash, '#/');
+    fire(win, 'hashchange');
+    await flush();
+    assert.equal(doc.documentElement!.getAttribute('data-view'), 'tower');
+    const selected = rows().filter((r) => r.getAttribute('aria-selected') === 'true');
+    assert.equal(selected.length, 1);
+    selected[0]!.focused = false;
+    // A node selected again by its route, then closed: its row takes the focus back.
+    fire(doc, 'click', { target: selected[0]!.querySelector('[data-slot=act]') });
+    assert.equal(loc.replaced.length, 1, 'a page opened on a narrow screen: a history entry');
+    fire(win, 'hashchange');
+    await flush();
+    assert.equal(doc.getElementById('dt-title')!.focused, true);
+    doc.getElementById('dt-title')!.focused = false;
+    fire(doc, 'click', { target: doc.querySelector('[data-act=back]') });
+    fire(win, 'hashchange');
+    await flush();
+    assert.equal(selected[0]!.focused, true, 'back on the tree, the row it came from has the focus');
+    const pins = doc.getElementById('pins')!;
+    const pinNode = pins.querySelectorAll('.pin')[1]!.getAttribute('data-node')!;
+    for (const r of rows()) r.focused = false;
+    doc.getElementById('dt-title')!.focused = false;
+    fire(doc, 'click', { target: pins.querySelectorAll('.pin-go')[1]!.querySelector('[data-slot=kind]') });
+    assert.equal(loc.hash, `#/n/${pinNode}`);
+    assert.equal(loc.replaced.length, 1, 'a page opened: a history entry, so Back closes it');
+    assert.equal(rows().find((r) => r.getAttribute('data-key') === pinNode)!.focused, false, 'no focus left on a row the page hides');
+    fire(win, 'hashchange');
+    await flush();
+    assert.equal(doc.documentElement!.getAttribute('data-view'), 'node');
+    assert.equal(doc.getElementById('dt-title')!.focused, true);
+    narrow = false;
+
+    // A state that changed lights its row once, for 1.2 s; past that the row loses the mark, so a row
+    // put back later (unfolded, refiltered, shown again) does not replay an old change.
+    tower = structuredClone(GOLDEN);
+    const flip = tower.projects[0].nodes.find((n: any) => n.state === 'returned' && n.harness === 'claude');
+    Object.assign(flip, { state: 'unknown', basis: 'none' });
+    tower.tally.returned -= 1;
+    tower.tally.unknown += 1;
+    tower.meta.rev = 'fedcba9876543210';
+    mono += 2000;
+    intervals[0]!();
+    await flush();
+    const flipped = rows().find((r) => r.getAttribute('data-key') === flip.id)!;
+    assert.equal(doc.getElementById('alert')!.getAttribute('data-hide'), '1');
+    assert.equal(flipped.getAttribute('data-flash'), 'unknown');
+    mono += 1300;
+    intervals[1]!();
+    await flush();
+    assert.equal(flipped.getAttribute('data-flash'), '');
 
     // The about view, then back; nothing the page shows says done (T2).
     fire(doc, 'click', { target: doc.querySelector('[data-act=about]') });

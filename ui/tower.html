@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>Orchestra</title>
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23EEF1EF'/%3E%3Cpath d='M9 7v18M9 12h8M9 20h8M17 9v6M17 17v6' stroke='%231C2530' stroke-width='2' fill='none'/%3E%3Ccircle cx='23' cy='12' r='3' fill='%23C98A00'/%3E%3Ccircle cx='23' cy='20' r='3' fill='%231C7487'/%3E%3C/svg%3E">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23EEF1EF'/%3E%3Cpath d='M9 7v18M9 12h8M9 20h8M17 9v6M17 17v6' stroke='%231C2530' stroke-width='2' fill='none'/%3E%3Ccircle cx='23' cy='12' r='3' fill='%2358636F'/%3E%3Ccircle cx='23' cy='20' r='3' fill='%2358636F'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="/assets/ui/tower.css">
 <script type="module" src="/assets/ui/app.js"></script>
 </head>
@@ -18,7 +18,7 @@
     <button type="button" class="count" data-filter="error" aria-pressed="false" data-slot="error"></button>
     <button type="button" class="count" data-filter="running" aria-pressed="false" data-slot="running"></button>
   </div>
-  <p class="srcs"><span class="sr" data-t="bar.sources"></span><span class="src-list" data-slot="srcs"></span></p>
+  <p class="srcs" data-slot="srcBox" data-hide="1"><span class="sr" data-t="bar.sources"></span><span class="src-list" data-slot="srcs"></span></p>
   <p class="fresh" data-slot="fresh" data-fresh="none"><span class="fdot" aria-hidden="true"></span><span data-slot="freshT"></span></p>
   <p class="nav"><button type="button" class="link" data-act="about" aria-pressed="false" data-slot="about"></button><button type="button" class="link" data-act="theme" data-slot="theme"></button></p>
 </header>
@@ -36,20 +36,22 @@
   <div class="tower-head">
     <h2 id="tower-h" data-t="tree.title"></h2>
     <p class="filter" data-slot="filterBox" data-hide="1"><span data-slot="filterT"></span><button type="button" class="link" data-act="clear" data-t="tree.clear"></button></p>
-    <button type="button" class="changes" data-act="apply" data-slot="changes" data-hide="1"></button>
+    <button type="button" class="changes" data-act="apply" data-slot="changes" data-hide="1" aria-describedby="changes-hint"></button><span id="changes-hint" class="sr" data-t="tree.changesHint"></span>
   </div>
   <p class="cols" aria-hidden="true"><span class="c-name" data-t="col.name"></span><span class="c-act" data-t="col.act"></span><span class="c-kids" data-t="col.kids"></span><span class="c-age" data-t="col.age"></span><span class="c-own" data-t="col.own"></span></p>
   <p class="router"><span class="r-ico" aria-hidden="true" data-t="router.icon"></span><span class="r-name" data-t="router.you"></span><span class="r-note" data-t="router.note"></span></p>
   <p id="tree-keys" class="sr" data-t="tree.keys"></p>
-  <ul id="tree" class="tree" role="tree" aria-labelledby="tower-h" aria-describedby="tree-keys" data-slot="tree"></ul>
+  <span id="tree-name" class="sr" data-t="tree.label"></span>
+  <ul id="tree" class="tree" role="tree" aria-labelledby="tower-h tree-name" aria-describedby="tree-keys" data-slot="tree"></ul>
   <p class="empty" data-slot="empty" data-hide="1"></p>
+  <p class="clip-note" data-slot="clipNote" data-hide="1"></p>
 </section>
 
 <aside id="detail" class="detail" aria-labelledby="dt-title" data-mode="empty">
   <p class="dt-nav"><button type="button" class="link back" data-act="back" data-t="detail.back"></button></p>
   <header class="dt-head">
     <span class="ico" aria-hidden="true" data-slot="ico"></span>
-    <div class="dt-id"><h2 id="dt-title" data-slot="title"></h2><p class="dt-sub" data-slot="sub"></p></div>
+    <div class="dt-id"><h2 id="dt-title" tabindex="-1" data-slot="title"></h2><p class="dt-sub" data-slot="sub"></p></div>
   </header>
   <p class="dt-gone" data-slot="gone" data-hide="1"></p>
   <p class="dt-empty" data-slot="empty"></p>
@@ -74,6 +76,7 @@
       <thead><tr><th data-t="about.colSrc"></th><th data-t="about.colState"></th><th data-t="about.colTotal"></th><th data-t="about.colShown"></th><th data-t="about.colClipped"></th><th data-t="about.colRegistry"></th></tr></thead>
       <tbody data-slot="srcRows"></tbody>
     </table>
+    <p class="ab-note" data-t="about.srcNote"></p>
     <p class="ab-clip" data-slot="clipped"></p>
   </section>
   <section class="ab-sec" aria-labelledby="ab-rules-h">
@@ -84,18 +87,18 @@
   </section>
   <section class="ab-sec" aria-labelledby="ab-h-h">
     <h3 id="ab-h-h" data-t="about.honest"></h3>
-    <ul class="honest"><li data-t="about.h1"></li><li data-t="about.h2"></li><li data-t="about.h3"></li><li data-t="about.h4"></li><li data-t="about.h5"></li><li data-t="about.h6"></li><li data-t="about.h7"></li></ul>
+    <ul class="honest"><li data-t="about.h1"></li><li data-t="about.h2"></li><li data-t="about.h3"></li><li data-t="about.h4"></li><li data-t="about.h5"></li><li data-t="about.h6"></li><li data-t="about.h7"></li><li data-t="about.h8"></li><li data-t="about.h9"></li></ul>
   </section>
 </section>
 
 <template id="tpl-src"><span class="src"><span class="sdot" aria-hidden="true"></span><span class="src-h" data-slot="h" aria-hidden="true"></span><span class="sr" data-slot="sr"></span></span></template>
-<template id="tpl-pin"><li class="pin" tabindex="0"><span class="ico" aria-hidden="true" data-slot="ico"></span><span class="pin-kind" data-slot="kind"></span><span class="pin-path" data-slot="path"></span><span class="pin-clock" data-slot="clock"></span><span class="pin-hint" data-slot="hint"></span></li></template>
-<template id="tpl-proj"><li class="row proj" role="treeitem" tabindex="-1"><span class="tw" aria-hidden="true"></span><span class="nm" data-slot="name"></span><span class="act" data-slot="act"></span><span class="kids" aria-hidden="true"><span class="k-e" data-slot="ke"></span><span class="k-w" data-slot="kw"></span></span></li></template>
+<template id="tpl-pin"><li class="pin"><button type="button" class="pin-go"><span class="ico" aria-hidden="true" data-slot="ico"></span><span class="pin-kind" data-slot="kind"></span><span class="pin-path" data-slot="path"></span><span class="pin-clock" data-slot="clock"></span><span class="pin-hint" data-slot="hint"></span></button></li></template>
+<template id="tpl-proj"><li class="row proj" role="treeitem" tabindex="-1"><span class="tw" aria-hidden="true"></span><span class="nm" data-slot="name"></span><span class="act" data-slot="act"></span><span class="kids" aria-hidden="true"><span class="k-e" data-slot="ke"></span><span class="k-w" data-slot="kw"></span></span><span class="sr" data-slot="kidsSr"></span></li></template>
 <template id="tpl-group"><li class="row group" role="treeitem" tabindex="-1"><span class="ind" aria-hidden="true" data-slot="ind"></span><span class="tw" aria-hidden="true"></span><span class="ico" aria-hidden="true" data-slot="ico"></span><span class="nm" data-slot="name"></span><span class="act" data-slot="act"></span></li></template>
 <template id="tpl-node"><li class="row node" role="treeitem" tabindex="-1">
 <span class="line">
-<span class="ind" aria-hidden="true" data-slot="ind"></span><span class="tw" aria-hidden="true"></span><span class="ico" aria-hidden="true" data-slot="ico"></span>
-<span class="name"><span class="nm" data-slot="name"></span><span class="approx" aria-hidden="true" data-slot="approx"></span><span class="sr" data-slot="srState"></span></span>
+<span class="c1"><span class="ind" aria-hidden="true" data-slot="ind"></span><span class="tw" aria-hidden="true"></span><span class="ico" aria-hidden="true" data-slot="ico"></span>
+<span class="name"><span class="nm" data-slot="name"></span><span class="approx" aria-hidden="true" data-slot="approx"></span><span class="sr" data-slot="srState"></span></span></span>
 <span class="act" data-slot="act"></span>
 <span class="kids" aria-hidden="true" data-slot="kids"><span class="k-c" data-slot="kc"></span><span class="k-e" data-slot="ke"></span><span class="k-w" data-slot="kw"></span></span><span class="sr" data-slot="kidsSr"></span>
 <span class="age" data-slot="age"></span>

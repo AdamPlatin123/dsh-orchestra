@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { parseHtml, type FakeDocument, type FakeElement } from '../helpers/fake-dom.ts';
 import { makePatcher } from '../../ui/dom.js';
 import { buildRows, freeze, groupKey, matched, navigate, pathOf, projectKey, type Row } from '../../ui/tree.js';
-import { EVENTS_SHOWN, describeAbout, describeBar, describeDetail, describeDock, describePins, describeTower, fmtAge, fmtLeft, t } from '../../ui/view.js';
+import { EVENTS_SHOWN, describeAbout, describeBar, describeDetail, describeDock, describePins, describeTower, clippedSessions, detectsError, fmtAge, fmtLeft, groupText, srcText, t } from '../../ui/view.js';
 import { TOWER_TEXT } from '../../shared/strings.js';
 import { towerFromStage } from '../../src/sources/tower.ts';
 import { busyStage, nid } from '../helpers/tower-fixture.ts';
@@ -46,7 +46,7 @@ function page() {
     ui.held = ui.frozen ? rows : null;
     const wall = snap.meta.observedAt;
     dom.paintId('pins', describePins(snap, { sel: ui.sel, nowWall: wall }));
-    dom.paintId('tower', describeTower(rows, { filter: ui.filter, pending, sel: ui.sel, peek: ui.peek, flash: ui.flash }));
+    dom.paintId('tower', describeTower(rows, { filter: ui.filter, pending, sel: ui.sel, peek: ui.peek, flash: ui.flash, detectsError: detectsError(snap), clipped: clippedSessions(snap) }));
     dom.paintId('detail', describeDetail(snap, ui.sel, rows, ui.detail, { nowWall: wall, fmtIso: (x: string) => x.slice(11, 19) }));
     dom.paintId('dock', describeDock(snap, ui.sel));
     dom.paintId('about', describeAbout(snap));
@@ -110,6 +110,54 @@ test('a row says state, ≈ for a guess, activity, the subtree box, age and owne
   assert.equal(slotText(item(unk.id)!, 'act'), TOWER_TEXT['state.unknown']);
   assert.equal(slotText(item(unk.id)!, 'ico'), TOWER_TEXT['icon.unknown']);
   assert.ok(lead !== undefined);
+  // The subtree box read aloud: no error count while nothing reads failures (meta.detects.error false).
+  assert.equal(slotText(row, 'kidsSr'), t('kids.srNoErr', { c: claude.counts.children, w: claude.counts.waiting }));
+  // A project row says aloud what its box shows: how many of its nodes wait on you.
+  const proj = item(`p:${s.projects[0].id}`)!;
+  const waiting = s.projects[0].nodes.filter((n: Json) => n.state === 'waiting').length;
+  assert.ok(waiting > 0);
+  assert.equal(slotText(proj, 'kw'), t('kids.wait', { n: waiting }));
+  assert.equal(slotText(proj, 'kidsSr'), t('project.sr', { parts: t('kids.srWait', { n: waiting }) }));
+});
+
+test('the tree says how many sessions the limits left out; the dock says why a project or a group cannot be a recipient', () => {
+  const { doc, ui, render } = page();
+  const g = golden();
+  let rows = render(g);
+  assert.equal(doc.querySelector('[data-slot=clipNote]')!.getAttribute('data-hide'), '1');
+  const s = busy();
+  rows = render(s);
+  const note = doc.querySelector('[data-slot=clipNote]')!;
+  assert.equal(note.getAttribute('data-hide'), '0');
+  assert.equal(note.textContent, t('tree.clipped', { n: 7 }));
+  ui.sel = rows.find((r) => r.kind === 'project')!.key;
+  render(s);
+  assert.equal(doc.querySelector('.dock-to')!.textContent, TOWER_TEXT['dock.notNode']);
+  ui.sel = rows.find((r) => r.kind === 'group')!.key;
+  render(s);
+  assert.equal(doc.querySelector('.dock-to')!.textContent, TOWER_TEXT['dock.notNode']);
+  // A project's detail counts no failures while nothing reads them.
+  ui.sel = rows.find((r) => r.kind === 'project')!.key;
+  render(s);
+  assert.equal(slotText(doc.getElementById('detail')!, 'empty'), t('detail.countsNoErr', { r: 2, w: 1 }));
+});
+
+test('under a filter every signpost stays open and says so: no fold offered, left climbs to the parent', () => {
+  const s = busy() as any;
+  const rows = buildRows(s, { filter: 'waiting', collapsed: new Set(), open: new Set() });
+  const lead = rows.findIndex((r) => r.key === nid('cx'));
+  assert.ok(lead >= 0);
+  assert.deepEqual([rows[lead]!.expandable, rows[lead]!.expanded], [false, true]);
+  assert.ok(rows.every((r) => !r.expandable), 'nothing folds under a filter');
+  assert.deepEqual(navigate(rows, lead, 'ArrowLeft'), { select: rows.findIndex((r) => r.kind === 'project' && r.project.id === rows[lead]!.project.id) });
+  assert.deepEqual(navigate(rows, lead, 'ArrowRight'), { select: lead + 1 });
+  const { doc, ui, render } = page();
+  ui.filter = 'waiting';
+  render(s);
+  for (const li of (doc.getElementById('tree') as FakeElement).children) {
+    assert.equal(li.getAttribute('aria-expanded'), null, li.getAttribute('data-key')!);
+    assert.equal(li.getAttribute('data-open'), '');
+  }
 });
 
 test('a poll patches rows by node id: changed text writes only that row, a reorder moves nodes, nothing is rebuilt', () => {
@@ -149,7 +197,12 @@ test('folding: groups stand where their first member would and open in place; co
   for (const id of ['ex1', 'gp1', 'idle1'].map(nid)) assert.equal(item(id), undefined);
   const explore = groups.find((g) => g.group!.kind === 'same-type')!;
   assert.equal(explore.key, groupKey(lead, explore.group!));
-  assert.equal(slotText(item(explore.key)!, 'name'), t('group.same', { label: 'Explore', n: 6 }));
+  // A same-type fold says how its members stand: six Explore subagents nobody placed are six unknown (T1).
+  assert.equal(slotText(item(explore.key)!, 'name'), [t('group.same', { label: 'Explore', n: 6 }), t('group.part', { n: 6, s: TOWER_TEXT['state.unknown'] })].join(TOWER_TEXT['sep.parts']));
+  const mixed = busy();
+  const mixedLead = nodes(mixed).find((n) => n.id === lead)!;
+  for (const id of mixedLead.groups[0].ids.slice(0, 2)) { const n = nodes(mixed).find((x) => x.id === id)!; n.state = 'returned'; n.basis = 'log'; }
+  assert.equal(groupText(mixedLead.groups[0], nodes(mixed) as any), [t('group.same', { label: 'Explore', n: 6 }), t('group.part', { n: 4, s: TOWER_TEXT['state.unknown'] }), t('group.part', { n: 2, s: TOWER_TEXT['state.returned'] })].join(TOWER_TEXT['sep.parts']));
   assert.equal(item(explore.key)!.getAttribute('aria-expanded'), 'false');
   const kept = new Map(items().map((e) => [e.getAttribute('data-key'), e]));
   ui.open.add(explore.key);
@@ -205,7 +258,11 @@ test('the waiting bar: one entry per waiting node with its path from 你, the so
   const list = pins.querySelectorAll('.pin');
   assert.equal(list.length, s.waitingBar.length);
   assert.equal(list.length, s.tally.waiting);
-  assert.equal(pins.querySelectorAll('button').length, 0, 'read only: nothing to approve, deny or answer here');
+  // Read only: nothing to approve, deny or answer here; each entry is one button that opens its node.
+  const buttons = pins.querySelectorAll('button');
+  assert.equal(buttons.length, list.length);
+  assert.ok(buttons.every((b) => b.getAttribute('class') === 'pin-go' && b.getAttribute('type') === 'button'));
+  assert.ok(list.every((li) => li.getAttribute('tabindex') === null), 'the button takes the focus, not the item');
   const [native, inferred] = list;
   assert.equal(native!.getAttribute('data-src'), 'native');
   assert.equal(slotText(native!, 'kind'), TOWER_TEXT['wait.approval']);
@@ -332,17 +389,28 @@ test('keyboard: up and down move, right opens then enters, left closes then clim
   assert.deepEqual(navigate(rows, 0, 'ArrowLeft'), { toggle: rows[0]!.key, open: false }, 'a project closes');
 });
 
-test('the top bar: sources with what they hold, freshness from the daemon, the test badge', () => {
+test('the top bar: a source only when it failed, no error count while nothing reads failures, freshness, the test badge', () => {
   const { doc, render } = page();
   const s = busy();
   render(s);
+  // Health takes no room (research §1.2): sources that read fine are not in the bar.
+  assert.deepEqual(doc.querySelectorAll('.src'), []);
+  assert.equal(doc.querySelector('[data-slot=srcBox]')!.getAttribute('data-hide'), '1');
+  // busy: DSH holds 7 sessions none of which shows: clipped, never empty (T1), said under the tree.
+  assert.equal(srcText(s as any, 'dsh'), t('src.clipped', { h: 'DSH', total: 7, unit: TOWER_TEXT['unit.dsh'], shown: 0 }));
+  const failed = busy();
+  failed.meta.sources.codex = { ...failed.meta.sources.codex, state: 'error', error: 'read-denied' };
+  render(failed);
   const srcs = doc.querySelectorAll('.src');
-  assert.deepEqual(srcs.map((e) => e.getAttribute('data-harness')), ['claude', 'dsh', 'codex']);
-  // busy: DSH holds 7 sessions none of which shows: clipped, never empty (T1).
-  const dsh = srcs[1]!;
-  assert.equal(dsh.getAttribute('data-state'), 'ok');
-  assert.equal(dsh.getAttribute('data-clipped'), '1');
-  assert.equal(dsh.querySelector('.sr')!.textContent, t('src.clipped', { h: 'DSH', total: 7, shown: 0 }));
+  assert.deepEqual(srcs.map((e) => e.getAttribute('data-harness')), ['codex']);
+  assert.equal(srcs[0]!.querySelector('.sr')!.textContent, t('src.error', { h: 'Codex', code: 'read-denied' }));
+  assert.equal(doc.querySelector('[data-slot=srcBox]')!.getAttribute('data-hide'), '0');
+  render(s);
+  // No rule reads a failure yet (meta.detects.error false): no 出错 0, which would read as none (T1).
+  assert.equal(s.meta.detects.error, false);
+  assert.equal(doc.querySelector('[data-filter=error]')!.getAttribute('data-hide'), '1');
+  render({ ...s, meta: { ...s.meta, detects: { error: true } } });
+  assert.equal(doc.querySelector('[data-filter=error]')!.getAttribute('data-hide'), '0');
   assert.equal(doc.querySelector('[data-slot=freshT]')!.textContent, t('fresh.live', { age: t('ago.s', { n: 2 }) }));
   assert.equal(doc.querySelector('[data-slot=test]')!.getAttribute('data-hide'), '0');
   assert.equal(fmtAge(null), TOWER_TEXT.dash);

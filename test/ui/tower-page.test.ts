@@ -45,7 +45,8 @@ test('tower.html: an ARIA tree, a polite live region, an alert, and every templa
   const doc = parseHtml(HTML);
   const tree = doc.getElementById('tree')!;
   assert.equal(tree.getAttribute('role'), 'tree');
-  assert.equal(tree.getAttribute('aria-labelledby'), 'tower-h');
+  assert.equal(tree.getAttribute('aria-labelledby'), 'tower-h tree-name', 'the tree is named in words, not only by its metaphor');
+  assert.equal(doc.getElementById('tree-name')!.getAttribute('data-t'), 'tree.label');
   assert.equal(doc.getElementById('live')!.getAttribute('aria-live'), 'polite');
   assert.equal(doc.getElementById('alert')!.getAttribute('role'), 'alert');
   const view = read('ui/view.js');

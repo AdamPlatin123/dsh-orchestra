@@ -8,7 +8,7 @@
   --sans: "PingFang SC", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", "Noto Sans CJK SC", system-ui, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
   --paper: #EEF1EF; --panel: #F4F6F4; --sel: #E2E7E4; --hover: #E8ECE9;
-  --ink: #1C2530; --ink2: #5E6976; --line: #C9D0CC; --rule: #D9DFDB; --grid: rgba(28, 37, 48, .04);
+  --ink: #1C2530; --ink2: #58636F; --line: #C9D0CC; --rule: #D9DFDB; --grid: rgba(28, 37, 48, .04);
   --wait: #C98A00; --err: #C2362B; --run: #1C7487;
   --claude: #7A5FB0; --dsh: #2F6FD6; --codex: #4E7D5B;
   --flash: rgba(28, 37, 48, .08);
@@ -84,14 +84,15 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
 .pins { padding: 10px 20px 8px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .pins-h { display: flex; align-items: baseline; gap: 10px; margin-bottom: 4px; font-size: 14px; }
 .pins-n, .pins-note { font-weight: 400; font-size: 12.5px; color: var(--ink2); }
-.pin {
+.pin { border-left: 3px solid var(--wait); }
+.pin-go {
   display: grid; grid-template-columns: 20px auto minmax(0, 1fr) auto auto; align-items: center; gap: 12px;
-  min-height: var(--row); padding: 0 10px 0 8px; border-left: 3px solid var(--wait); cursor: pointer;
+  width: 100%; min-height: var(--row); padding: 0 10px 0 8px; border: 0; background: none; text-align: left;
 }
 .pin[data-src=inferred] { border-left-style: dashed; }
 .pin + .pin { border-top: 1px solid var(--rule); }
-.pin:hover { background: var(--hover); }
-.pin[data-sel="1"] { background: var(--sel); }
+.pin-go:hover { background: var(--hover); }
+.pin[data-sel="1"] .pin-go { background: var(--sel); }
 .pin .ico { color: var(--wait); text-align: center; }
 .pin-kind { font-weight: 600; white-space: nowrap; }
 .pin-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -104,12 +105,14 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
 .filter { display: flex; gap: 12px; font-size: 12.5px; color: var(--ink2); }
 .changes { margin-left: auto; padding: 1px 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--panel); font-size: 12.5px; color: var(--ink); }
 .cols, .router, .row .line, .row.proj, .row.group { display: flex; align-items: center; gap: 10px; min-height: var(--row); padding: 0 16px 0 20px; }
+/* One column grid for the header and every node row (research §1.3: one row format for every layer),
+   so what each row does starts at the same place whatever its name or depth. */
+.cols, .row .line { display: grid; grid-template-columns: minmax(0, 40%) minmax(0, 1fr) 76px 52px 44px; }
+.c1 { display: flex; align-items: center; gap: 6px; min-width: 0; align-self: stretch; }
 .cols { min-height: 22px; font-size: 12.5px; color: var(--ink2); border-bottom: 1px solid var(--line); }
-.c-name { width: 40%; }
-.c-act { flex: 1; }
-.c-kids, .kids { width: 76px; text-align: right; flex: none; }
-.c-age, .age { width: 52px; text-align: right; flex: none; }
-.c-own, .own { width: 44px; flex: none; }
+.c-kids, .kids { text-align: right; }
+.c-age, .age { text-align: right; }
+.row.proj .kids { width: 76px; flex: none; }
 .router { gap: 8px; }
 .r-ico { font-size: 12px; }
 .r-name { font-weight: 600; }
@@ -128,7 +131,7 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
 .ind[data-depth="3"] { width: 54px; }
 .ind[data-depth="4"] { width: 72px; }
 .ind[data-depth="5"] { width: 90px; }
-.tw { flex: none; width: 10px; display: inline-flex; justify-content: center; }
+.tw { flex: none; width: 10px; display: inline-flex; align-items: center; justify-content: center; }
 .row[data-open="0"] .tw::before, .row[data-open="1"] .tw::before { content: ""; border-left: 5px solid var(--ink2); border-top: 4px solid transparent; border-bottom: 4px solid transparent; }
 .row[data-open="1"] .tw::before { transform: rotate(90deg); }
 .ico { flex: none; width: 16px; text-align: center; font-size: 13px; color: var(--ink2); }
@@ -140,7 +143,7 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
   border: 1.5px solid var(--run); border-top-color: transparent; border-radius: 50%;
 }
 .row[data-state=unknown] .nm, .row[data-state=returned] .nm, .row[data-state=idle] .nm, .row.group .nm { color: var(--ink2); }
-.name { display: flex; align-items: baseline; gap: 4px; flex: 0 1 auto; min-width: 5em; max-width: 34%; }
+.name { display: flex; align-items: baseline; gap: 4px; flex: 1 1 auto; min-width: 0; }
 .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row.proj .nm, .row.group .nm { flex: none; max-width: 40%; }
 .approx { flex: none; color: var(--ink2); }
@@ -156,9 +159,13 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
 .peek { display: none; }
 .row[data-peek="1"] .peek { display: flex; flex-wrap: wrap; gap: 2px 18px; padding: 2px 16px 8px 64px; font-size: 12.5px; color: var(--ink2); }
 .peek > span:empty { display: none; }
-.row[data-gone="1"] { opacity: .55; }
-:root:not([data-filter=""]) .row.node[data-match="0"] .line { opacity: .62; }
+/* A gone row and, under a filter, a signpost row step back by colour, not opacity: their secondary text
+   keeps its contrast. A gone row's name is struck through as well. */
+.row[data-gone="1"] .nm, .row[data-gone="1"] .act { color: var(--ink2); }
+.row[data-gone="1"] .nm { text-decoration: line-through 1px; }
+:root:not([data-filter=""]) .row.node[data-match="0"] .nm { color: var(--ink2); }
 .empty { padding: 16px 20px; color: var(--ink2); }
+.clip-note { padding: 6px 20px 0; font-size: 12.5px; color: var(--ink2); }
 
 /* == detail */
 .detail { min-width: 0; padding: 16px 20px 24px; border-left: 1px solid var(--line); background: var(--panel); }
@@ -234,19 +241,29 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
   :root[data-view=node] .dt-nav { display: block; }
   :root[data-view=node] .dock { display: grid; position: sticky; bottom: 0; }
   .dock { display: none; }
-  .pin { grid-template-columns: 20px minmax(0, 1fr) auto; row-gap: 0; padding: 4px 8px; }
+  .pin-go { grid-template-columns: 20px minmax(0, 1fr) auto; row-gap: 0; padding: 4px 8px; }
   .pin-path { grid-column: 2 / -1; grid-row: 2; }
   .pin-hint { grid-column: 2 / -1; grid-row: 3; white-space: normal; }
   .pin-clock { grid-column: 3; grid-row: 1; }
   .cols, .router, .row .line, .row.proj, .row.group { padding-left: 14px; padding-right: 12px; gap: 8px; }
+  .cols, .row .line { grid-template-columns: minmax(0, 46%) minmax(0, 1fr) auto; }
   .own, .age { display: none; }
-  .name { max-width: 46%; }
 }
 @media (max-width: 720px) {
   :root { --row: 44px; }
   .count { min-height: 44px; }
   .link { min-height: 44px; }
+  .changes { min-height: 44px; }
   .kids { width: auto; }
+  /* The fold triangle is a 44px target, not a 10px one; the indent steps shrink to make room. */
+  .row .tw { width: 44px; align-self: stretch; }
+  .row .line, .row.proj, .row.group { padding-left: 4px; }
+  .ind { background-image: repeating-linear-gradient(90deg, transparent 0 5px, var(--line) 5px 6px, transparent 6px 12px); }
+  .ind[data-depth="1"] { width: 12px; }
+  .ind[data-depth="2"] { width: 24px; }
+  .ind[data-depth="3"] { width: 36px; }
+  .ind[data-depth="4"] { width: 48px; }
+  .ind[data-depth="5"] { width: 60px; }
 }
 
 /* == motion: only with no reduced-motion preference */

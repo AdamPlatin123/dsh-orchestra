@@ -8,11 +8,11 @@
 // on a click or 5 s after the pointer and focus have left.
 import { getSession, getTower, oneAtATime } from './api.js';
 import { after, every, fmtIso, nowMono, onFrame } from './clock.js';
-import { activates, makePatcher } from './dom.js';
+import { makePatcher } from './dom.js';
 import { getTheme, setTheme } from './prefs.js';
 import { go, openFull, parse } from './route.js';
 import { FILTERS, buildRows, freeze, groupKey, indexOf, navigate, projectKey } from './tree.js';
-import { describeAbout, describeBar, describeDetail, describeDock, describePins, describeTower, t } from './view.js';
+import { clippedSessions, describeAbout, describeBar, describeDetail, describeDock, describePins, describeTower, detectsError, t } from './view.js';
 import { validateTower } from '../shared/tower-contract.js';
 
 /** @typedef {import('../shared/tower-contract.js').TowerSnapshot} TowerSnapshot */
@@ -23,6 +23,11 @@ import { validateTower } from '../shared/tower-contract.js';
 const POLL_MS = 2000;
 const STALE_MS = 10000;
 const QUIET_MS = 5000;
+/** How long a changed row lights up (research §1.5), and the CSS animation's length. */
+const FLASH_MS = 1200;
+/** Below this width there is no right pane: a node opens its own page (tower.css, narrow screens). */
+const NARROW = '(max-width: 899px)';
+const narrow = () => window.matchMedia(NARROW).matches;
 const dom = makePatcher(document);
 const treeEl = dom.byId('tree');
 const towerEl = dom.byId('tower');
@@ -46,7 +51,8 @@ const state = {
   /** @type {Detail | null} */ detail: null,
   detailRev: '',
   /** @type {Map<string, string>} */ lastState: new Map(),
-  /** @type {Map<string, string>} */ flash: new Map(),
+  /** A row whose state changed: the new state, lit until `until` (monotonic), once. @type {Map<string, { state: string, until: number }>} */ flash: new Map(),
+  /** The view of the last render, to move the focus when the node page opens or closes. @type {string} */ lastView: 'tower',
   /** @type {number | null} */ lastWaiting: null,
   /** A row to focus after the next render. @type {string | null} */ focusKey: null,
   queued: false,
@@ -89,14 +95,33 @@ function render() {
   state.rows = rows;
 
   const wall = nowWall();
+  // A flash plays once: past its time the row loses it, so a row put back later (unfolded, refiltered,
+  // shown again) does not light up for a change long gone.
+  /** @type {Map<string, string>} */
+  const flash = new Map();
+  const mono = nowMono();
+  for (const [id, f] of state.flash) {
+    if (mono < f.until) flash.set(id, f.state);
+    else state.flash.delete(id);
+  }
   dom.paintId('pins', describePins(snap, { sel: state.sel, nowWall: wall }));
-  dom.paintId('tower', describeTower(rows, { filter: state.filter, pending, sel: state.sel, peek: state.peek, flash: state.flash }));
+  dom.paintId('tower', describeTower(rows, { filter: state.filter, pending, sel: state.sel, peek: state.peek, flash, detectsError: detectsError(snap), clipped: clippedSessions(snap) }));
   dom.paintId('detail', describeDetail(snap, state.sel, rows, detailFor(snap), { nowWall: wall, fmtIso }));
   dom.paintId('dock', describeDock(snap, state.sel));
   const about = dom.byId('about');
   dom.paint(about, { data: { hide: view === 'about' ? '0' : '1' } });
   if (view === 'about') dom.paint(about, describeAbout(snap));
 
+  // On a narrow screen the node page replaces the tree: the focus goes to its title when it opens, and
+  // back to the row it came from when it closes (a hidden element cannot hold it).
+  const was = state.lastView;
+  state.lastView = view;
+  if (view === 'node' && was !== 'node' && narrow()) {
+    state.focusKey = null;
+    /** @type {HTMLElement} */ (dom.byId('dt-title')).focus();
+  } else if (view === 'tower' && was === 'node' && state.sel !== null && narrow()) {
+    state.focusKey = state.sel;
+  }
   if (state.focusKey !== null) {
     const el = dom.keyed(treeEl, state.focusKey);
     state.focusKey = null;
@@ -135,8 +160,15 @@ async function poll() {
   const body = /** @type {any} */ (a.body);
   const same = state.snap !== null && body !== null && typeof body === 'object' && body.meta?.rev === state.snap.meta.rev;
   if (!same) {
-    // A new revision is held to the contract before it is shown (T1-T3 travel with the payload).
-    const v = validateTower(body);
+    // A new revision is held to the contract before it is shown (T1-T3 travel with the payload). A
+    // checker that throws all the same (a payload deeper than the stack) is a shape error too.
+    /** @type {{ ok: boolean, errors: string[] }} */
+    let v;
+    try {
+      v = validateTower(body);
+    } catch (e) {
+      v = { ok: false, errors: [e instanceof Error ? e.name : 'throw'] };
+    }
     if (!v.ok) {
       state.error = t('err.shape', { why: v.errors[0] ?? '' });
       return schedule();
@@ -151,7 +183,7 @@ async function poll() {
   for (const p of snap.projects) {
     for (const n of p.nodes) {
       const was = state.lastState.get(n.id);
-      if (was !== undefined && was !== n.state) state.flash.set(n.id, n.state);
+      if (was !== undefined && was !== n.state) state.flash.set(n.id, { state: n.state, until: nowMono() + FLASH_MS });
       seen.set(n.id, n.state);
     }
   }
@@ -216,14 +248,25 @@ function setOpen(key, open) {
   schedule();
 }
 
-/** @param {Row} r */
-const toggle = (r) => setOpen(r.key, !r.expanded);
+/** Folds or unfolds a row that can (under a filter none can: every signpost stays open). @param {Row} r */
+const toggle = (r) => {
+  if (r.expandable) setOpen(r.key, !r.expanded);
+  else schedule();
+};
+
+/**
+ * Opens a node: its detail beside the tree on a wide screen (a selection: no history entry), its own
+ * page on a narrow one (Back closes it). @param {string} key
+ */
+function openNode(key) {
+  select(key, false);
+  go({ view: 'tower', node: key }, !narrow());
+}
 
 /** Opens a row: a node's page (its detail; full screen on a phone), else its fold. @param {Row} r */
 function openRow(r) {
   if (r.kind === 'node') {
-    select(r.key, false);
-    go({ view: 'tower', node: r.key });
+    openNode(r.key);
   } else {
     state.sel = r.key;
     toggle(r);
@@ -290,10 +333,12 @@ function act(el) {
     if (hit !== undefined && hit.node.session !== null) openFull(hit.node.session);
     return;
   }
-  const node = t0.dataset.node;
-  if (node !== undefined && t0.classList.contains('pin')) {
-    select(node, true);
-    return go({ view: 'tower', node });
+  // A waiting-bar entry opens its node; on a wide screen the focus follows to its row in the tree.
+  const pin = t0.classList.contains('pin-go') ? t0.closest('.pin') : null;
+  const node = pin === null ? undefined : /** @type {HTMLElement} */ (pin).dataset.node;
+  if (node !== undefined) {
+    if (!narrow()) state.focusKey = node;
+    return openNode(node);
   }
 }
 
@@ -316,7 +361,7 @@ document.addEventListener('click', (e) => {
     }
     return openRow(hit.row);
   }
-  const el = e.target instanceof Element ? e.target.closest('[data-act],[data-filter],.pin') : null;
+  const el = e.target instanceof Element ? e.target.closest('[data-act],[data-filter],.pin-go') : null;
   if (el !== null) act(el);
 });
 
@@ -350,15 +395,6 @@ treeEl.addEventListener('keydown', (e) => {
     return schedule();
   }
   setOpen(to.toggle, to.open);
-});
-
-document.addEventListener('keydown', (e) => {
-  if (!activates(e)) return;
-  const el = e.target instanceof Element ? e.target.closest('.pin') : null;
-  if (el !== null) {
-    e.preventDefault();
-    act(el);
-  }
 });
 
 window.addEventListener('hashchange', () => {

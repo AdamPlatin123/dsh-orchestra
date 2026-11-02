@@ -3,9 +3,9 @@ import { createHash } from 'node:crypto';
 import type { HarnessRoot } from '../fs/harness-roots.ts';
 import type { ReadGate } from '../fs/read-gate.ts';
 import type { Clock } from '../runtime/clock.ts';
-import type { PeekNote, PeekSession, Redact, SubagentFile } from './peek.ts';
+import type { PeekNote, PeekSession, PeekView, Redact, SubagentFile } from './peek.ts';
 import { ReadGateError } from '../fs/read-gate.ts';
-import { eachRecord, fairShare, findSession, keepPinned, listSessions, listSubagents, readSession, shown, sourceMs } from './peek.ts';
+import { PEEK_LIMITS, eachRecord, fairShare, findSession, keepPinned, listSessions, listSubagents, readSession, shown, sourceMs } from './peek.ts';
 import { STAGE_RULE_IDS } from '../../shared/stage-contract.js';
 import { frozen } from '../../shared/frozen.js';
 
@@ -28,7 +28,12 @@ import { frozen } from '../../shared/frozen.js';
 const win = path.win32;
 
 export const STAGE_LIMITS = frozen({
-  /** Principals in one snapshot, newest first, shared between the harnesses (each gets a floor; peek.ts fairShare). */
+  /**
+   * Principals (tree roots) in one snapshot, newest first, shared between the harnesses (each gets a
+   * floor; peek.ts fairShare). Only Claude transcripts are cut to this many before they are read; every
+   * listed DSH log and Codex rollout is read (a Codex subagent is a rollout of its own, so whose root it
+   * is shows only after the read), within decodedPerBuild.
+   */
   principals: 24,
   /** Subagent files read under one Claude transcript (newest first), so clones under any parent stay within 16. */
   clonesPerParent: 16,
@@ -63,6 +68,14 @@ export const STAGE_LIMITS = frozen({
   codexWaitMaxAgeMs: 6 * 60 * 60 * 1000,
   /** A Codex call's arguments longer than this are not parsed (only spawn, plan and shell calls are). */
   codexArgsChars: 64 * 1024,
+  /**
+   * Text one build may decode afresh from DSH logs and Codex rollouts (the memo's files cost nothing).
+   * A file is read only while what is left covers its own ceiling (peek.ts PEEK_LIMITS), so no read is
+   * cut by this budget; the rest wait for the next build, newest first, and count as not shown till then.
+   */
+  decodedPerBuild: 256 * 1024 * 1024,
+  /** Session details kept between calls, by file size and mtime (an archived .zst is decoded once). */
+  detailMemo: 4,
 });
 
 /** n per rule: samples checked against real data. None yet in the alpha, so every rule shows untested. */
@@ -283,8 +296,11 @@ export type CodexView = {
   nickname: string | null; role: string | null;
   /** agent_path (`/root/<task>`): shown, and its digest, which a spawn_agent result names. */
   agentPath: string | null; pathKey: string | null;
-  /** The last turn's state: open after task_started, closed after task_complete or turn_aborted. */
-  turn: 'open' | 'closed' | null;
+  /**
+   * The last turn's state: open after task_started, closed after task_complete, aborted after
+   * turn_aborted (interrupted or failed: nothing says it handed anything back).
+   */
+  turn: 'open' | 'closed' | 'aborted' | null;
   /** What an open turn's last unanswered call waits on: a question to you, or an escalation (inferred). */
   waiting: 'request_user_input' | 'approval' | null;
   spawns: { key: string; brief: string; agentKey: string | null; pathKey: string | null; paired: boolean }[];
@@ -579,7 +595,7 @@ export function codexDigester(ctx: DigestCtx): Digester {
     if (type === 'event_msg') {
       if (sub === 'task_started') c.turn = 'open';
       else if (sub === 'task_complete' || sub === 'turn_aborted') {
-        c.turn = 'closed';
+        c.turn = sub === 'task_complete' ? 'closed' : 'aborted';
         // A turn that ended answers nothing more: what it left unanswered waits on no one.
         pending.clear();
       } else if (sub === 'thread_settings_applied' && d.model === null) {
@@ -1155,10 +1171,11 @@ export function assembleLanes(g: Gathered, nowWall: number, extraClipped = 0): A
   for (const seat of roots) if (seat.harness === 'codex') cxWalk(seat, 0);
 
   // At most STAGE_LIMITS.principals, newest first but shared fairly between the harnesses (fairShare:
-  // each gets a floor), and one the registry says waits on you is always kept (its transcript ages
-  // while it waits); a dropped principal takes its tree with it.
+  // each gets a floor), and one that waits on you is always kept, whether its registry says so or its
+  // rollout suggests it (a Codex wait inferred within codexWaitMaxAgeMs): its file ages while it waits,
+  // and the harnesses are treated alike. A dropped principal takes its tree with it.
   const ordered = sortNewest(roots.map((r) => ({ r, id: r.id, mtimeMs: r.session.mtimeMs })));
-  const keptSet = new Set(fairShare(ordered, STAGE_LIMITS.principals, (o) => o.r.harness, (o) => o.r.live.state === 'waiting' && o.r.live.basis === 'registry'));
+  const keptSet = new Set(fairShare(ordered, STAGE_LIMITS.principals, (o) => o.r.harness, (o) => o.r.live.state === 'waiting'));
   const kept = ordered.filter((o) => keptSet.has(o)).map((o) => o.r);
   for (const o of ordered) if (!keptSet.has(o)) clipped.players += 1 + countBelow(o.r);
 
@@ -1247,8 +1264,9 @@ const ROLLOUT_ID = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
  * A Codex thread's live state from its own rollout: an inferred wait (an open turn's last call
  * unanswered: a question, or an escalated command under a policy that asks) while the file is younger
  * than STAGE_LIMITS.codexWaitMaxAgeMs; else an open turn runs (quiet once ghostAgeMs passed without a
- * write); a closed turn is idle, or returned for a clone; with no turn event, the file's age decides.
- * `hits` (null when recomputed for a clone) counts the rules used.
+ * write); a closed turn is idle, or returned for a clone; an aborted turn (interrupted or failed) is
+ * unknown, never returned (T2: nothing says it sent anything back) nor idle; with no turn event, the
+ * file's age decides. `hits` (null when recomputed for a clone) counts the rules used.
  */
 function codexLive(d: Digest, ageMs: number, clone: boolean, hits: Hits | null): Player['live'] {
   const c = d.codex;
@@ -1258,7 +1276,7 @@ function codexLive(d: Digest, ageMs: number, clone: boolean, hits: Hits | null):
   }
   if (c !== null && c.turn !== null) {
     if (hits !== null) hits['codex.live.turn']!++;
-    const state: LiveState = c.turn === 'open' ? (ageMs < STAGE_LIMITS.ghostAgeMs ? 'running' : 'quiet') : clone ? 'returned' : 'idle';
+    const state: LiveState = c.turn === 'open' ? (ageMs < STAGE_LIMITS.ghostAgeMs ? 'running' : 'quiet') : c.turn === 'aborted' ? 'unknown' : clone ? 'returned' : 'idle';
     return { state, basis: 'turn', waitingFor: null, ageMs };
   }
   return { state: ageMs < STAGE_LIMITS.solidAgeMs ? 'running' : 'quiet', basis: 'mtime', waitingFor: null, ageMs };
@@ -1300,6 +1318,8 @@ export function makeStageBuilder(deps: StageDeps): { snapshot(): StageSnapshot; 
   /** The memo keys this build used: the rest go when it ends (no cyclic scan can flush a working set). */
   const touched = new Set<string>();
   let last: { mono: number; snap: StageSnapshot } | null = null;
+  /** The last session details read, most recent last (session()). */
+  const views = new Map<string, { size: number; mtimeMs: number; view: PeekView }>();
 
   const remember = <T>(s: PeekSession, make: () => T): T => {
     touched.add(s.id);
@@ -1315,10 +1335,17 @@ export function makeStageBuilder(deps: StageDeps): { snapshot(): StageSnapshot; 
     while (memo.size > STAGE_LIMITS.memoEntries) memo.delete(memo.keys().next().value!);
     return value;
   };
+  /** Whether reading `s` now means reading its file (the memo holds no digest of it as it is). */
+  const fresh = (s: PeekSession): boolean => {
+    const hit = memo.get(s.id);
+    return hit === undefined || hit.size !== s.size || hit.mtimeMs !== s.mtimeMs;
+  };
   // Records go straight from the reader into the digest: none is kept, however long the file.
-  const digestFile = (s: PeekSession): Digest => remember(s, () => {
+  // `spent` hears how much text the read decoded.
+  const digestFile = (s: PeekSession, spent: (chars: number) => void = () => {}): Digest => remember(s, () => {
     const dg = s.harness === 'claude' ? claudeDigester({ redact }) : s.harness === 'codex' ? codexDigester({ redact }) : dshDigester({ redact });
     const r = eachRecord(gate, s, (rec) => dg.add(rec));
+    spent(r.chars);
     return dg.finish(r.note);
   });
   const metaFile = (s: PeekSession | null, keys: KeyTally): Meta => {
@@ -1390,19 +1417,28 @@ export function makeStageBuilder(deps: StageDeps): { snapshot(): StageSnapshot; 
       });
       if (got !== null) g.claude.push(got);
     }
-    for (const s of listed.sessions.filter((x) => x.harness === 'dsh')) {
-      const digest = guarded('dsh', () => digestFile(s));
+    // DSH logs and Codex rollouts are read whole (a .zst decoded): one build decodes afresh at most
+    // STAGE_LIMITS.decodedPerBuild, newest first over both, and reads a file only while what is left
+    // covers its own ceiling, so no read is cut short by the budget. The rest wait for the next build
+    // (the memo keeps what this one read, so the next one goes further) and count as not shown till then.
+    let budget = STAGE_LIMITS.decodedPerBuild;
+    let deferred = 0;
+    const ceiling = (s: PeekSession): number =>
+      s.harness === 'dsh' ? PEEK_LIMITS.dshMaxDecodedBytes
+        : /\.zst$/i.test(s.file) ? PEEK_LIMITS.codexMaxDecodedBytes : PEEK_LIMITS.codexHeadBytes + PEEK_LIMITS.codexTailBytes;
+    for (const s of listed.sessions) {
+      const h = s.harness;
+      if (h === 'claude') continue;
+      if (fresh(s) && budget < ceiling(s)) {
+        deferred++;
+        continue;
+      }
+      const digest = guarded(h, () => digestFile(s, (chars) => { budget -= chars; }));
       if (digest === null) continue;
       keys.push(digest.keys);
-      g.dsh.push({ session: s, digest });
+      g[h].push({ session: s, digest });
     }
-    for (const s of listed.sessions.filter((x) => x.harness === 'codex')) {
-      const digest = guarded('codex', () => digestFile(s));
-      if (digest === null) continue;
-      keys.push(digest.keys);
-      g.codex.push({ session: s, digest });
-    }
-    const unread = listed.total - listed.sessions.length + (claudeListed.length - claudeRead.length);
+    const unread = listed.total - listed.sessions.length + (claudeListed.length - claudeRead.length) + deferred;
     const a = assembleLanes(g, nowWall, unread);
     // A source counts every session it holds, before the listing's and the principals' cuts, and says
     // how many of them play: a source the limits pushed out reads as clipped, never as empty (T1).
@@ -1477,7 +1513,14 @@ export function makeStageBuilder(deps: StageDeps): { snapshot(): StageSnapshot; 
       }
     }
     if (s === null) return null;
-    const v = readSession(gate, s, redact);
+    // The page asks again on every new snapshot revision: a file whose size and mtime are unchanged is
+    // not read again (an archived .zst would be decoded whole each time).
+    const found = s;
+    const kept = views.get(found.id);
+    const v: PeekView = kept !== undefined && kept.size === found.size && kept.mtimeMs === found.mtimeMs ? kept.view : readSession(gate, found, redact);
+    views.delete(found.id);
+    views.set(found.id, { size: found.size, mtimeMs: found.mtimeMs, view: v });
+    while (views.size > STAGE_LIMITS.detailMemo) views.delete(views.keys().next().value!);
     let brief: string | null = null;
     let label: string | null = null;
     for (const lane of (last ?? { snap: snapshot() }).snap.lanes) {

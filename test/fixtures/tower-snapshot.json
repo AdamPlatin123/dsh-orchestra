@@ -4,6 +4,9 @@
     "rev": "0000000000000000",
     "observedAt": 0,
     "profile": "test",
+    "detects": {
+      "error": false
+    },
     "sources": {
       "claude": {
         "state": "ok",

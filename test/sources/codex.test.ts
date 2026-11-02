@@ -12,7 +12,8 @@ import { ReadGate, ReadGateError } from '../../src/fs/read-gate.ts';
 import { decodePrefix } from '../../src/lib/zstd/frames.ts';
 import { VirtualClock } from '../../src/runtime/clock.ts';
 import { makeRedactor } from '../../src/store/redact.ts';
-import { PEEK_LIMITS, codexEvent, eachRecord, findSession, listSessions, readSession } from '../../src/sources/peek.ts';
+import { PEEK_LIMITS, claudeEvent, codexEvent, eachRecord, findSession, listSessions, readSession } from '../../src/sources/peek.ts';
+import { towerFromStage } from '../../src/sources/tower.ts';
 import { STAGE_LIMITS, codexDigester, digestCodex, makeStageBuilder } from '../../src/sources/stage.ts';
 import { validateSession, validateStage } from '../../shared/stage-contract.js';
 import { realIo } from '../helpers/read-io.ts';
@@ -326,4 +327,90 @@ test('stage: a Codex session detail is its last events, through the same reader'
   assert.deepEqual(validateSession(d).errors, []);
   assert.deepEqual([d.session.harness, d.session.label, d.events[0]!.type], ['codex', 'shop', 'session_meta']);
   assert.equal(JSON.stringify(d).includes(STAGE_CANARY), false);
+});
+
+// ---- Review fixes (orchestra app phase 1)
+
+test('a secret the 600-character cut runs through is redacted before the cut, so no prefix of it shows', () => {
+  // The redactor wants 8 characters after sk-ant-: cut first, only 3 would be left and pass as text.
+  const key = `sk-ant-${'Q'.repeat(30)}`;
+  const args = `${'x'.repeat(589)} ${key}`;
+  const cx = codexEvent(JSON.stringify(item('function_call', { name: 'shell_command', arguments: args, call_id: 'c' })), redact)!;
+  const cl = claudeEvent(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { c: `${'x'.repeat(581)} ${key}` } }] } }), redact)!;
+  for (const text of [cx.text, cl.text]) {
+    assert.equal(text.includes('sk-ant-'), false, text.slice(-40));
+    assert.equal(text.includes('QQQ'), false, text.slice(-40));
+  }
+});
+
+test('a .zst rollout is read no further than the size it was listed with (plus one byte), whatever it became', (t) => {
+  let read = 0;
+  const fx = fixture(t, (io) => ({ ...io, readSync: (fd, buf, off, len, pos) => { const n = io.readSync(fd, buf, off, len, pos); read += n; return n; } }));
+  put(path.join(fx.codex, 'archived_sessions', rollout(U1, '.jsonl.zst')), zst(lines(meta(U1), ...Array.from({ length: 200 }, (_, i) => call(`c${i}`, 'shell_command', { command: `echo ${i}` })))));
+  const s = only(fx);
+  read = 0;
+  const whole = records(fx, s);
+  assert.deepEqual([whole.got.length, whole.note], [201, null]);
+  assert.equal(read, s.size, 'the listed size, and the extra byte finds the end of the file');
+  // Listed smaller than it is now (it grew, or was swapped, after the listing): only the listed bytes and one more.
+  read = 0;
+  const grown = records(fx, { ...s, size: 64 });
+  assert.ok(read <= 65, String(read));
+  assert.equal(grown.got.length, 0);
+  assert.notEqual(grown.note, null);
+  assert.equal(fx.gate.openHandles(), 0);
+});
+
+test('an aborted turn is no report: a Codex subagent whose turn was aborted is unknown, never returned (T2)', (t) => {
+  assert.equal(digestCodex([meta(U1), ev('task_started'), ev('turn_aborted', { reason: 'interrupted' })], { redact }).codex?.turn, 'aborted');
+  assert.equal(digestCodex([meta(U1), ev('task_started'), ev('task_complete')], { redact }).codex?.turn, 'closed');
+  const { snap } = stage(t, (dir) => {
+    const d = path.join(dir, 'roots', 'codex', 'sessions', '2026', '11', '01');
+    put(path.join(d, rollout(U1)), lines(meta(U1, { cwd: 'G:\\fx\\cut' }), ev('task_started'), ev('task_complete')));
+    for (const [id, nick, end] of [[U2, 'Stopped', 'turn_aborted'], [U3, 'Sent', 'task_complete']] as const) {
+      put(path.join(d, rollout(id)), lines(meta(id, { cwd: 'G:\\fx\\cut', source: { subagent: { thread_spawn: { parent_thread_id: U1, depth: 1, agent_nickname: nick } } } }), ev('task_started'), ev(end)));
+    }
+    // A lead whose own turn was aborted is not idle either.
+    const L = '01a00000-0000-7000-8000-000000000004';
+    put(path.join(d, rollout(L)), lines(meta(L, { cwd: 'G:\\fx\\halt' }), ev('task_started'), ev('turn_aborted')));
+  });
+  assert.deepEqual([named(snap, 'Stopped').live.state, named(snap, 'Sent').live.state, named(snap, 'halt').live.state], ['unknown', 'returned', 'unknown']);
+  const tower = towerFromStage(snap);
+  const all = tower.projects.flatMap((p) => p.nodes);
+  const stopped = all.find((n) => n.title === 'Stopped')!;
+  assert.deepEqual([stopped.state, stopped.basis], ['unknown', 'none']);
+  assert.equal(all.find((n) => n.title === 'halt')!.state, 'unknown');
+  assert.equal(tower.projects.flatMap((p) => [...p.groups, ...p.nodes.flatMap((n) => n.groups)]).some((g) => g.ids.includes(stopped.id)), false);
+});
+
+test('a Codex session that may wait on you stays in the snapshot however many newer ones push at it', (t) => {
+  const newer = Array.from({ length: STAGE_LIMITS.principals }, (_, i) => `01a00000-0000-7000-8000-0000000002${String(i).padStart(2, '0')}`);
+  const { snap } = stage(t, (dir) => {
+    const d = path.join(dir, 'roots', 'codex', 'sessions', '2026', '11', '01');
+    newer.forEach((id, i) => {
+      const f = put(path.join(d, rollout(id)), lines(meta(id, { cwd: `G:\\fx\\n${i}` }), ev('task_started'), ev('task_complete')));
+      fs.utimesSync(f, BASE / 1000 - i, BASE / 1000 - i);
+    });
+    // Older than all of them, and well within codexWaitMaxAgeMs: an open turn's question.
+    const f = put(path.join(d, rollout(U1)), lines(meta(U1, { cwd: 'G:\\fx\\asks' }), ev('task_started'), call('q', 'request_user_input', { questions: [] })));
+    fs.utimesSync(f, BASE / 1000 - 3600, BASE / 1000 - 3600);
+  });
+  const asks = named(snap, 'asks');
+  assert.deepEqual([asks.live.state, asks.live.basis], ['waiting', 'unpaired-tool-use']);
+  const tower = towerFromStage(snap);
+  const node = tower.projects.flatMap((p) => p.nodes).find((n) => n.title === 'asks')!;
+  assert.deepEqual(tower.waitingBar.map((w) => w.node), [node.id]);
+  assert.equal(tower.tally.waiting, 1);
+  assert.equal(codexPlayers(snap).filter((p) => p.role === 'principal').length, STAGE_LIMITS.principals, 'a newer one went instead');
+});
+
+test('stage: a session detail is read once while its file is unchanged (an archived .zst is not decoded on every revision)', (t) => {
+  let opens = 0;
+  const { snap, builder } = stage(t, undefined, (io) => ({ ...io, openSync: (p, flags) => { if (p.includes(FX.codexTests)) opens++; return io.openSync(p, flags); } }));
+  const ada = named(snap, 'Ada');
+  opens = 0;
+  const one = builder.session(ada.session!)!;
+  const two = builder.session(ada.session!)!;
+  assert.equal(opens, 1);
+  assert.deepEqual(two.events, one.events);
 });

@@ -155,10 +155,20 @@ function pairPage(profile: 'real' | 'test', message: string | null, open: boolea
 }
 
 const kib = (n: number) => (n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1024 / 1024).toFixed(1)} MiB`);
-const iso = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
+const two = (n: number) => String(n).padStart(2, '0');
+/**
+ * A time as this machine's local wall time, YYYY-MM-DD hh:mm:ss: the tower page beside it shows the same
+ * events in local time (ui/clock.js fmtIso), and the page and orchestrad run on one machine, so one
+ * event reads the same in both places. A conversion of a time the source wrote, never a clock read.
+ */
+const local = (ms: number) => {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${two(d.getMonth() + 1)}-${two(d.getDate())} ${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
+};
 
 function eventRow(e: PeekEvent): string {
-  return `<tr><td class="n">${e.at === null ? '' : escapeHtml(e.at.replace('T', ' ').slice(0, 23))}</td><td class="n">${escapeHtml(e.type)}</td><td class="t">${escapeHtml(e.text)}</td></tr>`;
+  const ms = e.at === null ? NaN : Date.parse(e.at);
+  return `<tr><td class="n">${Number.isFinite(ms) ? escapeHtml(local(ms)) : ''}</td><td class="n">${escapeHtml(e.type)}</td><td class="t">${escapeHtml(e.text)}</td></tr>`;
 }
 
 function sessionPage(profile: 'real' | 'test', v: PeekView): string {
@@ -166,8 +176,8 @@ function sessionPage(profile: 'real' | 'test', v: PeekView): string {
   const note = v.note === null ? '' : `<p class="note">${escapeHtml(NOTES[v.note])}</p>`;
   const unparsed = v.unparsed > 0 ? `<p class="sub">${v.unparsed} 行不是 JSON 对象，没显示。</p>` : '';
   return page(`Orchestra · ${s.project}`, profile, `<p><a href="/">← 回到塔</a></p><h1>${escapeHtml(s.project)}</h1>
-<p class="sub">${s.harness} · ${kib(s.size)} · 修改于 ${iso(s.mtimeMs)} UTC · 最后 ${v.events.length} 条事件（上限 ${PEEK_LIMITS.events}）</p>${note}${unparsed}
-<table><thead><tr><th>时间（UTC）</th><th>类型</th><th>内容</th></tr></thead><tbody>${v.events.map(eventRow).join('\n')}</tbody></table>`);
+<p class="sub">${s.harness} · ${kib(s.size)} · 修改于 ${local(s.mtimeMs)}（本机时间） · 最后 ${v.events.length} 条事件（上限 ${PEEK_LIMITS.events}）</p>${note}${unparsed}
+<table><thead><tr><th>时间（本机）</th><th>类型</th><th>内容</th></tr></thead><tbody>${v.events.map(eventRow).join('\n')}</tbody></table>`);
 }
 
 function send(res: ServerResponse, status: number, type: string, body: string | Buffer, extra: readonly (readonly [string, string])[] = []): void {

@@ -16,7 +16,9 @@ import { frozen } from '../../shared/frozen.js';
 //   last write is basis mtime; anything else is unknown (basis none), never idle or 0 (T1);
 // - a subagent the stage cannot place (no Task call names it) is running by mtime when its file was
 //   written within the last minute, else unknown; a possible orphan (the stage's ghost) is unknown;
-// - nothing is ever done: a subagent that sent its report back is returned (T2);
+// - nothing is ever done: a subagent that sent its report back is returned (T2); a Codex turn that
+//   was aborted sent nothing back, so it is unknown, never returned;
+// - nothing is read as failed yet (meta.detects.error is false): the page shows no error count;
 // - waits: the Claude registry's is native; a Codex wait read off an unanswered call is inferred.
 //   None of them has a deadline: only Orchestra's own queue (owned sessions, later) runs that clock.
 // Then the tree is ordered (waits on you, failed, runs, unknown, returned, idle), counted per
@@ -43,6 +45,8 @@ export type WaitingEntry = { node: string; kind: Waiting['kind']; source: Waitin
 export type TowerSnapshot = {
   meta: {
     v: 1; rev: string; observedAt: number; profile: 'test' | 'real';
+    /** What this build can tell at all: with no rule that reads a failure, error counts say nothing (T1). */
+    detects: { error: boolean };
     sources: Record<Harness, TowerSrc>;
     clipped: { projects: number; nodes: number; sessions: Record<Harness, number> };
     rules: { id: string; hits: number; n: number; status: 'untested' | 'keys-mismatch' }[];
@@ -234,6 +238,9 @@ export function towerFromStage(stage: StageSnapshot): TowerSnapshot {
   const body = {
     meta: {
       v: 1 as const, rev: '', observedAt: stage.observedAt, profile: stage.profile,
+      // No rule reads a failure yet (a Codex turn_aborted is unknown: interrupted or failed, the rollout
+      // does not say), so no node is ever error and an error count of 0 would only mean "not looked".
+      detects: { error: false },
       sources: { claude: src('claude'), dsh: src('dsh'), codex: src('codex') },
       clipped: { projects: stage.clipped.lanes, nodes: stage.clipped.players, sessions: { ...stage.clipped.sessions } },
       // The stage's rules as they are, for the page's about view (T4: untested however often they fired).

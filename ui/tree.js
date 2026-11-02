@@ -25,7 +25,8 @@
  * }} Row
  *   level: the aria-level, a project is 1, an agent 2, a subagent 3 and down; parentKey: the row it
  *   hangs from, null for a project; match: the row counts toward the active filter; gone: a frozen row
- *   whose node the latest snapshot no longer has.
+ *   whose node the latest snapshot no longer has; expandable: it folds or unfolds now (never under a
+ *   filter, which keeps every signpost open).
  * @typedef {{ filter: Filter | null, collapsed: ReadonlySet<string>, open: ReadonlySet<string> }} TreeUi
  * @typedef {{ byId: Map<string, { node: Node, project: Project }>, kids: Map<string, Node[]> }} TowerIndex
  */
@@ -136,7 +137,8 @@ export function buildRows(snap, ui) {
   const one = (project, n, parentKey, level) => {
     const kids = ix.kids.get(n.id) ?? [];
     const expanded = kids.length > 0 && (f !== null || !ui.collapsed.has(n.id));
-    push({ key: n.id, kind: 'node', level, parentKey, project, node: n, expandable: kids.length > 0, expanded, match: f !== null && n.state === f });
+    // Under a filter every signpost stays open: it does not fold, so it does not offer to.
+    push({ key: n.id, kind: 'node', level, parentKey, project, node: n, expandable: kids.length > 0 && f === null, expanded, match: f !== null && n.state === f });
     if (expanded) list(project, kids, n.groups, n.id, level + 1);
   };
 
@@ -145,7 +147,7 @@ export function buildRows(snap, ui) {
     if (f !== null && !roots.some(shows)) continue;
     const key = projectKey(project.id);
     const expanded = roots.length > 0 && (f !== null || !ui.collapsed.has(key));
-    push({ key, kind: 'project', level: 1, parentKey: null, project, expandable: roots.length > 0, expanded });
+    push({ key, kind: 'project', level: 1, parentKey: null, project, expandable: roots.length > 0 && f === null, expanded });
     if (expanded) list(project, roots, project.groups, key, 2);
   }
   numberSiblings(rows);

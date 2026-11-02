@@ -66,6 +66,45 @@ test('T1: unknown is said as unknown, only unknown has no basis, and a pushed-ou
   broken(busy, (s) => { s.meta.sources.dsh.state = 'empty'; }, 'empty, but it holds 7 sessions');
   broken(busy, (s) => { s.meta.clipped.sessions.dsh = 0; }, 'not sources.dsh.total - shown (7)');
   broken(golden, (s) => { s.meta.sources.claude.shown = 0; }, 'of its sessions lead a tree');
+  // A source with no registry has no node that reads as registry-reported, nor a native wait.
+  broken(golden, (s) => { s.meta.sources.dsh.registry = 0; }, 'DSH has no registry');
+  broken(golden, (s) => { const n = nodes(s).find((x) => x.harness === 'codex' && x.state === 'running')!; n.basis = 'registry'; }, 'registry, but codex has no registry');
+  broken(golden, (s) => { const n = nodes(s).find((x) => x.harness === 'dsh' && x.state === 'running')!; n.basis = 'registry'; }, 'registry, but dsh has no registry');
+  broken(golden, (s) => {
+    const n = nodes(s).find((x) => x.harness === 'codex' && x.waiting !== null)!;
+    n.waiting.source = 'native';
+    s.waitingBar.find((w: Json) => w.node === n.id).source = 'native';
+  }, 'native, but codex has no registry');
+  // Not looked is not none: a build that reads no failure has no node in error, and says which it is.
+  broken(golden, (s) => {
+    const n = nodes(s).find((x) => x.harness === 'dsh' && x.state === 'running')!;
+    n.state = 'error';
+    s.tally.running -= 1;
+    s.tally.error += 1;
+  }, 'error, but meta.detects.error is false');
+  broken(golden, (s) => { delete s.meta.detects; }, 'missing detects');
+  broken(golden, (s) => { s.meta.detects.error = 'no'; }, 'meta.detects.error');
+});
+
+test('a loop of parents is reported, never followed: the checker returns, it does not throw', () => {
+  for (const make of [golden, busy]) {
+    const s = make();
+    const ns = s.projects[0].nodes as Json[];
+    const [a, b] = ns.filter((n) => n.parent !== null).slice(0, 2);
+    a!.parent = b!.id;
+    b!.parent = a!.id;
+    let r: ReturnType<typeof validateTower> | undefined;
+    assert.doesNotThrow(() => { r = validateTower(s); });
+    assert.equal(r!.ok, false);
+    assert.ok(r!.errors.some((e) => e.includes('not in tree order')), r!.errors.join(' | '));
+  }
+  // A long chain is checked without recursion.
+  const s = golden();
+  const p = s.projects[0];
+  const leaf = p.nodes[0];
+  const chain = Array.from({ length: 20_000 }, (_, i) => ({ ...leaf, id: `n:${String(i).padStart(20, '0')}`, parent: i === 0 ? null : `n:${String(i - 1).padStart(20, '0')}`, depth: 0, layer: i === 0 ? 'agent' : 'subagent', waiting: null, state: 'idle', basis: 'mtime', groups: [] }));
+  p.nodes = chain;
+  assert.doesNotThrow(() => validateTower(s));
 });
 
 test('T2: nothing is done, and only a subagent returns', () => {
