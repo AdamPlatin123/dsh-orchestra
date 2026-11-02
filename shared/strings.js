@@ -76,6 +76,9 @@ export const ERROR_TEXT = Object.freeze({
   'rename-busy': '文件被占用，稍后再试',
   'host-tampered': '会话程序被改过，不启动',
   'body-too-big': '内容太大，没有收下',
+  'owned-ended': '会话已结束',
+  'queue-full': '排队的消息已满',
+  'spawn-failed': '会话没能启动',
 });
 
 /** @type {Readonly<Record<import('./protocol.js').EndClass, string>>} */
@@ -188,6 +191,7 @@ export const TOWER_TEXT = frozen({
   'basis.log': '从会话记录里读出来的（推测）',
   'basis.mtime': '按文件最后写入的时间推测',
   'basis.none': '没有依据，所以写未知',
+  'basis.owned': 'Orchestra 自己驱动，直接知道',
   'source.orchestra': 'Orchestra 审批队列：到点自动拒',
   'source.native': '{h} 自己说的：原生界面不计时',
   'source.inferred': '推测：最后一个调用还没有结果',

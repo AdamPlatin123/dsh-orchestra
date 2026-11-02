@@ -53,6 +53,7 @@ export class Feed {
   #bytes = 0;
   /** The highest seq dropped for room (not for being replaced). */
   #lostThrough = 0;
+  #lastAt: number | null = null;
 
   constructor(now: () => number) {
     this.#now = now;
@@ -60,6 +61,11 @@ export class Feed {
 
   get lastSeq(): number {
     return this.#seq;
+  }
+
+  /** The wall time of the newest event made, live ones included; null before any. */
+  get lastAt(): number | null {
+    return this.#lastAt;
   }
 
   /** Appends an event. */
@@ -102,6 +108,7 @@ export class Feed {
       live,
     });
     this.#events.push(e);
+    this.#lastAt = e.at;
     this.#bytes += sizeOf(e);
     while (this.#events.length > FEED_LIMITS.events || (this.#bytes > FEED_LIMITS.bytes && this.#events.length > 1)) {
       const old = this.#events.shift()!;

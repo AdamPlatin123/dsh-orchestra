@@ -9,6 +9,7 @@ import { ACK_REPLIES } from '../notify/channel.ts';
 import { ownFields } from '../runtime/own.ts';
 import { COUNT_NAMES } from '../model/source-report.ts';
 import { DIGEST_RE, ERROR_CODE_RE, EVENT_KINDS } from '../store/records.ts';
+import { OWNED_MODEL_RE } from '../owned/models.ts';
 
 // The route table and every JSON shape the HTTP server and the SSE stream speak (plan step 3; UI
 // design 一). No server here: step 4 builds it on these, checks each request against its route's
@@ -122,7 +123,7 @@ export const CHECKS: readonly Check[] = Object.freeze([
     step: 'own', status: null, codes: [
       'text-too-long', 'brake-unavailable', 'not-test-root', 'plan-expired',
       'owned-disabled', 'owned-limit', 'slash-command', 'digest-mismatch', 'approval-gone', 'stale-view', 'still-running', 'source-live', 'cwd-gone',
-      'cwd-forbidden', 'unfinished-frame', 'source-changed', 'newer-format', 'import-too-big', 'gateway-real-data',
+      'cwd-forbidden', 'unfinished-frame', 'source-changed', 'newer-format', 'import-too-big', 'gateway-real-data', 'owned-ended', 'queue-full',
     ],
   },
   { step: 'execute', status: null, codes: [] },
@@ -250,12 +251,16 @@ const message = text(OWNED_BODY_MAX_BYTES, 'message');
 const accepted = (extra: Record<string, Shape> = {}): Shape => obj({ actionId: uuid, accepted: konst(true), jseq, replayed: konst(true), ...extra }, ['replayed']);
 const OWNED_CHECKS: readonly CheckStep[] = ['auth', 'ui-only', 'actionId', 'dedup', 'own', 'execute'];
 const OWNED_TARGET_CHECKS: readonly CheckStep[] = ['auth', 'ui-only', 'actionId', 'dedup', 'item', 'own', 'execute'];
+/** The body fields a route may leave out: a retry's confirmGone, a new session's model. */
+const OPTIONAL_BODY = ['confirmGone', 'model'];
 /** An owned-session human route: the cookie and the controller token, a uuid actionId, the human record; never an inbox item. */
 const owned = (verb: HumanVerb, target: Route['target'], body: Record<string, Shape>, reply: Shape, own: ErrorCode[] = [], failures: ErrorCode[] = []): Route => ({
   method: 'POST', path: HUMAN_VERB_ROUTES[verb], auth: 'unlocked', human: verb, item: null, target,
   checks: target === 'owned' || target === 'stage' ? OWNED_TARGET_CHECKS : OWNED_CHECKS,
-  own, failures, query: null, body: obj({ actionId: uuid, ...body }, Object.hasOwn(body, 'confirmGone') ? ['confirmGone'] : []), reply,
+  own, failures, query: null, body: obj({ actionId: uuid, ...body }, OPTIONAL_BODY.filter((k) => Object.hasOwn(body, k))), reply,
 });
+/** The harnesses a new owned session may run on (orchestra app plan section 2): Codex over app-server, Claude over its host. */
+export const OWNED_HARNESSES: readonly ['codex', 'claude'] = frozen(['codex', 'claude'] as const);
 /** What GET /api/import/:id/check finds the stage session can be: resumed, forked, copied as a DSH snapshot, or nothing. */
 export const IMPORT_CAN: readonly ['resume', 'fork', 'dsh-snapshot', 'none'] = frozen(['resume', 'fork', 'dsh-snapshot', 'none'] as const);
 /** How POST /api/import/claude takes a Claude session: resumed (it has ended) or forked (it may still be live). */
@@ -274,6 +279,8 @@ const IMPORT_CHECK_REPLY = obj({
   files: count,
 }, ['cwd', 'files']);
 const SPAWN_FAILS: ErrorCode[] = ['host-tampered'];
+/** A new session's child could not start: the gate refused it or its work dir could not be made. */
+const NEW_FAILS: ErrorCode[] = [...SPAWN_FAILS, 'spawn-failed'];
 const COPY_FAILS: ErrorCode[] = ['reparse-point', 'source-changed', 'rename-busy'];
 
 /** Step 4's routes (plan step 4), with their shapes. GET /api/items/:id/detail replaces GET /api/items. */
@@ -314,8 +321,12 @@ export const ROUTES: readonly Route[] = Object.freeze([
   plain('GET', '/api/owned', 'unlocked', { reply: null, contract: 'OwnedList' }),
   plain('GET', '/api/owned/:id/feed', 'unlocked', { query: obj({ after: re(SEQ_RE, 'seq') }, ['after']), reply: null, contract: 'OwnedFeed', target: 'owned', checks: ['auth', 'shape', 'item', 'execute'] }),
   plain('GET', '/api/import/:id/check', 'unlocked', { reply: IMPORT_CHECK_REPLY, target: 'stage', checks: ['auth', 'shape', 'item', 'execute'] }),
-  owned('owned-new', null, { text: message }, accepted({ ownedId: id }), ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command'], SPAWN_FAILS),
-  owned('owned-message', 'owned', { text: message }, accepted({ uuid, queued: count }), ['text-too-long', 'slash-command']),
+  // orchestra app: a new session names its harness and may name a model of the owned list (src/owned/models.ts).
+  owned(
+    'owned-new', null, { text: message, harness: en(OWNED_HARNESSES), model: re(OWNED_MODEL_RE, 'model') }, accepted({ ownedId: id }),
+    ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command'], NEW_FAILS,
+  ),
+  owned('owned-message', 'owned', { text: message }, accepted({ uuid, queued: count }), ['text-too-long', 'slash-command', 'owned-ended', 'queue-full']),
   owned('owned-interrupt', 'owned', {}, accepted({ withdrawn: count, denied: count })),
   owned('owned-end', 'owned', {}, accepted()),
   owned('owned-retry', 'owned', { confirmGone: konst(true) }, accepted(), ['owned-disabled', 'owned-limit', 'still-running', 'cwd-gone', 'cwd-forbidden'], SPAWN_FAILS),

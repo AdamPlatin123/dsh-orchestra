@@ -15,7 +15,7 @@ import { parseProfileArgs } from '../../src/runtime/test-profile.ts';
 function queue(timeoutMs?: number) {
   const clock = new VirtualClock({ mono: 0, wall: 1_000_000 });
   const changes: number[] = [];
-  const q = new Approvals({ hub: clock, ...(timeoutMs !== undefined ? { timeoutMs } : {}), onChange: () => changes.push(1) });
+  const q = new Approvals({ hub: clock, settleMs: 0, ...(timeoutMs !== undefined ? { timeoutMs } : {}), onChange: () => changes.push(1) });
   const answered: [string, Answer, AnswerCause][] = [];
   const add = (over: Partial<ApprovalInput> = {}) => q.add({
     ownedId: 'o1', kind: 'command', title: 'ls', preview: 'command: ls', redactions: 0, risk: 'shell', canAccept: true, canText: false,
@@ -153,4 +153,31 @@ test('--owned: either profile, at most once, no value; absent means off', () => 
   assert.deepEqual(parseProfileArgs([], deps), { ok: true, profile: { kind: 'real' } });
   assert.deepEqual(parseProfileArgs(['--owned', '--owned'], deps), { ok: false, refusal: { reason: 'duplicate-flag', flag: '--owned' } });
   assert.deepEqual(parseProfileArgs(['--owned=1'], deps), { ok: false, refusal: { reason: 'unknown-argument', arg: '--owned=1' } });
+});
+
+test('approvals: within 750 ms of a change of the list an allow is stale-view (r4 §10.9), a deny is not; every entry that leaves says how and why', () => {
+  const clock = new VirtualClock({ mono: 0, wall: 1_000_000 });
+  const settled: [string, string, string][] = [];
+  const q = new Approvals({ hub: clock, onSettled: (v, o) => settled.push([v.approvalId, o.decision, o.cause]) });
+  assert.equal(APPROVAL_LIMITS.settleMs, 750);
+  const answered: Answer[] = [];
+  const add = (ownedId = 'o1') => q.add({ ownedId, kind: 'command', title: 'ls', preview: 'command: ls', redactions: 0, risk: 'shell', canAccept: true, canText: false, answer: (a) => answered.push(a) });
+  const a = add();
+  assert.equal(a.rev, 1, 'the revision it came in with');
+  clock.advanceBy(749);
+  assert.equal(q.allow(a.approvalId, { digest: a.digest, rev: q.rev }), 'stale-view');
+  clock.advanceBy(1);
+  const b = add('o2');
+  assert.equal(b.rev, 2);
+  assert.equal(q.allow(a.approvalId, { digest: a.digest, rev: q.rev }), 'stale-view', 'another session\'s card moved the list');
+  clock.advanceBy(750);
+  assert.equal(q.allow(a.approvalId, { digest: a.digest, rev: q.rev }), 'ok');
+  assert.equal(q.deny(b.approvalId), 'ok', 'a refusal is taken at once');
+  const c = add();
+  q.forget(c.approvalId);
+  const d = add();
+  clock.advanceBy(APPROVAL_LIMITS.timeoutMs);
+  assert.deepEqual(settled, [[a.approvalId, 'accept', 'human'], [b.approvalId, 'decline', 'human'], [c.approvalId, 'dropped', 'gone'], [d.approvalId, 'decline', 'clock']]);
+  assert.deepEqual(answered.map((x) => x.decision), ['accept', 'decline', 'decline']);
+  assert.throws(() => new Approvals({ hub: clock, settleMs: -1 }), /settleMs/);
 });

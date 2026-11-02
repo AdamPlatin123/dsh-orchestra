@@ -110,7 +110,7 @@ test('the steps of every route, in one order; a human route runs exactly plan li
   assert.deepEqual([...step('own').codes], [
     'text-too-long', 'brake-unavailable', 'not-test-root', 'plan-expired',
     'owned-disabled', 'owned-limit', 'slash-command', 'digest-mismatch', 'approval-gone', 'stale-view', 'still-running', 'source-live', 'cwd-gone',
-    'cwd-forbidden', 'unfinished-frame', 'source-changed', 'newer-format', 'import-too-big', 'gateway-real-data',
+    'cwd-forbidden', 'unfinished-frame', 'source-changed', 'newer-format', 'import-too-big', 'gateway-real-data', 'owned-ended', 'queue-full',
   ]);
   assert.deepEqual([...step('auth').codes], ['not-unlocked'], 'slice design §2.7: cookie without the controller token is 403 not-unlocked');
 });
@@ -126,7 +126,7 @@ test('the error table is shared/protocol.js\'s, in full: every code answered by 
   // alpha 0.2: what an owned-session route can only find out while acting (a wrong unlock code, a spawn refused by the hash pin, a copy that meets a link, a change or a locked file).
   assert.deepEqual(Object.fromEntries(ROUTES.filter((r) => r.failures.length > 0 && r.auth !== 'session').map((r) => [`${r.method} ${r.path}`, [...r.failures]])), {
     'POST /api/owned/unlock': ['not-unlocked'],
-    'POST /api/owned/claude/new': ['host-tampered'],
+    'POST /api/owned/new': ['host-tampered', 'spawn-failed'],
     'POST /api/owned/:id/retry': ['host-tampered'],
     'POST /api/import/claude': ['reparse-point', 'source-changed', 'rename-busy', 'host-tampered'],
     'POST /api/import/dsh': ['reparse-point', 'source-changed', 'rename-busy'],
@@ -288,7 +288,7 @@ test('owned sessions: every route needs the pairing cookie; all but the unlock p
   const ownedPaths = ROUTES.filter((r) => /^\/api\/(?:owned|approvals|import)\//.test(r.path) || r.path === '/api/owned');
   assert.deepEqual(ownedPaths.map((r) => `${r.method} ${r.path}`), [
     'POST /api/owned/unlock-code', 'POST /api/owned/unlock', 'GET /api/owned', 'GET /api/owned/:id/feed', 'GET /api/import/:id/check',
-    'POST /api/owned/claude/new', 'POST /api/owned/:id/message', 'POST /api/owned/:id/interrupt', 'POST /api/owned/:id/end', 'POST /api/owned/:id/retry',
+    'POST /api/owned/new', 'POST /api/owned/:id/message', 'POST /api/owned/:id/interrupt', 'POST /api/owned/:id/end', 'POST /api/owned/:id/retry',
     'POST /api/approvals/:id/allow', 'POST /api/approvals/:id/deny', 'POST /api/import/claude', 'POST /api/import/dsh',
   ]);
   for (const r of ownedPaths) assert.equal(r.auth, r.path.startsWith('/api/owned/unlock') ? 'cookie' : 'unlocked', r.path);
@@ -326,19 +326,23 @@ test('owned list and feed: replies checked by the owned contract (a later step);
 test('new and message: text up to the body cap as a shape, the 2 KB limit and the leading / are the route\'s own 422s; the replies carry ACCEPTED\'s fields', () => {
   assert.equal(OWNED_TEXT_MAX_BYTES, 2048);
   assert.equal(OWNED_BODY_MAX_BYTES, 64 * 1024);
-  const nu = owned('POST', '/api/owned/claude/new');
+  const nu = owned('POST', '/api/owned/new');
   assert.equal(nu.target, null, 'a new session takes no path and no project from the browser');
-  assert.equal(why(nu.body!, { actionId: ACT, text: 'hello' }), 'ok');
-  assert.equal(why(nu.body!, { actionId: ACT, text: 'x'.repeat(3000) }), 'ok', 'over 2 KB is text-too-long, never a 400');
-  assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', cwd: 'C:\\' }), 'extra-key $', 'no cwd from the browser');
-  assert.equal(why(nu.body!, { actionId: ACT, text: 'hi\ud800' }), 'type $.text');
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'codex' }), 'ok');
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'claude', model: 'zcode/GLM-5.3' }), 'ok');
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'hello' }), 'missing $.harness', 'the harness is named');
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'dsh' }), 'enum $.harness');
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'codex', model: 'gpt-4o' }), 'grammar $.model', 'only a model of the owned list');
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'x'.repeat(3000), harness: 'codex' }), 'ok', 'over 2 KB is text-too-long, never a 400');
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'codex', cwd: 'C:\\' }), 'extra-key $', 'no cwd from the browser');
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'hi\ud800', harness: 'codex' }), 'type $.text');
   assert.deepEqual([...nu.own], ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command']);
   assert.equal(why(nu.reply!, { actionId: ACT, accepted: true, jseq: 3, ownedId: OID }), 'ok');
   assert.equal(why(nu.reply!, { actionId: ACT, accepted: true, jseq: 3, ownedId: OID, replayed: true }), 'ok');
   assert.equal(why(nu.reply!, { actionId: ACT, accepted: true, jseq: 3, ownedId: 'a/b' }), 'grammar $.ownedId');
   const msg = owned('POST', '/api/owned/:id/message');
   assert.equal(msg.target, 'owned');
-  assert.deepEqual([...msg.own], ['text-too-long', 'slash-command']);
+  assert.deepEqual([...msg.own], ['text-too-long', 'slash-command', 'owned-ended', 'queue-full']);
   assert.equal(why(msg.reply!, { actionId: ACT, accepted: true, jseq: 4, uuid: TAB, queued: 2 }), 'ok');
   assert.equal(why(msg.reply!, { actionId: ACT, accepted: true, jseq: 4, uuid: 'm-1', queued: 2 }), 'grammar $.uuid', 'orchestrad makes the uuid with randomUUID');
 });

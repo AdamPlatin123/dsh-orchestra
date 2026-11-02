@@ -61,7 +61,7 @@ async function withRig(t: TestContext, body: (r: Rig) => Promise<void>, opts: { 
     cwd: { allowedRoots: [workRoot], protectedDirs: [home], userHome: os.homedir(), ownedWorkRoot: workRoot },
     fakeCodexNode: process.execPath,
   });
-  const approvals = new Approvals({ hub: clock });
+  const approvals = new Approvals({ hub: clock, settleMs: 0 });
   const redactor = makeRedactor({ env: {} });
   const closes: Promise<void>[] = [];
   const rig: Rig = {

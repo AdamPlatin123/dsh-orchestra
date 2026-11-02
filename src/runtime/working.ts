@@ -289,19 +289,25 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
     try {
       const { startPeekServer } = await import('../server/http.ts');
       const { humanJournal } = await import('../server/owned.ts');
+      const { ownedEnabled, registerOwnedHandlers } = await import('../server/owned-handlers.ts');
+      const deps = { codex: codexOwned, codexOff: ownedCodex.on ? 'on' : ownedCodex.why, claude: null, log };
+      const wall = ctx.clock.port(null);
+      const owner = codexOwned;
       const server = await startPeekServer({
         port: ctx.peekPort, gate, roots: ctx.roots, redact: (text) => redactor.redact({ text }).text, clock: ctx.clock.port(null), log, pairingCode: code, profile: ctx.profile.kind,
         // alpha 0.2's owned-session base (slice design §2.7): unlock codes go where the pairing code
-        // goes; owned sessions stay off (409 owned-disabled) until step 6c turns them on for the test
-        // profile with a gateway, and every route answers 501 until it registers its handler.
+        // goes. Owned sessions start only when --owned set them up (owned Codex sessions; the Claude
+        // host is not wired yet); otherwise new answers 409 owned-disabled and GET /api/owned says why.
         owned: {
           journal: humanJournal(store),
           printUnlockCode: pairing.print === 'none' ? null : (c) => {
             ctx.console.out(`orchestrad: unlock code ${c}`);
             log.info('unlock-code-printed', { to: pairing.print });
           },
-          enabled: false,
+          enabled: ownedEnabled(deps),
+          handlers: registerOwnedHandlers(deps),
         },
+        ...(owner === null ? {} : { ownedSeats: { seats: () => owner.towerSeats(), nowWall: () => wall.nowWall() } }),
       });
       peek = server;
       ctx.console.out(`orchestrad: peek page at ${server.url} (read-only; pair with the code above)`);
@@ -376,7 +382,13 @@ async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: str
     const redactor = makeRedactor({ env: ctx.env });
     const wall = ctx.clock.port(null);
     const owned = new Owned({
-      approvals: new Approvals({ hub: ctx.clock }),
+      // D8: what leaves the queue without a person (the 30-minute deadline, a stop, an end, a child gone) is logged.
+      approvals: new Approvals({
+        hub: ctx.clock,
+        onSettled: (v, o) => {
+          if (o.cause !== 'human') ctx.log.info('approval-settled', { approvalId: v.approvalId, ownedId: v.ownedId, kind: v.kind, decision: o.decision, cause: o.cause });
+        },
+      }),
       makeWorkDir: (ownedId) => {
         const dir = win.join(workRoot, ownedId);
         fence.mkdirp(dir);

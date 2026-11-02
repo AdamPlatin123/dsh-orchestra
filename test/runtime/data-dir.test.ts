@@ -176,3 +176,19 @@ test('test profile: ORCHESTRA_HOME, a root or the test dir itself that leads out
   assert.equal(!viaLink.ok && viaLink.reason === 'test-dir-escape' && viaLink.what, 'test-dir');
   assert.deepEqual(fs.readdirSync(sibling), [], 'only checked, never written');
 });
+
+test('owned Codex sessions write their rollouts to the private codex-home under ORCHESTRA_HOME: a start whose CODEX_HOME names it is refused, so the observer never reads an owned session again', (t) => {
+  // Orchestra app plan section 2: the tower draws an owned session from its driver. Its rollout lands in
+  // <ORCHESTRA_HOME>\codex-home\sessions, which is never a harness root: ORCHESTRA_HOME may not contain one.
+  const home = fakeHome(withTmp(t));
+  const orchestraHome = path.join(home, '.orchestra');
+  const { roots } = rootsOf(home, { CODEX_HOME: path.join(orchestraHome, 'codex-home') });
+  assert.ok(roots.some((r) => r.kind === 'codex' && r.path === path.join(orchestraHome, 'codex-home')));
+  const c = check(orchestraHome, home, roots);
+  assert.equal(c.ok, false);
+  assert.equal(!c.ok && c.reason, 'contains-harness-root');
+  // With the default CODEX_HOME the codex root is ~/.codex, beside ORCHESTRA_HOME and not in it.
+  const plain = rootsOf(home);
+  assert.ok(plain.roots.filter((r) => r.kind === 'codex').every((r) => !r.path.toLowerCase().startsWith(orchestraHome.toLowerCase())));
+  assert.ok(check(orchestraHome, home, plain.roots).ok);
+});

@@ -22,7 +22,8 @@ import { withTmp } from '../helpers/tmp.ts';
 
 // The owned-session base (slice design §2.7, §6 「端点安全」; §7 step 5): the unlock code and the
 // controller token, the check chain every owned route runs, the `human` records and the handler table.
-// No handler exists yet (step 6c): the tests register their own where a route must get that far.
+// Here the tests register their own handlers where a route must get that far; the real handlers and
+// their end to end runs against the fake app-server are in owned-flow.test.ts.
 
 const CODE = '12345678';
 const OID = 'own-1';
@@ -92,7 +93,7 @@ function sample(r: Route): { path: string; body: Record<string, unknown> | null 
   const path = r.path.replace(':id', r.target === 'stage' ? STAGE : OID);
   if (r.method === 'GET') return { path, body: null };
   const extra: Record<string, Record<string, unknown>> = {
-    'owned-new': { text: 'hello' }, 'owned-message': { text: 'hello' }, 'approval-allow': { digest: 'a'.repeat(64), rev: 1 },
+    'owned-new': { text: 'hello', harness: 'codex' }, 'owned-message': { text: 'hello' }, 'approval-allow': { digest: 'a'.repeat(64), rev: 1 },
     'import-claude': { stageId: STAGE, mode: 'fork', cwdShown: 'G:\\work\\x' }, 'import-dsh': { stageId: STAGE },
   };
   return { path, body: { actionId: uuid(), ...(extra[r.human ?? ''] ?? {}) } };
@@ -286,10 +287,10 @@ test('the chain runs in the design\'s order: cookie, Origin, Sec-Fetch-Site, JSO
     assert.deepEqual([r.status, err(r) ?? r.body.trim()], [status, why], `step ${i}`);
   }
   // A request that starts work stops at owned-disabled, after the dedup and before the handler.
-  fx.handlers.register('POST', '/api/owned/claude/new', () => assert.fail('the handler of a disabled route never runs'));
-  const n = await request(fx, 'POST', '/api/owned/claude/new', h, JSON.stringify({ actionId: uuid(), text: 'hi' }));
+  fx.handlers.register('POST', '/api/owned/new', () => assert.fail('the handler of a disabled route never runs'));
+  const n = await request(fx, 'POST', '/api/owned/new', h, JSON.stringify({ actionId: uuid(), text: 'hi', harness: 'codex' }));
   assert.deepEqual([n.status, err(n)], [409, 'owned-disabled']);
-  const bad = await request(fx, 'POST', '/api/owned/claude/new', h, JSON.stringify({ actionId: uuid(), text: 'hi', x: 1 }));
+  const bad = await request(fx, 'POST', '/api/owned/new', h, JSON.stringify({ actionId: uuid(), text: 'hi', harness: 'codex', x: 1 }));
   assert.equal(bad.status, 400, 'the shape comes before owned-disabled');
   assert.deepEqual(humans(fx), []);
 });
@@ -318,10 +319,11 @@ test('messages: at most 2048 bytes of UTF-8, else 422 text-too-long; one startin
   const fx = await fixture(t, { enabled: true });
   const { cookie, csrf } = await unlocked(fx);
   const ok: OwnedHandler = () => ({ ok: true, reply: { ownedId: OID }, targetId: OID });
-  fx.handlers.register('POST', '/api/owned/claude/new', ok);
+  fx.handlers.register('POST', '/api/owned/new', ok);
   fx.handlers.register('POST', '/api/owned/:id/message', () => ({ ok: true, reply: { uuid: uuid(), queued: 0 } }));
-  for (const path of ['/api/owned/claude/new', `/api/owned/${OID}/message`]) {
-    const send = (text: string) => request(fx, 'POST', path, page(fx, cookie, csrf), JSON.stringify({ actionId: uuid(), text }));
+  for (const path of ['/api/owned/new', `/api/owned/${OID}/message`]) {
+    const extra = path === '/api/owned/new' ? { harness: 'codex' } : {};
+    const send = (text: string) => request(fx, 'POST', path, page(fx, cookie, csrf), JSON.stringify({ actionId: uuid(), text, ...extra }));
     assert.equal((await send('中'.repeat(682) + 'ab')).status, 200, '2048 bytes');
     const over = await send('中'.repeat(683));
     assert.deepEqual([over.status, err(over)], [422, 'text-too-long'], '2049 bytes, 683 code points');
@@ -358,13 +360,13 @@ test('a handled action writes human and human.result in one batch; the same requ
   const fx = await fixture(t, { enabled: true });
   const { cookie, csrf } = await unlocked(fx);
   let runs = 0;
-  fx.handlers.register('POST', '/api/owned/claude/new', () => {
+  fx.handlers.register('POST', '/api/owned/new', () => {
     runs++;
     return { ok: true, reply: { ownedId: OID }, targetId: OID };
   });
   const actionId = uuid();
-  const body = JSON.stringify({ actionId, text: 'hello' });
-  const first = await request(fx, 'POST', '/api/owned/claude/new', page(fx, cookie, csrf), body);
+  const body = JSON.stringify({ actionId, text: 'hello', harness: 'codex' });
+  const first = await request(fx, 'POST', '/api/owned/new', page(fx, cookie, csrf), body);
   assert.equal(first.status, 200, first.body);
   const reply = JSON.parse(first.body) as Record<string, unknown>;
   assert.deepEqual(Object.keys(reply).sort(), ['accepted', 'actionId', 'jseq', 'ownedId']);
@@ -377,10 +379,10 @@ test('a handled action writes human and human.result in one batch; the same requ
   const jseqs = fx.store.db.all("SELECT jseq FROM event WHERE kind = 'human.result'").map((r) => Number(r.jseq));
   assert.deepEqual(jseqs, [reply.jseq]);
 
-  const again = await request(fx, 'POST', '/api/owned/claude/new', page(fx, cookie, csrf), body);
+  const again = await request(fx, 'POST', '/api/owned/new', page(fx, cookie, csrf), body);
   assert.deepEqual(JSON.parse(again.body), { ...reply, replayed: true });
   assert.equal(runs, 1, 'the effect runs once');
-  const other = await request(fx, 'POST', '/api/owned/claude/new', page(fx, cookie, csrf), JSON.stringify({ actionId, text: 'hello!' }));
+  const other = await request(fx, 'POST', '/api/owned/new', page(fx, cookie, csrf), JSON.stringify({ actionId, text: 'hello!', harness: 'codex' }));
   assert.deepEqual([other.status, err(other)], [422, 'actionId-reused']);
   const elsewhere = await request(fx, 'POST', `/api/owned/${OID}/end`, page(fx, cookie, csrf), JSON.stringify({ actionId }));
   assert.deepEqual([elsewhere.status, err(elsewhere)], [422, 'actionId-reused'], 'the digest covers the route');
@@ -391,10 +393,10 @@ test('a handled action writes human and human.result in one batch; the same requ
   fx.store.close();
   const fx2 = await fixture(t, { enabled: true, sf: fx.sf });
   const { cookie: c2, csrf: t2 } = await unlocked(fx2);
-  fx2.handlers.register('POST', '/api/owned/claude/new', () => assert.fail('a replay runs no handler'));
-  const replayed = await request(fx2, 'POST', '/api/owned/claude/new', page(fx2, c2, t2), body);
+  fx2.handlers.register('POST', '/api/owned/new', () => assert.fail('a replay runs no handler'));
+  const replayed = await request(fx2, 'POST', '/api/owned/new', page(fx2, c2, t2), body);
   assert.deepEqual(JSON.parse(replayed.body), { actionId, accepted: true, jseq: reply.jseq, replayed: true });
-  const reused = await request(fx2, 'POST', '/api/owned/claude/new', page(fx2, c2, t2), JSON.stringify({ actionId, text: 'other' }));
+  const reused = await request(fx2, 'POST', '/api/owned/new', page(fx2, c2, t2), JSON.stringify({ actionId, text: 'other', harness: 'codex' }));
   assert.deepEqual([reused.status, err(reused)], [422, 'actionId-reused']);
 });
 
@@ -496,7 +498,7 @@ function freePort(): Promise<number> {
   });
 }
 
-test('end to end: a test-profile orchestrad prints the unlock code to stdout; the token opens the owned routes, which stay off and unhandled', async (t) => {
+test('end to end: a test-profile orchestrad prints the unlock code to stdout; the token opens the owned routes; without --owned the list says why they are off and new is refused', async (t) => {
   const dir = withTmp(t);
   const port = await freePort();
   const child = startOrchestrad(t, ['--test-profile', '--test-dir', dir, '--peek-port', String(port)]);
@@ -518,8 +520,11 @@ test('end to end: a test-profile orchestrad prints the unlock code to stdout; th
   const csrf = (JSON.parse(u.body) as { csrf: string }).csrf;
   const hc = { ...h, 'x-orchestra-csrf': csrf };
   assert.equal((await request(fx, 'GET', '/api/owned', h)).status, 403);
-  assert.equal((await request(fx, 'GET', '/api/owned', hc)).status, 501);
-  const n = await request(fx, 'POST', '/api/owned/claude/new', hc, JSON.stringify({ actionId: uuid(), text: 'hi' }));
+  const list = await request(fx, 'GET', '/api/owned', hc);
+  assert.equal(list.status, 200, list.body);
+  const l = JSON.parse(list.body) as Record<string, unknown>;
+  assert.deepEqual([l.enabled, l.disabledWhy, l.owned, l.approvals], [false, 'not-asked', [], []]);
+  const n = await request(fx, 'POST', '/api/owned/new', hc, JSON.stringify({ actionId: uuid(), text: 'hi', harness: 'codex' }));
   assert.deepEqual([n.status, JSON.parse(n.body)], [409, { error: 'owned-disabled' }]);
   await child.stop();
   const log = child.lines().join('\n');

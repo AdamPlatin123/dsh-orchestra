@@ -1,10 +1,12 @@
 import * as crypto from 'node:crypto';
 import type { ChildPipe } from '../os/child-pipe.ts';
+import type { OwnedSeat } from '../sources/tower.ts';
 import type { Approvals } from './approvals.ts';
 import type { CodexSession } from './codex-session.ts';
 import type { Redact } from './text.ts';
 import { startCodexSession } from './codex-session.ts';
 import { DEFAULT_CODEX_MODEL, isOwnedModel } from './models.ts';
+import { shown } from './text.ts';
 import { frozen, frozenClass } from '../../shared/frozen.js';
 
 // The owned Codex sessions of one orchestrad (orchestra app plan §2): it names each new session (20
@@ -17,7 +19,12 @@ export const CODEX_OWNED_LIMITS = frozen({
   active: 3,
   /** Ended sessions kept for their feed; the oldest go first. */
   ended: 50,
+  /** A session's title: the first line of its first message, at most this many UTF-8 bytes once shown. */
+  titleBytes: 240,
 });
+
+/** What the routes and the tower know of a session beyond its driver: its title and when it was made. */
+export type OwnedMeta = { readonly ownedId: string; readonly harness: 'codex'; readonly title: string; readonly createdAt: number };
 
 export type CodexOwnedOptions = {
   approvals: Approvals;
@@ -40,6 +47,7 @@ export type NewOwned =
 export class CodexOwned {
   readonly #opts: CodexOwnedOptions;
   readonly #sessions = new Map<string, CodexSession>();
+  readonly #meta = new Map<string, OwnedMeta>();
   readonly #max: number;
 
   constructor(opts: CodexOwnedOptions) {
@@ -49,6 +57,11 @@ export class CodexOwned {
 
   get approvals(): Approvals {
     return this.#opts.approvals;
+  }
+
+  /** How many sessions may run at once. */
+  get maxActive(): number {
+    return this.#max;
   }
 
   /** Sessions whose child still runs. */
@@ -75,7 +88,10 @@ export class CodexOwned {
       ...(o.rpcLineMaxBytes !== undefined ? { rpcLineMaxBytes: o.rpcLineMaxBytes } : {}),
     });
     if (!started.ok) return started;
+    const first = (req.text ?? '').trim().split('\n', 1)[0] ?? '';
+    const title = first === '' ? '' : shown(o.redact, first, CODEX_OWNED_LIMITS.titleBytes, 'head').text;
     this.#sessions.set(ownedId, started.session);
+    this.#meta.set(ownedId, Object.freeze({ ownedId, harness: 'codex', title, createdAt: o.now() }));
     this.#trim();
     if (req.text !== undefined) started.session.send(req.text, req.uuid ?? '');
     return { ok: true, ownedId, session: started.session };
@@ -87,6 +103,24 @@ export class CodexOwned {
 
   list(): CodexSession[] {
     return [...this.#sessions.values()];
+  }
+
+  meta(ownedId: string): OwnedMeta | null {
+    return this.#meta.get(ownedId) ?? null;
+  }
+
+  /** Every session as the tower draws it: the driver's state, and the earliest open approval with its deadline. */
+  towerSeats(): OwnedSeat[] {
+    const open = this.#opts.approvals.list();
+    return this.list().map((s) => {
+      const mine = open.filter((a) => a.ownedId === s.ownedId).sort((a, b) => a.deadlineWall - b.deadlineWall);
+      const first = mine[0] ?? null;
+      return {
+        ownedId: s.ownedId, harness: 'codex' as const, title: this.#meta.get(s.ownedId)?.title ?? '', state: s.state, endReason: s.endReason,
+        waiting: first === null ? null : { kind: first.kind === 'question' ? 'question' as const : 'approval' as const, deadline: first.deadlineWall, title: first.title },
+        lastAt: s.feed.lastAt,
+      };
+    });
   }
 
   /** Ends every running session (orchestrad stops): their open approvals are declined first. */
@@ -102,7 +136,10 @@ export class CodexOwned {
 
   #trim(): void {
     const ended = [...this.#sessions.values()].filter((s) => s.state === 'ended' || s.state === 'failed');
-    for (const s of ended.slice(0, Math.max(0, ended.length - CODEX_OWNED_LIMITS.ended))) this.#sessions.delete(s.ownedId);
+    for (const s of ended.slice(0, Math.max(0, ended.length - CODEX_OWNED_LIMITS.ended))) {
+      this.#sessions.delete(s.ownedId);
+      this.#meta.delete(s.ownedId);
+    }
   }
 }
 frozenClass(CodexOwned);

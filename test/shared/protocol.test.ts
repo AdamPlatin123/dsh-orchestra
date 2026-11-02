@@ -80,6 +80,10 @@ test('the error codes are UI design 一 5\'s table, with ui-only, procguard-time
     'host-tampered': 503,
     // step 5: an owned-session body over 64 KiB
     'body-too-big': 413,
+    // the orchestra app's owned-session handlers
+    'owned-ended': 409,
+    'queue-full': 409,
+    'spawn-failed': 503,
   });
   assert.deepEqual([...ERROR_CODES], Object.keys(ERROR_STATUS));
   assert.deepEqual([...RESERVED_ERROR_CODES], ['ui-only']);
@@ -199,7 +203,8 @@ test('shared/ imports nothing but shared/ and no builtin, for the static scan an
   // frozen.js: the one deep freeze of every exported table (finding N3). stage-contract.js: the stage
   // preview's contract, which the daemon's golden file and the page's sample both pass (alpha design §3).
   // tower-contract.js: the tower's contract (orchestra app plan §1), which GET /api/tower answers.
-  assert.deepEqual(files.sort(), ['constants.js', 'frozen.js', 'protocol.js', 'stage-contract.js', 'strings.js', 'tower-contract.js']);
+  // owned-contract.js: the owned sessions' contract (GET /api/owned and its feed), the server's self-check.
+  assert.deepEqual(files.sort(), ['constants.js', 'frozen.js', 'owned-contract.js', 'protocol.js', 'stage-contract.js', 'strings.js', 'tower-contract.js']);
   for (const f of files) {
     const text = fs.readFileSync(path.join(dir, f), 'utf8');
     assert.ok(text.startsWith('// @ts-check\n'), `${f} is checked JS`);

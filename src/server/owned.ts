@@ -3,6 +3,7 @@ import { randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import type { ErrorCode, HumanVerb } from '../../shared/protocol.js';
 import { ERROR_STATUS, ID_RE, UUID_RE } from '../../shared/protocol.js';
 import { frozen } from '../../shared/frozen.js';
+import { validateOwnedFeed, validateOwnedList } from '../../shared/owned-contract.js';
 import type { Clock } from '../runtime/clock.ts';
 import type { Log } from '../runtime/log.ts';
 import type { Line, Rec } from '../store/journal.ts';
@@ -393,6 +394,14 @@ export function makeOwnedApi(opts: OwnedApiOptions & {
       if (route.reply !== null && shapeError(route.reply, out.reply) !== null) {
         log.warn('owned-reply-misshapen', { route: `${route.method} ${route.path}` });
         return text(500, 'failed');
+      }
+      // A reply a contract checks (shared/owned-contract.js) goes out only when it passes it.
+      if (route.contract !== undefined) {
+        const verdict = (route.contract === 'OwnedList' ? validateOwnedList : validateOwnedFeed)(out.reply);
+        if (!verdict.ok) {
+          log.warn('owned-reply-misshapen', { route: `${route.method} ${route.path}`, errors: verdict.errors.slice(0, 8) });
+          return text(500, 'failed');
+        }
       }
       return { status: 200, json: out.reply };
     }

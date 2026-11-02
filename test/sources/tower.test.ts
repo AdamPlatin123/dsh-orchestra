@@ -9,8 +9,8 @@ import { VirtualClock } from '../../src/runtime/clock.ts';
 import { makeRedactor } from '../../src/store/redact.ts';
 import { makeStageBuilder } from '../../src/sources/stage.ts';
 import type { StageSnapshot } from '../../src/sources/stage.ts';
-import { clipCp, foldSiblings, makeTowerBuilder, readState, towerFromStage } from '../../src/sources/tower.ts';
-import type { TowerNode, TowerSnapshot } from '../../src/sources/tower.ts';
+import { OWNED_PROJECT_ID, clipCp, foldSiblings, makeTowerBuilder, readState, towerFromStage } from '../../src/sources/tower.ts';
+import type { OwnedSeat, TowerNode, TowerSnapshot } from '../../src/sources/tower.ts';
 import { validateTower } from '../../shared/tower-contract.js';
 import { realIo } from '../helpers/read-io.ts';
 import { STAGE_CANARY, normalizeSnapshot, writeStageFixture } from '../helpers/stage-fixture.ts';
@@ -170,4 +170,66 @@ test('the builder hands back the same tower while the stage hands back the same 
   assert.equal(two.meta.rev, one.meta.rev, 'unchanged data, unchanged rev');
   s = { ...busyStage(), observedAt: s.observedAt + 5000 };
   assert.equal(b.snapshot().meta.rev, one.meta.rev, 'time alone does not change the rev');
+});
+
+// --- owned sessions (orchestra app plan section 2) -------------------------------------------------------
+
+const seat = (n: number, over: Partial<OwnedSeat> = {}): OwnedSeat => ({
+  ownedId: String(n).repeat(20).slice(0, 20), harness: 'codex', title: `synthetic ${n}`, state: 'idle', endReason: null, waiting: null, lastAt: 1_000, ...over,
+});
+
+test('owned sessions: one project of their own, first; the driver state with basis owned; a wait on the Orchestra queue carries its deadline and leads the waiting bar', () => {
+  const now = 61_000;
+  const seats = [
+    seat(1, { state: 'running' }),
+    seat(2, { state: 'running', waiting: { kind: 'approval', deadline: 2_000_000, title: 'rm synthetic' } }),
+    seat(3, { state: 'ended', endReason: 'you-ended' }),
+    seat(4, { state: 'starting', lastAt: null }),
+  ];
+  const tower = towerFromStage(busyStage(), { seats, nowWall: now });
+  const v = validateTower(tower);
+  assert.ok(v.ok, v.errors.join('\n'));
+  const p = tower.projects[0]!;
+  assert.deepEqual([p.id, p.basis, p.name], [OWNED_PROJECT_ID, 'owned', 'Orchestra 自有']);
+  assert.deepEqual(p.nodes.map((n) => [n.id.slice(2, 3), n.state, n.basis, n.ownership, n.session]), [
+    ['2', 'waiting', 'owned', 'owned', null], ['1', 'running', 'owned', 'owned', null], ['4', 'running', 'owned', 'owned', null], ['3', 'idle', 'owned', 'owned', null],
+  ]);
+  assert.deepEqual(p.nodes[0]!.waiting, { kind: 'approval', source: 'orchestra', deadline: 2_000_000 });
+  assert.equal(p.nodes[0]!.activity, 'rm synthetic');
+  assert.equal(p.nodes[3]!.activity, '已结束：你结束的', 'ended, never done');
+  assert.equal(p.nodes[2]!.activity, '正在启动');
+  assert.deepEqual([p.nodes[1]!.ageMs, p.nodes[2]!.ageMs], [60_000, null]);
+  assert.deepEqual(tower.waitingBar[0], { node: p.nodes[0]!.id, kind: 'approval', source: 'orchestra', deadline: 2_000_000 });
+  assert.equal(tower.projects.length, busyStage().lanes.length + 1);
+  // No seat, no project; a seat with an id outside the grammar is left out.
+  assert.equal(towerFromStage(busyStage(), { seats: [seat(5, { ownedId: 'x' })], nowWall: now }).projects.length, busyStage().lanes.length);
+  // The builder rebuilds while there are seats (they change between two stage reads).
+  let live: OwnedSeat[] = [seat(6)];
+  const s = busyStage();
+  const b = makeTowerBuilder({ snapshot: () => s }, { seats: () => live, nowWall: () => now });
+  assert.equal(b.snapshot().projects[0]!.nodes[0]!.state, 'idle');
+  live = [seat(6, { state: 'running' })];
+  assert.equal(b.snapshot().projects[0]!.nodes[0]!.state, 'running');
+});
+
+test('owned sessions: the validator holds basis owned to owned nodes, owned nodes to owned or none, and the owned project to owned nodes and to one', () => {
+  const now = 61_000;
+  const base = towerFromStage(busyStage(), { seats: [seat(1, { waiting: { kind: 'question', deadline: 5_000, title: 'which?' } })], nowWall: now });
+  assert.ok(validateTower(base).ok);
+  const copy = () => JSON.parse(JSON.stringify(base)) as TowerSnapshot;
+  const observed = copy();
+  observed.projects[1]!.nodes[0]!.basis = 'owned';
+  assert.ok(validateTower(observed).errors.some((e) => e.includes('owned on a node not owned')), validateTower(observed).errors.join('\n'));
+  const logged = copy();
+  logged.projects[0]!.nodes[0]!.basis = 'log';
+  assert.ok(validateTower(logged).errors.some((e) => e.includes('log on an owned node')));
+  const mixed = copy();
+  mixed.projects[0]!.nodes.push({ ...mixed.projects[1]!.nodes.at(-1)!, id: 'n:ffffffffffffffffffff', parent: null, depth: 0, layer: 'agent' });
+  assert.ok(validateTower(mixed).errors.some((e) => e.includes('not owned, in the owned project')));
+  const two = copy();
+  two.projects.push({ ...two.projects[0]!, id: 'f'.repeat(20), nodes: [], groups: [] });
+  assert.ok(validateTower(two).errors.some((e) => e.includes('a second owned project')));
+  const noDeadline = copy();
+  noDeadline.projects[0]!.nodes[0]!.waiting!.deadline = null;
+  assert.equal(validateTower(noDeadline).ok, false, 'the Orchestra queue always carries its deadline');
 });

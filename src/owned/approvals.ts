@@ -11,6 +11,8 @@ import { OWNED_TEXT_LIMITS, headUtf8, utf8Length } from './text.ts';
 //  - allowing takes the digest of what the page showed and the list revision it was drawn from: another
 //    digest is declined and answered digest-mismatch; another revision changes nothing and is answered
 //    stale-view (the server half of §10.9's freeze: the page knows when it drew, the server which list);
+//  - an allow that comes within 750 ms of a change of the list is stale-view too (r4 10.9: a list that just
+//    moved under the pointer takes no allow; the page freezes its own order, this is the server's half);
 //  - declining is taken at once, whatever the revision;
 //  - an entry the page cannot show whole (tooLong), or whose kind has no allow (a question, an MCP
 //    elicitation, a write grant for the rest of the session), offers only decline;
@@ -21,6 +23,8 @@ import { OWNED_TEXT_LIMITS, headUtf8, utf8Length } from './text.ts';
 export const APPROVAL_LIMITS = frozen({
   /** Q4: an open approval is declined after 30 minutes. */
   timeoutMs: 30 * 60 * 1000,
+  /** r4 10.9: for this long after the list changed, an allow is not taken (stale-view). */
+  settleMs: 750,
 });
 
 export const APPROVAL_KINDS = frozen(['command', 'file-change', 'permissions', 'question', 'elicitation'] as const);
@@ -63,6 +67,8 @@ export type ApprovalView = {
   readonly risk: ApprovalRisk;
   /** §10.9 high risk: a shell, the network, a grant, or a hidden secret; the page asks to hold or type. */
   readonly high: boolean;
+  /** The list revision this entry came in with (the list's own rev moves on with every later change). */
+  readonly rev: number;
   readonly canAccept: boolean;
   readonly canText: boolean;
   readonly deadlineMono: number;
@@ -73,26 +79,41 @@ export type ApprovalVerdict = 'ok' | 'approval-gone' | 'digest-mismatch' | 'stal
 
 type Entry = { view: ApprovalView; answer: ApprovalInput['answer']; timerId: string };
 
+/** How an entry left the queue: answered (by whom, with what), or dropped unanswered (its child resolved it or is gone). */
+export type ApprovalOutcome = { readonly decision: Answer['decision'] | 'dropped'; readonly cause: AnswerCause | 'gone' };
+
 export type ApprovalsOptions = {
   /** The hub the composition root holds; the queue takes its own Clock from it. */
   hub: ClockHub;
   timeoutMs?: number;
+  /** How long after a change of the list an allow is refused as stale-view (default APPROVAL_LIMITS.settleMs). */
+  settleMs?: number;
   /** Hears every change of the list (the page's revision moved). */
   onChange?: () => void;
+  /** Hears every entry that leaves the queue, after its answer was written: the composition root logs the deadline's refusals here. */
+  onSettled?: (view: ApprovalView, outcome: ApprovalOutcome) => void;
 };
 
 export class Approvals {
   readonly #open = new Map<string, Entry>();
   readonly #clock: Clock;
   readonly #timeoutMs: number;
+  readonly #settleMs: number;
   readonly #onChange: () => void;
+  readonly #onSettled: NonNullable<ApprovalsOptions['onSettled']>;
   #rev = 0;
+  /** The monotonic reading of the last change of the list; null before any. */
+  #changedMono: number | null = null;
 
   constructor(opts: ApprovalsOptions) {
     const timeoutMs = opts.timeoutMs ?? APPROVAL_LIMITS.timeoutMs;
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) throw new Error('approvals: timeoutMs must be a positive integer');
+    const settleMs = opts.settleMs ?? APPROVAL_LIMITS.settleMs;
+    if (!Number.isSafeInteger(settleMs) || settleMs < 0) throw new Error('approvals: settleMs must be a non-negative integer');
     this.#timeoutMs = timeoutMs;
+    this.#settleMs = settleMs;
     this.#onChange = opts.onChange ?? (() => {});
+    this.#onSettled = opts.onSettled ?? (() => {});
     this.#clock = opts.hub.port((f) => this.#fired(f));
   }
 
@@ -112,7 +133,7 @@ export class Approvals {
     const view: ApprovalView = Object.freeze({
       approvalId, ownedId: input.ownedId, kind: input.kind, title, preview, tooLong: !whole, redactions: input.redactions,
       digest: canonicalDigest({ approvalId, kind: input.kind, title, preview }),
-      risk, high, canAccept: whole && input.canAccept, canText: whole && input.canText,
+      risk, high, rev: this.#rev + 1, canAccept: whole && input.canAccept, canText: whole && input.canText,
       deadlineMono, deadlineWall: this.#clock.nowWall() + this.#timeoutMs,
     });
     const timerId = `deadline:${approvalId}:0`;
@@ -131,11 +152,16 @@ export class Approvals {
     return [...this.#open.values()].map((e) => e.view).filter((v) => ownedId === undefined || v.ownedId === ownedId);
   }
 
+  /** True while the list changed less than settleMs ago: no allow is taken then. */
+  get settling(): boolean {
+    return this.#changedMono !== null && this.#clock.nowMono() - this.#changedMono < this.#settleMs;
+  }
+
   /** The person allows what the page showed: `digest` from the card, `rev` the list revision it was drawn from. */
   allow(approvalId: string, seen: { digest: string; rev: number }): ApprovalVerdict {
     const e = this.#open.get(approvalId);
     if (e === undefined) return 'approval-gone';
-    if (seen.rev !== this.#rev) return 'stale-view';
+    if (seen.rev !== this.#rev || this.settling) return 'stale-view';
     // A card that offers no allow (too long, a question, a session-wide grant) is declined like a stale digest:
     // what would be allowed is not what the page could show.
     if (seen.digest !== e.view.digest || !e.view.canAccept) {
@@ -150,7 +176,7 @@ export class Approvals {
   answerText(approvalId: string, text: string, seen: { digest: string; rev: number }): ApprovalVerdict {
     const e = this.#open.get(approvalId);
     if (e === undefined) return 'approval-gone';
-    if (seen.rev !== this.#rev) return 'stale-view';
+    if (seen.rev !== this.#rev || this.settling) return 'stale-view';
     if (seen.digest !== e.view.digest || !e.view.canText || typeof text !== 'string') {
       this.#answer(e, { decision: 'decline' }, 'human');
       return 'digest-mismatch';
@@ -179,13 +205,17 @@ export class Approvals {
     const e = this.#open.get(approvalId);
     if (e === undefined) return false;
     this.#drop(e);
+    this.#settled(e.view, { decision: 'dropped', cause: 'gone' });
     return true;
   }
 
   /** Drops every open entry of a session whose child is gone; the count dropped. */
   forgetOwned(ownedId: string): number {
     const mine = [...this.#open.values()].filter((e) => e.view.ownedId === ownedId);
-    for (const e of mine) this.#drop(e);
+    for (const e of mine) {
+      this.#drop(e);
+      this.#settled(e.view, { decision: 'dropped', cause: 'gone' });
+    }
     return mine.length;
   }
 
@@ -197,6 +227,15 @@ export class Approvals {
     } catch {
       // The session writes the answer and notes its own failures (a child already gone, say); the
       // entry is answered either way, and a deadline that fires must not throw into the Clock.
+    }
+    this.#settled(e.view, { decision: a.decision, cause });
+  }
+
+  #settled(view: ApprovalView, outcome: ApprovalOutcome): void {
+    try {
+      this.#onSettled(view, Object.freeze(outcome));
+    } catch {
+      // A listener that throws must not undo an answer already written.
     }
   }
 
@@ -217,6 +256,7 @@ export class Approvals {
 
   #changed(): void {
     this.#rev++;
+    this.#changedMono = this.#clock.nowMono();
     try {
       this.#onChange();
     } catch {

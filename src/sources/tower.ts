@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { Harness, Lane, Player, StageSnapshot } from './stage.ts';
 import { STAGE_LIMITS } from './stage.ts';
 import { STATE_RANK, TOWER_BOUNDS } from '../../shared/tower-contract.js';
+import { OWNED_TOWER_TEXT } from '../../shared/owned-contract.js';
 import { frozen } from '../../shared/frozen.js';
 
 // The tower snapshot (orchestra app plan §1, tower panel research §1): you -> agents -> subagents,
@@ -20,12 +21,20 @@ import { frozen } from '../../shared/frozen.js';
 //   was aborted sent nothing back, so it is unknown, never returned;
 // - nothing is read as failed yet (meta.detects.error is false): the page shows no error count;
 // - waits: the Claude registry's is native; a Codex wait read off an unanswered call is inferred.
-//   None of them has a deadline: only Orchestra's own queue (owned sessions, later) runs that clock.
+//   None of them has a deadline: only Orchestra's own queue (owned sessions) runs that clock.
+//
+// Owned sessions (orchestra app plan section 2) come from the driver, not from the stage: one project
+// of their own, first, basis 'owned' (one project, not one per cwd: each owned session works in its own
+// ORCHESTRA_HOME\work\<ownedId>, so a project per cwd would be a project per session). Their state is
+// what the driver knows of its own child (basis 'owned'): a turn running, idle between turns, waiting on
+// an approval of Orchestra's queue (source orchestra, with the deadline the queue denies it at), or ended;
+// an ended session is idle with its end reason as its activity, never done (T2), never error (this
+// build shows no error state: meta.detects.error is false for the observed sources).
 // Then the tree is ordered (waits on you, failed, runs, unknown, returned, idle), counted per
 // subtree so a wait bubbles up through its ancestors, and folded by the research's rules.
 
 export type TowerState = 'waiting' | 'error' | 'running' | 'unknown' | 'returned' | 'idle';
-export type TowerBasis = 'registry' | 'log' | 'mtime' | 'none';
+export type TowerBasis = 'registry' | 'log' | 'mtime' | 'none' | 'owned';
 export type Waiting = { kind: 'approval' | 'question' | 'route'; source: 'orchestra' | 'native' | 'inferred'; deadline: number | null };
 export type Group = { kind: 'same-type' | 'returned' | 'idle'; label: string | null; count: number; ids: string[] };
 export type TowerNode = {
@@ -40,7 +49,28 @@ export type TowerNode = {
   ageMs: number | null; agentType: string | null;
 };
 export type TowerSrc = { state: 'ok' | 'empty' | 'error'; total: number; shown: number; registry: number | null; error: string | null };
-export type Project = { id: string; name: string; basis: 'cwd' | 'slug'; nodes: TowerNode[]; groups: Group[] };
+export type Project = { id: string; name: string; basis: 'cwd' | 'slug' | 'owned'; nodes: TowerNode[]; groups: Group[] };
+
+/**
+ * An owned session as the driver knows it (src/owned/codex-owned.ts towerSeats): its title and the
+ * approval it waits on are shown text already (redacted, invisible characters written out).
+ */
+export type OwnedSeat = {
+  /** 20 lowercase hex digits (slice design 2.4); the node is n:<ownedId>. */
+  ownedId: string;
+  harness: Harness;
+  title: string;
+  state: 'starting' | 'idle' | 'running' | 'ended' | 'failed';
+  endReason: string | null;
+  /** The earliest open approval of the session, with the wall time the queue declines it at. */
+  waiting: { kind: 'approval' | 'question'; deadline: number; title: string } | null;
+  /** Wall ms of the session's last feed event; null before any. */
+  lastAt: number | null;
+};
+
+/** The owned sessions' project: a fixed id, so the page keeps its fold state across snapshots. */
+export const OWNED_PROJECT_ID = createHash('sha256').update('orchestra:owned-project').digest('hex').slice(0, 20);
+const OWNED_ID_RE = /^[0-9a-f]{20}$/;
 export type WaitingEntry = { node: string; kind: Waiting['kind']; source: Waiting['source']; deadline: number | null };
 export type TowerSnapshot = {
   meta: {
@@ -207,15 +237,46 @@ export function projectOf(lane: Lane): Project {
   return { id: lane.id, name: lane.name, basis: lane.basis, nodes: ordered, groups: foldSiblings(roots) };
 }
 
+const text = (key: string, fallback: string): string => (Object.hasOwn(OWNED_TOWER_TEXT, key) ? (OWNED_TOWER_TEXT as Record<string, string>)[key]! : fallback);
+
+/** One owned session as a node: the driver's word, basis owned. */
+export function ownedNode(seat: OwnedSeat, nowWall: number): TowerNode {
+  const waiting: Waiting | null = seat.waiting === null ? null : { kind: seat.waiting.kind, source: 'orchestra', deadline: seat.waiting.deadline };
+  const state: TowerState = waiting !== null ? 'waiting' : seat.state === 'starting' || seat.state === 'running' ? 'running' : 'idle';
+  let activity: string | null = null;
+  if (seat.waiting !== null && seat.waiting.title !== '') activity = seat.waiting.title;
+  else if (seat.state === 'starting') activity = text('starting', 'starting');
+  else if (seat.state === 'ended' || seat.state === 'failed') activity = text(`end.${seat.endReason ?? 'unknown'}`, text('end.unknown', 'ended'));
+  const title = seat.title === '' ? text('untitled', 'owned session') : seat.title;
+  return {
+    id: `n:${seat.ownedId}`, session: null, harness: seat.harness, ownership: 'owned', layer: 'agent', parent: null, depth: 0,
+    title: clipCp(title, TOWER_BOUNDS.titleCp), activity: activity === null ? null : clipCp(activity, TOWER_BOUNDS.activityCp),
+    state, basis: 'owned', waiting,
+    counts: { children: 0, errors: 0, waiting: 0 }, groups: [],
+    ageMs: seat.lastAt === null ? null : Math.max(0, nowWall - seat.lastAt), agentType: null,
+  };
+}
+
+/** The owned sessions' project, or null when there is none. Seats with an id outside the grammar are left out. */
+export function ownedProject(seats: readonly OwnedSeat[], nowWall: number): Project | null {
+  const nodes = seats.filter((s) => OWNED_ID_RE.test(s.ownedId)).map((s) => ownedNode(s, nowWall)).sort(byRank);
+  if (nodes.length === 0) return null;
+  return { id: OWNED_PROJECT_ID, name: text('project', 'Orchestra'), basis: 'owned', nodes, groups: foldSiblings(nodes) };
+}
+
 /** 16 hex over the snapshot without its time fields: unchanged data, unchanged rev. */
 function revOf(body: unknown): string {
   const timeless = JSON.stringify(body, (k, v) => (k === 'rev' || k === 'observedAt' || k === 'ageMs' ? undefined : v));
   return createHash('sha256').update(timeless).digest('hex').slice(0, 16);
 }
 
-/** The tower of one stage snapshot. Pure: reads `stage`, shares no object with it. */
-export function towerFromStage(stage: StageSnapshot): TowerSnapshot {
-  const projects = stage.lanes.map(projectOf);
+/**
+ * The tower of one stage snapshot, the owned sessions' project first when there are any. Pure: reads
+ * `stage` and `owned`, shares no object with them.
+ */
+export function towerFromStage(stage: StageSnapshot, owned: { seats: readonly OwnedSeat[]; nowWall: number } | null = null): TowerSnapshot {
+  const mine = owned === null ? null : ownedProject(owned.seats, owned.nowWall);
+  const projects = [...(mine === null ? [] : [mine]), ...stage.lanes.map(projectOf)];
   const all = projects.flatMap((p) => p.nodes);
   // Deadlines first, soonest first; then the rest in tree order (native before inferred).
   const sourceRank = { orchestra: 0, native: 1, inferred: 2 } as const;
@@ -253,15 +314,22 @@ export function towerFromStage(stage: StageSnapshot): TowerSnapshot {
   return body;
 }
 
+/** Where the tower reads the owned sessions from: the driver's seats, and the wall clock their ages are taken against. */
+export type OwnedSeats = { seats(): readonly OwnedSeat[]; nowWall(): number };
+
 /**
  * The tower builder the peek server holds, over its stage builder: the stage's throttle and memo
- * decide when anything is read again, and the same stage snapshot gives the same tower object.
+ * decide when anything is read again, and the same stage snapshot gives the same tower object. With
+ * owned sessions the tower is built again whenever any of them is there (they change between two stage
+ * reads: a turn ends, an approval comes); with none it is the stage's memo alone.
  */
-export function makeTowerBuilder(stage: { snapshot(): StageSnapshot }): { snapshot(): TowerSnapshot } {
+export function makeTowerBuilder(stage: { snapshot(): StageSnapshot }, owned: OwnedSeats | null = null): { snapshot(): TowerSnapshot } {
   let last: { from: StageSnapshot; tower: TowerSnapshot } | null = null;
   return {
     snapshot(): TowerSnapshot {
       const s = stage.snapshot();
+      const seats = owned === null ? [] : owned.seats();
+      if (seats.length > 0) return towerFromStage(s, { seats, nowWall: owned!.nowWall() });
       if (last === null || last.from !== s) last = { from: s, tower: towerFromStage(s) };
       return last.tower;
     },

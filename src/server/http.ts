@@ -8,6 +8,7 @@ import type { Log } from '../runtime/log.ts';
 import type { PeekEvent, PeekView, Redact } from '../sources/peek.ts';
 import { PEEK_LIMITS, findSession, readSession } from '../sources/peek.ts';
 import { makeStageBuilder } from '../sources/stage.ts';
+import type { OwnedSeats } from '../sources/tower.ts';
 import { makeTowerBuilder } from '../sources/tower.ts';
 import type { OwnedAnswer, OwnedApiOptions } from './owned.ts';
 import { makeOwnedApi } from './owned.ts';
@@ -44,7 +45,8 @@ import { frozen } from '../../shared/frozen.js';
 // alpha 0.2 (slice design §2.7): when given `owned`, the owned-session routes of routes.ts (the unlock
 // pair, /api/owned/*, /api/approvals/*, /api/import/*) go to src/server/owned.ts, which runs their
 // check chain after the Host check here: the pairing cookie, Origin, Sec-Fetch-Site, JSON, and the
-// controller token an unlock code buys. Without `owned` they do not exist.
+// controller token an unlock code buys. Without `owned` they do not exist. With `ownedSeats` the tower
+// draws the owned sessions too, in a project of their own (src/sources/tower.ts).
 
 export const PEEK_HOST = 'orchestra.localhost';
 export const PAIR_TTL_MS = 10 * 60 * 1000;
@@ -85,6 +87,8 @@ export type PeekServerOptions = {
   assets?: Readonly<Record<string, UiAsset>>;
   /** The owned-session API (alpha 0.2); absent, its routes do not exist. */
   owned?: OwnedApiOptions;
+  /** The owned sessions as the tower draws them (orchestra app plan section 2); absent, the tower has none. */
+  ownedSeats?: OwnedSeats;
 };
 
 export type PeekServer = { port: number; url: string; close(): Promise<void> };
@@ -251,7 +255,7 @@ export async function startPeekServer(opts: PeekServerOptions): Promise<PeekServ
   const pairing = makePairing(opts.pairingCode, clock.nowMono());
   const sessions = new Set<string>();
   const stage = makeStageBuilder({ gate, roots, redact, clock, profile });
-  const tower = makeTowerBuilder(stage);
+  const tower = makeTowerBuilder(stage, opts.ownedSeats ?? null);
   // The embedded files, decoded once; looked up by exact name, nothing else reaches them.
   const assets = new Map<string, { type: string; etag: string; body: Buffer }>();
   const given = opts.assets ?? UI_ASSETS;

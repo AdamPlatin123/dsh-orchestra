@@ -39,7 +39,7 @@ export const HUMAN_VERB_ROUTES = Object.freeze(/** @type {const} */ ({
   'protect-remove': '/api/protect/remove',
   'dsh-connect': '/api/dsh-connect',
   'self-rating': '/api/self-rating',
-  'owned-new': '/api/owned/claude/new',
+  'owned-new': '/api/owned/new',
   'owned-message': '/api/owned/:id/message',
   'owned-interrupt': '/api/owned/:id/interrupt',
   'owned-end': '/api/owned/:id/end',
@@ -96,6 +96,10 @@ export const ERROR_STATUS = Object.freeze(/** @type {const} */ ({
   'host-tampered': 503,
   // alpha 0.2 step 5: an owned-session body over OWNED_BODY_MAX_BYTES (src/server/routes.ts), refused before it is read as JSON
   'body-too-big': 413,
+  // orchestra app: owned session ended, its queue full, its child not started
+  'owned-ended': 409,
+  'queue-full': 409,
+  'spawn-failed': 503,
 }));
 /** @typedef {keyof typeof ERROR_STATUS} ErrorCode */
 /** @type {readonly ErrorCode[]} */

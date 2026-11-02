@@ -11,6 +11,7 @@
 //   has no node with basis registry or a native wait. With meta.detects.error false, no node is error:
 //   an error count of 0 then means "not looked", and the page does not show one.
 // - T2: no node is ever done: the furthest a subagent gets is `returned` (it sent its report back).
+// - Basis owned only on an owned node; one owned project, of owned nodes only.
 // - T3: every count equals the length of the list it links to: tally against the nodes, a group's
 //   count against its ids, a node's subtree counts against its descendants, the waiting bar against
 //   the nodes that wait, clipped sessions against total - shown per source.
@@ -39,14 +40,14 @@ const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
 export const TOWER_ENUMS = frozen({
   profile: ['test', 'real'],
   srcState: ['ok', 'empty', 'error'],
-  projectBasis: ['cwd', 'slug'],
+  projectBasis: ['cwd', 'slug', 'owned'],
   harness: ['claude', 'dsh', 'codex'],
   ownership: ['observed', 'owned', 'foreign'],
   layer: ['agent', 'subagent'],
   /** In sibling order: waits on you, failed, runs, unknown, returned, idle. */
   state: ['waiting', 'error', 'running', 'unknown', 'returned', 'idle'],
-  /** registry: the harness reported it; log: read off the session's own events; mtime: guessed from the last write; none: unknown. */
-  basis: ['registry', 'log', 'mtime', 'none'],
+  /** registry: reported; log: read off its events; mtime: guessed from the last write; none: unknown; owned: its driver knows. */
+  basis: ['registry', 'log', 'mtime', 'none', 'owned'],
   waitingKind: ['approval', 'question', 'route'],
   /** orchestra: Orchestra's own queue (owned sessions, with a deadline); native: the harness says so; inferred: a guess. */
   waitingSource: ['orchestra', 'native', 'inferred'],
@@ -268,6 +269,8 @@ function checkNode(c, v, at) {
   if ((n.state === 'unknown') !== (n.basis === 'none')) c.bad(`${at}.basis`, `${String(n.basis)} with state ${String(n.state)}: basis none exactly when the state is unknown`);
   // T2: returned is a subagent's word; an agent is never reported back to anyone.
   if (n.state === 'returned' && n.layer !== 'subagent') c.bad(`${at}.state`, 'only a subagent returns');
+  if (n.basis === 'owned' && n.ownership !== 'owned') c.bad(`${at}.basis`, 'owned on a node not owned');
+  if (n.ownership === 'owned' && n.basis !== 'owned' && n.basis !== 'none') c.bad(`${at}.basis`, `${String(n.basis)} on an owned node`);
   if (n.waiting !== null) {
     const w = checkWaiting(c, n.waiting, `${at}.waiting`);
     if (w !== null) {
@@ -492,6 +495,7 @@ export function validateTower(x) {
   /** @type {Map<unknown, Record<string, unknown>>} */
   const all = new Map();
   const projectIds = new Set();
+  let ownedProjects = 0;
   c.arr(s.projects, '$.projects').forEach((p, pi) => {
     const at = `$.projects[${pi}]`;
     const project = c.obj(p, at, ['id', 'name', 'basis', 'nodes', 'groups']);
@@ -501,12 +505,14 @@ export function validateTower(x) {
     projectIds.add(project.id);
     c.text(project.name, `${at}.name`, TOWER_BOUNDS.textCp);
     c.en(project.basis, `${at}.basis`, TOWER_ENUMS.projectBasis);
+    if (project.basis === 'owned' && ++ownedProjects > 1) c.bad(`${at}.basis`, 'a second owned project');
     /** @type {{ n: Record<string, unknown>, groups: (Record<string, unknown> | null)[] }[]} */
     const checked = [];
     c.arr(project.nodes, `${at}.nodes`).forEach((n, i) => {
       const got = checkNode(c, n, `${at}.nodes[${i}]`);
       if (got === null) return;
       if (all.has(got.n.id)) c.bad(`${at}.nodes[${i}].id`, `${String(got.n.id)} used twice`);
+      if (project.basis === 'owned' && got.n.ownership !== 'owned') c.bad(`${at}.nodes[${i}].ownership`, 'not owned, in the owned project');
       all.set(got.n.id, got.n);
       checked.push(got);
     });
