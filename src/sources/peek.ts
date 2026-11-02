@@ -4,10 +4,10 @@ import type { HarnessRoot } from '../fs/harness-roots.ts';
 import type { ReadGate } from '../fs/read-gate.ts';
 import { pathKey } from '../fs/paths.ts';
 import { ReadGateError } from '../fs/read-gate.ts';
-import { FrameError, decodeFrame, walkFrames } from '../lib/zstd/frames.ts';
+import { FrameError, decodeFrame, decodePrefix, walkFrames } from '../lib/zstd/frames.ts';
 import { frozen } from '../../shared/frozen.js';
 
-// The thin slice ahead of plan steps 9-11: list the Claude transcripts and DSH v4 logs under the
+// The thin slice ahead of plan steps 9-11: list the Claude transcripts, DSH v4 logs and Codex rollouts under the
 // harness roots and show the last events of one, read-only, for the peek page (src/server/http.ts).
 // Every read goes through the read gate: 'r' only, closed as soon as the read is done, no tail handle
 // held, so nothing here keeps a file open that its harness may replace (plan §6 invariant 4). Nothing
@@ -15,7 +15,7 @@ import { frozen } from '../../shared/frozen.js';
 // cleaned of control characters, run through the redactor, and clipped to one field's size.
 // Steps 9-11 replace the readers (cursors, normalization, the hot set); step 5 replaces the page.
 
-export type PeekHarness = 'claude' | 'dsh';
+export type PeekHarness = 'claude' | 'dsh' | 'codex';
 
 export type PeekSession = {
   /** Opaque: a digest of the file's path. The page names a session by it, never by a path. */
@@ -52,6 +52,14 @@ export const PEEK_LIMITS = frozen({
   dshMaxDecodedBytes: 4 * 32 * 1024 * 1024,
   /** One shown field, in UTF-16 code units (plan step 5's 2 KB per field). */
   fieldChars: 2048,
+  /** A plain Codex rollout past this size is read as its first line (session_meta) and its last codexTailBytes. */
+  codexTailBytes: 256 * 1024,
+  /** The bytes a Codex rollout's first line is looked for in (a plain file), or decoded from (a .zst past codexMaxBytes). */
+  codexHeadBytes: 256 * 1024,
+  /** What those head bytes of a .zst may decode to; past it the head is not read. */
+  codexHeadDecodedBytes: 4 * 1024 * 1024,
+  /** A Codex .zst rollout (one frame of the whole session) is decoded whole only up to this size; past it, its head only. */
+  codexMaxBytes: 32 * 1024 * 1024,
 });
 
 export type Redact = (text: string) => string;
@@ -59,6 +67,9 @@ export type Redact = (text: string) => string;
 const win = path.win32;
 const UUID = /^(?:session-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const DSH_LOG = 'session.v4.jsonl.zstd';
+const ROLLOUT = /^rollout-[^\\/]*\.jsonl(?:\.zst)?$/i;
+/** Codex names a session's file by its start time and thread id; archiving moves it, compressing renames it. */
+const rolloutKey = (name: string) => name.toLowerCase().replace(/\.zst$/, '');
 // C0 and C1 controls but tab and newline, DEL, and the bidi embeddings, overrides and isolates.
 const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/g;
 
@@ -97,7 +108,11 @@ function session(harness: PeekHarness, project: string, file: string, gate: Read
   return { id: idOf(file), harness, project: shown(project, redact, 120), file, size: Number(st.size), mtimeMs: Number(st.mtimeMs) };
 }
 
-/** Every Claude transcript (`projects/<dir>/<uuid>.jsonl`) and DSH v4 log under one root. */
+/**
+ * Every Claude transcript (`projects/<dir>/<uuid>.jsonl`), DSH v4 log and Codex rollout
+ * (`sessions/YYYY/MM/DD/rollout-*.jsonl[.zst]` and `archived_sessions/rollout-*`) under one root. A
+ * Codex session found twice (plain and compressed, or live and archived) is listed once: its newest file.
+ */
 function walkRoot(gate: ReadGate, root: HarnessRoot, redact: Redact): PeekSession[] {
   const out: PeekSession[] = [];
   const add = (s: PeekSession | null) => {
@@ -118,6 +133,28 @@ function walkRoot(gate: ReadGate, root: HarnessRoot, redact: Redact): PeekSessio
         if (UUID.test(sub)) add(session('dsh', dir, win.join(sessions, dir, sub, DSH_LOG), gate, redact));
       }
     }
+  } else if (root.kind === 'codex') {
+    const byName = new Map<string, PeekSession>();
+    const rollout = (dir: string) => {
+      for (const name of tryGate(() => gate.readdir(dir), [])) {
+        if (!ROLLOUT.test(name)) continue;
+        // No project directory: Codex keeps the cwd inside the file, read by the stage digest.
+        const s = session('codex', 'codex', win.join(dir, name), gate, redact);
+        if (s === null) continue;
+        const had = byName.get(rolloutKey(name));
+        if (had === undefined || had.mtimeMs < s.mtimeMs) byName.set(rolloutKey(name), s);
+      }
+    };
+    const sessions = win.join(root.path, 'sessions');
+    for (const y of tryGate(() => gate.subdirs(sessions), [])) {
+      if (!/^\d{4}$/.test(y)) continue;
+      for (const m of tryGate(() => gate.subdirs(win.join(sessions, y)), [])) {
+        if (!/^\d{2}$/.test(m)) continue;
+        for (const d of tryGate(() => gate.subdirs(win.join(sessions, y, m)), [])) if (/^\d{2}$/.test(d)) rollout(win.join(sessions, y, m, d));
+      }
+    }
+    rollout(win.join(root.path, 'archived_sessions'));
+    out.push(...byName.values());
   }
   return out;
 }
@@ -229,7 +266,7 @@ export function claudeEvent(line: string, redact: Redact): PeekEvent | null {
 }
 
 /** `key: value` for the string, number and boolean leaves of a DSH event's data, depth first, bounded. */
-function leaves(v: unknown, at: string, out: string[], budget: { chars: number }, depth: number): void {
+function leaves(v: unknown, at: string, out: string[], budget: { chars: number }, depth: number, skip: RegExp | null = null): void {
   if (budget.chars <= 0 || depth > 6) return;
   if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') {
     const line = at === '' ? String(v) : `${at}: ${String(v)}`;
@@ -238,10 +275,10 @@ function leaves(v: unknown, at: string, out: string[], budget: { chars: number }
     return;
   }
   if (Array.isArray(v)) {
-    v.forEach((x, i) => leaves(x, `${at}[${i}]`, out, budget, depth + 1));
+    v.forEach((x, i) => leaves(x, `${at}[${i}]`, out, budget, depth + 1, skip));
     return;
   }
-  if (isObject(v)) for (const k of Object.keys(v)) leaves(v[k], at === '' ? k : `${at}.${k}`, out, budget, depth + 1);
+  if (isObject(v)) for (const k of Object.keys(v)) if (skip === null || !skip.test(k)) leaves(v[k], at === '' ? k : `${at}.${k}`, out, budget, depth + 1, skip);
 }
 
 /** One DSH log line (`{type, seq, time, data}`), or null when it is no JSON object. */
@@ -260,17 +297,64 @@ export function dshEvent(line: string, redact: Redact): PeekEvent | null {
   return { at: isoOf(own(o, 'time')), type: shown(type, redact, 64), text: shown(out.join('\n'), redact) };
 }
 
+/** Keys whose values are paths in Codex events (cwd, workdir, workspace_roots, writable_roots, agent_path...). */
+const CODEX_PATH_KEYS = /cwd|dir|path|root|instructions/i;
+
+/** The readable part of a Codex response item's content: its text blocks. */
+function codexContent(c: unknown): string {
+  if (typeof c === 'string') return c;
+  if (!Array.isArray(c)) return '';
+  return c.map((b) => (isObject(b) ? str(own(b, 'text')) : '')).filter((t) => t !== '').join('\n');
+}
+
+/** One Codex rollout line (`{timestamp, type, payload}`), or null when it is no JSON object. */
+export function codexEvent(line: string, redact: Redact): PeekEvent | null {
+  let o: unknown;
+  try {
+    o = JSON.parse(line);
+  } catch {
+    return null;
+  }
+  if (!isObject(o)) return null;
+  const type = str(own(o, 'type')) || '?';
+  const p = isObject(own(o, 'payload')) ? (own(o, 'payload') as Record<string, unknown>) : {};
+  const sub = str(own(p, 'type'));
+  let text = '';
+  if (type === 'session_meta') {
+    // Not its base instructions, nor its cwd (an absolute path): the id and what started it.
+    const source = own(p, 'source');
+    text = [`id: ${str(own(p, 'id'))}`, `source: ${typeof source === 'string' ? source : isObject(source) ? Object.keys(source).join(',') : ''}`].join('\n');
+  } else if (sub === 'message' || sub === 'agent_message') {
+    text = `${str(own(p, 'role'))}: ${codexContent(own(p, 'content'))}`;
+  } else if (sub === 'function_call' || sub === 'custom_tool_call') {
+    const args = own(p, 'arguments') ?? own(p, 'input');
+    text = `[${sub} ${str(own(p, 'name'))}] ${clip(typeof args === 'string' ? args : '', 600)}`;
+  } else if (sub === 'function_call_output' || sub === 'custom_tool_call_output') {
+    const out = own(p, 'output');
+    text = `[output] ${typeof out === 'string' ? out : isObject(out) ? str(own(out, 'content')) : ''}`;
+  } else if (sub === 'reasoning') {
+    text = '[reasoning]';
+  } else {
+    const out: string[] = [];
+    // Settings and events carry the cwd, workspace roots and sandbox paths: no path-like key is shown.
+    leaves(p, '', out, { chars: PEEK_LIMITS.fieldChars * 4 }, 0, CODEX_PATH_KEYS);
+    text = out.join('\n');
+  }
+  return { at: isoOf(own(o, 'timestamp')), type: shown(sub === '' ? type : `${type}:${sub}`, redact, 64), text: shown(text, redact) };
+}
+
 export type PeekNote = NonNullable<PeekView['note']>;
 
 /**
  * Hands every whole line of a session to `each`, in file order, read once through the gate: a Claude
- * transcript's last PEEK_LIMITS.claudeTailBytes, a DSH log frame by frame from byte 0 (none past
+ * transcript's last PEEK_LIMITS.claudeTailBytes, a Codex rollout as codexLines() says, a DSH log frame by frame from byte 0 (none past
  * PEEK_LIMITS.dshMaxBytes, and no more decoded text than `decoded` bytes: each frame is decoded with
  * what is left of it as its ceiling, so a frame that claims a huge size cannot grow past it). Returns
  * why fewer lines than the file holds may have come, or null.
  */
 function eachLine(gate: ReadGate, s: PeekSession, each: (line: string) => void, decoded: number = PEEK_LIMITS.dshMaxDecodedBytes): PeekNote | null {
   let note: PeekNote | null = null;
+  if (s.harness === 'codex') return codexLines(gate, s, each, decoded);
   if (s.harness === 'claude') {
     const start = Math.max(0, s.size - PEEK_LIMITS.claudeTailBytes);
     const text = gate.readRange(s.file, start, s.size - start).toString('utf8');
@@ -285,13 +369,24 @@ function eachLine(gate: ReadGate, s: PeekSession, each: (line: string) => void, 
     return note;
   }
   if (s.size > PEEK_LIMITS.dshMaxBytes) return 'too-large';
-  const b = gate.readFile(s.file);
+  return frameLines(gate.readFile(s.file), each, decoded).note;
+}
+
+const tooLarge = (e: unknown) => e instanceof RangeError && (e as { code?: unknown }).code === 'ERR_BUFFER_TOO_LARGE';
+
+/**
+ * Every line of every complete frame of `b`, frame by frame, no more decoded text than `decoded` bytes
+ * (each frame is decoded with what is left as its ceiling). `lines` counts the lines handed over.
+ */
+function frameLines(b: Buffer, each: (line: string) => void, decoded: number): { note: PeekNote | null; lines: number } {
+  let note: PeekNote | null = null;
+  let lines = 0;
   let walked: ReturnType<typeof walkFrames>;
   try {
     walked = walkFrames(b);
   } catch (e) {
     if (!(e instanceof FrameError)) throw e;
-    return 'bad-frame';
+    return { note: 'bad-frame', lines };
   }
   let left = decoded;
   for (const f of walked.frames) {
@@ -306,13 +401,74 @@ function eachLine(gate: ReadGate, s: PeekSession, each: (line: string) => void, 
       left -= out.length;
       text = out.toString('utf8');
     } catch (e) {
-      note = e instanceof RangeError && (e as { code?: unknown }).code === 'ERR_BUFFER_TOO_LARGE' ? 'too-large' : 'bad-frame';
+      note = tooLarge(e) ? 'too-large' : 'bad-frame';
       break;
     }
-    for (const line of text.split('\n')) each(line);
+    for (const line of text.split('\n')) {
+      lines++;
+      each(line);
+    }
   }
   if (note === null && walked.next < b.length) note = 'unfinished-frame';
-  return note;
+  return { note, lines };
+}
+
+/** A zlib error (Z_DATA_ERROR, Z_BUF_ERROR...): bytes that are no zstd, or end too soon. */
+const isZlibError = (e: unknown) => e instanceof Error && typeof (e as { code?: unknown }).code === 'string' && /^Z_/.test((e as { code: string }).code);
+
+/**
+ * A Codex rollout's lines. A plain one (the live file) is read whole up to PEEK_LIMITS.codexTailBytes;
+ * past it, its first line (session_meta: id, cwd, start) and then its last codexTailBytes, noted
+ * tail-only. A .zst one (Codex compresses a finished session into one frame) is decoded whole up to
+ * codexMaxBytes and `decoded` bytes of text; past either, only its first line comes, decoded from its
+ * first codexHeadBytes, noted too-large: the rest of it is never read.
+ */
+function codexLines(gate: ReadGate, s: PeekSession, each: (line: string) => void, decoded: number): PeekNote | null {
+  const L = PEEK_LIMITS;
+  if (/\.zst$/i.test(s.file)) {
+    if (s.size <= L.codexMaxBytes) {
+      const got = frameLines(gate.readFile(s.file), each, decoded);
+      if (got.note !== 'too-large' || got.lines > 0) return got.note;
+    }
+    // Its own small ceiling, not what is left of `decoded`: a prefix that decodes past it is cut to a
+    // quarter and tried again while it is over 1 KiB, since the first line sits in the first bytes.
+    const bytes = gate.readRange(s.file, 0, Math.min(s.size, L.codexHeadBytes));
+    for (let n = bytes.length; n > 0; ) {
+      let head: string;
+      try {
+        head = decodePrefix(bytes.subarray(0, n), L.codexHeadDecodedBytes).toString('utf8');
+      } catch (e) {
+        if (!tooLarge(e)) {
+          if (isZlibError(e)) return 'bad-frame';
+          throw e;
+        }
+        n = n > 1024 ? Math.floor(n / 4) : 0;
+        continue;
+      }
+      const nl = head.indexOf('\n');
+      if (nl > 0) each(head.slice(0, nl));
+      break;
+    }
+    return 'too-large';
+  }
+  if (s.size <= L.codexTailBytes) {
+    const text = gate.readRange(s.file, 0, s.size).toString('utf8');
+    const lines = text.split('\n');
+    if (!text.endsWith('\n')) lines.pop();
+    for (const line of lines) each(line);
+    return null;
+  }
+  const headBuf = gate.readRange(s.file, 0, Math.min(s.size, L.codexHeadBytes));
+  const nl = headBuf.indexOf(0x0a);
+  if (nl > 0) each(headBuf.subarray(0, nl).toString('utf8'));
+  const start = Math.max(nl + 1, s.size - L.codexTailBytes);
+  const text = gate.readRange(s.file, start, s.size - start).toString('utf8');
+  const lines = text.split('\n');
+  // A read from the middle starts inside a line, unless it starts right after the first; the last may be half written.
+  if (start !== nl + 1) lines.shift();
+  if (!text.endsWith('\n')) lines.pop();
+  for (const line of lines) each(line);
+  return 'tail-only';
 }
 
 /** The last events of a session, read once through the gate. */
@@ -320,7 +476,7 @@ export function readSession(gate: ReadGate, s: PeekSession, redact: Redact): Pee
   const keep = PEEK_LIMITS.events;
   const events: PeekEvent[] = [];
   let unparsed = 0;
-  const parse = s.harness === 'claude' ? claudeEvent : dshEvent;
+  const parse = s.harness === 'claude' ? claudeEvent : s.harness === 'codex' ? codexEvent : dshEvent;
   const note = eachLine(gate, s, (line) => {
     if (line.trim() === '') return;
     const e = parse(line, redact);

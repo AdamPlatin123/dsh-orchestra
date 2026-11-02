@@ -216,7 +216,7 @@ test('the lane total says how much the lead did not read, only over items with b
 test('describeRules reads 没测过（0 个样本） with class untested, never a pass, even with hits:5 and n:0 (T4)', () => {
   const s = sample();
   const rules = describeRules(s.rules);
-  assert.equal(rules.length, 13);
+  assert.equal(rules.length, 20);
   for (const r of rules) {
     assert.equal(r.cls, 'untested');
     assert.equal(r.slots!.n!.text, '没测过（0 个样本）');
@@ -324,8 +324,8 @@ test('the score: one system per group with players, heads and phrases from their
   assert.equal(sc.waits!.kids!.length, s.podium.fermatas.length);
   assert.equal(sc.waits!.kids![0]!.slots!.t!.text, 'shop · 重构结账流程 (checkout refactor) 在等你：批准一个操作');
   assert.equal(sc.podium!.text, '有 1 件事等你；汇总它们的收件箱这一版还没做');
-  assert.ok(!systems.some((d) => d.key === 'codex'), 'Codex has no players: its system is static and says 未接入');
-  assert.equal(STAGE_TEXT['grp.codex'], '未接入（这一版不读）');
+  assert.ok(!systems.some((d) => d.key === 'codex'), 'no Codex players in this lane: no Codex system');
+  assert.equal(Object.hasOwn(STAGE_TEXT, 'grp.codex'), false, 'Codex is read now: nothing says 未接入');
   const notes = describeScore(s as any, NOTES, null).systems!.kids!;
   assert.deepEqual(notes.map((d) => d.key), ['claude'], 'a group with no players in the lane draws no system');
   assert.equal(notes[0]!.slots!.heads!.kids![0]!.data!.instr, 'strings');

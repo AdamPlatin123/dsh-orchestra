@@ -33,7 +33,7 @@ button { cursor: pointer; }
 .note { font-size: 11px; color: var(--ink-soft); }
 [data-lineage=claude] { --hue: var(--ink); --rule: var(--line); --tag: var(--ink-soft); }
 [data-lineage=dsh] { --hue: var(--dsh); --rule: var(--dsh-fill); --tag: var(--dsh); }
-[data-lineage=codex] { --hue: var(--codex); }
+[data-lineage=codex] { --hue: var(--codex); --rule: var(--codex-line); --tag: var(--codex); }
 [data-lineage=none] { --hue: var(--stale); --rule: var(--line); --tag: var(--stale); }
 .ins use { display: none; }
 [data-instr=woodwind] .g-woodwind, [data-instr=strings] .g-strings, [data-instr=percussion] .g-percussion,
@@ -102,6 +102,7 @@ svg.heads, svg.music { display: block; overflow: visible; font-family: var(--san
 .ph, .ph-tail { stroke-linecap: round; }
 .ph { stroke: var(--hue); stroke-width: 10; }
 .phrase[data-lineage=dsh] .ph, .phrase[data-lineage=dsh] .ph-tail { stroke: var(--dsh-fill); }
+.phrase[data-lineage=codex] .ph, .phrase[data-lineage=codex] .ph-tail { stroke: var(--codex-line); }
 .phrase[data-kind=stub] .ph, .phrase[data-kind=open] .ph { stroke: var(--stale); stroke-width: 6; stroke-dasharray: 0 7; }
 .phrase[data-state=orphan] .ph { stroke-width: 6; stroke-linecap: butt; stroke-dasharray: 5 4; }
 .ph-tail { stroke: var(--hue); stroke-width: 2; stroke-dasharray: 1 5; }
@@ -118,7 +119,9 @@ svg.heads, svg.music { display: block; overflow: visible; font-family: var(--san
 .tie { stroke: var(--hue); stroke-width: 1.5; }
 .tah { color: var(--hue); }
 .phrase[data-lineage=dsh] .tie { stroke: var(--dsh-fill); }
+.phrase[data-lineage=codex] .tie { stroke: var(--codex-line); }
 .phrase[data-lineage=dsh] .tah { color: var(--dsh-fill); }
+.phrase[data-lineage=codex] .tah { color: var(--codex-line); }
 .tie[data-w="2"] { stroke-width: 2.5; } .tie[data-w="3"] { stroke-width: 3.5; } .tie[data-w="4"] { stroke-width: 5; }
 .badge-bg { fill: var(--warn-bg); stroke: var(--warn); stroke-width: 1; }
 .badge-t { font-size: 12px; font-weight: 600; fill: var(--warn); }
@@ -134,8 +137,6 @@ svg.heads, svg.music { display: block; overflow: visible; font-family: var(--san
 .phrase:focus-visible .hit, .shead:focus-visible .hit { stroke: var(--focus); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
 
 .nolanes { margin: 20px 0; color: var(--ink-soft); }
-.sys-codex .sys-line { margin-bottom: 0; }
-.codex-staff { max-width: 560px; height: 2px; margin-top: 10px; background: repeating-linear-gradient(90deg, var(--codex-line) 0 8px, transparent 8px 14px); }
 
 .legend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; margin: 4px 0 0; padding: 12px 0 0; border-top: 1px solid var(--line-soft); list-style: none; font-size: 11.5px; color: var(--ink-soft); }
 .legend li { display: flex; align-items: center; gap: 5px; }

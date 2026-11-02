@@ -85,7 +85,7 @@ test('the stage preview end to end: pair, then /api/peek/stage over the stage fi
   const snap = JSON.parse(r.body) as { profile: string; lanes: { name: string; players: unknown[] }[]; podium: { fermatas: unknown[] } };
   assert.deepEqual(validateStage(snap).errors, []);
   assert.equal(snap.profile, 'test');
-  assert.deepEqual(snap.lanes.map((l) => [l.name, l.players.length]), [['shop', 8]]);
+  assert.deepEqual(snap.lanes.map((l) => [l.name, l.players.length]), [['shop', 11]], '5 Claude, 3 DSH, 3 Codex');
   assert.equal(snap.podium.fermatas.length, 1);
   assert.equal(r.body.includes(STAGE_CANARY), false);
   await child.stop();

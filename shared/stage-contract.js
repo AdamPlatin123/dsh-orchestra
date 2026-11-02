@@ -40,10 +40,10 @@ export const STAGE_ENUMS = frozen({
   srcState: ['ok', 'empty', 'error'],
   ruleStatus: ['untested', 'keys-mismatch'],
   laneBasis: ['cwd', 'slug'],
-  harness: ['claude', 'dsh'],
+  harness: ['claude', 'dsh', 'codex'],
   role: ['principal', 'clone', 'teammate'],
   liveState: ['busy', 'idle', 'waiting', 'running', 'returned', 'quiet', 'unknown'],
-  liveBasis: ['registry', 'unpaired-tool-use', 'mtime', 'none'],
+  liveBasis: ['registry', 'unpaired-tool-use', 'turn', 'mtime', 'none'],
   look: ['solid', 'translucent', 'ghost'],
   instrument: ['woodwind', 'strings', 'percussion', 'brass', 'unknown'],
   standSource: ['todo', 'task-brief', 'goal', 'team-task', 'none', 'tail-miss'],
@@ -52,7 +52,7 @@ export const STAGE_ENUMS = frozen({
   note: ['tail-only', 'too-large', 'bad-frame', 'unfinished-frame'],
   itemSource: ['task', 'todo', 'team-task', 'subagent-catalog'],
   itemState: ['working', 'reported', 'orphan', 'unknown', 'self'],
-  join: ['agentId', 'description', 'parentSession', 'team-owner'],
+  join: ['agentId', 'description', 'agentPath', 'parentSession', 'team-owner'],
   cueKind: ['dispatch', 'report'],
 });
 
@@ -64,6 +64,8 @@ export const STAGE_RULE_IDS = frozen([
   'claude.live.registry', 'claude.join.agentId', 'claude.join.description', 'claude.clone.running', 'claude.clone.orphan',
   'claude.stand.todo-keys', 'dsh.stand.todo-keys', 'dsh.stand.goal-keys', 'dsh.team-task-keys', 'dsh.child.parentSession',
   'dsh.live.mtime', 'instrument.tool-map', 'fermata.registry-waiting',
+  'codex.meta.keys', 'codex.live.turn', 'codex.waiting.unpaired', 'codex.child.parentThread', 'codex.join.spawn', 'codex.join.activity',
+  'codex.stand.plan-keys',
 ]);
 
 /** The bounds of §3's limits that a payload shows by itself; the body's 256 KiB is the server's to check. */
@@ -94,7 +96,7 @@ export const STAGE_BOUNDS = frozen({
  *   v: 1, kind: 'stage-preview',
  *   rev: string, observedAt: number, computedMs: number,
  *   profile: 'test' | 'real',
- *   sources: { claude: Src, dsh: Src, codex: { state: 'not-connected' } },
+ *   sources: { claude: Src, dsh: Src, codex: Src },
  *   rules: Rule[],
  *   podium: { fermatas: PlayerId[], inbox: null },
  *   lanes: Lane[],
@@ -104,10 +106,11 @@ export const STAGE_BOUNDS = frozen({
  * @typedef {{ id: string, hits: number, n: number, status: 'untested' | 'keys-mismatch' }} Rule
  * @typedef {{ id: Hex20, name: string, basis: 'cwd' | 'slug', players: Player[], items: WorkItem[], cues: Cue[] }} Lane
  * @typedef {{
- *   id: PlayerId, session: Hex20 | null, harness: 'claude' | 'dsh', role: 'principal' | 'clone' | 'teammate',
+ *   id: PlayerId, session: Hex20 | null, harness: 'claude' | 'dsh' | 'codex', role: 'principal' | 'clone' | 'teammate',
  *   parent: PlayerId | null, depth: 0 | 1 | 2 | 3 | 4, shade: 0 | 1 | 2, label: string, agentType: string | null,
+ *   model: string | null, startedAt: number | null,
  *   live: { state: 'busy' | 'idle' | 'waiting' | 'running' | 'returned' | 'quiet' | 'unknown',
- *           basis: 'registry' | 'unpaired-tool-use' | 'mtime' | 'none', waitingFor: string | null, ageMs: number | null },
+ *           basis: 'registry' | 'unpaired-tool-use' | 'turn' | 'mtime' | 'none', waitingFor: string | null, ageMs: number | null },
  *   look: 'solid' | 'translucent' | 'ghost', lookRule: string,
  *   instrument: { class: 'woodwind' | 'strings' | 'percussion' | 'brass' | 'unknown', window: number,
  *                 read: number, write: number, shell: number, role: string | null },
@@ -122,7 +125,7 @@ export const STAGE_BOUNDS = frozen({
  *   brief: string, criteria: { state: 'undeclared' },
  *   state: 'working' | 'reported' | 'orphan' | 'unknown' | 'self', stateRule: string,
  *   todoStatus: 'pending' | 'in_progress' | 'completed' | 'other' | null,
- *   join: 'agentId' | 'description' | 'parentSession' | 'team-owner' | null,
+ *   join: 'agentId' | 'description' | 'agentPath' | 'parentSession' | 'team-owner' | null,
  *   report: { at: number | null, bytes: number } | null,
  *   flow: { childBytes: number, reportBytes: number } | null,
  *   verdict: 'no-reviewer',
@@ -215,7 +218,7 @@ function checkSrc(c, v, at) {
 
 /** @param {Checker} c @param {unknown} v @param {string} at */
 function checkPlayer(c, v, at) {
-  const p = c.obj(v, at, ['id', 'session', 'harness', 'role', 'parent', 'depth', 'shade', 'label', 'agentType', 'live', 'look', 'lookRule', 'instrument', 'stand', 'bytes', 'note']);
+  const p = c.obj(v, at, ['id', 'session', 'harness', 'role', 'parent', 'depth', 'shade', 'label', 'agentType', 'model', 'startedAt', 'live', 'look', 'lookRule', 'instrument', 'stand', 'bytes', 'note']);
   if (p === null) return;
   c.re(p.id, `${at}.id`, PLAYER_ID_RE, 'player id');
   if (p.session !== null) c.re(p.session, `${at}.session`, HEX20_RE, 'Hex20');
@@ -226,6 +229,8 @@ function checkPlayer(c, v, at) {
   c.int(p.shade, `${at}.shade`, 0, 2);
   c.text(p.label, `${at}.label`, STAGE_BOUNDS.textCp);
   if (p.agentType !== null) c.text(p.agentType, `${at}.agentType`, STAGE_BOUNDS.textCp);
+  if (p.model !== null) c.text(p.model, `${at}.model`, STAGE_BOUNDS.textCp);
+  if (p.startedAt !== null) c.int(p.startedAt, `${at}.startedAt`);
   if (p.role === 'principal' && (p.parent !== null || p.depth !== 0)) c.bad(at, 'a principal has no parent and depth 0');
   const live = c.obj(p.live, `${at}.live`, ['state', 'basis', 'waitingFor', 'ageMs']);
   if (live !== null) {
@@ -376,8 +381,10 @@ export function validateStage(x) {
   if (src !== null) {
     checkSrc(c, src.claude, '$.sources.claude');
     checkSrc(c, src.dsh, '$.sources.dsh');
-    const cx = c.obj(src.codex, '$.sources.codex', ['state']);
-    if (cx !== null && cx.state !== 'not-connected') c.bad('$.sources.codex.state', `${JSON.stringify(cx.state)}: Codex is not read in M0`);
+    checkSrc(c, src.codex, '$.sources.codex');
+    // Codex keeps no registry the stage reads: its live states come from its own rollouts.
+    const cx = isRecord(src.codex) ? src.codex : null;
+    if (cx !== null && cx.registry !== null) c.bad('$.sources.codex.registry', 'null: Codex has no registry');
   }
 
   const seenRules = new Set();
@@ -446,6 +453,8 @@ export function validateStage(x) {
       const p = allPlayers.get(id);
       if (p === undefined) c.bad(at, `${String(id)} is no player of this snapshot`);
       else if (!isRecord(p.live) || p.live.state !== 'waiting') c.bad(at, `${String(id)} is not waiting`);
+      // An inferred wait (a Codex question or escalation read from its rollout) is no fermata: only a registry's word is.
+      else if (p.live.basis !== 'registry') c.bad(at, `${String(id)} waits by ${String(p.live.basis)}, not by a registry`);
     });
     if (podium.inbox !== null) c.bad('$.podium.inbox', 'null in the alpha: the inbox is not connected');
   }

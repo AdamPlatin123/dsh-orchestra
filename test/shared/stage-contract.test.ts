@@ -47,7 +47,7 @@ test('the hand-written UI sample passes validateStage and holds the demo scenari
   assert.equal(item(s, 'w:agent-a3').state, 'orphan');
   assert.equal(player(s, 'impl').instrument.class, 'strings');
   assert.equal(player(s, 'shop · DSH').stand.source, 'goal');
-  assert.deepEqual(s.sources.codex, { state: 'not-connected' });
+  assert.deepEqual(s.sources.codex, { state: 'empty', sessions: 0, registry: null, error: null });
   const text = JSON.stringify(s);
   assert.ok(text.includes('[redacted:'), 'the canary shows as its redaction marker');
   assert.ok(!/sk-ant-api03-/.test(text) && !/[A-Za-z]:\\\\/.test(text), 'no key and no absolute path');
@@ -55,7 +55,7 @@ test('the hand-written UI sample passes validateStage and holds the demo scenari
 });
 
 test('the exported tables are the enums and rule ids of §3, frozen', () => {
-  assert.equal(STAGE_RULE_IDS.length, 13);
+  assert.equal(STAGE_RULE_IDS.length, 20);
   assert.ok(Object.isFrozen(STAGE_RULE_IDS) && Object.isFrozen(STAGE_ENUMS) && Object.isFrozen(STAGE_ENUMS.look) && Object.isFrozen(STAGE_BOUNDS));
   assert.deepEqual([...STAGE_ENUMS.instrument], ['woodwind', 'strings', 'percussion', 'brass', 'unknown']);
   assert.deepEqual([...STAGE_ENUMS.itemState], ['working', 'reported', 'orphan', 'unknown', 'self'], 'reported is the furthest a work item gets');
@@ -98,7 +98,7 @@ test('no verdict and no done criteria are claimed (D19, T2)', () => {
 test('every rule has n 0 in the alpha, each rule id exactly once (T4)', () => {
   broken((s) => { s.rules[0].n = 1; }, '$.rules[0].n');
   broken((s) => { s.rules[3].status = 'pass'; }, '$.rules[3].status');
-  broken((s) => { s.rules.pop(); }, 'missing fermata.registry-waiting');
+  broken((s) => { s.rules.pop(); }, 'missing codex.stand.plan-keys');
   broken((s) => { s.rules[1].id = s.rules[0].id; }, 'listed twice');
   // Hits are what fired on this snapshot, never a sample: any number of them keeps n at 0.
   const s = sample();
@@ -111,7 +111,13 @@ test('an enum value the design does not list fails, and so does a missing or unk
   broken((s) => { lane0(s).players[0].instrument.class = 'piano'; }, 'instrument.class');
   broken((s) => { lane0(s).players[0].live.basis = 'guess'; }, 'live.basis');
   broken((s) => { lane0(s).basis = 'path'; }, 'lanes[0].basis');
-  broken((s) => { s.sources.codex.state = 'ok'; }, 'Codex is not read in M0');
+  broken((s) => { s.sources.codex = { state: 'not-connected' }; }, '$.sources.codex: missing sessions');
+  broken((s) => { s.sources.codex.registry = 3; }, 'Codex has no registry');
+  broken((s) => { lane0(s).players[0].startedAt = -1; }, 'players[0].startedAt');
+  broken((s) => { lane0(s).players[0].model = 'x'.repeat(200); }, 'players[0].model');
+  broken((s) => { delete lane0(s).players[0].model; }, 'missing model');
+  // Only a registry's word puts a player on the podium: an inferred wait (a Codex question) never does.
+  broken((s) => { lane0(s).players[0].live.basis = 'unpaired-tool-use'; }, 'not by a registry');
   broken((s) => { s.profile = 'prod'; }, '$.profile');
   broken((s) => { s.v = 2; }, '$.v');
   broken((s) => { s.kind = 'snapshot'; }, '$.kind');
@@ -164,7 +170,7 @@ test('validateSession: a session detail with at most 50 events and peek\'s harne
   };
   bad((d) => { d.session.id = 'x'; }, '$.session.id');
   bad((d) => { d.session.file = 'C:\\x.jsonl'; }, 'unknown key file');
-  bad((d) => { d.session.harness = 'codex'; }, '$.session.harness');
+  bad((d) => { d.session.harness = 'opencode'; }, '$.session.harness');
   bad((d) => { d.events = Array.from({ length: 51 }, () => ok.events[1]); }, 'at most 50');
   bad((d) => { d.events[0].at = 'yesterday'; }, '$.events[0].at');
   bad((d) => { d.note = 'gone'; }, '$.note');

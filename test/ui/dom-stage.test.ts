@@ -41,13 +41,13 @@ test('the page renders the sample through the real templates, and a second ident
   const { doc, render } = page();
   render(sample(), null, 'w:toolu_t1', true);
   assert.ok(writes(doc) > 100, 'the first render builds the page');
-  assert.equal(doc.querySelectorAll('.system').length, 3, 'Claude and DSH from the data, Codex static');
+  assert.equal(doc.querySelectorAll('.system').length, 2, 'Claude and DSH from the data; the sample has no Codex player');
   assert.equal(doc.querySelectorAll('.shead').length, 8);
   assert.equal(doc.querySelectorAll('.phrase').length, 6);
   assert.equal(doc.querySelectorAll('.wait').length, 1);
   assert.equal(doc.querySelectorAll('.row').length, 6);
   assert.equal(doc.querySelectorAll('.desk').length, 2);
-  assert.equal(doc.querySelectorAll('.rule').length, 13);
+  assert.equal(doc.querySelectorAll('.rule').length, 20);
   assert.equal((doc.getElementById('drawer') as FakeElement).open, true);
   doc.resetOps();
   render(sample(), null, 'w:toolu_t1', true);
@@ -156,7 +156,7 @@ test(`notes float on at most NOTES (${NOTES}) bars a page, the first ones drawn`
 test('static text and template text come from STAGE_TEXT, and the score carries its geometry as attributes', () => {
   const { doc, render } = page();
   render(sample());
-  assert.equal(doc.querySelector('.sys-codex')!.querySelector('.sys-line')!.textContent, STAGE_TEXT['grp.codex']);
+  assert.equal(doc.querySelector('.sys-codex'), null, 'Codex draws a system of its own only when a lane has Codex players');
   const crit = doc.querySelector('.row')!.querySelector('.chip-crit')!;
   assert.equal(crit.textContent, '验收标准：未声明');
   const lead = doc.querySelectorAll('.shead').find((e) => e.getAttribute('data-node') === 'p:fbeae7c18667b6987518')!;

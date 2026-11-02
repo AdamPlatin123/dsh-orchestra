@@ -95,8 +95,12 @@ const waitWord = (w) => (w === null ? STAGE_TEXT['live.unknown'] : Object.hasOwn
 const liveWait = (p) => (p.live.waitingFor !== null ? `${fill('player.waiting', { w: waitWord(p.live.waitingFor) })}（${basisText(p)}）` : liveText(p));
 /** A rule's plain name; the raw id only when none is written. @param {string} id */
 const ruleName = (id) => (Object.hasOwn(STAGE_TEXT, `rn.${id}`) ? STAGE_TEXT[`rn.${id}`] : id);
-/** Whether a reported item's size is known: a DSH team task logs the status change, not the report. @param {WorkItem} w */
-const sized = (w) => w.report !== null && w.source !== 'team-task';
+/**
+ * Whether a reported item's size is known: a DSH team task logs the status change, not the report, and
+ * a Codex parent logs that its subagent completed, not what it sent back.
+ * @param {WorkItem} w
+ */
+const sized = (w) => w.report !== null && w.source !== 'team-task' && w.stateRule !== 'codex.join.activity';
 /** No player behind a mark: no lineage, no instrument. */
 const NOFIG = Object.freeze({ lineage: 'none', role: 'clone', look: 'ghost', instr: 'unknown', basis: 'none' });
 
@@ -126,7 +130,7 @@ export function plateText(p) {
 export function describeHeader(snap, laneId, fresh) {
   const lane = pickLane(snap, laneId);
   const test = snap.profile === 'test';
-  const errs = /** @type {const} */ (['claude', 'dsh']).filter((h) => snap.sources[h].state === 'error');
+  const errs = GROUPS.filter((h) => snap.sources[h].state === 'error');
   const a = lane === null ? 0 : playing(lane).count;
   const reported = lane === null ? 0 : view(lane, 'reported').count;
   const sent = lane === null ? 0 : view(lane, 'sent').count;
@@ -143,7 +147,7 @@ export function describeHeader(snap, laneId, fresh) {
       sources: {
         text: errs.length > 0
           ? errs.map((h) => fill('bar.srcError', { h, code: snap.sources[h].error ?? '' })).join('；')
-          : fill('bar.sources', { c: snap.sources.claude.sessions, d: snap.sources.dsh.sessions }),
+          : fill('bar.sources', { c: snap.sources.claude.sessions, d: snap.sources.dsh.sessions, x: snap.sources.codex.sessions }),
         data: { tone: errs.length > 0 ? 'warn' : '' },
       },
       fresh: { text: fill(fresh.stale ? 'bar.stale' : 'bar.fresh', { t: fresh.at }), data: { tone: fresh.stale ? 'warn' : '' } },
@@ -168,8 +172,8 @@ export function nameplate(p, lane) {
   return { tag, name };
 }
 
-/** The harnesses that can have a system on the score; Codex is static and says 未接入. */
-export const GROUPS = /** @type {const} */ (['claude', 'dsh']);
+/** The harnesses that can have a system on the score, in the order they are drawn. */
+export const GROUPS = /** @type {const} */ (['claude', 'dsh', 'codex']);
 
 /**
  * How one group works together, every number the length of a list returned beside it (T3).
@@ -477,7 +481,7 @@ export function describeRules(rules) {
 export function describePlan(snap, laneId, chip, sel, fmt) {
   const lane = pickLane(snap, laneId);
   const mismatch = snap.rules.filter((r) => r.status === 'keys-mismatch').map((r) => r.id);
-  const srcErr = /** @type {const} */ (['claude', 'dsh']).filter((h) => snap.sources[h].state === 'error').map((h) => fill('health.src', { h, code: snap.sources[h].error ?? '' }));
+  const srcErr = GROUPS.filter((h) => snap.sources[h].state === 'error').map((h) => fill('health.src', { h, code: snap.sources[h].error ?? '' }));
   const health = [...(mismatch.length > 0 ? [fill('health.keys', { ids: mismatch.map(ruleName).join('、') })] : []), ...srcErr].join('；');
   const clippedN = snap.clipped.lanes + snap.clipped.players + snap.clipped.items + snap.clipped.standItems;
   /** @type {Record<string, Paint>} */

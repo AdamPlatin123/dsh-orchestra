@@ -1,4 +1,4 @@
-import { zstdDecompressSync } from 'node:zlib';
+import { constants, zstdDecompressSync } from 'node:zlib';
 import { frozenClass } from '../../../shared/frozen.js';
 
 // A zstd frame walker (RFC 8878 §3.1), ported from the S1-DSH spike (spikes/s1-dsh/frame-tail.mjs).
@@ -69,4 +69,15 @@ export function walkFrames(b: Uint8Array, start = 0): { frames: Frame[]; next: n
 export function decodeFrame(b: Uint8Array, f: Frame, maxOutputLength?: number): Buffer {
   const frame = b.subarray(f.start, f.end);
   return maxOutputLength === undefined ? zstdDecompressSync(frame) : zstdDecompressSync(frame, { maxOutputLength });
+}
+
+/**
+ * What the first bytes of a zstd stream decode to, when the rest of it is not read: the input may end
+ * anywhere (mid-block, mid-frame), and only what those bytes already produce comes out. A Codex
+ * archived rollout is one frame of the whole session; its first line (session_meta) is in its first
+ * bytes. A prefix that decodes to more than `maxOutputLength` throws a RangeError (code
+ * ERR_BUFFER_TOO_LARGE); bytes that are no zstd throw as zlib does.
+ */
+export function decodePrefix(b: Uint8Array, maxOutputLength: number): Buffer {
+  return zstdDecompressSync(b, { finishFlush: constants.ZSTD_e_flush, maxOutputLength });
 }

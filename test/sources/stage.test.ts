@@ -182,7 +182,7 @@ test('DSH: parentSession nests the children, team members are teammates, the lea
   assert.deepEqual([cat.source, cat.join, cat.state], ['subagent-catalog', 'parentSession', 'unknown']);
   // Both leads worked in G:\fx\shop: one lane, named by the cwd's last segment only.
   assert.deepEqual(s.lanes.map((l) => [l.name, l.basis]), [['shop', 'cwd']]);
-  assert.deepEqual(s.sources.codex, { state: 'not-connected' });
+  assert.deepEqual(s.sources.codex, { state: 'ok', sessions: 3, registry: null, error: null });
 });
 
 test('a transcript read from its tail: a TodoWrite before it is a tail miss, and an unnamed subagent is unknown', (t) => {

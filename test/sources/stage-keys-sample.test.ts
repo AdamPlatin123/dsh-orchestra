@@ -28,7 +28,7 @@ function fixtureStrings(dir: string): Set<string> {
       out.add(e.name);
       if (e.isDirectory()) walk(p);
       else {
-        const text = e.name.endsWith('.zstd') ? zlib.zstdDecompressSync(fs.readFileSync(p)).toString('utf8') : fs.readFileSync(p, 'utf8');
+        const text = /\.zstd?$/.test(e.name) ? zlib.zstdDecompressSync(fs.readFileSync(p)).toString('utf8') : fs.readFileSync(p, 'utf8');
         for (const line of text.split('\n')) if (line.trim() !== '') walkValue(JSON.parse(line));
       }
     }
@@ -40,7 +40,7 @@ function fixtureStrings(dir: string): Set<string> {
 test('the sampler prints counts per KEYS entry, tool name and event type, and nothing of the sessions', (t) => {
   const dir = fs.realpathSync.native(withTmp(t));
   writeStageFixture(dir, 1_793_560_000_000);
-  const r = spawnSync(process.execPath, [SCRIPT, '--claude-root', path.join(dir, 'roots', 'claude'), '--dsh-root', path.join(dir, 'roots', 'dsh')], { encoding: 'utf8', windowsHide: true });
+  const r = spawnSync(process.execPath, [SCRIPT, '--claude-root', path.join(dir, 'roots', 'claude'), '--dsh-root', path.join(dir, 'roots', 'dsh'), '--codex-root', path.join(dir, 'roots', 'codex')], { encoding: 'utf8', windowsHide: true });
   assert.equal(r.status, 0, r.stderr);
   const out = r.stdout;
   for (const e of KEYS) assert.match(out, new RegExp(`^  ${e.id.replace(/\./g, '\\.')} +\\d+ / \\d+ / \\d+ `, 'm'), e.id);
@@ -48,6 +48,12 @@ test('the sampler prints counts per KEYS entry, tool name and event type, and no
   assert.match(out, /^  claude\.task-result +1 \/ 1 \/ 0 /m);
   assert.match(out, /^tool_use names: Task 3, Agent 0, TodoWrite 1, Read 1, Grep 1, Glob 1, .*Bash 2, .*other 0$/m);
   assert.match(out, /^dsh event types: head 3, todo\/write 1, goal\/change 1, .*tool\/call 4, other 2$/m);
+  assert.match(out, /^roots: claude 1, dsh 1, codex 1$/m);
+  assert.match(out, /^  codex\.meta +3 \/ 3 \/ 0 /m);
+  assert.match(out, /^  codex\.child +2 \/ 2 \/ 0 /m);
+  assert.match(out, /^  codex\.plan +1 \/ 1 \/ 0 /m);
+  assert.match(out, /^codex call names: shell 0, shell_command 1, exec_command 2, .*update_plan 1, spawn_agent 2, .*other 0$/m);
+  assert.match(out, /^files: .*codex rollouts 3/m);
 
   assert.equal(out.includes(STAGE_CANARY), false);
   assert.equal(out.includes('sk-ant'), false);

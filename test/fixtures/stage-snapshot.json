@@ -19,7 +19,10 @@
       "error": null
     },
     "codex": {
-      "state": "not-connected"
+      "state": "ok",
+      "sessions": 3,
+      "registry": null,
+      "error": null
     }
   },
   "rules": [
@@ -91,12 +94,54 @@
     },
     {
       "id": "instrument.tool-map",
-      "hits": 8,
+      "hits": 11,
       "n": 0,
       "status": "untested"
     },
     {
       "id": "fermata.registry-waiting",
+      "hits": 1,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "codex.meta.keys",
+      "hits": 3,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "codex.live.turn",
+      "hits": 2,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "codex.waiting.unpaired",
+      "hits": 1,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "codex.child.parentThread",
+      "hits": 2,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "codex.join.spawn",
+      "hits": 2,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "codex.join.activity",
+      "hits": 2,
+      "n": 0,
+      "status": "untested"
+    },
+    {
+      "id": "codex.stand.plan-keys",
       "hits": 1,
       "n": 0,
       "status": "untested"
@@ -115,8 +160,144 @@
       "basis": "cwd",
       "players": [
         {
-          "id": "p:432a4c806b9d285085e0",
+          "id": "p:f07180f9976b75fbc989",
           "session": "00000000000000000001",
+          "harness": "codex",
+          "role": "principal",
+          "parent": null,
+          "depth": 0,
+          "shade": 0,
+          "label": "shop",
+          "agentType": null,
+          "model": "codex/gpt-fx",
+          "startedAt": 1793560000000,
+          "live": {
+            "state": "waiting",
+            "basis": "unpaired-tool-use",
+            "waitingFor": "approval",
+            "ageMs": 0
+          },
+          "look": "solid",
+          "lookRule": "look.solid.waiting",
+          "instrument": {
+            "class": "percussion",
+            "window": 5,
+            "read": 0,
+            "write": 0,
+            "shell": 2,
+            "role": null
+          },
+          "stand": {
+            "source": "todo",
+            "keys": "ok",
+            "title": null,
+            "items": [
+              {
+                "text": "Map the checkout flow",
+                "status": "completed"
+              },
+              {
+                "text": "Wire payments with [redacted:sk-ant]",
+                "status": "in_progress"
+              },
+              {
+                "text": "Ship",
+                "status": "pending"
+              }
+            ],
+            "selfReported": {
+              "checked": 1,
+              "total": 3
+            }
+          },
+          "bytes": 3619,
+          "note": null
+        },
+        {
+          "id": "p:ecc2087bd3bea225d48c",
+          "session": "00000000000000000002",
+          "harness": "codex",
+          "role": "clone",
+          "parent": "p:f07180f9976b75fbc989",
+          "depth": 1,
+          "shade": 1,
+          "label": "docs",
+          "agentType": "explorer",
+          "model": "codex/gpt-fx",
+          "startedAt": 1793560004000,
+          "live": {
+            "state": "running",
+            "basis": "turn",
+            "waitingFor": null,
+            "ageMs": 0
+          },
+          "look": "solid",
+          "lookRule": "look.solid.running",
+          "instrument": {
+            "class": "percussion",
+            "window": 1,
+            "read": 0,
+            "write": 0,
+            "shell": 1,
+            "role": "explorer"
+          },
+          "stand": {
+            "source": "none",
+            "keys": "none",
+            "title": null,
+            "items": [],
+            "selfReported": {
+              "checked": 0,
+              "total": 0
+            }
+          },
+          "bytes": 1289,
+          "note": null
+        },
+        {
+          "id": "p:ff3bc5e0efd65107263a",
+          "session": "00000000000000000003",
+          "harness": "codex",
+          "role": "clone",
+          "parent": "p:f07180f9976b75fbc989",
+          "depth": 1,
+          "shade": 1,
+          "label": "Ada",
+          "agentType": "worker",
+          "model": "codex/gpt-fx",
+          "startedAt": 1793560003000,
+          "live": {
+            "state": "returned",
+            "basis": "turn",
+            "waitingFor": null,
+            "ageMs": 0
+          },
+          "look": "translucent",
+          "lookRule": "look.translucent.returned",
+          "instrument": {
+            "class": "strings",
+            "window": 1,
+            "read": 0,
+            "write": 1,
+            "shell": 0,
+            "role": "worker"
+          },
+          "stand": {
+            "source": "none",
+            "keys": "none",
+            "title": null,
+            "items": [],
+            "selfReported": {
+              "checked": 0,
+              "total": 0
+            }
+          },
+          "bytes": 555,
+          "note": null
+        },
+        {
+          "id": "p:432a4c806b9d285085e0",
+          "session": "00000000000000000004",
           "harness": "claude",
           "role": "principal",
           "parent": null,
@@ -124,6 +305,8 @@
           "shade": 0,
           "label": "shop",
           "agentType": null,
+          "model": null,
+          "startedAt": 1793527200000,
           "live": {
             "state": "waiting",
             "basis": "registry",
@@ -168,7 +351,7 @@
         },
         {
           "id": "p:23d4685c6441a51ab6aa",
-          "session": "00000000000000000002",
+          "session": "00000000000000000005",
           "harness": "claude",
           "role": "clone",
           "parent": "p:432a4c806b9d285085e0",
@@ -176,6 +359,8 @@
           "shade": 1,
           "label": "Explore cart",
           "agentType": "Explore",
+          "model": null,
+          "startedAt": 1793527205000,
           "live": {
             "state": "returned",
             "basis": "unpaired-tool-use",
@@ -207,7 +392,7 @@
         },
         {
           "id": "p:f0da593cb7e018d87617",
-          "session": "00000000000000000003",
+          "session": "00000000000000000006",
           "harness": "claude",
           "role": "clone",
           "parent": "p:432a4c806b9d285085e0",
@@ -215,6 +400,8 @@
           "shade": 1,
           "label": "Review diff",
           "agentType": "code-reviewer",
+          "model": null,
+          "startedAt": 1793527206000,
           "live": {
             "state": "running",
             "basis": "unpaired-tool-use",
@@ -246,7 +433,7 @@
         },
         {
           "id": "p:d6fd0ebf29854932a86f",
-          "session": "00000000000000000004",
+          "session": "00000000000000000007",
           "harness": "claude",
           "role": "clone",
           "parent": "p:f0da593cb7e018d87617",
@@ -254,6 +441,8 @@
           "shade": 2,
           "label": "Run checkout tests",
           "agentType": "general-purpose",
+          "model": null,
+          "startedAt": 1793527210000,
           "live": {
             "state": "running",
             "basis": "unpaired-tool-use",
@@ -285,7 +474,7 @@
         },
         {
           "id": "p:4ed5663bc35e36685b4c",
-          "session": "00000000000000000005",
+          "session": "00000000000000000008",
           "harness": "claude",
           "role": "clone",
           "parent": "p:432a4c806b9d285085e0",
@@ -293,6 +482,8 @@
           "shade": 1,
           "label": "Scan legacy coupons",
           "agentType": "Explore",
+          "model": null,
+          "startedAt": 1793526300000,
           "live": {
             "state": "unknown",
             "basis": "none",
@@ -324,7 +515,7 @@
         },
         {
           "id": "p:e8523ae68da21e111627",
-          "session": "00000000000000000006",
+          "session": "00000000000000000009",
           "harness": "dsh",
           "role": "principal",
           "parent": null,
@@ -332,6 +523,8 @@
           "shade": 0,
           "label": "shop",
           "agentType": null,
+          "model": null,
+          "startedAt": 1793560000000,
           "live": {
             "state": "running",
             "basis": "mtime",
@@ -376,7 +569,7 @@
         },
         {
           "id": "p:1e53d9e5cf74b7dff31e",
-          "session": "00000000000000000007",
+          "session": "0000000000000000000a",
           "harness": "dsh",
           "role": "teammate",
           "parent": "p:e8523ae68da21e111627",
@@ -384,6 +577,8 @@
           "shade": 1,
           "label": "impl",
           "agentType": "worker",
+          "model": null,
+          "startedAt": 1793560000000,
           "live": {
             "state": "running",
             "basis": "mtime",
@@ -415,7 +610,7 @@
         },
         {
           "id": "p:b69d912394efe22b30f4",
-          "session": "00000000000000000008",
+          "session": "0000000000000000000b",
           "harness": "dsh",
           "role": "clone",
           "parent": "p:e8523ae68da21e111627",
@@ -423,6 +618,8 @@
           "shade": 1,
           "label": "reviewer",
           "agentType": "reviewer",
+          "model": null,
+          "startedAt": 1793560000000,
           "live": {
             "state": "quiet",
             "basis": "mtime",
@@ -454,6 +651,99 @@
         }
       ],
       "items": [
+        {
+          "id": "w:codex:50d38a88c9c0015e",
+          "owner": "p:f07180f9976b75fbc989",
+          "executor": "p:ff3bc5e0efd65107263a",
+          "parent": null,
+          "source": "task",
+          "brief": "tests — Write the checkout tests",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "reported",
+          "stateRule": "codex.join.activity",
+          "todoStatus": null,
+          "join": "agentId",
+          "report": {
+            "at": 1793560020000,
+            "bytes": 0
+          },
+          "flow": null,
+          "verdict": "no-reviewer"
+        },
+        {
+          "id": "w:codex:2a7fb086f99f7a36",
+          "owner": "p:f07180f9976b75fbc989",
+          "executor": "p:ecc2087bd3bea225d48c",
+          "parent": null,
+          "source": "task",
+          "brief": "docs — Update the docs; token [redacted:sk-ant]",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "working",
+          "stateRule": "codex.join.activity",
+          "todoStatus": null,
+          "join": "agentPath",
+          "report": null,
+          "flow": null,
+          "verdict": "no-reviewer"
+        },
+        {
+          "id": "w:todo:f07180f9976b75fbc989:0",
+          "owner": "p:f07180f9976b75fbc989",
+          "executor": null,
+          "parent": null,
+          "source": "todo",
+          "brief": "Map the checkout flow",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "self",
+          "stateRule": "dsh.stand.todo-keys",
+          "todoStatus": "completed",
+          "join": null,
+          "report": null,
+          "flow": null,
+          "verdict": "no-reviewer"
+        },
+        {
+          "id": "w:todo:f07180f9976b75fbc989:1",
+          "owner": "p:f07180f9976b75fbc989",
+          "executor": null,
+          "parent": null,
+          "source": "todo",
+          "brief": "Wire payments with [redacted:sk-ant]",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "self",
+          "stateRule": "dsh.stand.todo-keys",
+          "todoStatus": "in_progress",
+          "join": null,
+          "report": null,
+          "flow": null,
+          "verdict": "no-reviewer"
+        },
+        {
+          "id": "w:todo:f07180f9976b75fbc989:2",
+          "owner": "p:f07180f9976b75fbc989",
+          "executor": null,
+          "parent": null,
+          "source": "todo",
+          "brief": "Ship",
+          "criteria": {
+            "state": "undeclared"
+          },
+          "state": "self",
+          "stateRule": "dsh.stand.todo-keys",
+          "todoStatus": "pending",
+          "join": null,
+          "report": null,
+          "flow": null,
+          "verdict": "no-reviewer"
+        },
         {
           "id": "w:task:3fdce4beb925d62f",
           "owner": "p:432a4c806b9d285085e0",
@@ -678,6 +968,24 @@
         }
       ],
       "cues": [
+        {
+          "from": "p:f07180f9976b75fbc989",
+          "to": "p:ff3bc5e0efd65107263a",
+          "item": "w:codex:50d38a88c9c0015e",
+          "kind": "dispatch"
+        },
+        {
+          "from": "p:ff3bc5e0efd65107263a",
+          "to": "p:f07180f9976b75fbc989",
+          "item": "w:codex:50d38a88c9c0015e",
+          "kind": "report"
+        },
+        {
+          "from": "p:f07180f9976b75fbc989",
+          "to": "p:ecc2087bd3bea225d48c",
+          "item": "w:codex:2a7fb086f99f7a36",
+          "kind": "dispatch"
+        },
         {
           "from": "p:432a4c806b9d285085e0",
           "to": "p:23d4685c6441a51ab6aa",

@@ -73,6 +73,9 @@ export const ALLOW_RULES: Readonly<Record<GateRootKind, readonly AllowRule[]>> =
     { id: 'state_5.sqlite-wal', re: /^state_5\.sqlite-wal$/i, since: 'M0' },
     { id: 'sessions/**/rollout-*.jsonl', re: new RegExp(`^sessions/${ANY_DIRS}rollout-[^/]*\\.jsonl$`, 'i'), since: 'M0', tail: 'M2' },
     { id: 'sessions/**/rollout-*.jsonl.zst', re: new RegExp(`^sessions/${ANY_DIRS}rollout-[^/]*\\.jsonl\\.zst$`, 'i'), since: 'M0' },
+    // Codex moves a finished session here under the same file name, compressed or not.
+    { id: 'archived_sessions/rollout-*.jsonl', re: /^archived_sessions\/rollout-[^/]*\.jsonl$/i, since: 'M0' },
+    { id: 'archived_sessions/rollout-*.jsonl.zst', re: /^archived_sessions\/rollout-[^/]*\.jsonl\.zst$/i, since: 'M0' },
   ],
   'dsh-tui': [
     { id: 'session-mounts.json', re: /^session-mounts\.json$/i, since: 'M2' },

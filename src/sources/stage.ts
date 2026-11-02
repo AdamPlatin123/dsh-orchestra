@@ -10,7 +10,8 @@ import { STAGE_RULE_IDS } from '../../shared/stage-contract.js';
 import { frozen } from '../../shared/frozen.js';
 
 // The stage preview (0.1 alpha design §3-§4): who plays in each project, who dispatched what to whom,
-// what came back, and who waits on you, read from the same sessions the peek page lists. A labelled M2
+// what came back, and who waits on you, read from the same sessions the peek page lists: Claude
+// transcripts, DSH logs and Codex rollouts (orchestra app plan §1: the three harnesses alike). A labelled M2
 // preview (r4:2051): step 4 or 5 merges or deletes it, together with GET /api/peek/stage.
 //
 // Read-only and stateless but for a memo: every read goes through the read gate via peek.ts's readers
@@ -58,18 +59,24 @@ export const STAGE_LIMITS = frozen({
   memoEntries: 1024,
   /** A snapshot asked for again within this long (monotonic) is the same snapshot. */
   throttleMs: 2000,
+  /** A Codex wait inferred from an unanswered call reads as one only while the rollout is younger than this. */
+  codexWaitMaxAgeMs: 6 * 60 * 60 * 1000,
+  /** A Codex call's arguments longer than this are not parsed (only spawn, plan and shell calls are). */
+  codexArgsChars: 64 * 1024,
 });
 
 /** n per rule: samples checked against real data. None yet in the alpha, so every rule shows untested. */
 export const RULES: readonly { id: string; n: number }[] = frozen(STAGE_RULE_IDS.map((id: string) => ({ id, n: 0 })));
 
-export type KeyUnit = 'claude-tool' | 'claude-result' | 'claude-meta' | 'claude-registry' | 'dsh-head' | 'dsh-event';
+export type KeyUnit = 'claude-tool' | 'claude-result' | 'claude-meta' | 'claude-registry' | 'dsh-head' | 'dsh-event' | 'codex-record' | 'codex-plan';
 
 /**
  * One inferred key shape. `when` says whether a unit carries the event at all (a value at `path` in
  * `in`, a trailing `*` matching a prefix, or a positive number); `paths` are the keys the event must
  * then carry (`a[].b`: every element of the array a has b). claude-result units are Claude user
  * records that hold the tool_result of a Task or Agent call: the reader decides that, so `when` is null.
+ * codex-record units are Codex rollout lines; codex-plan units are the parsed arguments of an
+ * update_plan call (a JSON string in the rollout).
  */
 export type KeyEntry = {
   id: string;
@@ -96,13 +103,25 @@ export const KEYS: readonly KeyEntry[] = frozen([
   { id: 'dsh.team-task', unit: 'dsh-event', rule: 'dsh.team-task-keys', when: { path: 'type', in: ['team/task/*'] }, paths: ['data.taskId', 'data.title', 'data.owner', 'data.status'] },
   { id: 'dsh.catalog', unit: 'dsh-event', rule: 'dsh.child.parentSession', when: { path: 'type', in: ['subagent/catalog'] }, paths: ['data.childId', 'data.description'] },
   { id: 'dsh.tool', unit: 'dsh-event', rule: 'instrument.tool-map', when: { path: 'type', in: ['tool/call'] }, paths: ['data.name'] },
+  { id: 'codex.meta', unit: 'codex-record', rule: 'codex.meta.keys', when: { path: 'type', in: ['session_meta'] }, paths: ['payload.id', 'payload.cwd', 'payload.timestamp'] },
+  { id: 'codex.context', unit: 'codex-record', rule: 'codex.waiting.unpaired', when: { path: 'type', in: ['turn_context'] }, paths: ['payload.model', 'payload.approval_policy'] },
+  { id: 'codex.turn', unit: 'codex-record', rule: 'codex.live.turn', when: { path: 'payload.type', in: ['task_started', 'task_complete', 'turn_aborted'] }, paths: ['payload.turn_id'] },
+  { id: 'codex.tool', unit: 'codex-record', rule: 'instrument.tool-map', when: { path: 'payload.type', in: ['function_call', 'custom_tool_call'] }, paths: ['payload.name', 'payload.call_id'] },
+  { id: 'codex.tool-output', unit: 'codex-record', rule: 'codex.waiting.unpaired', when: { path: 'payload.type', in: ['function_call_output', 'custom_tool_call_output'] }, paths: ['payload.call_id'] },
+  { id: 'codex.child', unit: 'codex-record', rule: 'codex.child.parentThread', when: { path: 'payload.source.subagent.thread_spawn.depth', positive: true }, paths: ['payload.source.subagent.thread_spawn.parent_thread_id'] },
+  { id: 'codex.sub-activity', unit: 'codex-record', rule: 'codex.join.activity', when: { path: 'payload.item.type', in: ['SubAgentActivity'] }, paths: ['payload.item.agent_thread_id', 'payload.item.kind'] },
+  { id: 'codex.plan', unit: 'codex-plan', rule: 'codex.stand.plan-keys', when: null, paths: ['plan[].step', 'plan[].status'] },
 ]);
 
-/** Tool names by risk class (r4:2124-2131); the lowercase DSH names are inferred. Anything else is 'other'. */
+/**
+ * Tool names by risk class (r4:2124-2131); the lowercase DSH names are inferred, the Codex ones
+ * (shell_command, exec_command, write_stdin, local_shell, view_image) are the names its rollouts call.
+ * Anything else is 'other'.
+ */
 export const TOOL_KINDS = frozen({
-  read: ['Read', 'Grep', 'Glob', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch', 'read', 'grep', 'glob', 'ls', 'list', 'web_fetch', 'web_search'],
+  read: ['Read', 'Grep', 'Glob', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch', 'read', 'grep', 'glob', 'ls', 'list', 'web_fetch', 'web_search', 'view_image'],
   write: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'edit', 'write', 'multi_edit', 'apply_patch'],
-  shell: ['Bash', 'PowerShell', 'bash', 'powershell', 'shell', 'exec'],
+  shell: ['Bash', 'PowerShell', 'bash', 'powershell', 'shell', 'exec', 'shell_command', 'exec_command', 'write_stdin', 'local_shell'],
 });
 
 // ---- The JSON contract (design §3; shared/stage-contract.js checks it) ----
@@ -117,10 +136,13 @@ export type Stand = {
   items: { text: string; status: TodoStatus }[];
   selfReported: { checked: number; total: number };
 };
+export type Harness = 'claude' | 'dsh' | 'codex';
 export type Player = {
-  id: string; session: string | null; harness: 'claude' | 'dsh'; role: 'principal' | 'clone' | 'teammate';
+  id: string; session: string | null; harness: Harness; role: 'principal' | 'clone' | 'teammate';
   parent: string | null; depth: number; shade: number; label: string; agentType: string | null;
-  live: { state: LiveState; basis: 'registry' | 'unpaired-tool-use' | 'mtime' | 'none'; waitingFor: string | null; ageMs: number | null };
+  /** The model its record names last (shown), and when it started (epoch ms): null when the record does not say. */
+  model: string | null; startedAt: number | null;
+  live: { state: LiveState; basis: 'registry' | 'unpaired-tool-use' | 'turn' | 'mtime' | 'none'; waitingFor: string | null; ageMs: number | null };
   look: 'solid' | 'translucent' | 'ghost'; lookRule: string;
   instrument: Instrument; stand: Stand; bytes: number; note: PeekNote | null;
 };
@@ -130,7 +152,7 @@ export type WorkItem = {
   brief: string; criteria: { state: 'undeclared' };
   state: 'working' | 'reported' | 'orphan' | 'unknown' | 'self'; stateRule: string;
   todoStatus: TodoStatus | null;
-  join: 'agentId' | 'description' | 'parentSession' | 'team-owner' | null;
+  join: 'agentId' | 'description' | 'agentPath' | 'parentSession' | 'team-owner' | null;
   report: { at: number | null; bytes: number } | null;
   flow: { childBytes: number; reportBytes: number } | null;
   verdict: 'no-reviewer';
@@ -142,14 +164,14 @@ export type Src = { state: 'ok' | 'empty' | 'error'; sessions: number; registry:
 export type Clipped = { lanes: number; players: number; items: number; standItems: number };
 export type StageSnapshot = {
   v: 1; kind: 'stage-preview'; rev: string; observedAt: number; computedMs: number; profile: 'test' | 'real';
-  sources: { claude: Src; dsh: Src; codex: { state: 'not-connected' } };
+  sources: { claude: Src; dsh: Src; codex: Src };
   rules: Rule[];
   podium: { fermatas: string[]; inbox: null };
   lanes: Lane[];
   clipped: Clipped;
 };
 export type SessionDetail = {
-  session: { id: string; harness: 'claude' | 'dsh'; label: string; size: number; mtimeMs: number };
+  session: { id: string; harness: Harness; label: string; size: number; mtimeMs: number };
   events: { at: string | null; type: string; text: string }[];
   unparsed: number; note: PeekNote | null; brief: string | null;
 };
@@ -238,8 +260,30 @@ export type TaskCall = {
   paired: boolean; report: { at: number | null; bytes: number } | null; agentKey: string | null;
 };
 
+/** What a Codex subagent last did, as its parent's rollout records it (a SubAgentActivity item). */
+export type CodexActivity = 'started' | 'interacted' | 'interrupted' | 'completed';
+
+/** The Codex part of a digest: digests of thread ids and agent paths, never the ids themselves. */
+export type CodexView = {
+  idKey: string | null;
+  /** The parent thread session_meta names: set for a subagent Codex spawned (thread_spawn). */
+  parentKey: string | null;
+  /** session_meta says a subagent started it (a thread spawn, a review, a compaction...). */
+  sub: boolean;
+  nickname: string | null; role: string | null;
+  /** agent_path (`/root/<task>`): shown, and its digest, which a spawn_agent result names. */
+  agentPath: string | null; pathKey: string | null;
+  /** The last turn's state: open after task_started, closed after task_complete or turn_aborted. */
+  turn: 'open' | 'closed' | null;
+  /** What an open turn's last unanswered call waits on: a question to you, or an escalation (inferred). */
+  waiting: 'request_user_input' | 'approval' | null;
+  spawns: { key: string; brief: string; agentKey: string | null; pathKey: string | null; paired: boolean }[];
+  /** The last activity per subagent thread. */
+  activity: { agentKey: string; kind: CodexActivity; at: number | null }[];
+};
+
 export type Digest = {
-  harness: 'claude' | 'dsh';
+  harness: Harness;
   /** The project the session ran in, from its cwd: a digest and the shown last segment, never the path. */
   lane: { key: string; name: string } | null;
   /** The last STAGE_LIMITS.window tool calls, by risk class. */
@@ -252,6 +296,10 @@ export type Digest = {
   members: { idKey: string; name: string }[];
   teamTasks: { key: string; title: string; owner: string; status: string; at: number | null }[];
   catalog: { childKey: string; description: string }[];
+  /** The model the record names last (shown), and the session's start (epoch ms), or null. */
+  model: string | null;
+  startedAt: number | null;
+  codex: CodexView | null;
   note: PeekNote | null;
 };
 
@@ -259,8 +307,8 @@ export type DigestCtx = { redact: Redact; note?: PeekNote | null };
 
 const text120 = (raw: unknown, redact: Redact) => shown(str(raw), redact, STAGE_LIMITS.textChars);
 
-function emptyDigest(harness: 'claude' | 'dsh', note: PeekNote | null): Digest {
-  return { harness, lane: null, calls: [], todo: null, tasks: [], keys: {}, head: null, goal: null, members: [], teamTasks: [], catalog: [], note };
+function emptyDigest(harness: Harness, note: PeekNote | null): Digest {
+  return { harness, lane: null, calls: [], todo: null, tasks: [], keys: {}, head: null, goal: null, members: [], teamTasks: [], catalog: [], model: null, startedAt: null, codex: null, note };
 }
 
 function laneOf(cwd: string, redact: Redact): { key: string; name: string } {
@@ -329,12 +377,15 @@ export function claudeDigester(ctx: DigestCtx): Digester {
   const d = emptyDigest('claude', ctx.note ?? null);
   const tasks = new Map<string, TaskCall>();
   let cwd = '';
+  let first: number | null | undefined;
   const todoKeys = entry('claude.todo');
   const taskKeys = entry('claude.task');
   const add = (r: unknown): void => {
     if (!isObject(r)) return;
+    if (first === undefined && own(r, 'timestamp') !== undefined) first = msOf(own(r, 'timestamp'));
     if (typeof own(r, 'cwd') === 'string' && own(r, 'cwd') !== '') cwd = own(r, 'cwd') as string;
     const message = own(r, 'message');
+    if (own(r, 'type') === 'assistant' && isObject(message) && typeof own(message, 'model') === 'string' && own(message, 'model') !== '') d.model = text120(own(message, 'model'), redact);
     const content = isObject(message) ? own(message, 'content') : undefined;
     if (!Array.isArray(content)) return;
     const type = own(r, 'type');
@@ -378,6 +429,8 @@ export function claudeDigester(ctx: DigestCtx): Digester {
   const finish = (note?: PeekNote | null): Digest => {
     if (note !== undefined) d.note = note;
     if (cwd !== '') d.lane = laneOf(cwd, redact);
+    // A transcript read from a tail starts mid-session: its first record is not the start.
+    d.startedAt = d.note === null ? first ?? null : null;
     d.calls = d.calls.slice(-STAGE_LIMITS.window);
     d.tasks = [...tasks.values()];
     return d;
@@ -408,6 +461,7 @@ export function dshDigester(ctx: DigestCtx): Digester {
       tallyKeys(d.keys, 'dsh-head', r);
       const preset = str(own(r, 'agentPreset'));
       d.head = { idKey: dshId(own(r, 'id')), parentKey: dshId(own(r, 'parentSession')), preset: preset === '' ? null : text120(preset, redact) };
+      d.startedAt = msOf(own(r, 'createdAt'));
       if (typeof own(r, 'cwd') === 'string' && own(r, 'cwd') !== '') d.lane = laneOf(own(r, 'cwd') as string, redact);
       return;
     }
@@ -434,6 +488,155 @@ export function dshDigester(ctx: DigestCtx): Digester {
     d.calls = d.calls.slice(-STAGE_LIMITS.window);
     d.members = [...members.values()];
     d.teamTasks = [...teamTasks.values()];
+    return d;
+  };
+  return { add, finish };
+}
+
+/** A Codex thread id as session_meta, spawn results and activity items spell it, lowercase. */
+const codexId = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? key(`codex:${v.toLowerCase()}`) : null);
+const codexPath = (v: unknown): string | null => (typeof v === 'string' && v !== '' ? key(`codex-path:${v}`) : null);
+const CODEX_ACTIVITY: readonly string[] = ['started', 'interacted', 'interrupted', 'completed'];
+
+/** A call's arguments as an object, when they are a JSON object no longer than STAGE_LIMITS.codexArgsChars. */
+function codexArgs(v: unknown): Record<string, unknown> | null {
+  if (typeof v !== 'string' || v.length > STAGE_LIMITS.codexArgsChars) return null;
+  try {
+    const o: unknown = JSON.parse(v);
+    return isObject(o) ? o : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A Codex rollout (`{timestamp, type, payload}` lines): session_meta (thread id, cwd, start, the
+ * parent thread of a subagent), the latest model, turn starts and ends, tool calls by risk class and
+ * the ones still unanswered, the latest update_plan, spawn_agent calls and what their results name, and
+ * the parent's record of each subagent's activity.
+ */
+export function digestCodex(rec: readonly unknown[], ctx: DigestCtx): Digest {
+  const dg = codexDigester(ctx);
+  for (const r of rec) dg.add(r);
+  return dg.finish();
+}
+
+export function codexDigester(ctx: DigestCtx): Digester {
+  const { redact } = ctx;
+  const d = emptyDigest('codex', ctx.note ?? null);
+  const c: CodexView = { idKey: null, parentKey: null, sub: false, nickname: null, role: null, agentPath: null, pathKey: null, turn: null, waiting: null, spawns: [], activity: [] };
+  d.codex = c;
+  let metaSeen = false;
+  let policy: string | null = null;
+  /** Calls without their output yet, in call order: the name, and whether it asks to leave the sandbox. */
+  const pending = new Map<string, { name: string; escalated: boolean }>();
+  const spawns = new Map<string, CodexView['spawns'][number]>();
+  const activity = new Map<string, CodexView['activity'][number]>();
+  const planKeys = entry('codex.plan');
+  const shownOrNull = (v: unknown) => (typeof v === 'string' && v !== '' ? text120(v, redact) : null);
+  const add = (r: unknown): void => {
+    if (!isObject(r)) return;
+    tallyKeys(d.keys, 'codex-record', r);
+    const type = str(own(r, 'type'));
+    const p = isObject(own(r, 'payload')) ? (own(r, 'payload') as Record<string, unknown>) : {};
+    const sub = str(own(p, 'type'));
+    if (type === 'session_meta') {
+      // A forked or resumed rollout may carry its source's meta again later: the first one is this file's.
+      if (metaSeen) return;
+      metaSeen = true;
+      c.idKey = codexId(own(p, 'id')) ?? codexId(own(p, 'session_id'));
+      if (typeof own(p, 'cwd') === 'string' && own(p, 'cwd') !== '') d.lane = laneOf(own(p, 'cwd') as string, redact);
+      d.startedAt = msOf(own(p, 'timestamp')) ?? msOf(own(r, 'timestamp'));
+      const source = own(p, 'source');
+      // The rollout spells it subagent; the app-server protocol (v2 SessionSource) subAgent.
+      const via = isObject(source) ? own(source, 'subagent') ?? own(source, 'subAgent') : undefined;
+      const spawn = isObject(via) && isObject(own(via, 'thread_spawn')) ? (own(via, 'thread_spawn') as Record<string, unknown>) : {};
+      c.sub = via !== undefined;
+      c.parentKey = codexId(own(p, 'parent_thread_id')) ?? codexId(own(spawn, 'parent_thread_id'));
+      c.nickname = shownOrNull(own(p, 'agent_nickname')) ?? shownOrNull(own(spawn, 'agent_nickname'));
+      c.role = shownOrNull(own(p, 'agent_role')) ?? shownOrNull(own(spawn, 'agent_role'));
+      const agentPath = typeof own(p, 'agent_path') === 'string' ? own(p, 'agent_path') : own(spawn, 'agent_path');
+      c.agentPath = shownOrNull(agentPath);
+      c.pathKey = codexPath(agentPath);
+      return;
+    }
+    if (type === 'turn_context') {
+      if (typeof own(p, 'model') === 'string' && own(p, 'model') !== '') d.model = text120(own(p, 'model'), redact);
+      const ap = own(p, 'approval_policy');
+      policy = typeof ap === 'string' ? ap : isObject(ap) ? 'granular' : policy;
+      return;
+    }
+    if (type === 'event_msg') {
+      if (sub === 'task_started') c.turn = 'open';
+      else if (sub === 'task_complete' || sub === 'turn_aborted') {
+        c.turn = 'closed';
+        // A turn that ended answers nothing more: what it left unanswered waits on no one.
+        pending.clear();
+      } else if (sub === 'thread_settings_applied' && d.model === null) {
+        const ts = own(p, 'thread_settings');
+        if (isObject(ts) && typeof own(ts, 'model') === 'string' && own(ts, 'model') !== '') d.model = text120(own(ts, 'model'), redact);
+      } else if (sub === 'item_completed') {
+        const item = own(p, 'item');
+        if (!isObject(item) || own(item, 'type') !== 'SubAgentActivity') return;
+        const agentKey = codexId(own(item, 'agent_thread_id'));
+        const kind = str(own(item, 'kind'));
+        if (agentKey === null || !CODEX_ACTIVITY.includes(kind)) return;
+        activity.delete(agentKey);
+        activity.set(agentKey, { agentKey, kind: kind as CodexActivity, at: msOf(own(r, 'timestamp')) });
+      }
+      return;
+    }
+    if (type !== 'response_item') return;
+    if (sub === 'function_call' || sub === 'custom_tool_call' || sub === 'local_shell_call') {
+      const name = sub === 'local_shell_call' ? 'local_shell' : str(own(p, 'name'));
+      const kind = toolKind(name);
+      d.calls.push(kind);
+      const callId = str(own(p, 'call_id'));
+      const args = name === 'update_plan' || name === 'spawn_agent' || kind === 'shell' ? codexArgs(own(p, 'arguments')) : null;
+      if (callId !== '') {
+        const escalated = args !== null && (own(args, 'sandbox_permissions') === 'require_escalated' || own(args, 'with_escalated_permissions') === true);
+        pending.delete(callId);
+        pending.set(callId, { name, escalated });
+      }
+      if (name === 'update_plan' && args !== null) {
+        tallyKeys(d.keys, 'codex-plan', args);
+        const ok = keysPresent(planKeys, args);
+        const plan = ok ? (own(args, 'plan') as unknown[]) : [];
+        d.todo = todoView({ todos: plan.map((x) => ({ content: isObject(x) ? own(x, 'step') : '', status: isObject(x) ? own(x, 'status') : '' })) }, ok, redact);
+      } else if (name === 'spawn_agent' && callId !== '') {
+        const what = str(own(args ?? {}, 'task_name')) || str(own(args ?? {}, 'agent_type'));
+        const message = str(own(args ?? {}, 'message'));
+        spawns.set(callId, { key: key(`codex-call:${callId}`), brief: text120(what === '' ? message : `${what} — ${message}`, redact), agentKey: null, pathKey: null, paired: false });
+      }
+    } else if (sub === 'function_call_output' || sub === 'custom_tool_call_output') {
+      const callId = str(own(p, 'call_id'));
+      pending.delete(callId);
+      const sp = spawns.get(callId);
+      if (sp !== undefined) {
+        sp.paired = true;
+        // The result is a JSON string: {agent_id, nickname} or {task_name} (the child's agent_path).
+        const out = codexArgs(own(p, 'output'));
+        if (out !== null) {
+          sp.agentKey = codexId(own(out, 'agent_id'));
+          sp.pathKey = codexPath(own(out, 'task_name'));
+        }
+      }
+    }
+    if (d.calls.length > 4 * STAGE_LIMITS.window) d.calls = d.calls.slice(-STAGE_LIMITS.window);
+  };
+  const finish = (note?: PeekNote | null): Digest => {
+    if (note !== undefined) d.note = note;
+    d.calls = d.calls.slice(-STAGE_LIMITS.window);
+    // Only an open turn waits; and only on its last unanswered call, as the rollout shows it. A
+    // question (request_user_input) waits on you; a command that asked to leave the sandbox, under a
+    // policy that asks, may wait on an approval the rollout does not record. Both are inferences.
+    const last = c.turn === 'open' ? [...pending.values()].at(-1) : undefined;
+    if (last !== undefined) {
+      if (/^request_user_input/.test(last.name)) c.waiting = 'request_user_input';
+      else if (last.escalated && policy !== null && policy !== 'never') c.waiting = 'approval';
+    }
+    c.spawns = [...spawns.values()];
+    c.activity = [...activity.values()];
     return d;
   };
   return { add, finish };
@@ -571,7 +774,7 @@ type Meta = { agentType: string | null; description: string | null };
 
 /** A player before it is written out: the tree is built on these, then flattened per lane. */
 type Seat = {
-  id: string; session: PeekSession; harness: 'claude' | 'dsh'; role: Player['role'];
+  id: string; session: PeekSession; harness: Harness; role: Player['role'];
   parent: Seat | null; children: Seat[]; depth: number;
   digest: Digest; label: string; agentType: string | null;
   live: Player['live']; unjoined: boolean; unpaired: boolean; stand: Stand;
@@ -606,6 +809,7 @@ const iid = (kind: string, s: string) => `w:${kind}:${digestOf(`item:${s}`, 16)}
 export type Gathered = {
   claude: { session: PeekSession; digest: Digest; subs: { file: SubagentFile; digest: Digest; meta: Meta }[]; subsClipped: number }[];
   dsh: { session: PeekSession; digest: Digest }[];
+  codex: { session: PeekSession; digest: Digest }[];
   registry: RegistryEntry[];
   keys: KeyTally[];
 };
@@ -772,26 +976,7 @@ export function assembleLanes(g: Gathered, nowWall: number, extraClipped = 0): A
     dshKey.set(seat, idKey);
     dshParent.set(seat, d.head?.parentKey ?? null);
   }
-  for (const [idKey, seat] of dshSeats) {
-    const parentKey = dshParent.get(seat)!;
-    const parent = parentKey === null || parentKey === idKey ? undefined : dshSeats.get(parentKey);
-    if (parent === undefined) continue;
-    // A head chain that loops back is no tree: such a log stays a principal.
-    let up: Seat | undefined = parent;
-    let loops = false;
-    for (let n = 0; up !== undefined && n < 64; n++) {
-      if (up === seat) {
-        loops = true;
-        break;
-      }
-      const k = dshParent.get(up) ?? null;
-      up = k === null ? undefined : dshSeats.get(k);
-    }
-    if (loops) continue;
-    seat.parent = parent;
-    parent.children.push(seat);
-    hits['dsh.child.parentSession']!++;
-  }
+  hits['dsh.child.parentSession']! += linkParents(dshSeats, dshParent);
   for (const [idKey, seat] of dshSeats) {
     if (seat.parent !== null) continue;
     roots.push(seat);
@@ -864,6 +1049,101 @@ export function assembleLanes(g: Gathered, nowWall: number, extraClipped = 0): A
   };
   for (const seat of roots) if (seat.harness === 'dsh') dshWalk(seat, 0);
 
+  // Codex: a rollout whose session_meta names a listed parent thread is that thread's clone (Codex
+  // subagents are threads of their own, each with its own rollout). The parent's spawn_agent calls
+  // are its work items, joined to a clone by the agent id or the agent path their results name.
+  const cxSeats = new Map<string, Seat>();
+  const cxParent = new Map<Seat, string | null>();
+  const cxKey = new Map<Seat, string>();
+  for (const x of g.codex) {
+    const d = x.digest;
+    const idKey = d.codex?.idKey ?? codexId(ROLLOUT_ID.exec(win.basename(x.session.file))?.[1]) ?? key(`codex-file:${x.session.id}`);
+    if (cxSeats.has(idKey)) continue;
+    if ((d.codex?.idKey ?? null) !== null) hits['codex.meta.keys']!++;
+    const seat: Seat = {
+      id: pid(`codex:${idKey}`), session: x.session, harness: 'codex', role: 'principal', parent: null, children: [], depth: 0,
+      digest: d, label: d.lane?.name ?? slugTail(x.session.project), agentType: d.codex?.role ?? null,
+      live: codexLive(d, ageOf(x.session.mtimeMs, nowWall), false, hits),
+      unjoined: false, unpaired: false, stand: copyStand(NO_STAND),
+    };
+    cxSeats.set(idKey, seat);
+    cxKey.set(seat, idKey);
+    cxParent.set(seat, d.codex?.parentKey ?? null);
+  }
+  hits['codex.child.parentThread']! += linkParents(cxSeats, cxParent);
+  // A subagent by its nickname, else its agent path's last segment (`/root/docs`: docs), else its role.
+  const cxName = (seat: Seat) => seat.digest.codex?.nickname ?? seat.digest.codex?.agentPath?.split('/').filter((x) => x !== '').at(-1) ?? seat.digest.codex?.role ?? seat.label;
+  for (const seat of cxSeats.values()) {
+    if (seat.parent !== null) continue;
+    roots.push(seat);
+    // A subagent whose parent thread is not listed (older than the listing, or gone) stays at the
+    // root of its lane, but never plays as a lead.
+    if (seat.digest.codex?.sub === true) {
+      seat.role = 'clone';
+      seat.label = cxName(seat);
+      seat.live = codexLive(seat.digest, seat.live.ageMs ?? 0, true, null);
+    }
+    const lane = seat.digest.lane;
+    laneOfSeat.set(seat, lane === null ? slugLane(seat.session.project) : { ...lane, basis: 'cwd' });
+  }
+  const cxWalk = (seat: Seat, depth: number): void => {
+    seat.depth = depth;
+    const d = seat.digest;
+    if (seat.parent !== null) {
+      seat.role = 'clone';
+      seat.label = cxName(seat);
+      seat.live = codexLive(d, seat.live.ageMs ?? 0, true, null);
+    }
+    if (d.todo !== null) {
+      seat.stand = todoStand(d.todo, null, 'todo');
+      hits['codex.stand.plan-keys']!++;
+    }
+    // Past the depth limit a subtree goes before any item can name one of its players.
+    if (depth + 1 > STAGE_LIMITS.depth) {
+      for (const ch of seat.children) clipped.players += 1 + countBelow(ch);
+      seat.children = [];
+    }
+    const c = d.codex;
+    const acts = new Map((c?.activity ?? []).map((a) => [a.agentKey, a]));
+    const claimed = new Set<Seat>();
+    const item = (executor: Seat | null, act: CodexView['activity'][number] | undefined, fallback: WorkItem['state'], fallbackRule: string) => {
+      if (act !== undefined) hits['codex.join.activity']!++;
+      const state: WorkItem['state'] = act === undefined ? fallback : act.kind === 'completed' ? 'reported' : act.kind === 'interrupted' ? 'unknown' : 'working';
+      // The parent records that its subagent finished, not what it sent back: the size is unknown, so 0.
+      return { state, stateRule: act === undefined ? fallbackRule : 'codex.join.activity', report: state === 'reported' ? { at: act?.at ?? null, bytes: 0 } : null, executor: executor?.id ?? null };
+    };
+    for (const sp of c?.spawns ?? []) {
+      let executor: Seat | null = null;
+      let join: WorkItem['join'] = null;
+      const byId = sp.agentKey === null ? undefined : seat.children.find((ch) => !claimed.has(ch) && cxKey.get(ch) === sp.agentKey);
+      const byPath = byId !== undefined || sp.pathKey === null ? undefined : seat.children.find((ch) => !claimed.has(ch) && ch.digest.codex?.pathKey === sp.pathKey);
+      if (byId !== undefined) [executor, join] = [byId, 'agentId'];
+      else if (byPath !== undefined) [executor, join] = [byPath, 'agentPath'];
+      if (executor !== null) {
+        claimed.add(executor);
+        hits['codex.join.spawn']!++;
+      }
+      const s = item(executor, executor === null ? undefined : acts.get(cxKey.get(executor)!), sp.paired ? 'unknown' : 'working', 'codex.join.spawn');
+      pushItem(seat, {
+        id: iid('codex', `${seat.id}:${sp.key}`), owner: seat.id, executor: s.executor, parent: owned.get(seat.id) ?? null,
+        source: 'task', brief: sp.brief, criteria: { state: 'undeclared' }, state: s.state, stateRule: s.stateRule,
+        todoStatus: null, join, report: s.report, flow: null, verdict: 'no-reviewer',
+      });
+    }
+    // A subagent no spawn result names (an older call, or a result without its id): found by its parent thread.
+    for (const ch of seat.children) {
+      if (claimed.has(ch)) continue;
+      const s = item(ch, acts.get(cxKey.get(ch)!), 'unknown', 'codex.child.parentThread');
+      pushItem(seat, {
+        id: iid('codex', `${seat.id}:${ch.id}`), owner: seat.id, executor: s.executor, parent: owned.get(seat.id) ?? null,
+        source: 'subagent-catalog', brief: cxName(ch), criteria: { state: 'undeclared' }, state: s.state, stateRule: s.stateRule,
+        todoStatus: null, join: 'parentSession', report: s.report, flow: null, verdict: 'no-reviewer',
+      });
+    }
+    for (const ch of seat.children) cxWalk(ch, depth + 1);
+  };
+  for (const seat of roots) if (seat.harness === 'codex') cxWalk(seat, 0);
+
   // At most STAGE_LIMITS.principals, newest first, but one the registry says waits on you is always
   // kept (its transcript ages while it waits); a dropped principal takes its tree with it.
   const ordered = sortNewest(roots.map((r) => ({ r, id: r.id, mtimeMs: r.session.mtimeMs })));
@@ -921,8 +1201,60 @@ function countBelow(s: Seat): number {
   return s.children.reduce((n, c) => n + 1 + countBelow(c), 0);
 }
 
+/**
+ * Hangs each seat under the seat its parent key names, when that one is listed and the chain does not
+ * loop back (such a seat stays a principal). Returns how many were hung.
+ */
+function linkParents(seats: ReadonlyMap<string, Seat>, parentOf: ReadonlyMap<Seat, string | null>): number {
+  let linked = 0;
+  for (const [idKey, seat] of seats) {
+    const parentKey = parentOf.get(seat) ?? null;
+    const parent = parentKey === null || parentKey === idKey ? undefined : seats.get(parentKey);
+    if (parent === undefined) continue;
+    let up: Seat | undefined = parent;
+    let loops = false;
+    for (let n = 0; up !== undefined && n < 64; n++) {
+      if (up === seat) {
+        loops = true;
+        break;
+      }
+      const k = parentOf.get(up) ?? null;
+      up = k === null ? undefined : seats.get(k);
+    }
+    if (loops) continue;
+    seat.parent = parent;
+    parent.children.push(seat);
+    linked++;
+  }
+  return linked;
+}
+
+/** A rollout's thread id from its file name (`rollout-<time>-<uuid>.jsonl[.zst]`), for a file without session_meta. */
+const ROLLOUT_ID = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl(?:\.zst)?$/i;
+
+/**
+ * A Codex thread's live state from its own rollout: an inferred wait (an open turn's last call
+ * unanswered: a question, or an escalated command under a policy that asks) while the file is younger
+ * than STAGE_LIMITS.codexWaitMaxAgeMs; else an open turn runs (quiet once ghostAgeMs passed without a
+ * write); a closed turn is idle, or returned for a clone; with no turn event, the file's age decides.
+ * `hits` (null when recomputed for a clone) counts the rules used.
+ */
+function codexLive(d: Digest, ageMs: number, clone: boolean, hits: Hits | null): Player['live'] {
+  const c = d.codex;
+  if (c !== null && c.waiting !== null && ageMs < STAGE_LIMITS.codexWaitMaxAgeMs) {
+    if (hits !== null) hits['codex.waiting.unpaired']!++;
+    return { state: 'waiting', basis: 'unpaired-tool-use', waitingFor: c.waiting, ageMs };
+  }
+  if (c !== null && c.turn !== null) {
+    if (hits !== null) hits['codex.live.turn']!++;
+    const state: LiveState = c.turn === 'open' ? (ageMs < STAGE_LIMITS.ghostAgeMs ? 'running' : 'quiet') : clone ? 'returned' : 'idle';
+    return { state, basis: 'turn', waitingFor: null, ageMs };
+  }
+  return { state: ageMs < STAGE_LIMITS.solidAgeMs ? 'running' : 'quiet', basis: 'mtime', waitingFor: null, ageMs };
+}
+
 function toPlayer(s: Seat, hits: Hits, clipped: Clipped): Player {
-  const role = s.harness === 'claude' ? s.agentType : s.digest.head?.preset ?? null;
+  const role = s.harness === 'dsh' ? s.digest.head?.preset ?? null : s.agentType;
   const instrument = classifyInstrument(s.digest.calls, role);
   if (instrument.window > 0) hits['instrument.tool-map']!++;
   const look = deriveLook({ state: s.live.state, ageMs: s.live.ageMs, unjoined: s.unjoined, unpaired: s.unpaired, parentBusy: s.parent?.live.state === 'busy' });
@@ -930,6 +1262,7 @@ function toPlayer(s: Seat, hits: Hits, clipped: Clipped): Player {
   return {
     id: s.id, session: s.session.id, harness: s.harness, role: s.role, parent: s.parent?.id ?? null,
     depth: s.depth, shade: Math.min(2, s.depth), label: s.label, agentType: s.agentType,
+    model: s.digest.model, startedAt: s.digest.startedAt,
     live: s.live, look: look.look, lookRule: look.rule, instrument, stand: s.stand,
     bytes: s.session.size, note: s.digest.note,
   };
@@ -973,7 +1306,7 @@ export function makeStageBuilder(deps: StageDeps): { snapshot(): StageSnapshot; 
   };
   // Records go straight from the reader into the digest: none is kept, however long the file.
   const digestFile = (s: PeekSession): Digest => remember(s, () => {
-    const dg = s.harness === 'claude' ? claudeDigester({ redact }) : dshDigester({ redact });
+    const dg = s.harness === 'claude' ? claudeDigester({ redact }) : s.harness === 'codex' ? codexDigester({ redact }) : dshDigester({ redact });
     const r = eachRecord(gate, s, (rec) => dg.add(rec));
     return dg.finish(r.note);
   });
@@ -996,7 +1329,7 @@ export function makeStageBuilder(deps: StageDeps): { snapshot(): StageSnapshot; 
   };
 
   const build = (nowWall: number): Omit<StageSnapshot, 'rev' | 'observedAt' | 'computedMs'> => {
-    const errors = { claude: null as string | null, dsh: null as string | null };
+    const errors: Record<Harness, string | null> = { claude: null, dsh: null, codex: null };
     const keys: KeyTally[] = [];
     const reg = readRegistry(gate, roots.filter((r) => r.kind === 'claude'), redact);
     keys.push(reg.keys);
@@ -1006,10 +1339,10 @@ export function makeStageBuilder(deps: StageDeps): { snapshot(): StageSnapshot; 
     const waiting = new Set(reg.entries.filter((e) => e.status === 'waiting').map((e) => e.sessionKey));
     const isWaiting = (s: PeekSession) => s.harness === 'claude' && waiting.has(key(`claude:${uuidOf(s.file)}`));
     const listed = listSessions(gate, roots, redact, isWaiting);
-    const g: Gathered = { claude: [], dsh: [], registry: reg.entries, keys };
+    const g: Gathered = { claude: [], dsh: [], codex: [], registry: reg.entries, keys };
     // A file that vanished or was replaced between the listing and the read is skipped; any other
     // refusal, or a file the system would not open (locked, denied), marks its source.
-    const guarded = <T>(harness: 'claude' | 'dsh', read: () => T): T | null => {
+    const guarded = <T>(harness: Harness, read: () => T): T | null => {
       try {
         return read();
       } catch (e) {
@@ -1052,16 +1385,22 @@ export function makeStageBuilder(deps: StageDeps): { snapshot(): StageSnapshot; 
       keys.push(digest.keys);
       g.dsh.push({ session: s, digest });
     }
+    for (const s of listed.sessions.filter((x) => x.harness === 'codex')) {
+      const digest = guarded('codex', () => digestFile(s));
+      if (digest === null) continue;
+      keys.push(digest.keys);
+      g.codex.push({ session: s, digest });
+    }
     const unread = listed.total - listed.sessions.length + (claudeListed.length - claudeRead.length);
     const a = assembleLanes(g, nowWall, unread);
-    const src = (harness: 'claude' | 'dsh', registry: number | null): Src => {
+    const src = (harness: Harness, registry: number | null): Src => {
       const sessions = listed.sessions.filter((s) => s.harness === harness).length;
       const error = errors[harness];
       return { state: error !== null ? 'error' : sessions > 0 ? 'ok' : 'empty', sessions, registry, error };
     };
     const body = {
       v: 1 as const, kind: 'stage-preview' as const, profile,
-      sources: { claude: src('claude', reg.entries.length), dsh: src('dsh', null), codex: { state: 'not-connected' as const } },
+      sources: { claude: src('claude', reg.entries.length), dsh: src('dsh', null), codex: src('codex', null) },
       rules: a.rules, podium: { fermatas: a.fermatas, inbox: null }, lanes: a.lanes, clipped: a.clipped,
     };
     // Past the body limit whole lanes go, the oldest first, and are counted; a lane with a player who

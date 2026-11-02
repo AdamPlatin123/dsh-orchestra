@@ -10,8 +10,10 @@
 // - a2 (code-reviewer) still running, joined by description: solid, brass;
 // - a4 runs under a2 (a Task call of a2's own): the department at depth 2;
 // - a3 has no Task call naming it and is 15 min old: a possible orphan, ghost;
-// - DSH lead with a goal and a todo list, teammate impl (writes: strings), child reviewer (brass).
-// STAGE_CANARY sits in a TodoWrite item, a Task prompt and the DSH goal: none of it may leave.
+// - DSH lead with a goal and a todo list, teammate impl (writes: strings), child reviewer (brass);
+// - Codex lead with a plan, maybe waiting on an escalation, subagents tests (returned) and docs (running).
+// STAGE_CANARY sits in a TodoWrite item, a Task prompt, the DSH goal, a Codex plan step and a spawn
+// message: none of it may leave.
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
@@ -27,6 +29,9 @@ export const FX = {
   claudeProject: 'G--fx-shop',
   dshProject: '--G-fx-shop--',
   cwd: 'G:\\fx\\shop',
+  codexLead: '55555555-5555-4555-8555-555555555555',
+  codexTests: '66666666-6666-4666-8666-666666666666',
+  codexDocs: '77777777-7777-4777-8777-777777777777',
 } as const;
 
 function put(file: string, content: string | Uint8Array, mtimeMs: number): string {
@@ -134,5 +139,55 @@ export function writeStageFixture(dir: string, baseMs: number): { claude: string
     frame([head(FX.dshReviewer, { delegationDepth: 1, parentSession: FX.dshLead, agentPreset: 'reviewer' })]),
     frame([{ type: 'tool/call', seq: 1, time: at(-70), data: { name: 'read', args: { path: 'cart.ts' } } }]),
   ]), at(-60));
+
+  // Codex, in the same cwd: a lead (a live plain rollout) whose turn is open and whose last call, a
+  // command that asked to leave the sandbox under on-request, has no output yet; its plan is its
+  // stand. It spawned two subagents: tests (its result names the agent id; the parent recorded it
+  // completed; archived and compressed) and docs (its result names the agent path; still running).
+  const cx = (kind: string, sub: string | null, extra: Record<string, unknown>, s: number) =>
+    ({ timestamp: new Date(at(s)).toISOString(), type: kind, payload: sub === null ? extra : { type: sub, ...extra } });
+  const cxMeta = (id: string, s: number, extra: Record<string, unknown> = {}) =>
+    cx('session_meta', null, { id, session_id: id, timestamp: new Date(at(s)).toISOString(), cwd: FX.cwd, originator: 'codex_exec', cli_version: '0.165.0', model_provider: 'fx', base_instructions: { text: 'fx instructions' }, ...extra }, s);
+  const context = (turn: string, s: number) => cx('turn_context', null, { turn_id: turn, cwd: FX.cwd, model: 'codex/gpt-fx', approval_policy: 'on-request', sandbox_policy: { type: 'workspace-write' } }, s);
+  const call = (callId: string, name: string, args: unknown, s: number) => cx('response_item', 'function_call', { name, arguments: JSON.stringify(args), call_id: callId }, s);
+  const output = (callId: string, out: string, s: number) => cx('response_item', 'function_call_output', { call_id: callId, output: out }, s);
+  const child = (agentPath: string, nickname: string | null, role: string) => ({
+    source: { subagent: { thread_spawn: { parent_thread_id: FX.codexLead, depth: 1, agent_path: agentPath, agent_nickname: nickname, agent_role: role } } },
+    parent_thread_id: FX.codexLead, agent_path: agentPath, ...(nickname === null ? {} : { agent_nickname: nickname }), agent_role: role,
+  });
+  const day = path.join(roots.codex, 'sessions', '2026', '11', '01');
+  put(path.join(day, `rollout-2026-11-01T10-00-00-${FX.codexLead}.jsonl`), jsonl([
+    cxMeta(FX.codexLead, 0, { source: 'exec' }),
+    context('turn-1', 1),
+    cx('event_msg', 'task_started', { turn_id: 'turn-1' }, 1),
+    cx('response_item', 'message', { role: 'user', content: [{ type: 'input_text', text: 'add checkout payments' }] }, 1),
+    call('call_plan', 'update_plan', { plan: [{ step: 'Map the checkout flow', status: 'completed' }, { step: `Wire payments with ${STAGE_CANARY}`, status: 'in_progress' }, { step: 'Ship', status: 'pending' }] }, 2),
+    output('call_plan', 'Plan updated', 2),
+    call('call_s1', 'spawn_agent', { task_name: 'tests', message: 'Write the checkout tests' }, 3),
+    output('call_s1', JSON.stringify({ agent_id: FX.codexTests, nickname: 'Ada' }), 3),
+    call('call_s2', 'spawn_agent', { task_name: 'docs', message: `Update the docs; token ${STAGE_CANARY}` }, 4),
+    output('call_s2', JSON.stringify({ task_name: '/root/docs' }), 4),
+    cx('event_msg', 'item_completed', { item: { type: 'SubAgentActivity', id: 'act-1', kind: 'started', agent_thread_id: FX.codexTests, agent_path: '/root/tests' } }, 5),
+    cx('event_msg', 'item_completed', { item: { type: 'SubAgentActivity', id: 'act-2', kind: 'started', agent_thread_id: FX.codexDocs, agent_path: '/root/docs' } }, 5),
+    call('call_r1', 'exec_command', { cmd: 'rg checkout' }, 6),
+    output('call_r1', 'src/checkout.ts', 6),
+    cx('event_msg', 'item_completed', { item: { type: 'SubAgentActivity', id: 'act-3', kind: 'completed', agent_thread_id: FX.codexTests, agent_path: '/root/tests' } }, 20),
+    call('call_push', 'shell_command', { command: 'git push', sandbox_permissions: 'require_escalated', justification: 'push the branch' }, 27),
+  ]), at(28));
+  put(path.join(roots.codex, 'archived_sessions', `rollout-2026-11-01T10-00-03-${FX.codexTests}.jsonl.zst`), zlib.zstdCompressSync(Buffer.from(jsonl([
+    cxMeta(FX.codexTests, 3, child('/root/tests', 'Ada', 'worker')),
+    context('turn-t', 3),
+    cx('event_msg', 'task_started', { turn_id: 'turn-t' }, 3),
+    cx('response_item', 'custom_tool_call', { name: 'apply_patch', input: '*** Begin Patch', call_id: 'call_p1' }, 10),
+    cx('response_item', 'custom_tool_call_output', { call_id: 'call_p1', output: 'Done' }, 11),
+    cx('event_msg', 'task_complete', { turn_id: 'turn-t', last_agent_message: 'tests written' }, 19),
+  ]))), at(-120));
+  put(path.join(day, `rollout-2026-11-01T10-00-04-${FX.codexDocs}.jsonl`), jsonl([
+    cxMeta(FX.codexDocs, 4, child('/root/docs', null, 'explorer')),
+    context('turn-d', 4),
+    cx('event_msg', 'task_started', { turn_id: 'turn-d' }, 4),
+    call('call_d1', 'exec_command', { cmd: 'ls docs' }, 15),
+    output('call_d1', 'README.md', 15),
+  ]), at(26));
   return roots;
 }

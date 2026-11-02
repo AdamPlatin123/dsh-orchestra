@@ -2,11 +2,11 @@
 // §11 risk 1, plan step 9's sampler idea): for every entry of src/sources/stage.ts's KEYS table, how
 // many units carried its event and how many of them had the expected keys. Read-only, through the
 // read gate's production policy and peek's limits (the newest 60 sessions, a Claude transcript's last
-// 256 KiB, no DSH log past 32 MiB), exactly what the stage reads. It prints counts and nothing else:
+// 256 KiB, no DSH log past 32 MiB, a Codex rollout as peek.ts's codexLines reads it), exactly what the stage reads. It prints counts and nothing else:
 // no value, no file name, no path, no project name; tool names and event types only from fixed lists.
 // A file the gate refuses or the system will not open is counted as unreadable, and any other failure
 // prints its class and code only, never its message (a Node or gate error's message names a path).
-//   node scripts/stage-keys-sample.ts [--claude-root <dir>]... [--dsh-root <dir>]...
+//   node scripts/stage-keys-sample.ts [--claude-root <dir>]... [--dsh-root <dir>]... [--codex-root <dir>]...
 // Without roots it finds them the way orchestrad's real profile does (src/fs/harness-roots.ts over the
 // environment). Scanned like daemon code: it reads real roots (plan step 1).
 import * as path from 'node:path';
@@ -18,13 +18,19 @@ import { makeRedactor } from '../src/store/redact.ts';
 import type { PeekSession } from '../src/sources/peek.ts';
 import { eachRecord, listSessions, listSubagents } from '../src/sources/peek.ts';
 import type { KeyEntry, KeyTally } from '../src/sources/stage.ts';
-import { KEYS, STAGE_LIMITS, claudeDigester, dshDigester, keyEvent, readRegistry, tallyKeys } from '../src/sources/stage.ts';
+import { KEYS, STAGE_LIMITS, claudeDigester, codexDigester, dshDigester, keyEvent, readRegistry, tallyKeys } from '../src/sources/stage.ts';
 import { realIo } from '../test/helpers/read-io.ts';
 
 const win = path.win32;
 
 /** Tool names counted by name; every other tool_use counts as other. */
 const TOOL_NAMES: readonly string[] = ['Task', 'Agent', 'TodoWrite', 'Read', 'Grep', 'Glob', 'Edit', 'Write', 'MultiEdit', 'Bash', 'WebFetch', 'WebSearch'];
+
+/** Codex tool names counted by name; every other call counts as other. */
+const CODEX_TOOLS: readonly string[] = ['shell', 'shell_command', 'exec_command', 'write_stdin', 'apply_patch', 'update_plan', 'spawn_agent', 'wait_agent', 'send_message', 'request_user_input', 'view_image'];
+
+/** Codex rollout line types counted; every other counts as other. */
+const CODEX_TYPES: readonly string[] = ['session_meta', 'turn_context', 'event_msg', 'response_item', 'compacted'];
 
 /** DSH event types counted: head and the types the KEYS table names (a trailing * groups a family). */
 const DSH_TYPES: readonly string[] = ['head', ...new Set(KEYS.filter((e) => e.unit === 'dsh-event' && e.when !== null && 'in' in e.when).flatMap((e) => (e.when as { in: readonly string[] }).in))];
@@ -47,13 +53,21 @@ const CANDIDATES: Readonly<Record<string, readonly string[]>> = {
   'dsh.team-task': ['data.id', 'data.subject', 'data.assignee', 'data.task.id', 'data.task.title'],
   'dsh.catalog': ['data.id', 'data.sessionId', 'data.childSessionId', 'data.entries'],
   'dsh.tool': ['data.tool', 'data.toolName'],
+  'codex.meta': ['payload.session_id', 'payload.source', 'payload.model_provider', 'payload.parent_thread_id', 'payload.agent_path'],
+  'codex.context': ['payload.sandbox_policy', 'payload.effort', 'payload.collaboration_mode'],
+  'codex.turn': ['payload.started_at', 'payload.completed_at', 'payload.reason'],
+  'codex.tool': ['payload.arguments', 'payload.input', 'payload.namespace'],
+  'codex.tool-output': ['payload.output'],
+  'codex.child': ['payload.parent_thread_id', 'payload.source.subagent.thread_spawn.agent_path', 'payload.source.subagent.thread_spawn.agent_nickname', 'payload.source.subAgent.thread_spawn.parent_thread_id'],
+  'codex.sub-activity': ['payload.item.agent_path', 'payload.item.id'],
+  'codex.plan': ['explanation', 'plan[].text', 'plan[].title'],
 };
 
 /** A bad command line: the one failure whose message is printed whole (it holds only the sampler's own words). */
 class UsageError extends Error {}
 
 function usage(why: string): never {
-  throw new UsageError(`stage-keys-sample: ${why}\nusage: node scripts/stage-keys-sample.ts [--claude-root <dir>]... [--dsh-root <dir>]...`);
+  throw new UsageError(`stage-keys-sample: ${why}\nusage: node scripts/stage-keys-sample.ts [--claude-root <dir>]... [--dsh-root <dir>]... [--codex-root <dir>]...`);
 }
 
 /** An error the file system raised (EPERM, EBUSY, EACCES...): its message names the file. */
@@ -64,14 +78,16 @@ function isFsError(e: unknown): boolean {
 /** A file the gate refused or the system would not open: counted as unreadable, never printed. */
 const unreadable = (e: unknown) => e instanceof ReadGateError || isFsError(e);
 
-function parseArgs(args: readonly string[]): { kind: 'claude' | 'dsh'; path: string }[] {
-  const out: { kind: 'claude' | 'dsh'; path: string }[] = [];
+const FLAGS: Readonly<Record<string, 'claude' | 'dsh' | 'codex'>> = { '--claude-root': 'claude', '--dsh-root': 'dsh', '--codex-root': 'codex' };
+
+function parseArgs(args: readonly string[]): { kind: 'claude' | 'dsh' | 'codex'; path: string }[] {
+  const out: { kind: 'claude' | 'dsh' | 'codex'; path: string }[] = [];
   for (let i = 0; i < args.length; i += 2) {
     const flag = args[i]!;
     const value = args[i + 1];
-    if (flag !== '--claude-root' && flag !== '--dsh-root') usage(`unknown argument ${flag}`);
+    const kind = Object.hasOwn(FLAGS, flag) ? FLAGS[flag]! : usage(`unknown argument ${flag}`);
     if (value === undefined || value.startsWith('--')) usage(`${flag} needs a directory`);
-    out.push({ kind: flag === '--claude-root' ? 'claude' : 'dsh', path: win.resolve(value) });
+    out.push({ kind, path: win.resolve(value) });
   }
   return out;
 }
@@ -144,6 +160,8 @@ function main(): void {
   const files: Counts = new Map();
   const tools: Counts = new Map();
   const types: Counts = new Map();
+  const codexTools: Counts = new Map();
+  const codexTypes: Counts = new Map();
   const skipped = () => bump(files, 'unreadable');
 
   // Records are handed over as they are parsed and kept by no one, as in the stage builder.
@@ -237,6 +255,32 @@ function main(): void {
     if (r.note !== null) bump(files, `dsh logs ${r.note}`);
     merge(dg.finish(r.note).keys);
   }
+  for (const s of listed.sessions.filter((x) => x.harness === 'codex')) {
+    const dg = codexDigester({ redact });
+    const r = read(s, (rec) => {
+      dg.add(rec);
+      const type = typeof own(rec, 'type') === 'string' ? (own(rec, 'type') as string) : '';
+      bump(codexTypes, CODEX_TYPES.includes(type) ? type : 'other');
+      samplePaths('codex-record', rec);
+      const p = own(rec, 'payload');
+      if (type !== 'response_item' || !isObject(p)) return;
+      const sub = own(p, 'type');
+      if (sub !== 'function_call' && sub !== 'custom_tool_call') return;
+      const name = own(p, 'name');
+      bump(codexTools, typeof name === 'string' && CODEX_TOOLS.includes(name) ? name : 'other');
+      if (name !== 'update_plan' || typeof own(p, 'arguments') !== 'string') return;
+      try {
+        const args: unknown = JSON.parse(own(p, 'arguments') as string);
+        if (isObject(args)) samplePaths('codex-plan', args);
+      } catch (e) {
+        if (!(e instanceof SyntaxError)) throw e;
+      }
+    });
+    if (r === null) continue;
+    bump(files, 'codex rollouts');
+    if (r.note !== null) bump(files, `codex rollouts ${r.note}`);
+    merge(dg.finish(r.note).keys);
+  }
   const claudeRoots = roots.filter((r) => r.kind === 'claude');
   const reg = readRegistry(gate, claudeRoots, redact);
   merge(reg.keys);
@@ -268,7 +312,7 @@ function main(): void {
 
   const line = (m: Counts, order: readonly string[]) => order.map((k) => `${k} ${m.get(k) ?? 0}`).join(', ');
   console.log('stage-keys-sample: read-only, keys only; counts, never values, names or paths');
-  console.log(`roots: claude ${roots.filter((r) => r.kind === 'claude').length}, dsh ${roots.filter((r) => r.kind === 'dsh').length}`);
+  console.log(`roots: claude ${roots.filter((r) => r.kind === 'claude').length}, dsh ${roots.filter((r) => r.kind === 'dsh').length}, codex ${roots.filter((r) => r.kind === 'codex').length}`);
   console.log(`sessions listed: ${listed.sessions.length} of ${listed.total} (claude ${claude.length}, of them read ${Math.min(claude.length, STAGE_LIMITS.principals)})`);
   console.log(`files: ${[...files.keys()].sort().map((k) => `${k} ${files.get(k)}`).join(', ')}`);
   console.log('KEYS entries: units with the event / with every expected key / missing one; then units with each path');
@@ -279,6 +323,8 @@ function main(): void {
   }
   console.log(`tool_use names: ${line(tools, [...TOOL_NAMES, 'other'])}`);
   console.log(`dsh event types: ${line(types, [...DSH_TYPES, 'other'])}`);
+  console.log(`codex line types: ${line(codexTypes, [...CODEX_TYPES, 'other'])}`);
+  console.log(`codex call names: ${line(codexTools, [...CODEX_TOOLS, 'other'])}`);
   console.log('(~ marks a candidate path counted beside the expected ones)');
 }
 

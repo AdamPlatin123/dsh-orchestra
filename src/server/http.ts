@@ -129,8 +129,8 @@ td.n{white-space:nowrap;color:#555;font-size:12px}.test{background:#b00020;color
 `;
 
 const NOTES: Readonly<Record<NonNullable<PeekView['note']>, string>> = frozen({
-  'tail-only': `只读了文件末尾 ${PEEK_LIMITS.claudeTailBytes / 1024} KiB，更早的事件没显示。`,
-  'too-large': `文件超过 ${PEEK_LIMITS.dshMaxBytes / 1024 / 1024} MiB，这一版不读。`,
+  'tail-only': `只读了文件末尾 ${PEEK_LIMITS.claudeTailBytes / 1024} KiB，更早的事件没显示（Codex 会话另读了开头第一行）。`,
+  'too-large': `文件太大（DSH 超过 ${PEEK_LIMITS.dshMaxBytes / 1024 / 1024} MiB；Codex 压缩包超过 ${PEEK_LIMITS.codexMaxBytes / 1024 / 1024} MiB 或解开后超过上限），这一版不读全：Codex 只读开头第一行。`,
   'bad-frame': '遇到一个解不开的帧，停在了那里；之前的事件照常显示。',
   'unfinished-frame': '文件末尾有一帧还没写完（DSH 可能正在写），下次刷新再看。',
 });
@@ -156,7 +156,7 @@ const iso = (ms: number) => new Date(ms).toISOString().replace('T', ' ').slice(0
 function listPage(profile: 'real' | 'test', list: { sessions: PeekSession[]; total: number }): string {
   const rows = list.sessions.map((s) => `<tr><td class="n">${s.harness}</td><td><a href="/session?id=${s.id}">${escapeHtml(s.project)}</a></td><td class="n">${iso(s.mtimeMs)} UTC</td><td class="n">${kib(s.size)}</td></tr>`).join('\n');
   const more = list.total > list.sessions.length ? `<p class="sub">共 ${list.total} 个，只列最新的 ${list.sessions.length} 个。</p>` : '';
-  const empty = list.total === 0 ? '<p class="note">没在 harness 根下找到 Claude 或 DSH 会话文件。</p>' : '';
+  const empty = list.total === 0 ? '<p class="note">没在 harness 根下找到 Claude、DSH 或 Codex 会话文件。</p>' : '';
   return page('Orchestra · 会话', profile, `<h1>会话（只读）</h1><p class="sub">最薄通路：按修改时间排，刷新页面重读。正文经过脱敏，不落盘。</p>${empty}${more}
 <p><a href="/stage">Stage 预览（M2，只读）</a></p>
 <table><thead><tr><th>harness</th><th>项目目录</th><th>修改时间</th><th>大小</th></tr></thead><tbody>${rows}</tbody></table>`);
