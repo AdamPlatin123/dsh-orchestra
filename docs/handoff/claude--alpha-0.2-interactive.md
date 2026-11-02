@@ -2,10 +2,10 @@
 
 ## Facts
 - Owner: AdamPlatin123
-- When: 2026-11-02 12:27 +00:00
+- When: 2026-11-02（第二次更新：记下用户的四项决定，放宽页面上限）
 - Machine: 550W备份1号机
 - Branch: claude/alpha-0.2-interactive（从 `claude/alpha-0.1` 的 eead531 切出）
-- Commit: 97ef0b7
+- Commit: 见 `git log eead531..HEAD`
 - Pushed: no（push 要等用户点头）
 - Uncommitted on that machine: none（本分支 worktree 在 `.claude/worktrees/alpha-0-2`）
 - 设计稿 `slice-design.md`（alpha 0.2 交互薄切片和导入的设计方案，中文，约 86 KB）**不在仓库里**，只在那台机器上编排会话的临时目录里。下文的「第 N 步」「§N」都指它。别的机器上拿不到，接手前先请用户把它提交进来或另行提供。
@@ -36,6 +36,7 @@
 - `ImportStager` 没有任何调用方；导入流程（第 11、12 步）没做。磁盘剩余空间检查只在调用方传 `freeBytes` 时生效（写围栏的 io 没有 statfs）。
 - 小音符没在真实浏览器、真实数据上看过：亮暗主题、减少动效、`var()` 写在 keyframes 里的跨浏览器表现、拆路径后的形状，都只在假 DOM 里测过。
 - powershell-toast 的环境变量名单是暂定的，要等第 17 步（早先计划里引入 toast 脚本的那一步）才能真跑。
+- 小音符在真实浏览器里没见到：演示数据（`scripts/stage-demo.ts`）没有登记表确认在跑的条，所以页面上一个音符都不画（JS 读回 6 条在跑的条，`data-notes` 全是 "0"）。要看效果，得给演示数据加一个登记表确认在跑的会话。
 - 本分支所有提交都没有 push。
 
 ## Next（按设计 §7 的顺序；每条标出依赖和要等的决定）
@@ -47,7 +48,7 @@
 6. 第 6b 步：审批队列（digest、rev、作废、超时）。依赖 6a。超时时长等设计 §8 第 7 条。
 7. 第 6c 步：端点 new / message / interrupt / end / retry / approvals / owned / feed，`working.ts` → `http.ts` 接线，`--claude-gateway` 参数。依赖第 5 步和 6b。
 8. 第 7 步：`shared/owned-contract.js`（`validateOwnedList` / `validateOwnedFeed`）和金样例。依赖 6c。`OwnedList`、`OwnedFeed` 路由现在只挂着契约名，等这一步。
-9. 第 8 步：只改页面体积上限。**等「体积上限」决定**；必须排在第 9 步前。现在只剩 24 字节余量，任何前端改动都会撞线。
+9. 第 8 步（只改页面体积上限）已做（5895f37）：页面 168 KiB、`ui/` 120 KiB。
 10. 第 9 步：UI（解锁、自有会话区、会话卡、输入框、审批卡、停下、结束、重试，`api.js` 的 POST），之后跑 `scripts/embed-ui.ts`。依赖第 7、8 步。
 11. 第 11 步：Claude 导入（check 端点、活着还是结束、切点、回执、交接说明）。依赖第 0、6c、10 步。**等「导入默认算不算污染」和「0.2 只开测试 profile」决定**。`ImportStager` 的 `stagingParent` 传 ORCHESTRA_HOME 下的 tmp；用 Clock 重试 `busy`（约 2 秒内 5 次）、把错误映射成 HTTP 413/503 都在这一步做。
 12. 第 12 步：DSH 快照（可单独拿掉）。依赖第 0、10 步。**等设计 §8 第 9 条（带不带进 0.2）**。
@@ -58,7 +59,14 @@
 - 主检出目录里 `docs/specs/2026-10-27-dsh-orchestra-design-r4.md` 的未提交改动：用户本人的。
 
 ## Open questions
-四个未定的决定（实现时都只做了各选项共有的部分，取决于决定的值做成了参数）：
+**已定（用户 2026-11-02：「按推荐，导入对话不每次用工具都问」）：**
+- **SDK 路线 = B**：独立 host 子进程，用真 SDK。仓库只放 `hosts/claude/package.json` 和 lockfile；SDK 由用户本人在 `hosts/claude` 里执行一次 `npm ci` 装上（要下载，AI 助手不代跑）。
+- **0.2 只开测试 profile**：只在测试 profile 下、只在测试目录的 `work\` 里干活，不碰真实项目。
+- **页面体积上限放宽**：页面 168 KiB、`ui/` 120 KiB（`test/ui/stage-html.test.ts`，即设计第 8 步，已在 5895f37 提交）。
+- **导入的会话默认不算污染**（这一条没按设计推荐）：导入的会话和新开的会话一样，工作目录内的只读工具（Read、Glob、Grep）不每次问；工作目录外的、会写的、跑命令的照样逐次审批（设计 §2.2 第 5 条）。设计 §2.2 第 4 条（污染会话连 Read 也问）的代码路径保留，但导入时 `tainted` 默认 false，页面不显示「来源不明，每次都会问你」。用户接受的代价：导入的历史里可能读过网页或第三方 MCP 输出，会影响它接下来的行为（设计 §8 第 6 条）。
+- 设计 §8 其余各条（第 2、3、7、8、9、10、11、13、14 条）这次没有逐条问。实现时先按设计推荐做，交付前再请用户过一遍。
+
+下面「四个未定的决定」一节是决定之前写的，保留作记录（实现时都只做了各选项共有的部分，取决于决定的值做成了参数）：
 - **SDK 路线**（设计 §8 第 1 条）：B 独立 host 子进程（用真 SDK，围栏不动，host 靠专属扫描规则和哈希钉死来管），还是 C 直接说 stream-json（零依赖，但要复刻没有文档的协议）。设计推荐 B。
 - **0.2 只开测试 profile**（设计 §8 第 12 条）：0.2 只在测试 profile 下、只在测试目录里干活，还是允许在测试 profile 下选真实项目当 cwd（项目内容会发给 magpie）。设计推荐前者。
 - **页面体积上限**（设计 §4.2、§8 第 5 条）：放宽到页面 168 KiB、`ui/` 120 KiB，还是把对话区做成单独的乐手页（Stage 只加约 5 KB，仍要小幅放宽）。
@@ -78,6 +86,7 @@
 
 本分支实现中冒出来、要人确认的：
 - **AppData 和 `%TEMP%` 冲突**：设计要求 cwd 只能在测试目录的 `work\` 下，测试 profile 又要求测试目录直接放在 `%TEMP%`（默认就在 `%USERPROFILE%\AppData\Local\Temp`）；而拒绝表不许 cwd 落在 AppData 里。现在默认 TEMP 下的 `work\` 一律被拒，有测试钉住。可选：AppData 规则对 `%TEMP%` 开口子，或把 work 目录挪到别处。
+  定了「只开测试 profile」以后一定会碰到。建议：只有 orchestrad 自己建的允许根（测试目录下的 `work\`）豁免 AppData 这一行，其余各行照拒；在第 6a 步实现，实现前先跟用户确认一句。
 - 路由路径参数写成 `:id`，不是设计里的 `:ownedId` / `:approvalId` / `:stageId`（已有测试要求路由只含小写字母）。
 - `text-too-long` 现在同时用于提醒（120 字）和自有会话消息（2048 字节），提示文字已改成不带数字的「文字太长」；要不要拆成两个错误码，在处理函数落地前定。
 - 设计稿要不要提交进仓库（见 Facts）。
@@ -89,6 +98,7 @@
   - 没有 `fence.mkdtemp`：扫描规则禁止在写围栏以外出现这个词。改为用 `mkdirp` 建随机名目录，只认 mkdirp 报告由它新建的。
   - 读闸新增 `openRead`，供导入复制用（复核修正，97ef0b7）。
   - 设计第 1、4、10 步之外多做了一件 UI 小事（1a15923 飘小音符）。
+- 2026-11-02 AdamPlatin123：5895f37 的提交信息写了「user decisions recorded」，但那个提交只含上限改动（`test/ui/stage-html.test.ts`），交接文件的更新没写进去（写入被那个会话的 worktree 隔离 hook 拦下）。本条和上面的各项更新在下一个 `handoff:` 提交里补上。
 
 ## 代号速查
 | 代号 | 内容（一句话） | 出处 |
