@@ -19,7 +19,6 @@
 <radialGradient id="g-lamp"><stop class="s-lamp0" offset="0"/><stop class="s-lamp1" offset=".3"/><stop class="s-spot2" offset="1"/></radialGradient>
 <linearGradient id="g-riser" x1="0" y1="0" x2="0" y2="1"><stop class="s-r0" offset="0"/><stop class="s-r1" offset="1"/></linearGradient>
 <linearGradient id="g-arch" x1="0" y1="0" x2="0" y2="1"><stop class="s-arch0" offset="0"/><stop class="s-arch1" offset="1"/></linearGradient>
-<pattern id="scallop" width="60" height="52" patternUnits="userSpaceOnUse"><path class="scallop" d="M0 0H60V32Q30 54 0 32Z"/><path class="fringe" d="M0 32Q30 54 60 32"/></pattern>
 <symbol id="lamp" overflow="visible"><circle r="46" fill="url(#g-lamp)"/><path class="lamp-cap" d="M-7 4H7L4 -6H-4Z"/><circle class="lamp-core" cy="-9" r="5"/></symbol>
 <pattern id="hatch" width="2" height="2" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="1" height="2" fill="currentColor"/></pattern>
 <marker id="arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0 0L8 4L0 8z" fill="context-stroke"/></marker>
@@ -98,8 +97,6 @@
 <path class="baton" d="M24.4 -48.6L40 -68"/>
 </g>
 </g>
-<path class="drape" d="M0 0H42Q30 420 24 920H0ZM1200 0H1158Q1170 420 1176 920H1200Z"/>
-<rect class="valance" width="1200" height="52"/>
 <text class="nolanes" x="600" y="420" data-slot="nolanes" data-hide="1"></text>
 </svg>
 </div>
@@ -119,7 +116,7 @@
 </section>
 
 <section id="plan" class="pane plan-pane" aria-labelledby="plan-h">
-  <h2 id="plan-h" class="pane-h"><span data-t="tab.plan"></span><small>Parts</small></h2>
+  <h2 id="plan-h" class="pane-h"><span data-t="tab.plan"></span></h2>
   <p class="health" data-slot="health" data-hide="1"></p>
   <div class="desks" data-slot="desk"></div>
   <p id="chips-l" class="sr" data-t="chip.label"></p>

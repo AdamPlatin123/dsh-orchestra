@@ -122,7 +122,7 @@ test('markup parsing throws in the fake DOM, and the patcher refuses any attribu
   for (const bad of ['href', 'style', 'onclick', 'src', 'xlink:href']) {
     assert.throws(() => dom.paint(el as unknown as Element, { attr: { [bad]: 'x' } }), /not on the patcher's list/, bad);
   }
-  assert.deepEqual([...ATTRS], ['transform', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'aria-pressed']);
+  assert.deepEqual([...ATTRS], ['transform', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'aria-pressed', 'aria-current']);
   assert.ok(Object.isFrozen(ATTRS));
   assert.throws(() => dom.paint(el as unknown as Element, { slots: { nope: { text: 'x' } } }), /no slot nope/);
 });
@@ -136,4 +136,27 @@ test('the drawer opens modal for a node and closes when the route drops it', () 
   assert.equal(doc.getElementById('dr-title')!.textContent, 'shop · 重构结账流程 (checkout refactor)');
   render(s, null, 'p:fbeae7c18667b6987518', false);
   assert.equal(dlg.open, false);
+});
+
+test('the selection reaches assistive tech: aria-current on the selected row, desk and seat, and nowhere else', () => {
+  const { doc, render } = page();
+  const s = sample();
+  const current = (sel: string) => doc.querySelectorAll(sel).filter((e) => e.getAttribute('aria-current') === 'true');
+  const desks = () => doc.querySelectorAll('.desk').map((d) => d.querySelector('.open')!).filter((e) => e.getAttribute('aria-current') === 'true');
+  render(s, null, 'w:toolu_t1');
+  const ex = s.lanes[0].items.find((w: Json) => w.id === 'w:toolu_t1').executor;
+  const rows = doc.querySelectorAll('.row').filter((r) => r.getAttribute('data-sel') === '1');
+  assert.ok(rows.length > 0);
+  for (const r of doc.querySelectorAll('.row')) {
+    assert.equal(r.querySelector('.open')!.getAttribute('aria-current'), r.getAttribute('data-sel') === '1' ? 'true' : 'false', 'the row button says what the gold rule shows');
+  }
+  assert.deepEqual(current('.player').map((e) => e.getAttribute('data-node')), [ex], 'the stage seat of the executor mirrors it');
+  assert.equal(doc.querySelectorAll('.desk').length, 2);
+  assert.deepEqual(desks(), []);
+  const lead = 'p:fbeae7c18667b6987518';
+  render(s, null, lead);
+  assert.deepEqual(desks().map((e) => e.textContent), [s.lanes[0].players.find((p: Json) => p.id === lead).label]);
+  assert.deepEqual(current('.player').map((e) => e.getAttribute('data-node')), [lead]);
+  render(s, null, null);
+  assert.deepEqual([...current('.open'), ...current('.player')], [], 'clearing the selection clears every aria-current');
 });

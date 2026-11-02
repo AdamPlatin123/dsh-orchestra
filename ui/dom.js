@@ -11,10 +11,10 @@ import { STAGE_TEXT } from '../shared/strings.js';
 /** @typedef {import('./view.js').Desc} Desc */
 
 /**
- * The attributes setAttribute may write: SVG geometry, plus aria-pressed, which no dataset or class can
- * carry to assistive tech. Never href, style or an on* handler.
+ * The attributes setAttribute may write: SVG geometry, plus aria-pressed and aria-current, which no
+ * dataset or class can carry to assistive tech. Never href, style or an on* handler.
  */
-export const ATTRS = frozen(['transform', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'aria-pressed']);
+export const ATTRS = frozen(['transform', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'aria-pressed', 'aria-current']);
 
 /** @param {DOMRect} b @param {number} x @param {number} y */
 export function outsideBox(b, x, y) {

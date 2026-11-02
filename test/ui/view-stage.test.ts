@@ -120,7 +120,7 @@ test('a checked todo reads 自报已勾 with a hatched dot; the lead desk report
   const s = sample();
   const plan = describePlan(s as any, SHOP, null, null, fmt);
   const desk = descs(plan.slots.desk).find((d) => d.tpl === 'tpl-desk' && d.slots.name.text.startsWith('shop · 重构'))!;
-  assert.equal(desk.slots.todoHead.text, '待办 · 由主奏自己做 · 自报 1/3');
+  assert.equal(desk.slots.todoHead.text, '主奏自己的待办，自报 1/3');
   assert.equal(desk.slots.goal.text, '未设目标');
   const todos = desk.slots.todo.kids;
   assert.deepEqual(todos.map((t: Json) => [t.slots.g.text, t.slots.st.text]), [['☑', '自报已勾'], ['◐', '在做'], ['○', '待做']]);
@@ -134,7 +134,7 @@ test('a checked todo reads 自报已勾 with a hatched dot; the lead desk report
   all.lanes[0].players[0].stand.items.forEach((i: Json) => { i.status = 'completed'; });
   all.lanes[0].players[0].stand.selfReported.checked = 3;
   const d2 = descs(describePlan(all as any, SHOP, null, null, fmt).slots.desk)[0]!;
-  assert.equal(d2.slots.todoHead.text, '待办 · 由主奏自己做 · 自报 3/3 · 待办全部勾选（自报）');
+  assert.equal(d2.slots.todoHead.text, '主奏自己的待办，自报 3/3，全部自报已勾');
 });
 
 test('every work item row carries the verdict 无复核者（M0）, undeclared criteria, and a report no further than 已回报', () => {
@@ -143,7 +143,7 @@ test('every work item row carries the verdict 无复核者（M0）, undeclared c
   assert.ok(rows.length >= 6);
   for (const r of rows) assert.equal(r.slots.verdict.text, '无复核者（M0）');
   const t1 = rows.find((r) => r.key === 'w:toolu_t1')!;
-  assert.equal(t1.slots.report.text, '已回报 · 19:07:00 · 1.2k 字节');
+  assert.equal(t1.slots.report.text, '已回报 19:07:00，1.2k 字节');
   assert.equal(t1.slots.flowText.text, '局部上下文 48k 字节 → 回流 1.2k 字节（压缩 40×）');
   assert.equal(t1.data.flow, '5');
   assert.equal(rows.find((r) => r.key === 'w:agent-a3')!.slots.report.text, '疑似孤儿');
@@ -164,8 +164,8 @@ test('departments group by executor with depth badges; unjoined items and stray 
     ['h:unlinked', '-'], ['w:agent-a3', '0'],
   ]);
   const t2 = list[1]!;
-  assert.deepEqual(t2.slots!.dept, { text: '部门 · 下派 1 · 深度 1', data: { hide: '0' } });
-  assert.equal(list[5]!.slots!.t!.text, '未关联 · 1');
+  assert.deepEqual(t2.slots!.dept, { text: '部门：下派 1，深度 1', data: { hide: '0' } });
+  assert.equal(list[5]!.slots!.t!.text, '未关联（1）');
   // A clone no item points at is listed too, and a department deeper than 2 is flagged.
   const s2 = sample();
   s2.lanes[0].items = s2.lanes[0].items.filter((w: Json) => w.id !== 'w:agent-a3');
@@ -174,7 +174,7 @@ test('departments group by executor with depth badges; unjoined items and stray 
   const l2 = describePlan(s2 as any, SHOP, null, null, fmt).slots.list.kids!;
   // Its one button names the player, so several stray rows read apart.
   const strayLabel = s2.lanes[0].players.find((p: Json) => p.id === 'p:f46dd28a5499d8efef0b').label;
-  assert.ok(l2.some((d) => d.key === 'x:p:f46dd28a5499d8efef0b' && d.slots!.brief!.text === `${strayLabel} · 没有找到派活记录`));
+  assert.ok(l2.some((d) => d.key === 'x:p:f46dd28a5499d8efef0b' && d.slots!.brief!.text === `${strayLabel}：没有找到派活记录`));
   assert.equal(l2.find((d) => d.key === 'w:toolu_t2')!.slots!.deep!.data!.hide, '0');
 });
 
@@ -228,17 +228,17 @@ test('the stage: a fermata on the waiting lead, looks and instruments from the f
   assert.equal(by('Scan legacy').data!.look, 'ghost');
   assert.equal(by('impl').data!.instr, 'strings');
   assert.equal(by('reviewer').slots!.plate!.text, '谱架空着');
-  assert.equal(st.podium!.text, '你 · 需要你 1 · 收件箱 未接入');
+  assert.equal(st.podium!.text, '你：需要你 1，收件箱未接入');
   assert.ok(texts(by('重构结账')).some((t) => t.includes('在等你：permission prompt')));
   assert.equal(by('重构结账').slots!.tag!.text, 'Claude 主奏', 'the nameplate says who: harness and role');
   assert.equal(by('DSH lead').slots!.tag!.text, 'DSH 主奏');
   assert.equal(by('Review diff').slots!.tag!.text, 'code-reviewer', 'a clone in a narrow cell shows its agent type');
-  assert.equal(by('impl').slots!.tag!.text, '队友 · worker', 'with room, the tag shows role and agent type');
+  assert.equal(by('impl').slots!.tag!.text, '队友（worker）', 'with room, the tag shows role and agent type');
   assert.ok(!st.players.kids!.some((d) => d.slots!.name!.text!.startsWith('shop')), 'no nameplate repeats the project the header names');
   const cue = st.cues!.kids!.find((c) => c.key === 'w:toolu_t1|report')!;
   assert.equal(cue.slots!.label!.text, '48k→1.2k');
   assert.ok(!st.players.kids!.some((d) => d.data!.lineage === 'codex'), 'Codex has no players: its chairs are static and say 未接入');
-  assert.equal(STAGE_TEXT['sec.codex'], 'Codex · 未接入（M0 不读）');
+  assert.equal(STAGE_TEXT['sec.codex'], 'Codex 未接入（M0 不读）');
   const notes = describeStage(s as any, NOTES, null);
   assert.equal(notes.players.kids![0]!.slots!.plate!.text, '不在读到…');
   assert.ok(notes.players.kids![0]!.slots!.title!.text!.endsWith('不在读到的尾部'), 'the full text is in the seat title');
@@ -249,11 +249,11 @@ test('the drawer: basis, instrument evidence, rules at N=0, the canary only as i
   const s = sample();
   const d = describeDrawer(s as any, SHOP, 'w:toolu_t2', null, fmt, 2000)!;
   const facts = Object.fromEntries(d.slots.facts!.kids!.map((k) => [k.key, k.slots!.v!.text]));
-  assert.equal(facts['dr.live'], '在跑 · 推断 · 10 秒前');
-  assert.equal(facts['dr.instr'], '铜管 · 复核 · 近 15 次工具调用：读 10 · 写 0 · 命令 3 · code-reviewer');
-  assert.equal(facts['dr.rule'], 'instrument.tool-map · 未测（N=0） · 本次命中 10');
+  assert.equal(facts['dr.live'], '在跑（推断），10 秒前');
+  assert.equal(facts['dr.instr'], '铜管：复核（code-reviewer）；近 15 次工具调用：读 10、写 0、命令 3');
+  assert.equal(facts['dr.rule'], 'instrument.tool-map：未测（N=0），本次命中 10');
   assert.equal(facts['dr.verdict'], '无复核者（M0）');
-  assert.equal(facts['dr.join'], '按描述关联（推测） · claude.clone.running · 未测（N=0） · 本次命中 2');
+  assert.equal(facts['dr.join'], '按描述关联（推测）；claude.clone.running：未测（N=0），本次命中 2');
   assert.match(d.slots.brief!.text!, /\[redacted:sk-ant\]$/);
   assert.equal(d.slots.evNote!.text, '读取中…');
   assert.equal(d.session, 'ff7ce04c37f67805bb72');
@@ -261,9 +261,12 @@ test('the drawer: basis, instrument evidence, rules at N=0, the canary only as i
     session: { id: '1f58d4ebc954d015d023', harness: 'claude', label: 'x', size: 1, mtimeMs: 0 },
     events: Array.from({ length: 60 }, (_, i) => ({ at: '2026-11-01T10:00:00.000Z', type: 'assistant', text: `e${i}` })), unparsed: 2, note: 'tail-only', brief: null,
   }, fmt, 0)!;
+  const lead = Object.fromEntries(ok.slots.facts!.kids!.map((k) => [k.key, k.slots!.v!.text!]));
+  assert.match(lead['dr.live'], /^在等你：permission prompt（登记表），\d+ (秒|分钟|小时)前$/, 'the wait is said once, with its reason');
+  assert.equal(ok.slots.sub!.text!.split('在等你').length, 2, 'the drawer header says it once too');
   assert.equal(ok.slots.events!.kids!.length, 50);
   assert.equal(ok.slots.events!.kids![49]!.slots!.tx!.text, 'e59');
-  assert.equal(ok.slots.evNote!.text, '另有 2 行没解析 · 只读了文件末尾');
+  assert.equal(ok.slots.evNote!.text, '另有 2 行没解析；只读了文件末尾');
   assert.equal(describeDrawer(s as any, SHOP, 'p:fbeae7c18667b6987518', { error: 'not-found' }, fmt, 0)!.slots.evNote!.text, '读取失败：not-found');
   assert.equal(describeDrawer(s as any, SHOP, 'p:00000000000000000000', null, fmt, 0), null);
   for (const t of everything(s)) assert.ok(!/sk-ant-api03-/.test(t));

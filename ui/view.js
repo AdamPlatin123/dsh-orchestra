@@ -88,7 +88,9 @@ function playing(lane) {
 /** @param {Player} p */
 const basisText = (p) => STAGE_TEXT[p.live.basis === 'registry' ? 'basis.registry' : p.live.basis === 'none' ? 'basis.none' : 'basis.inferred'];
 /** @param {Player} p */
-const liveText = (p) => `${STAGE_TEXT[`live.${p.live.state}`]} · ${basisText(p)}`;
+const liveText = (p) => `${STAGE_TEXT[`live.${p.live.state}`]}（${basisText(p)}）`;
+/** The state, with what it waits for said once: 在等你：x（登记表）. @param {Player} p */
+const liveWait = (p) => (p.live.waitingFor !== null ? `${fill('player.waiting', { w: p.live.waitingFor })}（${basisText(p)}）` : liveText(p));
 /** @param {Player} p */
 const eyes = (p) => (PLAYING.includes(p.live.state) ? 'open' : 'shut');
 
@@ -137,7 +139,7 @@ export function describeHeader(snap, laneId, fresh) {
       items: { text: fill('bar.items', { c: reported, d: sent }) },
       sources: {
         text: errs.length > 0
-          ? errs.map((h) => fill('bar.srcError', { h, code: snap.sources[h].error ?? '' })).join(' · ')
+          ? errs.map((h) => fill('bar.srcError', { h, code: snap.sources[h].error ?? '' })).join('；')
           : fill('bar.sources', { c: snap.sources.claude.sessions, d: snap.sources.dsh.sessions }),
         data: { tone: errs.length > 0 ? 'warn' : '' },
       },
@@ -156,7 +158,7 @@ export function describeHeader(snap, laneId, fresh) {
  */
 export function nameplate(p, lane) {
   const role = STAGE_TEXT[`role.${p.role}`];
-  const tag = p.role === 'principal' ? `${STAGE_TEXT[`harness.${p.harness}`]} ${role}` : p.agentType !== null ? `${role} · ${p.agentType}` : role;
+  const tag = p.role === 'principal' ? `${STAGE_TEXT[`harness.${p.harness}`]} ${role}` : p.agentType !== null ? `${role}（${p.agentType}）` : role;
   const cut = p.label.indexOf(' · ');
   let name = p.label;
   if (cut > 0 && p.label.slice(0, cut) === lane.name) name = p.label.slice(cut + 3);
@@ -168,14 +170,13 @@ export function nameplate(p, lane) {
 function seatDesc(p, lane, seat, sel, fermatas) {
   const instr = STAGE_TEXT[`instr.${p.instrument.class}`];
   const plate = plateText(p);
-  const wait = p.live.waitingFor !== null ? ` · ${fill('player.waiting', { w: p.live.waitingFor })}` : '';
   const np = nameplate(p, lane);
   // The nameplate is in viewBox units, so its width in columns follows the seat's cell.
   const room = Math.max(seat.w, 70) - 12;
   const tagW = Math.min(30, Math.floor(room / 6.6));
   /** @type {Record<string, Paint>} */
   const slots = {
-    title: { text: `${fill('player.title', { label: p.label, role: STAGE_TEXT[`role.${p.role}`], instr, live: liveText(p) })}${wait} · ${plate}` },
+    title: { text: fill('player.title', { label: p.label, role: STAGE_TEXT[`role.${p.role}`], instr, live: liveWait(p), plate }) },
     body: { attr: { transform: `scale(${seat.s})` } },
     plate: { text: clipW(plate, 9) },
     tag: { text: clipW(clipW(np.tag, tagW) === np.tag ? np.tag : np.short, tagW) },
@@ -188,8 +189,8 @@ function seatDesc(p, lane, seat, sel, fermatas) {
   return {
     key: p.id,
     tpl: 'tpl-player',
-    attr: { transform: `translate(${seat.x} ${seat.y})` },
     data: { node: p.id, ...figure(p), fermata: fermatas.has(p.id) ? '1' : '0', sel: sel === p.id ? '1' : '0' },
+    attr: { transform: `translate(${seat.x} ${seat.y})`, 'aria-current': sel === p.id ? 'true' : 'false' },
     slots,
   };
 }
@@ -271,15 +272,16 @@ function reportText(w, fmt) {
 function rowDesc(w, ex, depth, sel, dept, fmt, key) {
   const fig = ex !== null ? figure(ex) : NOFIG;
   const node = w !== null ? w.id : /** @type {Player} */ (ex).id;
+  const on = sel === node || (ex !== null && sel === ex.id);
   return {
     key: key ?? node,
     tpl: 'tpl-row',
     data: {
-      node, ...fig, depth: String(Math.min(depth, 4)), state: w !== null ? w.state : 'orphan', sel: sel === node || (ex !== null && sel === ex.id) ? '1' : '0',
+      node, ...fig, depth: String(Math.min(depth, 4)), state: w !== null ? w.state : 'orphan', sel: on ? '1' : '0',
       flow: w !== null && w.flow !== null ? flowBucket(w.flow) : 'none', dept: dept !== null ? '1' : '0',
     },
     slots: {
-      brief: { text: w !== null ? w.brief : `${/** @type {Player} */ (ex).label} · ${STAGE_TEXT['plan.noBrief']}` },
+      brief: { text: w !== null ? w.brief : `${/** @type {Player} */ (ex).label}：${STAGE_TEXT['plan.noBrief']}`, attr: { 'aria-current': on ? 'true' : 'false' } },
       src: { text: w !== null ? STAGE_TEXT[`src.${w.source}`] : STAGE_TEXT['join.none'] },
       exName: { text: ex !== null ? ex.label : STAGE_TEXT['plan.noExec'] },
       exInstr: { text: ex !== null ? STAGE_TEXT[`instr.${ex.instrument.class}`] : STAGE_TEXT['instr.unknown'] },
@@ -300,18 +302,18 @@ function deskDesc(p, sel) {
   const todo = st.source === 'todo' ? st.items : [];
   const { checked, total } = st.selfReported;
   let head = STAGE_TEXT['desk.noTodo'];
-  if (st.source === 'todo') head = fill('desk.todo', { x: checked, y: total }) + (total > 0 && checked === total ? ` · ${STAGE_TEXT['desk.allChecked']}` : '');
+  if (st.source === 'todo') head = fill('desk.todo', { x: checked, y: total }) + (total > 0 && checked === total ? `，${STAGE_TEXT['desk.allChecked']}` : '');
   let note = '';
   if (st.keys === 'mismatch') note = fill('health.keys', { ids: `${p.harness}.stand` });
   else if (st.source === 'tail-miss') note = STAGE_TEXT['stand.tail-miss'];
-  if (p.note !== null) note = note === '' ? STAGE_TEXT[`note.${p.note}`] : `${note} · ${STAGE_TEXT[`note.${p.note}`]}`;
+  if (p.note !== null) note = note === '' ? STAGE_TEXT[`note.${p.note}`] : `${note}；${STAGE_TEXT[`note.${p.note}`]}`;
   return {
     key: p.id,
     tpl: 'tpl-desk',
     data: { node: p.id, ...figure(p), sel: sel === p.id ? '1' : '0' },
     slots: {
-      name: { text: p.label },
-      who: { text: `${STAGE_TEXT[`harness.${p.harness}`]} · ${STAGE_TEXT['role.principal']} · ${liveText(p)}` },
+      name: { text: p.label, attr: { 'aria-current': sel === p.id ? 'true' : 'false' } },
+      who: { text: `${STAGE_TEXT[`harness.${p.harness}`]} ${STAGE_TEXT['role.principal']}，${liveText(p)}` },
       goal: { text: goal, data: { tone: goal === STAGE_TEXT['desk.noGoal'] ? 'none' : '' } },
       todoHead: { text: head },
       todo: { kids: todo.map((it, i) => todoDesc(it, i)) },
@@ -354,7 +356,7 @@ export function describePlan(snap, laneId, chip, sel, fmt) {
   const lane = pickLane(snap, laneId);
   const mismatch = snap.rules.filter((r) => r.status === 'keys-mismatch').map((r) => r.id);
   const srcErr = /** @type {const} */ (['claude', 'dsh']).filter((h) => snap.sources[h].state === 'error').map((h) => fill('health.src', { h, code: snap.sources[h].error ?? '' }));
-  const health = [...(mismatch.length > 0 ? [fill('health.keys', { ids: mismatch.join(', ') })] : []), ...srcErr].join(' · ');
+  const health = [...(mismatch.length > 0 ? [fill('health.keys', { ids: mismatch.join(', ') })] : []), ...srcErr].join('；');
   const clippedN = snap.clipped.lanes + snap.clipped.players + snap.clipped.items + snap.clipped.standItems;
   /** @type {Record<string, Paint>} */
   const common = {
@@ -459,27 +461,26 @@ export function describeDrawer(snap, laneId, node, detail, fmt, sinceMs) {
   if (p === null && w === null) return null;
   const rule = (/** @type {string} */ id) => {
     const r = snap.rules.find((x) => x.id === id);
-    if (r === undefined) return `${id} · ${fill('rule.untested', { n: 0 })}`;
-    return `${id} · ${r.status === 'keys-mismatch' ? STAGE_TEXT['rule.mismatch'] : fill('rule.untested', { n: r.n })} · ${fill('rule.hits', { h: r.hits })}`;
+    if (r === undefined) return `${id}：${fill('rule.untested', { n: 0 })}`;
+    return `${id}：${r.status === 'keys-mismatch' ? STAGE_TEXT['rule.mismatch'] : fill('rule.untested', { n: r.n })}，${fill('rule.hits', { h: r.hits })}`;
   };
   /** @type {Desc[]} */
   const facts = [];
   if (p !== null) {
-    const who = [STAGE_TEXT[`harness.${p.harness}`], STAGE_TEXT[`role.${p.role}`], ...(p.agentType !== null ? [p.agentType] : []), fill('dr.depth', { d: p.depth })].join(' · ');
+    const who = `${STAGE_TEXT[`harness.${p.harness}`]} ${STAGE_TEXT[`role.${p.role}`]}${p.agentType !== null ? `（${p.agentType}）` : ''}，${fill('dr.depth', { d: p.depth })}`;
     facts.push(kv('dr.who', who));
-    facts.push(kv('dr.session', p.session === null ? STAGE_TEXT['dr.noSession'] : `${p.session.slice(0, 8)} · ${bytes(p.bytes)}${p.note !== null ? ` · ${STAGE_TEXT[`note.${p.note}`]}` : ''}`, p.note !== null ? 'warn' : ''));
-    const ageText = p.live.ageMs !== null ? ` · ${age(p.live.ageMs + sinceMs)}` : '';
-    const wait = p.live.waitingFor !== null ? ` · ${fill('player.waiting', { w: p.live.waitingFor })}` : '';
-    facts.push(kv('dr.live', `${liveText(p)}${ageText}${wait}`, p.live.state === 'waiting' ? 'warn' : ''));
-    facts.push(kv('dr.look', `${STAGE_TEXT[`look.${p.look}`]} · ${p.lookRule}`));
+    facts.push(kv('dr.session', p.session === null ? STAGE_TEXT['dr.noSession'] : `${p.session.slice(0, 8)}（${bytes(p.bytes)}）${p.note !== null ? `，${STAGE_TEXT[`note.${p.note}`]}` : ''}`, p.note !== null ? 'warn' : ''));
+    const ageText = p.live.ageMs !== null ? `，${age(p.live.ageMs + sinceMs)}` : '';
+    facts.push(kv('dr.live', `${liveWait(p)}${ageText}`, p.live.state === 'waiting' ? 'warn' : ''));
+    facts.push(kv('dr.look', `${STAGE_TEXT[`look.${p.look}`]}（${p.lookRule}）`));
     const ins = p.instrument;
-    facts.push(kv('dr.instr', `${STAGE_TEXT[`instr.${ins.class}`]} · ${fill('dr.instrLine', { n: ins.window, r: ins.read, w: ins.write, s: ins.shell })}${ins.role !== null ? ` · ${ins.role}` : ''}`));
+    facts.push(kv('dr.instr', `${STAGE_TEXT[`instr.${ins.class}`]}${ins.role !== null ? `（${ins.role}）` : ''}；${fill('dr.instrLine', { n: ins.window, r: ins.read, w: ins.write, s: ins.shell })}`));
     facts.push(kv('dr.rule', rule('instrument.tool-map')));
   }
   if (w !== null) {
-    facts.push(kv('dr.report', `${reportText(w, fmt)} · ${flowText(w)}`));
+    facts.push(kv('dr.report', `${reportText(w, fmt)}；${flowText(w)}`));
     facts.push(kv('dr.verdict', STAGE_TEXT['plan.verdict']));
-    facts.push(kv('dr.join', `${STAGE_TEXT[w.join === null ? 'join.none' : `join.${w.join}`]} · ${rule(w.stateRule)}`, w.join === null ? 'warn' : ''));
+    facts.push(kv('dr.join', `${STAGE_TEXT[w.join === null ? 'join.none' : `join.${w.join}`]}；${rule(w.stateRule)}`, w.join === null ? 'warn' : ''));
   }
   const session = p !== null ? p.session : null;
   /** @type {Desc[]} */
@@ -491,7 +492,7 @@ export function describeDrawer(snap, laneId, node, detail, fmt, sinceMs) {
   else {
     events = detail.events.slice(-50).map((e, i) => ({ key: String(i), tpl: 'tpl-ev', slots: { at: { text: e.at !== null ? fmt.iso(e.at) : '--:--:--' }, ty: { text: e.type }, tx: { text: e.text } } }));
     const bits = [...(events.length === 0 ? [STAGE_TEXT['dr.noEvents']] : []), ...(detail.unparsed > 0 ? [fill('dr.unparsed', { n: detail.unparsed })] : []), ...(detail.note !== null && Object.hasOwn(STAGE_TEXT, `note.${detail.note}`) ? [STAGE_TEXT[`note.${detail.note}`]] : [])];
-    evNote = bits.join(' · ');
+    evNote = bits.join('；');
   }
   const brief = w !== null ? w.brief : p !== null && p.stand.source === 'task-brief' ? p.stand.title : null;
   const stand = p !== null ? p.stand.items : [];
@@ -500,7 +501,7 @@ export function describeDrawer(snap, laneId, node, detail, fmt, sinceMs) {
     slots: {
       head: { data: p !== null ? figure(p) : NOFIG },
       title: { text: p !== null ? p.label : w !== null ? w.brief : '' },
-      sub: { text: p !== null ? `${STAGE_TEXT[`instr.${p.instrument.class}`]} · ${liveText(p)}` : '' },
+      sub: { text: p !== null ? `${STAGE_TEXT[`instr.${p.instrument.class}`]}，${liveWait(p)}` : '' },
       facts: { kids: facts },
       briefBox: { data: { hide: brief === null ? '1' : '0' } },
       brief: { text: brief ?? '' },
