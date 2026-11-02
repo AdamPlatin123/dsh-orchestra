@@ -13,6 +13,8 @@ import { CLASS_RANK, TIMER_CLASSES, TRANSITION_CLASSES, VirtualClock, clockRecor
 import { BODY_SCHEMAS, ENTITIES, JOURNAL_KINDS, KINDS, REMINDER_EDGES, STATES } from '../../src/store/records.ts';
 import { MIGRATIONS } from '../../src/store/migrations/0001-m0.ts';
 import { ITEM_EDGES, KIND_RULES } from '../../src/model/inbox.ts';
+import type { Route, Shape } from '../../src/server/routes.ts';
+import * as routes from '../../src/server/routes.ts';
 
 /** A JSON-able picture of an export: its kind and its value as far as data goes. */
 export function describeValue(v: unknown): unknown {
@@ -124,5 +126,50 @@ export function describeJournal(lineKeys: readonly string[]): Record<string, unk
     journalKinds: [...JOURNAL_KINDS],
     bodies: Object.fromEntries(KINDS.map((k) => [k, describeSchema(BODY_SCHEMAS[k] as Schema)])),
     migrations: MIGRATIONS.map((m) => ({ name: m.name, setVersion: m.setVersion, sha256: crypto.createHash('sha256').update(m.statements.join('\n;\n'), 'utf8').digest('hex') })),
+  };
+}
+
+/** A route shape as plain data, in describeSchema's notation; a grammar by its name and source. */
+function describeShape(s: Shape): unknown {
+  switch (s.t) {
+    case 'int':
+      return `int[${s.min},${s.max === Number.MAX_SAFE_INTEGER ? 'max' : s.max}]`;
+    case 'const':
+      return `const:${String(s.value)}`;
+    case 'enum':
+      return `enum:${s.of.join('|')}`;
+    case 're':
+      return `re:${s.name}:/${s.re.source}/${s.re.flags}`;
+    case 'text':
+      return `text[${s.maxCp}]:${s.why}`;
+    case 'null':
+      return { nullable: describeShape(s.of) };
+    case 'obj':
+      return { fields: Object.fromEntries(Object.entries(s.fields).map(([k, f]) => [k, describeShape(f)])), optional: [...s.optional] };
+    case 'arr':
+      return { array: describeShape(s.of), min: s.min, max: s.max };
+    case 'tagged':
+      return { tag: s.tag, cases: Object.fromEntries(Object.entries(s.cases).map(([c, fs]) => [c, Object.fromEntries(Object.entries(fs).map(([k, f]) => [k, describeShape(f)]))])) };
+    default:
+      return s.t;
+  }
+}
+
+/**
+ * The owned-session routes of alpha 0.2 (slice design §2.7) as plain data: every field of each route
+ * (auth, human verb, target, checks, own codes, failures, status, contract) and the trees of its query,
+ * body and reply, plus the constants their handlers code against.
+ */
+export function describeOwnedRoutes(): Record<string, unknown> {
+  const isOwned = (r: Route) => r.auth === 'cookie' || r.auth === 'unlocked';
+  return {
+    constants: {
+      CONTROL_HEADER: routes.CONTROL_HEADER, OWNED_BODY_MAX_BYTES: routes.OWNED_BODY_MAX_BYTES, OWNED_TEXT_MAX_BYTES: routes.OWNED_TEXT_MAX_BYTES,
+      STAGE_ID_RE: describeValue(routes.STAGE_ID_RE), SEQ_RE: describeValue(routes.SEQ_RE), IMPORT_CAN: [...routes.IMPORT_CAN], IMPORT_MODES: [...routes.IMPORT_MODES],
+    },
+    routes: Object.fromEntries(routes.ROUTES.filter(isOwned).map((r) => [`${r.method} ${r.path}`, {
+      auth: r.auth, human: r.human, target: r.target, checks: [...r.checks], own: [...r.own], failures: [...r.failures], status: r.status ?? null, contract: r.contract ?? null,
+      query: r.query === null ? null : describeShape(r.query), body: r.body === null ? null : describeShape(r.body), reply: r.reply === null ? null : describeShape(r.reply),
+    }])),
   };
 }

@@ -8,7 +8,7 @@ import { frozen } from '../../shared/frozen.js';
 import { ACK_REPLIES } from '../notify/channel.ts';
 import { ownFields } from '../runtime/own.ts';
 import { COUNT_NAMES } from '../model/source-report.ts';
-import { ERROR_CODE_RE, EVENT_KINDS } from '../store/records.ts';
+import { DIGEST_RE, ERROR_CODE_RE, EVENT_KINDS } from '../store/records.ts';
 
 // The route table and every JSON shape the HTTP server and the SSE stream speak (plan step 3; UI
 // design 一). No server here: step 4 builds it on these, checks each request against its route's
@@ -20,8 +20,14 @@ import { ERROR_CODE_RE, EVENT_KINDS } from '../store/records.ts';
 // redacted text of at most one snippet, each as a text leaf naming why.
 //
 // Every POST that writes a human record carries an actionId (UI design 一 5); pair, notify-ack,
-// client-state (idempotent by their natural keys) and brake/plan (only plans, causes no transition)
-// do not. 4xx and 503 replies write nothing to the journal.
+// client-state (idempotent by their natural keys), brake/plan (only plans, causes no transition) and
+// the two unlock routes (they hand out the controller token, and act on no session) do not. 4xx and
+// 503 replies write nothing to the journal.
+//
+// alpha 0.2 (slice design §2.7) adds the owned-session routes: the protocol only, frozen before any
+// handler exists. Every one of them but the unlock pair needs the controller token as well as the
+// pairing cookie, a GET too (auth 'unlocked'); the token comes only from an unlock code the daemon
+// prints to its own console, so a page on another port that holds the cookie still cannot act.
 
 export type { Shape, TextWhy };
 /** The frame and payload shapes live in shared/protocol.js (plan §3); re-exported for the server's own modules. */
@@ -31,8 +37,24 @@ const { en, re, int, bool, konst, text, nul, obj, arr } = S;
 
 /** The CSRF token GET /api/session hands out: 32 random bytes, base64url. */
 export const CSRF_RE = frozen(/^[A-Za-z0-9_-]{43}$/);
-/** The pairing code: 8 digits (step 4). */
+/** The pairing code: 8 digits (step 4). The unlock code (slice design §2.7) has the same form and the same throttle. */
 export const PAIR_CODE_RE = frozen(/^[0-9]{8}$/);
+/** A stage session id as the import routes name it: 20 lowercase hex digits (slice design §2.7). */
+export const STAGE_ID_RE = frozen(/^[0-9a-f]{20}$/);
+/** A feed position in GET /api/owned/:id/feed?after=: a query value is a string, so a decimal of at most 16 digits. */
+export const SEQ_RE = frozen(/^(?:0|[1-9][0-9]{0,15})$/);
+/** The header that carries the controller token; its value has CSRF_RE's form and is bound to the sid. */
+export const CONTROL_HEADER = 'x-orchestra-csrf';
+/**
+ * The largest body an owned-session POST may send (slice design §2.7 check 7). Over it the request is
+ * refused before its shape is read; the design gives that refusal no code, so step 5 picks the status.
+ */
+export const OWNED_BODY_MAX_BYTES = 64 * 1024;
+/**
+ * The longest message, in UTF-8 bytes (r4 §10.11's single-field cap): over it the route's own 422
+ * text-too-long, never cut short. The shape lets a longer text through to that check.
+ */
+export const OWNED_TEXT_MAX_BYTES = 2048;
 /** A DSH session page on that origin: a path, never a query or a fragment, so never a token. */
 export const DSH_LINK_RE = frozen(/^http:\/\/(?:127\.0\.0\.1|\[::1\]|localhost):[1-9][0-9]{0,4}\/[A-Za-z0-9._~/-]{0,256}$/);
 
@@ -76,9 +98,17 @@ export type Check = {
  * default a ui-only orchestrad serves no HTTP at all, so the slot is not in the order and the code is
  * reserved. `ended` answers 200 with noop:already-ended before `verb`: an ended item has no verbs. The
  * verb's own checks are text-too-long for a reminder and the brake's three codes.
+ *
+ * The owned-session routes (alpha 0.2) keep this order. Their `auth` step is slice design §2.7's checks
+ * 1 to 6 (Host, cookie, Origin, Sec-Fetch-Site same-origin, JSON content type, and for 'unlocked' the
+ * controller token: 403 not-unlocked); the body cap (check 7) comes before the shape. A message over
+ * OWNED_TEXT_MAX_BYTES is the `own` step's 422 text-too-long, after dedup as for a reminder (the design
+ * lists it before the shape check: its status is the same either way, and a 4xx writes nothing). The
+ * `item` step looks up the owned session or the stage session the route names (404 item-unknown); an
+ * approval that is unknown or gone is the `own` step's approval-gone.
  */
 export const CHECKS: readonly Check[] = Object.freeze([
-  { step: 'auth', status: 403, codes: [] },
+  { step: 'auth', status: 403, codes: ['not-unlocked'] },
   { step: 'ui-only', status: 503, codes: ['ui-only'], reservedBy: 'D-17' },
   { step: 'actionId', status: 400, codes: ['actionId-missing'] },
   { step: 'shape', status: 400, codes: [] },
@@ -86,7 +116,13 @@ export const CHECKS: readonly Check[] = Object.freeze([
   { step: 'item', status: 404, codes: ['item-unknown'] },
   { step: 'ended', status: null, codes: [], outcome: 'noop:already-ended' },
   { step: 'verb', status: 422, codes: ['verb-not-allowed'] },
-  { step: 'own', status: null, codes: ['text-too-long', 'brake-unavailable', 'not-test-root', 'plan-expired'] },
+  {
+    step: 'own', status: null, codes: [
+      'text-too-long', 'brake-unavailable', 'not-test-root', 'plan-expired',
+      'owned-disabled', 'owned-limit', 'slash-command', 'digest-mismatch', 'approval-gone', 'stale-view', 'still-running', 'source-live', 'cwd-gone',
+      'cwd-forbidden', 'unfinished-frame', 'source-changed', 'newer-format', 'import-too-big', 'gateway-real-data',
+    ],
+  },
   { step: 'execute', status: null, codes: [] },
 ].map((c) => Object.freeze({ ...c, codes: Object.freeze(c.codes as ErrorCode[]) })) as Check[]);
 
@@ -103,12 +139,19 @@ export function checkOrder(servesUiOnly: boolean = D17_SERVES_UI_ONLY): readonly
 export type Route = {
   readonly method: 'GET' | 'POST';
   readonly path: string;
-  /** none: assets and the page; pair: POST /api/pair's own rules; session: the cookie (and for a POST, Origin and the CSRF header). */
-  readonly auth: 'none' | 'pair' | 'session';
+  /**
+   * none: assets and the page; pair: POST /api/pair's own rules; session: the cookie (and for a POST,
+   * Origin and the CSRF header); cookie: the cookie, and for a POST Origin, Sec-Fetch-Site same-origin
+   * and a JSON body, with no token (the unlock pair); unlocked: all of cookie's checks plus the
+   * controller token in CONTROL_HEADER, for a GET as well (slice design §2.7).
+   */
+  readonly auth: 'none' | 'pair' | 'session' | 'cookie' | 'unlocked';
   /** The human verb whose `human` and `human.result` records this route writes; such a body carries an actionId. */
   readonly human: HumanVerb | null;
   /** Where the item comes from, when the route acts on one. */
   readonly item: 'path' | 'body' | 'body-or-none' | null;
+  /** What an owned-session route acts on: `:id` or the body's stageId names it (null: nothing, or an inbox item). */
+  readonly target: 'owned' | 'approval' | 'stage' | null;
   /** The steps of checkOrder() this route runs, in that order. */
   readonly checks: readonly CheckStep[];
   /** The verb's own checks (the `own` step) and the codes its execution may fail with. */
@@ -116,9 +159,11 @@ export type Route = {
   readonly failures: readonly ErrorCode[];
   readonly query: Shape | null;
   readonly body: Shape | null;
-  /** The 200 reply; null for an asset, a stream (GET /api/events) or a reserved route. */
+  /** The 200 reply; null for an asset, a stream (GET /api/events), a reply without a body, or one a contract checks. */
   readonly reply: Shape | null;
-  /** A route that answers this status once authenticated (the reserved approvals: 501). */
+  /** The reply shared/owned-contract.js checks (validateOwnedList, validateOwnedFeed: slice design §2.8, a later step), in place of a shape here. */
+  readonly contract?: 'OwnedList' | 'OwnedFeed';
+  /** A route that answers this status once its checks pass (POST /api/owned/unlock-code: 204, no body). */
   readonly status?: number;
 };
 
@@ -177,18 +222,57 @@ const TUNING_REPLY = obj({
 });
 
 const human = (verb: HumanVerb, item: Route['item'], body: Record<string, Shape>, own: ErrorCode[] = [], failures: ErrorCode[] = []): Route => ({
-  method: 'POST', path: HUMAN_VERB_ROUTES[verb], auth: 'session', human: verb, item, checks: item === null ? HUMAN_CHECKS : ITEM_CHECKS,
+  method: 'POST', path: HUMAN_VERB_ROUTES[verb], auth: 'session', human: verb, item, target: null, checks: item === null ? HUMAN_CHECKS : ITEM_CHECKS,
   own, failures, query: null, body: obj({ actionId: uuid, ...body }), reply: ACCEPTED,
 });
-type PlainSpec = { query?: Shape; body?: Shape; reply: Shape | null; item?: Route['item']; checks?: CheckStep[]; own?: ErrorCode[]; status?: number };
+type PlainSpec = {
+  query?: Shape; body?: Shape; reply: Shape | null; item?: Route['item']; target?: Route['target']; checks?: CheckStep[]; own?: ErrorCode[]; failures?: ErrorCode[];
+  status?: number; contract?: Route['contract'];
+};
 const plain = (method: Route['method'], path: string, auth: Route['auth'], spec: PlainSpec): Route => {
   // Own fields only: a field left out of the literal reads undefined, never Object.prototype's.
-  const o = ownFields(spec, ['query', 'body', 'reply', 'item', 'checks', 'own', 'status']);
+  const o = ownFields(spec, ['query', 'body', 'reply', 'item', 'target', 'checks', 'own', 'failures', 'status', 'contract']);
   return {
-    method, path, auth, human: null, item: o.item ?? null, checks: o.checks ?? ['auth', 'shape', 'execute'], own: o.own ?? [], failures: [],
-    query: o.query ?? null, body: o.body ?? null, reply: o.reply ?? null, ...(o.status === undefined ? {} : { status: o.status }),
+    method, path, auth, human: null, item: o.item ?? null, target: o.target ?? null, checks: o.checks ?? ['auth', 'shape', 'execute'], own: o.own ?? [],
+    failures: o.failures ?? [], query: o.query ?? null, body: o.body ?? null, reply: o.reply ?? null,
+    ...(o.status === undefined ? {} : { status: o.status }), ...(o.contract === undefined ? {} : { contract: o.contract }),
   };
 };
+
+// --- the owned-session routes (alpha 0.2, slice design §2.7) ----------------------------------------
+
+const stageId = re(STAGE_ID_RE, 'stageId');
+/** Your message as a body carries it: up to the body cap as a shape; OWNED_TEXT_MAX_BYTES is the own check's. */
+const message = text(OWNED_BODY_MAX_BYTES, 'message');
+/** Accepted, as every human route answers (ACCEPTED's fields), plus what this verb hands back. */
+const accepted = (extra: Record<string, Shape> = {}): Shape => obj({ actionId: uuid, accepted: konst(true), jseq, replayed: konst(true), ...extra }, ['replayed']);
+const OWNED_CHECKS: readonly CheckStep[] = ['auth', 'ui-only', 'actionId', 'dedup', 'own', 'execute'];
+const OWNED_TARGET_CHECKS: readonly CheckStep[] = ['auth', 'ui-only', 'actionId', 'dedup', 'item', 'own', 'execute'];
+/** An owned-session human route: the cookie and the controller token, a uuid actionId, the human record; never an inbox item. */
+const owned = (verb: HumanVerb, target: Route['target'], body: Record<string, Shape>, reply: Shape, own: ErrorCode[] = [], failures: ErrorCode[] = []): Route => ({
+  method: 'POST', path: HUMAN_VERB_ROUTES[verb], auth: 'unlocked', human: verb, item: null, target,
+  checks: target === 'owned' || target === 'stage' ? OWNED_TARGET_CHECKS : OWNED_CHECKS,
+  own, failures, query: null, body: obj({ actionId: uuid, ...body }, Object.hasOwn(body, 'confirmGone') ? ['confirmGone'] : []), reply,
+});
+/** What GET /api/import/:id/check finds the stage session can be: resumed, forked, copied as a DSH snapshot, or nothing. */
+export const IMPORT_CAN: readonly ['resume', 'fork', 'dsh-snapshot', 'none'] = frozen(['resume', 'fork', 'dsh-snapshot', 'none'] as const);
+/** How POST /api/import/claude takes a Claude session: resumed (it has ended) or forked (it may still be live). */
+export const IMPORT_MODES: readonly ['resume', 'fork'] = frozen(['resume', 'fork'] as const);
+const CLAUDE_IMPORT_OWN: ErrorCode[] = ['owned-disabled', 'gateway-real-data', 'owned-limit', 'source-live', 'unfinished-frame', 'source-changed', 'cwd-gone', 'cwd-forbidden', 'import-too-big'];
+const DSH_IMPORT_OWN: ErrorCode[] = ['owned-disabled', 'gateway-real-data', 'newer-format', 'unfinished-frame', 'import-too-big'];
+/** The codes GET /api/import/:id/check may give as `why`: the import routes' own checks, which the POST runs again on the spot. */
+export const IMPORT_WHY: readonly ErrorCode[] = frozen([...new Set([...CLAUDE_IMPORT_OWN, ...DSH_IMPORT_OWN])]);
+const IMPORT_CHECK_REPLY = obj({
+  can: en(IMPORT_CAN),
+  /** Why it cannot be imported (or, with can 'fork', why not resumed): the code the POST would answer; null when nothing stands in the way. */
+  why: nul(en(IMPORT_WHY)),
+  /** The cwd the confirmation shows you (POST /api/import/claude sends it back as cwdShown). */
+  cwd: text(260, 'cwd'),
+  /** How many files a copy would take. */
+  files: count,
+}, ['cwd', 'files']);
+const SPAWN_FAILS: ErrorCode[] = ['host-tampered'];
+const COPY_FAILS: ErrorCode[] = ['reparse-point', 'source-changed', 'rename-busy'];
 
 /** Step 4's routes (plan step 4), with their shapes. GET /api/items/:id/detail replaces GET /api/items. */
 export const ROUTES: readonly Route[] = Object.freeze([
@@ -222,8 +306,24 @@ export const ROUTES: readonly Route[] = Object.freeze([
   human('dsh-connect', null, { url: text(2048, 'dsh-url') }),
   human('self-rating', null, { score: int(1, 5) }),
   plain('GET', '/api/tuning', 'session', { reply: TUNING_REPLY }),
-  plain('POST', '/api/approvals/:id/allow', 'session', { reply: null, status: 501, checks: ['auth', 'execute'] }),
-  plain('POST', '/api/approvals/:id/deny', 'session', { reply: null, status: 501, checks: ['auth', 'execute'] }),
+  // alpha 0.2: owned sessions and imports (slice design §2.7). The approvals were reserved here (501) until now.
+  plain('POST', '/api/owned/unlock-code', 'cookie', { reply: null, status: 204, checks: ['auth', 'execute'] }),
+  plain('POST', '/api/owned/unlock', 'cookie', { body: obj({ code: re(PAIR_CODE_RE, 'unlockCode') }), reply: obj({ csrf: re(CSRF_RE, 'csrf') }), failures: ['not-unlocked'] }),
+  plain('GET', '/api/owned', 'unlocked', { reply: null, contract: 'OwnedList' }),
+  plain('GET', '/api/owned/:id/feed', 'unlocked', { query: obj({ after: re(SEQ_RE, 'seq') }, ['after']), reply: null, contract: 'OwnedFeed', target: 'owned', checks: ['auth', 'shape', 'item', 'execute'] }),
+  plain('GET', '/api/import/:id/check', 'unlocked', { reply: IMPORT_CHECK_REPLY, target: 'stage', checks: ['auth', 'shape', 'item', 'execute'] }),
+  owned('owned-new', null, { text: message }, accepted({ ownedId: id }), ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command'], SPAWN_FAILS),
+  owned('owned-message', 'owned', { text: message }, accepted({ uuid, queued: count }), ['text-too-long', 'slash-command']),
+  owned('owned-interrupt', 'owned', {}, accepted({ withdrawn: count, denied: count })),
+  owned('owned-end', 'owned', {}, accepted()),
+  owned('owned-retry', 'owned', { confirmGone: konst(true) }, accepted(), ['owned-disabled', 'owned-limit', 'still-running', 'cwd-gone', 'cwd-forbidden'], SPAWN_FAILS),
+  owned('approval-allow', 'approval', { digest: re(DIGEST_RE, 'digest'), rev: count }, accepted(), ['approval-gone', 'digest-mismatch', 'stale-view']),
+  owned('approval-deny', 'approval', {}, accepted(), ['approval-gone']),
+  owned(
+    'import-claude', 'stage', { stageId, mode: en(IMPORT_MODES), cwdShown: text(260, 'cwd') }, accepted({ importId: id, ownedId: id }),
+    CLAUDE_IMPORT_OWN, [...COPY_FAILS, ...SPAWN_FAILS],
+  ),
+  owned('import-dsh', 'stage', { stageId }, accepted({ importId: id }), DSH_IMPORT_OWN, COPY_FAILS),
 ].map((r) => Object.freeze(r)));
 
 /** The route of `method path` (a pattern as the table writes it), or undefined. */

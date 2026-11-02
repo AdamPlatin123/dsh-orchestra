@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import type { CheckStep, Shape } from '../../src/server/routes.ts';
 import { ERROR_CODES, ERROR_STATUS, HUMAN_VERBS, HUMAN_VERB_ROUTES, ITEM_VERBS, TITLE_KEYS } from '../../shared/protocol.js';
 import { PLAN_TTL_MS, REMINDER_TEXT_MAX, TICK_MS } from '../../shared/constants.js';
-import { CHECKS, D17_SERVES_UI_ONLY, ERROR_TABLE, FRAMES, ROUTES, SHAPES, checkOrder, routeOf, shapeError, textLeaves } from '../../src/server/routes.ts';
+import {
+  CHECKS, CONTROL_HEADER, D17_SERVES_UI_ONLY, ERROR_TABLE, FRAMES, IMPORT_WHY, OWNED_BODY_MAX_BYTES, OWNED_TEXT_MAX_BYTES, ROUTES, SHAPES, checkOrder, routeOf, shapeError, textLeaves,
+} from '../../src/server/routes.ts';
 
 // Plan step 3: the route table and the JSON shapes (UI design 一), the fixed check order of plan line
 // 588 as data, and the full error table. Frames carry no source free text: their only text leaf is
@@ -93,14 +95,24 @@ test('the steps of every route, in one order; a human route runs exactly plan li
   // Plan line 588 and UI design 一 5 have no shape step: a human route folds its body check into the actionId step (finding C8).
   const inForce = (steps: readonly CheckStep[]) => steps.filter((s) => checkOrder().includes(s));
   for (const r of ROUTES.filter((x) => x.human !== null && x.item !== null)) assert.deepEqual(inForce(r.checks), ['auth', 'actionId', 'dedup', 'item', 'ended', 'verb', 'own', 'execute'], r.path);
-  for (const r of ROUTES.filter((x) => x.human !== null && x.item === null)) assert.deepEqual(inForce(r.checks), ['auth', 'actionId', 'dedup', 'execute'], r.path);
+  for (const r of ROUTES.filter((x) => x.human !== null && x.item === null && x.auth === 'session')) assert.deepEqual(inForce(r.checks), ['auth', 'actionId', 'dedup', 'execute'], r.path);
+  // alpha 0.2: an owned-session route keeps the order and adds the lookup of the session it names (item) and its own checks; never ended or verb.
+  for (const r of ROUTES.filter((x) => x.human !== null && x.auth === 'unlocked')) {
+    const named = r.target === 'owned' || r.target === 'stage';
+    assert.deepEqual(inForce(r.checks), named ? ['auth', 'actionId', 'dedup', 'item', 'own', 'execute'] : ['auth', 'actionId', 'dedup', 'own', 'execute'], r.path);
+  }
   const step = (s: CheckStep) => CHECKS.find((c) => c.step === s)!;
   assert.deepEqual([step('auth').status, step('ui-only').status, step('actionId').status, step('item').status, step('verb').status], [403, 503, 400, 404, 422]);
   assert.deepEqual([...step('actionId').codes], ['actionId-missing']);
   assert.deepEqual([...step('dedup').codes], ['in-flight', 'actionId-reused']);
   assert.equal(step('ended').outcome, 'noop:already-ended');
   assert.ok(CHECKS.findIndex((c) => c.step === 'ended') < CHECKS.findIndex((c) => c.step === 'verb'), 'an ended item has no verbs: ended answers first');
-  assert.deepEqual([...step('own').codes], ['text-too-long', 'brake-unavailable', 'not-test-root', 'plan-expired']);
+  assert.deepEqual([...step('own').codes], [
+    'text-too-long', 'brake-unavailable', 'not-test-root', 'plan-expired',
+    'owned-disabled', 'owned-limit', 'slash-command', 'digest-mismatch', 'approval-gone', 'stale-view', 'still-running', 'source-live', 'cwd-gone',
+    'cwd-forbidden', 'unfinished-frame', 'source-changed', 'newer-format', 'import-too-big', 'gateway-real-data',
+  ]);
+  assert.deepEqual([...step('auth').codes], ['not-unlocked'], 'slice design §2.7: cookie without the controller token is 403 not-unlocked');
 });
 
 test('the error table is shared/protocol.js\'s, in full: every code answered by a step or a route, ui-only reserved', () => {
@@ -110,7 +122,15 @@ test('the error table is shared/protocol.js\'s, in full: every code answered by 
   const answered = new Set([...CHECKS.flatMap((c) => c.codes), ...ROUTES.flatMap((r) => [...r.own, ...r.failures])]);
   assert.deepEqual(ERROR_CODES.filter((c) => !answered.has(c)), []);
   for (const r of ROUTES) for (const c of r.own) assert.ok(CHECKS.find((x) => x.step === 'own')!.codes.includes(c), `${r.path}: ${c} is an own check`);
-  assert.deepEqual(ROUTES.flatMap((r) => r.failures), ['procguard-timeout', 'procguard-timeout'], 'only protect fails in execution, and writes nothing');
+  assert.deepEqual(ROUTES.filter((r) => r.auth === 'session').flatMap((r) => r.failures), ['procguard-timeout', 'procguard-timeout'], 'of M0\'s routes only protect fails in execution, and writes nothing');
+  // alpha 0.2: what an owned-session route can only find out while acting (a wrong unlock code, a spawn refused by the hash pin, a copy that meets a link, a change or a locked file).
+  assert.deepEqual(Object.fromEntries(ROUTES.filter((r) => r.failures.length > 0 && r.auth !== 'session').map((r) => [`${r.method} ${r.path}`, [...r.failures]])), {
+    'POST /api/owned/unlock': ['not-unlocked'],
+    'POST /api/owned/claude/new': ['host-tampered'],
+    'POST /api/owned/:id/retry': ['host-tampered'],
+    'POST /api/import/claude': ['reparse-point', 'source-changed', 'rename-busy', 'host-tampered'],
+    'POST /api/import/dsh': ['reparse-point', 'source-changed', 'rename-busy'],
+  });
 });
 
 test('every POST that writes a human record carries an actionId and runs actionId and dedup; the others carry none', () => {
@@ -144,7 +164,12 @@ test('each route runs its steps in the order of CHECKS; item routes run item, en
   assert.equal(new Set(ROUTES.map((r) => `${r.method} ${r.path}`)).size, ROUTES.length);
   assert.equal(routeOf('GET', '/api/items'), undefined, 'GET /api/items/:id/detail replaces it');
   assert.ok(routeOf('GET', '/api/items/:id/detail'));
-  for (const v of ['allow', 'deny']) assert.equal(routeOf('POST', `/api/approvals/:id/${v}`)!.status, 501);
+  // alpha 0.2: the approvals were reserved (501); now they are the human verbs approval-allow and approval-deny, with no fixed status.
+  for (const v of ['allow', 'deny'] as const) {
+    const r = routeOf('POST', `/api/approvals/:id/${v}`)!;
+    assert.equal(r.status, undefined);
+    assert.equal(r.human, `approval-${v}`);
+  }
   for (const v of ITEM_VERBS.filter((x) => x !== 'open' && x !== 'peek')) assert.ok(ROUTES.some((r) => r.human === v), `item verb ${v} has its route`);
 });
 
@@ -246,6 +271,125 @@ test('the shape check reads own data fields of plain objects only: prototypes, a
   assert.equal(why(detail.fields.open!, []), 'not-plain $');
   assert.equal(why(detail.fields.open!, {}), 'missing $.kind');
   assert.equal(why(detail.fields.open!, { kind: 'resume' }), 'missing $.sessionId');
+});
+
+// --- alpha 0.2: the owned-session protocol (slice design §2.7) --------------------------------------------
+
+const OID = 'own-1';
+const STAGE = '0123456789abcdef0123';
+const DIGEST = 'a'.repeat(64);
+const owned = (method: 'GET' | 'POST', path: string) => {
+  const r = routeOf(method, path);
+  assert.ok(r, `${method} ${path}`);
+  return r;
+};
+
+test('owned sessions: every route needs the pairing cookie; all but the unlock pair need the controller token too, a GET as well', () => {
+  const ownedPaths = ROUTES.filter((r) => /^\/api\/(?:owned|approvals|import)\//.test(r.path) || r.path === '/api/owned');
+  assert.deepEqual(ownedPaths.map((r) => `${r.method} ${r.path}`), [
+    'POST /api/owned/unlock-code', 'POST /api/owned/unlock', 'GET /api/owned', 'GET /api/owned/:id/feed', 'GET /api/import/:id/check',
+    'POST /api/owned/claude/new', 'POST /api/owned/:id/message', 'POST /api/owned/:id/interrupt', 'POST /api/owned/:id/end', 'POST /api/owned/:id/retry',
+    'POST /api/approvals/:id/allow', 'POST /api/approvals/:id/deny', 'POST /api/import/claude', 'POST /api/import/dsh',
+  ]);
+  for (const r of ownedPaths) assert.equal(r.auth, r.path.startsWith('/api/owned/unlock') ? 'cookie' : 'unlocked', r.path);
+  assert.ok(ROUTES.every((r) => (r.auth === 'cookie' || r.auth === 'unlocked') === ownedPaths.includes(r)), 'no M0 route takes the new auth');
+  assert.equal(CONTROL_HEADER, 'x-orchestra-csrf');
+  assert.equal(routeOf('GET', '/api/session')!.auth, 'session', 'the frozen GET /api/session is not reused');
+  // the owned verbs are human verbs, each with its route; the unlock pair writes no human record and carries no actionId
+  for (const r of ownedPaths.filter((x) => x.method === 'POST' && !x.path.startsWith('/api/owned/unlock'))) assert.notEqual(r.human, null, r.path);
+  for (const p of ['/api/owned/unlock-code', '/api/owned/unlock']) assert.equal(owned('POST', p).human, null);
+});
+
+test('unlock: unlock-code takes no body and answers 204 (the code goes to the console only); unlock trades the code for a token of CSRF_RE\'s form', () => {
+  const code = owned('POST', '/api/owned/unlock-code');
+  assert.deepEqual([code.body, code.reply, code.status], [null, null, 204]);
+  const unlock = owned('POST', '/api/owned/unlock');
+  assert.equal(why(unlock.body!, { code: '12345678' }), 'ok');
+  for (const bad of ['1234567', '123456789', 'abcdefgh', '1234 678']) assert.equal(why(unlock.body!, { code: bad }), 'grammar $.code', bad);
+  assert.equal(why(unlock.body!, { code: '12345678', sid: 'x' }), 'extra-key $');
+  assert.equal(why(unlock.reply!, { csrf: 'A'.repeat(43) }), 'ok');
+  assert.equal(why(unlock.reply!, { csrf: 'A'.repeat(42) }), 'grammar $.csrf');
+  assert.deepEqual([...unlock.failures], ['not-unlocked'], 'a wrong, expired or used-up code');
+});
+
+test('owned list and feed: replies checked by the owned contract (a later step); feed takes an optional decimal after=', () => {
+  assert.equal(owned('GET', '/api/owned').contract, 'OwnedList');
+  const feed = owned('GET', '/api/owned/:id/feed');
+  assert.equal(feed.contract, 'OwnedFeed');
+  assert.equal(feed.target, 'owned');
+  assert.equal(why(feed.query!, {}), 'ok');
+  for (const ok of ['0', '17', '9'.repeat(16)]) assert.equal(why(feed.query!, { after: ok }), 'ok', ok);
+  for (const bad of ['-1', '01', '1.5', '9'.repeat(17), '']) assert.equal(why(feed.query!, { after: bad }), 'grammar $.after', bad);
+  assert.equal(why(feed.query!, { after: 3 }), 'type $.after', 'a query value is a string');
+});
+
+test('new and message: text up to the body cap as a shape, the 2 KB limit and the leading / are the route\'s own 422s; the replies carry ACCEPTED\'s fields', () => {
+  assert.equal(OWNED_TEXT_MAX_BYTES, 2048);
+  assert.equal(OWNED_BODY_MAX_BYTES, 64 * 1024);
+  const nu = owned('POST', '/api/owned/claude/new');
+  assert.equal(nu.target, null, 'a new session takes no path and no project from the browser');
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'hello' }), 'ok');
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'x'.repeat(3000) }), 'ok', 'over 2 KB is text-too-long, never a 400');
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', cwd: 'C:\\' }), 'extra-key $', 'no cwd from the browser');
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'hi\ud800' }), 'type $.text');
+  assert.deepEqual([...nu.own], ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command']);
+  assert.equal(why(nu.reply!, { actionId: ACT, accepted: true, jseq: 3, ownedId: OID }), 'ok');
+  assert.equal(why(nu.reply!, { actionId: ACT, accepted: true, jseq: 3, ownedId: OID, replayed: true }), 'ok');
+  assert.equal(why(nu.reply!, { actionId: ACT, accepted: true, jseq: 3, ownedId: 'a/b' }), 'grammar $.ownedId');
+  const msg = owned('POST', '/api/owned/:id/message');
+  assert.equal(msg.target, 'owned');
+  assert.deepEqual([...msg.own], ['text-too-long', 'slash-command']);
+  assert.equal(why(msg.reply!, { actionId: ACT, accepted: true, jseq: 4, uuid: TAB, queued: 2 }), 'ok');
+  assert.equal(why(msg.reply!, { actionId: ACT, accepted: true, jseq: 4, uuid: 'm-1', queued: 2 }), 'grammar $.uuid', 'orchestrad makes the uuid with randomUUID');
+});
+
+test('interrupt, end, retry: an actionId (retry may confirm the old process is gone); interrupt says how much it withdrew and denied', () => {
+  const intr = owned('POST', '/api/owned/:id/interrupt');
+  assert.equal(why(intr.body!, { actionId: ACT }), 'ok');
+  assert.equal(why(intr.reply!, { actionId: ACT, accepted: true, jseq: 5, withdrawn: 2, denied: 1 }), 'ok');
+  assert.equal(why(intr.reply!, { actionId: ACT, accepted: true, jseq: 5, withdrawn: 2 }), 'missing $.denied');
+  const end = owned('POST', '/api/owned/:id/end');
+  assert.equal(why(end.reply!, { actionId: ACT, accepted: true, jseq: 6 }), 'ok');
+  const retry = owned('POST', '/api/owned/:id/retry');
+  assert.equal(why(retry.body!, { actionId: ACT }), 'ok');
+  assert.equal(why(retry.body!, { actionId: ACT, confirmGone: true }), 'ok');
+  assert.equal(why(retry.body!, { actionId: ACT, confirmGone: false }), 'const $.confirmGone', 'only true confirms');
+  assert.ok(retry.own.includes('still-running'));
+});
+
+test('approvals: allow carries the digest and the rev the page saw; deny carries nothing but its actionId and always takes effect', () => {
+  const allow = owned('POST', '/api/approvals/:id/allow');
+  assert.equal(allow.target, 'approval');
+  assert.equal(why(allow.body!, { actionId: ACT, digest: DIGEST, rev: 7 }), 'ok');
+  assert.equal(why(allow.body!, { actionId: ACT, rev: 7 }), 'missing $.digest');
+  assert.equal(why(allow.body!, { actionId: ACT, digest: DIGEST }), 'missing $.rev');
+  assert.equal(why(allow.body!, { actionId: ACT, digest: 'A'.repeat(64), rev: 7 }), 'grammar $.digest');
+  assert.deepEqual([...allow.own], ['approval-gone', 'digest-mismatch', 'stale-view']);
+  const deny = owned('POST', '/api/approvals/:id/deny');
+  assert.equal(why(deny.body!, { actionId: ACT }), 'ok');
+  assert.equal(why(deny.body!, { actionId: ACT, digest: DIGEST }), 'extra-key $', 'deny binds to nothing that can go stale');
+  assert.deepEqual([...deny.own], ['approval-gone']);
+});
+
+test('imports: check names what can be done and why not; claude takes a stage id, a mode and the cwd you were shown; dsh a stage id', () => {
+  const check = owned('GET', '/api/import/:id/check');
+  assert.equal(check.target, 'stage');
+  for (const can of ['resume', 'fork', 'dsh-snapshot', 'none']) assert.equal(why(check.reply!, { can, why: null }), 'ok', can);
+  assert.equal(why(check.reply!, { can: 'fork', why: 'source-live', cwd: 'D:\\work\\shop', files: 3 }), 'ok');
+  assert.equal(why(check.reply!, { can: 'none', why: 'not-unlocked' }), 'enum $.why', 'why is an import refusal');
+  assert.equal(why(check.reply!, { can: 'copy', why: null }), 'enum $.can');
+  assert.ok(IMPORT_WHY.every((c) => ERROR_CODES.includes(c)));
+  const claude = owned('POST', '/api/import/claude');
+  assert.equal(why(claude.body!, { actionId: ACT, stageId: STAGE, mode: 'resume', cwdShown: 'D:\\work\\shop' }), 'ok');
+  assert.equal(why(claude.body!, { actionId: ACT, stageId: STAGE, mode: 'move', cwdShown: 'x' }), 'enum $.mode');
+  assert.equal(why(claude.body!, { actionId: ACT, stageId: STAGE.toUpperCase(), mode: 'fork', cwdShown: 'x' }), 'grammar $.stageId');
+  assert.equal(why(claude.body!, { actionId: ACT, stageId: STAGE, mode: 'fork' }), 'missing $.cwdShown');
+  assert.equal(why(claude.reply!, { actionId: ACT, accepted: true, jseq: 8, importId: 'imp-1', ownedId: OID }), 'ok');
+  const dsh = owned('POST', '/api/import/dsh');
+  assert.equal(why(dsh.body!, { actionId: ACT, stageId: STAGE }), 'ok');
+  assert.equal(why(dsh.reply!, { actionId: ACT, accepted: true, jseq: 9, importId: 'imp-2' }), 'ok');
+  assert.equal(why(dsh.reply!, { actionId: ACT, accepted: true, jseq: 9, importId: 'imp-2', ownedId: OID }), 'extra-key $', 'a DSH snapshot starts no session');
+  for (const r of [claude, dsh]) for (const c of ['owned-disabled', 'gateway-real-data', 'import-too-big']) assert.ok(r.own.includes(c), `${r.path}: ${c}`);
 });
 
 test('the tables are frozen through: no module can widen a frame or a route at run time', () => {

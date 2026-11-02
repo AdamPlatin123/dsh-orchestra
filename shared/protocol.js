@@ -17,13 +17,16 @@ export const PROTOCOL_V = 1;
 
 /**
  * The human verbs: each one writes a `human` and a `human.result` journal record, and is what
- * ActionOutcome.verb names (UI design 一 5). The routes that take them are HUMAN_VERB_ROUTES.
- * @type {readonly ['seen', 'snooze', 'acted', 'remind', 'brake', 'roots-add', 'roots-confirm', 'protect-add', 'protect-remove', 'dsh-connect', 'self-rating']}
+ * ActionOutcome.verb names (UI design 一 5). The routes that take them are HUMAN_VERB_ROUTES. From
+ * `owned-new` on: the owned-session verbs of alpha 0.2 (slice design §2.7).
  */
-export const HUMAN_VERBS = Object.freeze(/** @type {const} */ (['seen', 'snooze', 'acted', 'remind', 'brake', 'roots-add', 'roots-confirm', 'protect-add', 'protect-remove', 'dsh-connect', 'self-rating']));
+export const HUMAN_VERBS = Object.freeze(/** @type {const} */ ([
+  'seen', 'snooze', 'acted', 'remind', 'brake', 'roots-add', 'roots-confirm', 'protect-add', 'protect-remove', 'dsh-connect', 'self-rating',
+  'owned-new', 'owned-message', 'owned-interrupt', 'owned-end', 'owned-retry', 'approval-allow', 'approval-deny', 'import-claude', 'import-dsh',
+]));
 /** @typedef {typeof HUMAN_VERBS[number]} HumanVerb */
 
-/** The POST route of each human verb (step 4's route table); `:id` is an item id. */
+/** The POST route of each human verb (step 4's route table); `:id` is an item, owned-session or approval id. */
 export const HUMAN_VERB_ROUTES = Object.freeze(/** @type {const} */ ({
   seen: '/api/items/:id/seen',
   snooze: '/api/items/:id/snooze',
@@ -36,12 +39,20 @@ export const HUMAN_VERB_ROUTES = Object.freeze(/** @type {const} */ ({
   'protect-remove': '/api/protect/remove',
   'dsh-connect': '/api/dsh-connect',
   'self-rating': '/api/self-rating',
+  'owned-new': '/api/owned/claude/new',
+  'owned-message': '/api/owned/:id/message',
+  'owned-interrupt': '/api/owned/:id/interrupt',
+  'owned-end': '/api/owned/:id/end',
+  'owned-retry': '/api/owned/:id/retry',
+  'approval-allow': '/api/approvals/:id/allow',
+  'approval-deny': '/api/approvals/:id/deny',
+  'import-claude': '/api/import/claude',
+  'import-dsh': '/api/import/dsh',
 }));
 
 /**
  * The verbs an ItemView may offer (`item.verbs`, computed by the daemon from kind and state). The row
  * hint is the command table ∩ these; open and peek only read (GET .../detail) and write nothing.
- * @type {readonly ['open', 'peek', 'seen', 'snooze', 'remind', 'acted', 'brake']}
  */
 export const ITEM_VERBS = Object.freeze(/** @type {const} */ (['open', 'peek', 'seen', 'snooze', 'remind', 'acted', 'brake']));
 /** @typedef {typeof ITEM_VERBS[number]} ItemVerb */
@@ -63,6 +74,26 @@ export const ERROR_STATUS = Object.freeze(/** @type {const} */ ({
   'not-test-root': 422,
   'procguard-timeout': 503,
   'plan-expired': 409,
+  // alpha 0.2's owned sessions and imports (slice design §2.7)
+  'not-unlocked': 403,
+  'owned-disabled': 409,
+  'owned-limit': 409,
+  'slash-command': 422,
+  'digest-mismatch': 409,
+  'approval-gone': 409,
+  'stale-view': 409,
+  'still-running': 409,
+  'source-live': 409,
+  'cwd-gone': 409,
+  'cwd-forbidden': 409,
+  'unfinished-frame': 409,
+  'source-changed': 409,
+  'newer-format': 409,
+  'reparse-point': 409,
+  'import-too-big': 413,
+  'gateway-real-data': 409,
+  'rename-busy': 503,
+  'host-tampered': 503,
 }));
 /** @typedef {keyof typeof ERROR_STATUS} ErrorCode */
 /** @type {readonly ErrorCode[]} */
@@ -73,7 +104,6 @@ export const RESERVED_ERROR_CODES = Object.freeze(/** @type {ErrorCode[]} */ (['
 /**
  * How an item ended (EndView.end; r4 §6.5 for M0): you acted, the source resolved it, or it expired.
  * Each needs a different reading, so each renders differently (P1).
- * @type {readonly ['acted', 'auto-cleared', 'expired']}
  */
 export const END_CLASSES = Object.freeze(/** @type {const} */ (['acted', 'auto-cleared', 'expired']));
 /** @typedef {typeof END_CLASSES[number]} EndClass */
@@ -81,14 +111,12 @@ export const END_CLASSES = Object.freeze(/** @type {const} */ (['acted', 'auto-c
 /**
  * What caused a transition, and so an end (EndView.cause; I01): a source event, a human action or a
  * clock timer. A transition record without one of these is refused when applied.
- * @type {readonly ['source', 'human', 'clock']}
  */
 export const CAUSE_KINDS = Object.freeze(/** @type {const} */ (['source', 'human', 'clock']));
 
 /**
  * The reasons an accepted human action changed nothing. Only `already-ended` exists in M0 (UI design
  * 一 5): an ended item has no verbs, so the check order answers before the verb check.
- * @type {readonly ['already-ended']}
  */
 export const NOOP_REASONS = Object.freeze(/** @type {const} */ (['already-ended']));
 
@@ -107,7 +135,6 @@ export function isActionOutcome(x) {
 /**
  * A brake subtree's status in ActionOutcome.brake (UI design 一 2): killed with no residue, killed with
  * residue, not touched because the pre-kill check failed, or no verdict from procguard.
- * @type {readonly ['ok', 'partial', 'refused', 'unknown']}
  */
 export const BRAKE_STATUSES = Object.freeze(/** @type {const} */ (['ok', 'partial', 'refused', 'unknown']));
 
@@ -172,26 +199,24 @@ export function cwdTailArg(cwd) {
   return tail !== undefined && CWD_TAIL_RE.test(tail) ? tail : null;
 }
 
-/** The inbox groups, top to bottom (r4 §11.2). @type {readonly ['fermatas', 'wrong-notes', 'ready-for-review', 'reminders']} */
+/** The inbox groups, top to bottom (r4 §11.2). */
 export const GROUPS = Object.freeze(/** @type {const} */ (['fermatas', 'wrong-notes', 'ready-for-review', 'reminders']));
-/** Severity levels, most urgent first (r4 §11.2). @type {readonly ['P0', 'P1', 'P2', 'P3']} */
+/** Severity levels, most urgent first (r4 §11.2). */
 export const SEVERITIES = Object.freeze(/** @type {const} */ (['P0', 'P1', 'P2', 'P3']));
 
 /**
  * The InboxItem kinds M0 can open (r4 §6.1, §11.2; plan §2.2 items 5, 6, 12). Their group, levels,
  * confidences and verbs are src/model/inbox.ts's kind table, which reads this list.
- * @type {readonly ['approval', 'question', 'failure', 'runaway', 'policy', 'ready-for-review', 'flood', 'reminder', 'unknown-outcome']}
  */
 export const ITEM_KINDS = Object.freeze(/** @type {const} */ (['approval', 'question', 'failure', 'runaway', 'policy', 'ready-for-review', 'flood', 'reminder', 'unknown-outcome']));
 /** @typedef {typeof ITEM_KINDS[number]} ItemKind */
 
-/** How sure the daemon is that an item is what its kind says; `low` is the guess class (「推测」, plan §2.2 item 5). @type {readonly ['high', 'low']} */
+/** How sure the daemon is that an item is what its kind says; `low` is the guess class (「推测」, plan §2.2 item 5). */
 export const CONFIDENCES = Object.freeze(/** @type {const} */ (['high', 'low']));
 
 /**
  * The states an item shows (ItemView.state, r4 §6.5 for M0): three live ones, then the end classes.
  * The daemon's own `none`, before the creating transition, never leaves it.
- * @type {readonly ['open', 'seen', 'snoozed', 'acted', 'auto-cleared', 'expired']}
  */
 export const ITEM_STATES = Object.freeze(/** @type {const} */ (['open', 'seen', 'snoozed', 'acted', 'auto-cleared', 'expired']));
 
@@ -212,7 +237,7 @@ export const TITLE_KEYS = Object.freeze([
   'item.policy', 'item.flood', 'item.ready-for-review', 'item.reminder', 'item.unknown-outcome',
 ]);
 
-/** The args a title may carry: the project's display name and the two checked journal fields. @type {readonly ['project', 'tool', 'version']} */
+/** The args a title may carry: the project's display name and the two checked journal fields. */
 export const TITLE_ARG_NAMES = Object.freeze(/** @type {const} */ (['project', 'tool', 'version']));
 
 /** @param {unknown} v */
@@ -257,36 +282,33 @@ export function titleError(title) {
  * The payload enums of UI design 一 (frames, client-state, notify-ack, detail). The frame and payload
  * shapes around them (SHAPES, FRAMES below) are frozen with step 4.
  */
-/** The five frames (UI design 一 1); `delta` keeps its shape in FRAMES and is not sent in M0. @type {readonly ['snapshot', 'status', 'tick', 'notify', 'bye']} */
+/** The five frames (UI design 一 1); `delta` keeps its shape in FRAMES and is not sent in M0. */
 export const FRAME_KINDS = Object.freeze(/** @type {const} */ (['snapshot', 'status', 'tick', 'notify', 'bye']));
-/** Why a stream ends (bye.reason). @type {readonly ['shutdown', 'superseded', 'replaced', 'backpressure']} */
+/** Why a stream ends (bye.reason). */
 export const BYE_REASONS = Object.freeze(/** @type {const} */ (['shutdown', 'superseded', 'replaced', 'backpressure']));
-/** Why the page opens a stream (GET /api/events `why`). @type {readonly ['open', 'reload', 'gap', 'stale', 'probe', 'backpressure']} */
+/** Why the page opens a stream (GET /api/events `why`). */
 export const WHY_REASONS = Object.freeze(/** @type {const} */ (['open', 'reload', 'gap', 'stale', 'probe', 'backpressure']));
-/** The page's notification permission (`perm`, client-state `permission`). @type {readonly ['granted', 'denied', 'default']} */
+/** The page's notification permission (`perm`, client-state `permission`). */
 export const PERMISSIONS = Object.freeze(/** @type {const} */ (['granted', 'denied', 'default']));
-/** @type {readonly ['visible', 'hidden']} */
 export const VISIBILITIES = Object.freeze(/** @type {const} */ (['visible', 'hidden']));
-/** A notify ack's phase (D-15): handed to the system, shown by it, or an error event. @type {readonly ['dispatched', 'shown', 'error']} */
+/** A notify ack's phase (D-15): handed to the system, shown by it, or an error event. */
 export const ACK_PHASES = Object.freeze(/** @type {const} */ (['dispatched', 'shown', 'error']));
-/** @type {readonly ['working', 'ui-only']} */
 export const MODES = Object.freeze(/** @type {const} */ (['working', 'ui-only']));
-/** Why orchestrad is ui-only (snapshot `modeReasons`; src/runtime/startup.ts and the journal check). Reserved with `ui-only`: under D-17's default no page is served then. @type {readonly ['integrity-low', 'integrity-unknown', 'data-dir', 'journal-chain']} */
+/** Why orchestrad is ui-only (snapshot `modeReasons`; src/runtime/startup.ts and the journal check). Reserved with `ui-only`: under D-17's default no page is served then. */
 export const MODE_REASONS = Object.freeze(/** @type {const} */ (['integrity-low', 'integrity-unknown', 'data-dir', 'journal-chain']));
-/** @type {readonly ['real', 'test']} */
 export const PROFILES = Object.freeze(/** @type {const} */ (['real', 'test']));
-/** ItemView.notify: no notification due, one due and not yet acked, handed to the system or shown by the toast. @type {readonly ['none', 'pending', 'handed']} */
+/** ItemView.notify: no notification due, one due and not yet acked, handed to the system or shown by the toast. */
 export const NOTIFY_STATES = Object.freeze(/** @type {const} */ (['none', 'pending', 'handed']));
-/** What a piece of purgeable text is now (peek, a reminder's text): there, past its TTL, cleared by you, or gone with a lost database. @type {readonly ['present', 'expired', 'purged', 'lost']} */
+/** What a piece of purgeable text is now (peek, a reminder's text): there, past its TTL, cleared by you, or gone with a lost database. */
 export const TEXT_STATES = Object.freeze(/** @type {const} */ (['present', 'expired', 'purged', 'lost']));
-/** How `o` opens an item (plan §2.2 item 9). @type {readonly ['resume', 'native', 'dsh-link', 'none']} */
+/** How `o` opens an item (plan §2.2 item 9). */
 export const OPEN_KINDS = Object.freeze(/** @type {const} */ (['resume', 'native', 'dsh-link', 'none']));
-/** The snooze choices (UI design 三 1): the daemon turns a preset into UTC milliseconds; custom carries them. @type {readonly ['15m', '1h', 'tonight', 'tomorrow', 'custom']} */
+/** The snooze choices (UI design 三 1): the daemon turns a preset into UTC milliseconds; custom carries them. */
 export const SNOOZE_PRESETS = Object.freeze(/** @type {const} */ (['15m', '1h', 'tonight', 'tomorrow', 'custom']));
-/** The UI latency samples client-state's optional `perf` carries (plan step 19). @type {readonly ['frame-to-paint-ms', 'key-event-ms', 'long-frames', 'notify-handle-ms', 'no-result-yet', 'brake-unknown']} */
+/** The UI latency samples client-state's optional `perf` carries (plan step 19). */
 export const PERF_METRICS = Object.freeze(/** @type {const} */ (['frame-to-paint-ms', 'key-event-ms', 'long-frames', 'notify-handle-ms', 'no-result-yet', 'brake-unknown']));
 
-/** The harnesses M0 observes (a part's harness, a source's name). @type {readonly ['claude', 'dsh', 'codex']} */
+/** The harnesses M0 observes (a part's harness, a source's name). */
 export const HARNESSES = Object.freeze(/** @type {const} */ (['claude', 'dsh', 'codex']));
 
 /** A part's short form on a row. */
@@ -300,7 +322,7 @@ export const DSH_ORIGIN_RE = frozen(/^http:\/\/(?:127\.0\.0\.1|\[::1\]|localhost
 // value through one of the grammars above (a title is {key, args}, titleError); the one text a frame
 // may carry is your own reminder's (ItemView.reminder, with its textState).
 
-/** @typedef {'reminder' | 'peek' | 'cmdline' | 'window-title' | 'path' | 'dsh-url' | 'root-path'} TextWhy */
+/** @typedef {'reminder' | 'peek' | 'cmdline' | 'window-title' | 'path' | 'dsh-url' | 'root-path' | 'message' | 'cwd'} TextWhy */
 /**
  * @typedef {{ readonly t: 'enum', readonly of: readonly string[] }
  *   | { readonly t: 're', readonly re: RegExp, readonly name: string }

@@ -23,7 +23,11 @@ const REPO = new URL('../../', import.meta.url);
 
 test('the enums are the frozen sets of UI design 一, each unique and frozen', () => {
   assert.equal(PROTOCOL_V, 1);
-  assert.deepEqual([...HUMAN_VERBS], ['seen', 'snooze', 'acted', 'remind', 'brake', 'roots-add', 'roots-confirm', 'protect-add', 'protect-remove', 'dsh-connect', 'self-rating']);
+  assert.deepEqual([...HUMAN_VERBS], [
+    'seen', 'snooze', 'acted', 'remind', 'brake', 'roots-add', 'roots-confirm', 'protect-add', 'protect-remove', 'dsh-connect', 'self-rating',
+    // alpha 0.2's owned sessions (slice design §2.7): new, message, interrupt, end, retry, allow, deny, and the two imports
+    'owned-new', 'owned-message', 'owned-interrupt', 'owned-end', 'owned-retry', 'approval-allow', 'approval-deny', 'import-claude', 'import-dsh',
+  ]);
   assert.deepEqual(Object.keys(HUMAN_VERB_ROUTES), [...HUMAN_VERBS], 'every human verb has its route, in the same order');
   assert.ok(Object.values(HUMAN_VERB_ROUTES).every((r) => /^\/api\/[a-z/:-]+$/.test(r)));
   assert.equal(new Set(Object.values(HUMAN_VERB_ROUTES)).size, HUMAN_VERBS.length, 'one route per verb');
@@ -54,6 +58,26 @@ test('the error codes are UI design 一 5\'s table, with ui-only, procguard-time
     'not-test-root': 422,
     'procguard-timeout': 503,
     'plan-expired': 409,
+    // alpha 0.2 (slice design §2.7): the controller token, owned sessions, approvals, imports
+    'not-unlocked': 403,
+    'owned-disabled': 409,
+    'owned-limit': 409,
+    'slash-command': 422,
+    'digest-mismatch': 409,
+    'approval-gone': 409,
+    'stale-view': 409,
+    'still-running': 409,
+    'source-live': 409,
+    'cwd-gone': 409,
+    'cwd-forbidden': 409,
+    'unfinished-frame': 409,
+    'source-changed': 409,
+    'newer-format': 409,
+    'reparse-point': 409,
+    'import-too-big': 413,
+    'gateway-real-data': 409,
+    'rename-busy': 503,
+    'host-tampered': 503,
   });
   assert.deepEqual([...ERROR_CODES], Object.keys(ERROR_STATUS));
   assert.deepEqual([...RESERVED_ERROR_CODES], ['ui-only']);

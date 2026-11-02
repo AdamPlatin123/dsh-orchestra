@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
-import { describeChannel, describeChannelText, describeClock, describeJournal, describePolicy, describeProtocol } from '../helpers/contract.ts';
+import { describeChannel, describeChannelText, describeClock, describeJournal, describeOwnedRoutes, describePolicy, describeProtocol } from '../helpers/contract.ts';
 import { CHANNEL_METHODS, STREAMS_PORT_METHODS, TOAST_PORT_METHODS } from '../../src/notify/channel.ts';
 import { R } from '../helpers/records.ts';
 import { mustOpen, storeFixture } from '../helpers/store.ts';
@@ -13,6 +13,11 @@ import { mustOpen, storeFixture } from '../helpers/store.ts';
 // body schema and a digest of migration 0001. A change to any of them turns this test red: update the
 // golden in the same commit, on purpose, and tell the lines that code against it (lane C for the Clock).
 // Step 4 adds the frame and payload shapes and the strings keys, and will widen PROTOCOL then.
+//
+// alpha 0.2's protocol commit (slice design §2.7, §7 step 4) widens it on purpose: nine owned-session
+// human verbs with their routes, nineteen error codes, and with the verbs the `human` and
+// `human.result` bodies' verb enum (it only grows, so an older journal still replays). OWNED_ROUTES
+// below pins the owned-session routes themselves, frozen before any handler acts on them.
 
 const PROTOCOL = {
   "ACK_PHASES": ["dispatched","shown","error"],
@@ -25,12 +30,12 @@ const PROTOCOL = {
   "CWD_TAIL_MAX": 32,
   "CWD_TAIL_RE": "/^[^\\p{Cc}\\p{Cf}\\p{Cs}\\p{Zl}\\p{Zp}\\\\/]{1,32}$/u",
   "END_CLASSES": ["acted","auto-cleared","expired"],
-  "ERROR_CODES": ["in-flight","actionId-reused","actionId-missing","verb-not-allowed","ui-only","item-unknown","text-too-long","brake-unavailable","not-test-root","procguard-timeout","plan-expired"],
-  "ERROR_STATUS": {"in-flight":409,"actionId-reused":422,"actionId-missing":400,"verb-not-allowed":422,"ui-only":503,"item-unknown":404,"text-too-long":422,"brake-unavailable":503,"not-test-root":422,"procguard-timeout":503,"plan-expired":409},
+  "ERROR_CODES": ["in-flight","actionId-reused","actionId-missing","verb-not-allowed","ui-only","item-unknown","text-too-long","brake-unavailable","not-test-root","procguard-timeout","plan-expired","not-unlocked","owned-disabled","owned-limit","slash-command","digest-mismatch","approval-gone","stale-view","still-running","source-live","cwd-gone","cwd-forbidden","unfinished-frame","source-changed","newer-format","reparse-point","import-too-big","gateway-real-data","rename-busy","host-tampered"],
+  "ERROR_STATUS": {"in-flight":409,"actionId-reused":422,"actionId-missing":400,"verb-not-allowed":422,"ui-only":503,"item-unknown":404,"text-too-long":422,"brake-unavailable":503,"not-test-root":422,"procguard-timeout":503,"plan-expired":409,"not-unlocked":403,"owned-disabled":409,"owned-limit":409,"slash-command":422,"digest-mismatch":409,"approval-gone":409,"stale-view":409,"still-running":409,"source-live":409,"cwd-gone":409,"cwd-forbidden":409,"unfinished-frame":409,"source-changed":409,"newer-format":409,"reparse-point":409,"import-too-big":413,"gateway-real-data":409,"rename-busy":503,"host-tampered":503},
   "FRAME_KINDS": ["snapshot","status","tick","notify","bye"],
   "GROUPS": ["fermatas","wrong-notes","ready-for-review","reminders"],
-  "HUMAN_VERBS": ["seen","snooze","acted","remind","brake","roots-add","roots-confirm","protect-add","protect-remove","dsh-connect","self-rating"],
-  "HUMAN_VERB_ROUTES": {"seen":"/api/items/:id/seen","snooze":"/api/items/:id/snooze","acted":"/api/items/:id/acted","remind":"/api/reminders","brake":"/api/brake/execute","roots-add":"/api/roots/add","roots-confirm":"/api/roots/confirm","protect-add":"/api/protect/add","protect-remove":"/api/protect/remove","dsh-connect":"/api/dsh-connect","self-rating":"/api/self-rating"},
+  "HUMAN_VERBS": ["seen","snooze","acted","remind","brake","roots-add","roots-confirm","protect-add","protect-remove","dsh-connect","self-rating","owned-new","owned-message","owned-interrupt","owned-end","owned-retry","approval-allow","approval-deny","import-claude","import-dsh"],
+  "HUMAN_VERB_ROUTES": {"seen":"/api/items/:id/seen","snooze":"/api/items/:id/snooze","acted":"/api/items/:id/acted","remind":"/api/reminders","brake":"/api/brake/execute","roots-add":"/api/roots/add","roots-confirm":"/api/roots/confirm","protect-add":"/api/protect/add","protect-remove":"/api/protect/remove","dsh-connect":"/api/dsh-connect","self-rating":"/api/self-rating","owned-new":"/api/owned/claude/new","owned-message":"/api/owned/:id/message","owned-interrupt":"/api/owned/:id/interrupt","owned-end":"/api/owned/:id/end","owned-retry":"/api/owned/:id/retry","approval-allow":"/api/approvals/:id/allow","approval-deny":"/api/approvals/:id/deny","import-claude":"/api/import/claude","import-dsh":"/api/import/dsh"},
   "ID_RE": "/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/",
   "IMAGE_NAME_RE": "/^[A-Za-z0-9_.+-]{1,64}$/",
   "ITEM_KINDS": ["approval","question","failure","runaway","policy","ready-for-review","flood","reminder","unknown-outcome"],
@@ -75,6 +80,34 @@ const PROTOCOL = {
   "versionArg": "function/1",
 };
 
+const OWNED_ROUTES = {
+  "constants": {
+    "CONTROL_HEADER": "x-orchestra-csrf",
+    "OWNED_BODY_MAX_BYTES": 65536,
+    "OWNED_TEXT_MAX_BYTES": 2048,
+    "STAGE_ID_RE": "/^[0-9a-f]{20}$/",
+    "SEQ_RE": "/^(?:0|[1-9][0-9]{0,15})$/",
+    "IMPORT_CAN": ["resume","fork","dsh-snapshot","none"],
+    "IMPORT_MODES": ["resume","fork"],
+  },
+  "routes": {
+    "POST /api/owned/unlock-code": {"auth":"cookie","human":null,"target":null,"checks":["auth","execute"],"own":[],"failures":[],"status":204,"contract":null,"query":null,"body":null,"reply":null},
+    "POST /api/owned/unlock": {"auth":"cookie","human":null,"target":null,"checks":["auth","shape","execute"],"own":[],"failures":["not-unlocked"],"status":null,"contract":null,"query":null,"body":{"fields":{"code":"re:unlockCode:/^[0-9]{8}$/"},"optional":[]},"reply":{"fields":{"csrf":"re:csrf:/^[A-Za-z0-9_-]{43}$/"},"optional":[]}},
+    "GET /api/owned": {"auth":"unlocked","human":null,"target":null,"checks":["auth","shape","execute"],"own":[],"failures":[],"status":null,"contract":"OwnedList","query":null,"body":null,"reply":null},
+    "GET /api/owned/:id/feed": {"auth":"unlocked","human":null,"target":"owned","checks":["auth","shape","item","execute"],"own":[],"failures":[],"status":null,"contract":"OwnedFeed","query":{"fields":{"after":"re:seq:/^(?:0|[1-9][0-9]{0,15})$/"},"optional":["after"]},"body":null,"reply":null},
+    "GET /api/import/:id/check": {"auth":"unlocked","human":null,"target":"stage","checks":["auth","shape","item","execute"],"own":[],"failures":[],"status":null,"contract":null,"query":null,"body":null,"reply":{"fields":{"can":"enum:resume|fork|dsh-snapshot|none","why":{"nullable":"enum:owned-disabled|gateway-real-data|owned-limit|source-live|unfinished-frame|source-changed|cwd-gone|cwd-forbidden|import-too-big|newer-format"},"cwd":"text[260]:cwd","files":"int[0,max]"},"optional":["cwd","files"]}},
+    "POST /api/owned/claude/new": {"auth":"unlocked","human":"owned-new","target":null,"checks":["auth","ui-only","actionId","dedup","own","execute"],"own":["owned-disabled","owned-limit","text-too-long","slash-command"],"failures":["host-tampered"],"status":null,"contract":null,"query":null,"body":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","text":"text[65536]:message"},"optional":[]},"reply":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","accepted":"const:true","jseq":"int[0,max]","replayed":"const:true","ownedId":"re:id:/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/"},"optional":["replayed"]}},
+    "POST /api/owned/:id/message": {"auth":"unlocked","human":"owned-message","target":"owned","checks":["auth","ui-only","actionId","dedup","item","own","execute"],"own":["text-too-long","slash-command"],"failures":[],"status":null,"contract":null,"query":null,"body":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","text":"text[65536]:message"},"optional":[]},"reply":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","accepted":"const:true","jseq":"int[0,max]","replayed":"const:true","uuid":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","queued":"int[0,max]"},"optional":["replayed"]}},
+    "POST /api/owned/:id/interrupt": {"auth":"unlocked","human":"owned-interrupt","target":"owned","checks":["auth","ui-only","actionId","dedup","item","own","execute"],"own":[],"failures":[],"status":null,"contract":null,"query":null,"body":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/"},"optional":[]},"reply":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","accepted":"const:true","jseq":"int[0,max]","replayed":"const:true","withdrawn":"int[0,max]","denied":"int[0,max]"},"optional":["replayed"]}},
+    "POST /api/owned/:id/end": {"auth":"unlocked","human":"owned-end","target":"owned","checks":["auth","ui-only","actionId","dedup","item","own","execute"],"own":[],"failures":[],"status":null,"contract":null,"query":null,"body":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/"},"optional":[]},"reply":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","accepted":"const:true","jseq":"int[0,max]","replayed":"const:true"},"optional":["replayed"]}},
+    "POST /api/owned/:id/retry": {"auth":"unlocked","human":"owned-retry","target":"owned","checks":["auth","ui-only","actionId","dedup","item","own","execute"],"own":["owned-disabled","owned-limit","still-running","cwd-gone","cwd-forbidden"],"failures":["host-tampered"],"status":null,"contract":null,"query":null,"body":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","confirmGone":"const:true"},"optional":["confirmGone"]},"reply":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","accepted":"const:true","jseq":"int[0,max]","replayed":"const:true"},"optional":["replayed"]}},
+    "POST /api/approvals/:id/allow": {"auth":"unlocked","human":"approval-allow","target":"approval","checks":["auth","ui-only","actionId","dedup","own","execute"],"own":["approval-gone","digest-mismatch","stale-view"],"failures":[],"status":null,"contract":null,"query":null,"body":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","digest":"re:digest:/^[0-9a-f]{64}$/","rev":"int[0,max]"},"optional":[]},"reply":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","accepted":"const:true","jseq":"int[0,max]","replayed":"const:true"},"optional":["replayed"]}},
+    "POST /api/approvals/:id/deny": {"auth":"unlocked","human":"approval-deny","target":"approval","checks":["auth","ui-only","actionId","dedup","own","execute"],"own":["approval-gone"],"failures":[],"status":null,"contract":null,"query":null,"body":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/"},"optional":[]},"reply":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","accepted":"const:true","jseq":"int[0,max]","replayed":"const:true"},"optional":["replayed"]}},
+    "POST /api/import/claude": {"auth":"unlocked","human":"import-claude","target":"stage","checks":["auth","ui-only","actionId","dedup","item","own","execute"],"own":["owned-disabled","gateway-real-data","owned-limit","source-live","unfinished-frame","source-changed","cwd-gone","cwd-forbidden","import-too-big"],"failures":["reparse-point","source-changed","rename-busy","host-tampered"],"status":null,"contract":null,"query":null,"body":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","stageId":"re:stageId:/^[0-9a-f]{20}$/","mode":"enum:resume|fork","cwdShown":"text[260]:cwd"},"optional":[]},"reply":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","accepted":"const:true","jseq":"int[0,max]","replayed":"const:true","importId":"re:id:/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/","ownedId":"re:id:/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/"},"optional":["replayed"]}},
+    "POST /api/import/dsh": {"auth":"unlocked","human":"import-dsh","target":"stage","checks":["auth","ui-only","actionId","dedup","item","own","execute"],"own":["owned-disabled","gateway-real-data","newer-format","unfinished-frame","import-too-big"],"failures":["reparse-point","source-changed","rename-busy"],"status":null,"contract":null,"query":null,"body":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","stageId":"re:stageId:/^[0-9a-f]{20}$/"},"optional":[]},"reply":{"fields":{"actionId":"re:uuid:/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/","accepted":"const:true","jseq":"int[0,max]","replayed":"const:true","importId":"re:id:/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/"},"optional":["replayed"]}},
+  },
+};
+
 const CHANNEL = {
   "ACK_FIELDS": ["itemId","attempt","tabId","phase"],
   "ACK_REPLIES": ["recorded","dup","stale"],
@@ -108,8 +141,8 @@ const JOURNAL_BODIES = {
   "command": {"commandId":"id","actionId":"uuid","verb":"enum:kill-tree","harness":{"pid":"int[1,4294967295]","createTime":"createTime"},"status":"enum:ok|partial|refused|unknown","subtrees":{"array":{"root":{"pid":"int[1,4294967295]","createTime":"createTime"},"requestId":"id","killed":"int[0,max]","residual":"int[0,max]","status":"enum:ok|partial|refused|unknown"},"min":1,"max":64}},
   "commit": {"count":"int[1,4096]","bootId":"uuid","obsMono":"int[0,max]","obsWall":"int[0,max]"},
   "event": {"partRef":"id","srcSeq":"int[0,max]","srcTime":{"nullable":"int[0,max]"},"srcTimePrecision":"enum:ms|s|none","evKind":"enum:edge|status|tool|message|waiting|approval|error","digest":"digest","snippetRef":{"nullable":"id"},"tool":{"nullable":"src:tool"},"errorCode":{"nullable":"src:errorCode"}},
-  "human": {"actionId":"uuid","verb":"enum:seen|snooze|acted|remind|brake|roots-add|roots-confirm|protect-add|protect-remove|dsh-connect|self-rating","targetId":{"nullable":"target"},"requestDigest":"digest"},
-  "human.result": {"actionId":"uuid","verb":"enum:seen|snooze|acted|remind|brake|roots-add|roots-confirm|protect-add|protect-remove|dsh-connect|self-rating","targetId":{"nullable":"target"},"outcome":"outcome","commandId":{"nullable":"id"},"subtrees":{"nullable":{"array":{"root":{"pid":"int[1,4294967295]","createTime":"createTime"},"requestId":"id","killed":"int[0,max]","residual":"int[0,max]","status":"enum:ok|partial|refused|unknown"},"min":1,"max":64}}},
+  "human": {"actionId":"uuid","verb":"enum:seen|snooze|acted|remind|brake|roots-add|roots-confirm|protect-add|protect-remove|dsh-connect|self-rating|owned-new|owned-message|owned-interrupt|owned-end|owned-retry|approval-allow|approval-deny|import-claude|import-dsh","targetId":{"nullable":"target"},"requestDigest":"digest"},
+  "human.result": {"actionId":"uuid","verb":"enum:seen|snooze|acted|remind|brake|roots-add|roots-confirm|protect-add|protect-remove|dsh-connect|self-rating|owned-new|owned-message|owned-interrupt|owned-end|owned-retry|approval-allow|approval-deny|import-claude|import-dsh","targetId":{"nullable":"target"},"outcome":"outcome","commandId":{"nullable":"id"},"subtrees":{"nullable":{"array":{"root":{"pid":"int[1,4294967295]","createTime":"createTime"},"requestId":"id","killed":"int[0,max]","residual":"int[0,max]","status":"enum:ok|partial|refused|unknown"},"min":1,"max":64}}},
   "item": {"itemId":"id","itemKind":"enum:approval|question|failure|runaway|policy|ready-for-review|flood|reminder|unknown-outcome","sev":"enum:P0|P1|P2|P3","group":"enum:fermatas|wrong-notes|ready-for-review|reminders","conf":"enum:high|low","projectId":{"nullable":"id"},"partRef":{"nullable":"id"},"dedupKey":"digest","reminderId":{"nullable":"id"}},
   "judgment": {"name":"enum:redact","inputDigest":"digest","ver":"int[0,max]","value":{"ver":"int[0,max]","dropped":{"nullable":"enum:env-dump"},"known":"int[0,max]","format":{"record":["pem","sk-ant","sk","github","aws","jwt","authorization","bearer","url-credentials","secret-param"],"value":"int[0,max]"},"entropy":"int[0,max]"}},
   "notified": {"itemId":"id","attempt":"int[1,max]","via":"enum:browser|toast","atMono":"int[0,max]","atWall":"int[0,max]"},
@@ -133,6 +166,10 @@ const JOURNAL = {
 
 test('shared/protocol.js: exactly these exports, with these values (step 3 freezes the enums, regexes and functions\' names)', () => {
   assert.deepEqual(describeProtocol(), PROTOCOL);
+});
+
+test('the owned-session routes (alpha 0.2): auth, verb, target, checks, codes and the trees of query, body and reply, and the constants handlers code against', () => {
+  assert.deepEqual(describeOwnedRoutes(), OWNED_ROUTES);
 });
 
 test('notify/channel.ts: the interface lists of the channel, StreamsPort and ToastPort', () => {
