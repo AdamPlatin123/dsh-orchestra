@@ -306,7 +306,8 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     assert.equal(nd.querySelector('[data-slot=hClaude]')!.getAttribute('disabled'), '', 'Claude greyed');
     assert.equal(nd.querySelector('[data-slot=hCodex]')!.getAttribute('disabled'), null);
     assert.ok(nd.querySelector('[data-slot=why]')!.textContent.includes(TOWER_TEXT['new.claudeOff']!));
-    assert.deepEqual(doc.getElementById('nw-model')!.querySelectorAll('option').map((o) => o.getAttribute('value')), ['codex/gpt-6.1-sol', 'codex/gpt-6-astra', 'zcode/GLM-5.3', 'opencode-go/glm-5.3']);
+    assert.deepEqual(doc.getElementById('nw-model')!.querySelectorAll('option').map((o) => o.getAttribute('value')), ['codex/gpt-6.1-sol', 'codex/gpt-6-astra', 'codex/gpt-6.1-terra', 'zcode/GLM-5.3', 'opencode-go/glm-5.3']);
+    assert.equal(nd.querySelector('[data-slot=note]')!.textContent, TOWER_TEXT['new.sandbox']);
     assert.equal(posts('/api/owned/new').length, 0);
     (doc.getElementById('nw-text') as any).value = 'write the release notes';
     (doc.getElementById('nw-model') as any).value = 'zcode/GLM-5.3';
@@ -457,5 +458,14 @@ test('the chat (live run fixes): a command told again moves below its approval; 
   assert.equal(atBottom({ scrollHeight: 1000, scrollTop: 100, clientHeight: 400 }), false);
   // The page: a polite live region of its own next to the chat; the chat scrolls and takes the keyboard.
   assert.match(HTML, /<ol class="chat" data-slot="chat" tabindex="0" aria-labelledby="chat-h"><\/ol><p class="sr" aria-live="polite" data-slot="chatSay"><\/p>/);
-  assert.match(HTML, /data-t="new.sandbox"/);
+  assert.ok(HTML.includes('<p class="dlg-p" data-slot="note"></p>'));
+  // The model list and the note follow the harness: Claude takes only zcode/ and opencode-go/, its default first.
+  const both = { v: 1, kind: 'owned-list', rev: 0, enabled: true, disabledWhy: null, harnesses: { codex: true, claude: true }, owned: [], approvals: [], limits: { maxOwned: 6, active: 0 } };
+  const cl = describeNew(both, 'claude', false);
+  assert.deepEqual(cl.model.kids.map((k) => k.attr.value), ['zcode/GLM-5.3', 'zcode/GLM-5.3-Flash', 'zcode/GLM-5.2', 'opencode-go/glm-5.3', 'opencode-go/kimi-k3', 'opencode-go/claude-haiku-5-5']);
+  assert.ok(cl.model.kids.every((k) => !k.attr.value.startsWith('codex/')));
+  assert.equal(cl.note.text, TOWER_TEXT['new.claudeNote']);
+  assert.equal(cl.why.text, '');
+  assert.equal(describeNew(both, 'codex', false).model.kids[0]!.attr.value, 'codex/gpt-6.1-sol');
+  assert.notEqual(cl.model.kids[0]!.key, describeNew(both, 'codex', false).model.kids[3]!.key, 'keyed by harness: a switch replaces the options');
 });

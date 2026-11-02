@@ -26,6 +26,15 @@ export const EXEMPT_SCRIPTS: readonly string[] = [
   // stays scanned (plan step 1).
   'scripts/tower-demo.ts',
   'scripts/embed-ui.ts',
+  // Orchestra app step 4 (owned Claude sessions): pin-claude-host reads the host's two files and the
+  // installed SDK entry and writes the one generated src/owned/claude-pins.ts. live-smoke is the manual
+  // end-to-end run against the local magpie gateway: it starts orchestrad in the test profile (a child
+  // process, its data dir an %TEMP%\orchestra-test-* dir it makes and removes), talks to it over HTTP
+  // on 127.0.0.1 with fetch, waits with timers and reads the one file the owned session wrote in that
+  // dir. Daemon rules (spawn gate, read gate, clock) would ban each of those; it is never part of the
+  // test run and touches no harness root.
+  'scripts/pin-claude-host.ts',
+  'scripts/live-smoke.ts',
 ];
 
 // test/ is scanned for in-process-start-only-in-helper alone: every other rule's scope excludes it.

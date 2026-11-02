@@ -9,7 +9,7 @@ import { frozen, frozenClass } from '../../shared/frozen.js';
 const win = path.win32;
 
 export type Milestone = 'M0' | 'M1' | 'M2' | 'M3' | 'M4' | 'M5' | 'M6';
-export type GateRootKind = HarnessRootKind | 'orchestra-home' | 'version-file';
+export type GateRootKind = HarnessRootKind | 'orchestra-home' | 'version-file' | 'pinned-file';
 export type ReadOp = 'read' | 'tail' | 'stat' | 'readdir';
 
 export type AllowRule = {
@@ -91,6 +91,9 @@ export const ALLOW_RULES: Readonly<Record<GateRootKind, readonly AllowRule[]>> =
   'orchestra-home': [{ id: 'orchestra-home/**', re: /^.+$/, since: 'M0' }],
   // A version file is its own root, so its relative path is ''. Only `version` is used by the caller.
   'version-file': [{ id: 'package.json', re: /^$/, since: 'M0' }],
+  // A file orchestrad holds to a pinned sha256 (the Claude host's files and its SDK entry,
+  // src/owned/claude-pins.ts): its own root, read whole, never listed.
+  'pinned-file': [{ id: 'pinned file', re: /^$/, since: 'M0' }],
 });
 
 /** From which milestone stat/readdir are allowed inside a root of this kind; null = never. */
@@ -104,6 +107,7 @@ export const LISTABLE: Readonly<Record<GateRootKind, Milestone | null>> = frozen
   extra: null,
   'orchestra-home': 'M0',
   'version-file': 'M0',
+  'pinned-file': null,
 });
 
 const ORDER: readonly Milestone[] = ['M0', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6'];
@@ -182,6 +186,8 @@ export type ReadGateConfig = {
   roots: readonly HarnessRoot[];
   /** Exact files (the global package.json of each harness), see defaultVersionFiles. */
   versionFiles?: readonly string[];
+  /** Exact files held to a pinned hash (src/owned/claude-pins.ts); each is its own root, readable whole and never listed. */
+  pinnedFiles?: readonly string[];
   /** orchestrad's own data dir; global deny rules still apply inside it, and harness roots win over it. */
   orchestraHome?: string;
   milestone?: Milestone;
@@ -190,7 +196,7 @@ export type ReadGateConfig = {
   io: ReadIo;
 };
 
-const CONFIG_KEYS = ['roots', 'versionFiles', 'orchestraHome', 'milestone', 'testDirs', 'io'] as const;
+const CONFIG_KEYS = ['roots', 'versionFiles', 'pinnedFiles', 'orchestraHome', 'milestone', 'testDirs', 'io'] as const;
 
 type GateRoot = { kind: GateRootKind; forms: string[] };
 
@@ -278,6 +284,7 @@ export class ReadGate {
       .map((r) => ({ kind: r.kind, forms: [...new Set([...canon(r.path, 'root'), ...canon(r.real, 'root')])] }));
     this.#own = [
       ...(cfg.versionFiles ?? []).filter(inTest).map((f) => ({ kind: 'version-file' as const, forms: canon(f, 'version file') })),
+      ...(cfg.pinnedFiles ?? []).filter(inTest).map((f) => ({ kind: 'pinned-file' as const, forms: canon(f, 'pinned file') })),
       ...(cfg.orchestraHome !== undefined && inTest(cfg.orchestraHome)
         ? [{ kind: 'orchestra-home' as const, forms: canon(cfg.orchestraHome, 'ORCHESTRA_HOME') }]
         : []),

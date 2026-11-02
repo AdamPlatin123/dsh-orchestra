@@ -32,7 +32,7 @@ const START = Object.freeze({
 });
 
 // The fake disk: these names exist; the two junctions in cwd lead to .claude and to a dir outside cwd.
-const EXISTING = [
+const EXISTING: string[] = [
   'C:\\', 'C:\\t', CWD, `${CWD}\\a.txt`, `${CWD}\\sub`, 'C:\\t\\claude', CONFIG, 'C:\\Users', HOME, `${HOME}\\.claude`,
   `${HOME}\\.claude\\settings.json`, 'C:\\repo', 'C:\\repo\\src', 'C:\\outside', 'C:\\outside\\b.txt',
 ];
@@ -183,9 +183,9 @@ test('start: the SDK options are the fixed ones of design §2.2 with the probe c
     assert.ok(o.disallowedTools.includes(t), t);
   }
   assert.deepEqual(o.disallowedTools.filter((t: string) => CORE_TOOLS.includes(t)), []);
-  assert.deepEqual(Object.keys(o.env).sort(), ['ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CONFIG_DIR', 'PATH', 'USERPROFILE']);
+  assert.deepEqual(Object.keys(o.env).sort(), ['ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL', 'CLAUDE_CONFIG_DIR', 'PATH', 'USERPROFILE']);
   assert.equal(o.env.CLAUDE_CONFIG_DIR, CONFIG);
-  for (const k of ['ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL']) assert.equal(o.env[k], MODEL, k);
+  for (const k of ['ANTHROPIC_DEFAULT_HAIKU_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_MODEL', 'CLAUDE_CODE_SUBAGENT_MODEL']) assert.equal(o.env[k], MODEL, k);
   assert.equal(typeof o.canUseTool, 'function');
   assert.equal(o.hooks.PreToolUse.length, 1);
   assert.equal(typeof o.hooks.PreToolUse[0].hooks[0], 'function');
@@ -784,4 +784,70 @@ test('host.mjs: without the SDK it says sdk-missing; with it, stdin EOF before a
   assert.deepEqual(out.trim().split('\n').map((l) => JSON.parse(l)), [{ t: 'exit', reason: sdkThere ? 'stdin-eof' : 'sdk-missing' }]);
   assert.equal(code, sdkThere ? 0 : 2);
   assert.ok(DISALLOWED_TOOLS.length >= 20);
+});
+
+// ---- orchestra app: magpie models and the owned work root (2026-11-02) ------------------------------
+
+test('models: zcode/* and opencode-go/* start, codex/* and others do not; the small fast model of the env passes the running guard', async () => {
+  for (const model of ['zcode/GLM-5.3', 'opencode-go/glm-5.3']) {
+    const h = await started({ model });
+    assert.equal(h.q.options.model, model);
+    assert.equal(h.q.options.env.ANTHROPIC_MODEL, model);
+    await closed(h);
+  }
+  for (const model of ['codex/gpt-6.1-sol', 'anthropic/claude', 'zcode/', 'zcode/a b']) {
+    const h = harness();
+    h.send({ ...START, model });
+    assert.deepEqual(await h.exit(), { t: 'exit', reason: 'bad-start', detail: 'model' }, model);
+    h.input.end();
+  }
+  const env = { USERPROFILE: HOME, PATH: 'C:\\Windows', ANTHROPIC_SMALL_FAST_MODEL: 'zcode/GLM-5-Turbo' };
+  const h = await started({}, { env });
+  h.q.emit(initMessage());
+  await h.frame((f) => f.t === 'init');
+  h.q.emit({ type: 'assistant', uuid: U1, message: { model: 'zcode/GLM-5-Turbo', content: [{ type: 'text', text: 'side call' }] }, parent_tool_use_id: null });
+  h.q.emit({ type: 'result', subtype: 'success', total_cost_usd: 0, modelUsage: { [MODEL]: {}, 'zcode/GLM-5-Turbo': {} } });
+  await h.frame((f) => f.t === 'result');
+  assert.equal(h.of('exit').length, 0);
+  h.q.emit({ type: 'assistant', uuid: U2, message: { model: 'zcode/GLM-5.3', content: [] }, parent_tool_use_id: null });
+  assert.deepEqual(await h.exit(), { t: 'exit', reason: 'safety-stop', detail: 'model' });
+  h.input.end();
+});
+
+test('an ask frame names the places the call reaches and a one-line subject, besides its preview', async () => {
+  const h = await started();
+  const w = await askWrite(h, { file_path: 'sub\\new.txt', content: 'x' });
+  assert.deepEqual([w.ask.paths, w.ask.unplaced, w.ask.subject], [[`${CWD}\\sub\\new.txt`], false, `${CWD}\\sub\\new.txt`]);
+  const id = toolId();
+  await h.q.callTool('PowerShell', { command: 'Set-Content a.txt hi\nGet-Content a.txt' }, id);
+  const sh = await h.frame((f) => f.t === 'ask' && f.toolUseId === id);
+  assert.deepEqual([sh.paths, sh.subject], [[], 'Set-Content a.txt hi']);
+  await closed(h);
+});
+
+test('the owned work root: a cwd in <protected root>\\work\\<id> starts; only its own subtree is open, the rest of the root stays protected', async () => {
+  // C:\t holds this session's config dir; it is protected here as orchestrad protects its data dir.
+  const added = ['C:\\t\\work\\s1', 'C:\\t\\work\\s2', `${HOME}\\.claude\\work`, `${HOME}\\.claude\\work\\x`];
+  EXISTING.push(...added);
+  try {
+    const h = await started({ cwd: 'C:\\t\\work\\s1', protectedRoots: ['C:\\t'] });
+    const inside = await h.q.callTool('Write', { file_path: 'C:\\t\\work\\s1\\a.txt', content: 'x' }, toolId());
+    assert.equal(inside.decision, 'ask');
+    const read = await h.q.callTool('Read', { file_path: 'a.txt' }, toolId());
+    assert.equal(read.decision, 'default');
+    for (const p of ['C:\\t\\work\\s2\\x.txt', 'C:\\t\\work\\x.txt', 'C:\\t\\owned\\x.json', '..\\s2\\x.txt']) {
+      const id = toolId();
+      const call = await h.q.callTool('Read', { file_path: p }, id);
+      assert.equal(call.decision, 'deny', p);
+      assert.equal((await h.frame((f) => f.toolUseId === id)).why, 'protected');
+    }
+    await closed(h);
+    // The hard roots never open: a cwd in .claude\work\x is refused whatever else is passed.
+    const hard = harness();
+    hard.send({ ...START, cwd: `${HOME}\\.claude\\work\\x` });
+    assert.equal((await hard.exit()).detail, 'cwd-protected');
+    hard.input.end();
+  } finally {
+    EXISTING.splice(EXISTING.length - added.length, added.length);
+  }
 });

@@ -7,7 +7,7 @@ import { tableSeq } from '../runtime/clock.ts';
 import type { CwdPolicySpec } from './cwd.ts';
 import { CwdPolicy } from './cwd.ts';
 import { envGet, ownFields } from '../runtime/own.ts';
-import { frozenClass } from '../../shared/frozen.js';
+import { frozen, frozenClass } from '../../shared/frozen.js';
 
 const win = path.win32;
 
@@ -18,8 +18,8 @@ const win = path.win32;
 // reaches a gate only through node-proc.ts's gate factory: a gate built anywhere else spawns through whatever its
 // builder wrote, which cannot start a process.
 
-export type SpawnRule = 'whoami' | 'csc' | 'powershell-toast' | 'procguard' | 'codex-app-server' | 'codex-app-server-fake';
-const RULES: readonly SpawnRule[] = Object.freeze(['whoami', 'csc', 'powershell-toast', 'procguard', 'codex-app-server', 'codex-app-server-fake']);
+export type SpawnRule = 'whoami' | 'csc' | 'powershell-toast' | 'procguard' | 'codex-app-server' | 'codex-app-server-fake' | 'claude-host';
+const RULES: readonly SpawnRule[] = Object.freeze(['whoami', 'csc', 'powershell-toast', 'procguard', 'codex-app-server', 'codex-app-server-fake', 'claude-host']);
 
 // The argv tables the gate decides from on every call are frozen where they are defined: a module that
 // imports one could otherwise push an argument into what the gate allows (P8).
@@ -61,6 +61,12 @@ export const ENV_WHITELIST: Readonly<Record<SpawnRule, readonly string[]>> = Obj
   // list, PATH among it: LIBUV_ADDED_ENV above). The fake app-server of the tests gets the same.
   'codex-app-server': Object.freeze([...SYSTEM_ENV, 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA']),
   'codex-app-server-fake': Object.freeze([...SYSTEM_ENV, 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA']),
+  // The Claude host (alpha 0.2 design §2.1; orchestra app step 4): node.exe running hosts/claude/host.mjs,
+  // which hands its env to claude.exe. The probe's system list: the profile and AppData (claude.exe finds
+  // its temp and cache dirs there), and PATH, PATHEXT, COMSPEC for the shell tools a person allows. The
+  // gateway, the private config dir and the model come as fixed extras (CLAUDE_HOST_REQUIRED_ENV), and
+  // the gate adds CLAUDE_HOST_FIXED_ENV itself; no key, no proxy with credentials, no NODE_OPTIONS.
+  'claude-host': Object.freeze([...SYSTEM_ENV, 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PATH', 'PATHEXT', 'COMSPEC']),
 });
 const isNever = (name: string) => ENV_NEVER.some((x) => x.toLowerCase() === name.toLowerCase());
 for (const names of Object.values(ENV_WHITELIST)) if (names.some(isNever)) throw new Error('spawn gate: a whitelist names NODE_OPTIONS or NODE_PATH');
@@ -105,6 +111,12 @@ function ruleEnv(rule: SpawnRule, source: Readonly<Record<string, string | undef
       out[key] = value;
     }
   }
+  if (rule === 'claude-host') {
+    for (const [k, v] of Object.entries(CLAUDE_HOST_FIXED_ENV)) {
+      if (Object.keys(out).some((n) => n.toLowerCase() === k.toLowerCase())) throw new Error(`spawn gate: envExtra.claude-host: ${k} is set by the gate itself`);
+      out[k] = v;
+    }
+  }
   return Object.freeze(out);
 }
 
@@ -121,6 +133,40 @@ export const CODEX_EXE_REL = 'npm\\node_modules\\@openai\\codex\\node_modules\\@
 export const CODEX_APP_SERVER_ARGV: readonly string[] = Object.freeze(['app-server']);
 /** The variable every codex rule must get as a fixed extra: without it codex.exe would use the user's own ~/.codex. */
 export const CODEX_HOME_VAR = 'CODEX_HOME';
+
+/**
+ * The Claude host's gateway placeholder (orchestra app plan §2, measured 2026-11-02): magpie needs no
+ * key, but the CLI wants some auth token before it calls; this fixed string is that token. Not a secret.
+ */
+export const CLAUDE_GATEWAY_TOKEN = 'orchestra-magpie-no-key';
+/** Only a loopback gateway: an owned Claude session's prompts and files go to this machine and nowhere else. */
+export const CLAUDE_GATEWAY_RE = frozen(/^http:\/\/127\.0\.0\.1:[1-9][0-9]{0,4}$/);
+/**
+ * The extras the composition root must give the claude-host rule, each checked here: the private config
+ * dir (never the user's ~/.claude), the loopback gateway, the placeholder token, the small fast model.
+ * The session's own model and config dir go in the host's start frame (hosts/claude/host-core.mjs).
+ */
+export const CLAUDE_HOST_REQUIRED_ENV: readonly string[] = Object.freeze(['CLAUDE_CONFIG_DIR', 'ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_SMALL_FAST_MODEL', 'NO_PROXY']);
+/** Never an extra of the claude-host rule: a real key would leave the gateway's placeholder behind. */
+const CLAUDE_HOST_REFUSED_ENV: readonly string[] = Object.freeze(['ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_CUSTOM_HEADERS']);
+/**
+ * What the gate itself adds for claude-host (alpha 0.2 design §2.1): no workflows (R33), no self-update
+ * (a CLI that changes under the host), no traffic the session does not need.
+ */
+export const CLAUDE_HOST_FIXED_ENV: Readonly<Record<string, string>> = Object.freeze({
+  CLAUDE_CODE_DISABLE_WORKFLOWS: '1',
+  DISABLE_AUTOUPDATER: '1',
+  CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
+});
+const MODEL_ENV_RE = /^(?:zcode|opencode-go)\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+/**
+ * The Claude host as the composition root names it (orchestra app step 4): the repository's node.exe,
+ * resolved at startup; host.mjs, the one argument; and the pin check (src/owned/claude-pins.ts), which
+ * the gate runs again before every start: a host file or the SDK that changed since startup is refused
+ * (host-tampered) without a child.
+ */
+export type ClaudeHostSite = { node: string; entry: string; verify(): string | null };
 
 const REPO = win.join(import.meta.dirname, '..', '..');
 /** The one file csc may compile. */
@@ -368,8 +414,9 @@ export type SpawnRequest = {
   exe: string;
   argv: readonly string[];
   /**
-   * The child's working directory, for a rule that takes one from its caller (none yet: the claude-host
-   * rule of step 3). Every other rule runs in its exe's directory and is refused a cwd (`cwd-not-allowed`).
+   * The child's working directory, for a rule that takes one from its caller (CALLER_CWD: the codex rules
+   * and claude-host), checked by the gate's CwdPolicy. Every other rule runs in its exe's directory and is
+   * refused a cwd (`cwd-not-allowed`).
    */
   cwd?: string;
   /** Present only so a caller asking for a shell or other options is refused with a reason. */
@@ -392,12 +439,13 @@ export type SpawnDenyReason =
   | 'exe-unresolved'
   | 'exe-reparsed'
   | 'cwd-not-allowed'
-  | 'cwd-denied';
+  | 'cwd-denied'
+  | 'host-tampered';
 
 /** The rules that run as a long-lived child, the only ones start() may launch; run-only rules stay run(). */
-const STARTABLE: readonly SpawnRule[] = ['procguard', 'powershell-toast', 'codex-app-server', 'codex-app-server-fake'];
+const STARTABLE: readonly SpawnRule[] = ['procguard', 'powershell-toast', 'codex-app-server', 'codex-app-server-fake', 'claude-host'];
 /** The rules that run in a cwd their caller names, checked by the gate's CwdPolicy; the rest run in their exe's directory. */
-const CALLER_CWD: readonly SpawnRule[] = Object.freeze(['codex-app-server', 'codex-app-server-fake']);
+const CALLER_CWD: readonly SpawnRule[] = Object.freeze(['codex-app-server', 'codex-app-server-fake', 'claude-host']);
 
 export type SpawnDecision =
   | { allow: true; rule: SpawnRule; exe: string; argv: readonly string[]; cwd: string }
@@ -445,9 +493,11 @@ export type SpawnGateConfig = {
    * unless the env source carries TEST_RUNNER_MARKER; the static scan bans the name in daemon code.
    */
   fakeCodexNode?: string;
+  /** The Claude host's node.exe, host.mjs and pin check; required when the rule claude-host is on. */
+  claudeHost?: ClaudeHostSite;
 };
 
-const CONFIG_KEYS = ['systemRoot', 'rules', 'csc', 'procguard', 'record', 'backend', 'realpath', 'clock', 'env', 'envExtra', 'cwd', 'fakeCodexNode'] as const;
+const CONFIG_KEYS = ['systemRoot', 'rules', 'csc', 'procguard', 'record', 'backend', 'realpath', 'clock', 'env', 'envExtra', 'cwd', 'fakeCodexNode', 'claudeHost'] as const;
 
 /** timeoutMs is a positive integer (a Clock due time is whole milliseconds), at most 2^31 - 1. */
 export type RunLimits = { timeoutMs: number; maxBytes: number };
@@ -539,6 +589,8 @@ export class SpawnGate {
   /** Each rule's child env, built once at construction. */
   readonly #env: ReadonlyMap<SpawnRule, Readonly<Record<string, string>>>;
   readonly #cwd: CwdPolicy | null;
+  /** The Claude host's entry and pin check, when the rule claude-host is on. */
+  readonly #claudeHost: { entry: string; verify(): string | null } | null;
   /** run() deadlines by timerId; the Clock fires into #expire, which looks the run up here. */
   readonly #deadlines = new Map<string, () => void>();
 
@@ -581,6 +633,21 @@ export class SpawnGate {
     } else if (this.#rules.has('codex-app-server-fake')) {
       throw new Error('spawn gate: codex-app-server-fake enabled without fakeCodexNode');
     }
+    let host: { entry: string; verify(): string | null } | null = null;
+    if (cfg.claudeHost !== undefined) {
+      const site = ownFields(cfg.claudeHost as ClaudeHostSite, ['node', 'entry', 'verify'] as const);
+      const node = mustPath(site.node as string, 'claude host node.exe');
+      if (win.basename(node).toLowerCase() !== 'node.exe') throw new Error(`spawn gate: the Claude host runs under node.exe, not ${node}`);
+      const entry = mustPath(site.entry as string, 'claude host entry');
+      if (win.basename(entry).toLowerCase() !== 'host.mjs') throw new Error(`spawn gate: the Claude host entry is host.mjs, not ${entry}`);
+      if (typeof site.verify !== 'function') throw new Error('spawn gate: the Claude host needs its pin check (verify)');
+      const verify = site.verify;
+      add('claude-host', node);
+      host = Object.freeze({ entry, verify: () => verify() });
+    } else if (this.#rules.has('claude-host')) {
+      throw new Error('spawn gate: claude-host enabled without its site (node.exe, host.mjs, the pin check)');
+    }
+    this.#claudeHost = host;
     this.#exes = exes;
     if (this.#rules.has('powershell-toast') && TOAST_ENCODED === null) {
       throw new Error('spawn gate: powershell-toast needs the constant script of os/toast-script.ts, which arrives in step 17');
@@ -599,6 +666,20 @@ export class SpawnGate {
       if (!this.#rules.has(rule)) continue;
       const home = ownFields(extras[rule] as Record<string, unknown> | undefined, [CODEX_HOME_VAR] as const)[CODEX_HOME_VAR];
       if (typeof home !== 'string' || !checkPath(home).ok) throw new Error(`spawn gate: ${rule} needs envExtra.${rule}.${CODEX_HOME_VAR}, an absolute path (else codex.exe uses the user's own ~/.codex)`);
+    }
+    if (this.#rules.has('claude-host')) {
+      const given = (extras['claude-host'] ?? {}) as Record<string, unknown>;
+      const names = Object.keys(given);
+      const value = (name: string) => given[names.find((n) => n.toLowerCase() === name.toLowerCase()) ?? ''];
+      for (const name of CLAUDE_HOST_REQUIRED_ENV) {
+        if (typeof value(name) !== 'string' || (value(name) as string) === '') throw new Error(`spawn gate: claude-host needs envExtra.claude-host.${name}`);
+      }
+      const configDir = checkPath(value('CLAUDE_CONFIG_DIR') as string);
+      if (!configDir.ok) throw new Error('spawn gate: claude-host needs CLAUDE_CONFIG_DIR, an absolute path (else claude.exe uses the user\'s own ~/.claude)');
+      if (!CLAUDE_GATEWAY_RE.test(value('ANTHROPIC_BASE_URL') as string)) throw new Error(`spawn gate: claude-host's gateway must be http://127.0.0.1:<port>, got ${String(value('ANTHROPIC_BASE_URL'))}`);
+      if (value('ANTHROPIC_AUTH_TOKEN') !== CLAUDE_GATEWAY_TOKEN) throw new Error('spawn gate: claude-host\'s ANTHROPIC_AUTH_TOKEN is the fixed gateway placeholder, never a key');
+      if (!MODEL_ENV_RE.test(value('ANTHROPIC_SMALL_FAST_MODEL') as string)) throw new Error('spawn gate: claude-host\'s ANTHROPIC_SMALL_FAST_MODEL must be a zcode/ or opencode-go/ model');
+      for (const name of CLAUDE_HOST_REFUSED_ENV) if (value(name) !== undefined) throw new Error(`spawn gate: envExtra.claude-host: ${name} is never handed to the Claude host`);
     }
     this.#env = new Map(RULES.map((rule) => [rule, ruleEnv(rule, source, extras[rule])]));
     this.#cwd = cfg.cwd === undefined ? null : new CwdPolicy({ spec: cfg.cwd, env: source, systemRoot: sys.path, realpath: cfg.realpath! });
@@ -642,6 +723,16 @@ export class SpawnGate {
       return deny('exe-unresolved', { rule, detail: errCode(e) });
     }
     if (pathKey(real) !== pathKey(known.exe)) return deny('exe-reparsed', { rule, detail: real });
+    if (rule === 'claude-host') {
+      // The pins again, now: a host file or the SDK that changed since startup starts no child.
+      let why: string | null;
+      try {
+        why = this.#claudeHost!.verify();
+      } catch (e) {
+        why = `verify failed: ${errCode(e)}`;
+      }
+      if (why !== null) return deny('host-tampered', { rule, detail: why });
+    }
     let cwd = win.dirname(known.exe);
     if (CALLER_CWD.includes(rule)) {
       if (r.cwd === undefined) return deny('cwd-not-allowed', { rule, detail: 'required' });
@@ -667,6 +758,8 @@ export class SpawnGate {
         return sameArgv(argv, CODEX_APP_SERVER_ARGV) ? null : 'argv-mismatch';
       case 'codex-app-server-fake':
         return argv.length === 1 && argv[0] === FAKE_CODEX_SCRIPT ? null : 'argv-mismatch';
+      case 'claude-host':
+        return argv.length === 1 && argv[0] === this.#claudeHost!.entry ? null : 'argv-mismatch';
       case 'procguard':
         return argv.length === 0 || (argv.length === 2 && argv[0] === '--protect' && PROTECT_LIST.test(argv[1]!)) ? null : 'argv-mismatch';
       case 'csc': {

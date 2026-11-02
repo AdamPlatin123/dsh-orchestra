@@ -7,7 +7,8 @@ import type { TestProfile } from '../../src/runtime/test-profile.ts';
 import type { WorkingOutcome } from '../../src/runtime/working.ts';
 import type { SpawnGateSpec } from '../../src/os/node-proc.ts';
 import { makeReadGate, makeWriteFence } from '../../src/fs/node-io.ts';
-import { CODEX_EXE_REL, PidLog, SpawnGate } from '../../src/os/spawn.ts';
+import { CLAUDE_GATEWAY_TOKEN, CODEX_EXE_REL, PidLog, SpawnGate } from '../../src/os/spawn.ts';
+import { resolveHostSite } from '../../src/owned/claude-site.ts';
 import { makeRealClock } from '../../src/runtime/clock.ts';
 import { Log } from '../../src/runtime/log.ts';
 import { makeDbOpener } from '../../src/store/node-sqlite.ts';
@@ -25,7 +26,7 @@ const CLOCK = makeRealClock();
 type Working = { o: Extract<WorkingOutcome, { mode: 'working' }>; out: string[]; home: string; specs: SpawnGateSpec[] };
 
 /** A test-profile working orchestrad; `body` runs while it works, and it is stopped before the temp dir goes. */
-async function working(t: TestContext, env: Record<string, string>, owned: boolean, body: (w: Working) => void): Promise<void> {
+async function working(t: TestContext, env: Record<string, string>, owned: boolean, body: (w: Working) => void, opts: { readGate?: typeof makeReadGate } = {}): Promise<void> {
   const base = withTmp(t);
   fs.mkdirSync(path.join(base, 'orchestra-test-x'));
   const testDir = fs.realpathSync.native(path.join(base, 'orchestra-test-x'));
@@ -37,7 +38,7 @@ async function working(t: TestContext, env: Record<string, string>, owned: boole
   const o = await runWorkingInProcess({
     profile, home, userHome: path.join(base, 'user-home'), roots: [], notes: [], log: new Log({ clock: CLOCK.port(null) }), pidLog: new PidLog(), console: con.port,
     pid: process.pid, clock: CLOCK, tty: () => ({ stdin: false, stdout: false }), realpath: (p: string) => fs.realpathSync.native(p),
-    makeReadGate, makeWriteFence, makeDbOpener, env: { ...minimalEnv(), ...env },
+    makeReadGate: opts.readGate ?? makeReadGate, makeWriteFence, makeDbOpener, env: { ...minimalEnv(), ...env },
     makeSpawnGate: (spec: SpawnGateSpec) => {
       specs.push(spec);
       return new SpawnGate({ ...spec, backend: spy.backend });
@@ -71,8 +72,9 @@ test('--owned with codex.exe in place: the private CODEX_HOME, the work root, an
     assert.ok(toml.includes('[model_providers.magpie]\nname = "magpie"\nbase_url = "http://127.0.0.1:3425/v1"\nwire_api = "responses"\n'), toml);
     assert.ok(toml.includes('[skills]\ninclude_instructions = false\n'), 'the user\'s ~/.agents/skills stay out of the prompt');
     assert.ok(fs.statSync(path.join(w.home, 'work')).isDirectory());
-    assert.equal(w.specs.length, 1);
-    const spec = w.specs[0]!;
+    const codexSpecs = w.specs.filter((s) => s.rules.includes('codex-app-server'));
+    assert.equal(codexSpecs.length, 1);
+    const spec = codexSpecs[0]!;
     assert.deepEqual([...spec.rules], ['codex-app-server']);
     assert.deepEqual(spec.envExtra, { 'codex-app-server': { CODEX_HOME: path.join(w.home, 'codex-home') } });
     assert.deepEqual(spec.cwd?.allowedRoots, [path.join(w.home, 'work')]);
@@ -89,7 +91,7 @@ test('--owned without codex.exe: off, and the reason is on the console and in th
   await working(t, { APPDATA: appData }, true, (w) => {
     assert.deepEqual(w.o.ownedCodex, { on: false, why: 'codex-missing', detail: 'ENOENT' });
     assert.ok(w.out.includes('orchestrad: owned Codex sessions are off: codex-missing (ENOENT)'), w.out.join('\n'));
-    assert.equal(w.specs.length, 0);
+    assert.equal(w.specs.filter((s) => s.rules.includes('codex-app-server')).length, 0);
     assert.equal(fs.existsSync(path.join(w.home, 'codex-home')), false);
   });
 });
@@ -100,4 +102,52 @@ test('without --owned: off as not-asked, nothing of src/owned/ is set up', async
     assert.equal(w.specs.length, 0);
     assert.ok(!w.out.some((l) => l.includes('owned Codex')));
   });
+});
+
+// ---- owned Claude sessions (orchestra app step 4) ----------------------------------------------------
+
+const site = resolveHostSite((p: string) => fs.realpathSync.native(p));
+
+test('--owned with the host in place: the claude-host gate with node.exe, host.mjs and its pin check, the checked extras, the work root; else off with the reason', async (t) => {
+  await working(t, {}, true, (w) => {
+    const s = w.o.ownedClaude;
+    if (!site.ok) {
+      // A copy without the installed SDK (or without .tools\node24): off, and why.
+      assert.equal(s.on, false);
+      assert.ok(w.out.some((l) => l.startsWith('orchestrad: owned Claude sessions are off: claude-')), w.out.join('\n'));
+      return;
+    }
+    assert.equal(s.on, true, JSON.stringify(s));
+    if (!s.on) return;
+    assert.deepEqual([s.node, s.entry, s.claudeExe, s.model, s.gateway], [site.node, site.entry, site.claudeExe, 'zcode/GLM-5.3', 'http://127.0.0.1:3425']);
+    const specs = w.specs.filter((x) => x.rules.includes('claude-host'));
+    assert.equal(specs.length, 1);
+    const spec = specs[0]!;
+    assert.deepEqual([...spec.rules], ['claude-host']);
+    assert.deepEqual(spec.envExtra, {
+      'claude-host': {
+        CLAUDE_CONFIG_DIR: path.join(w.home, 'claude-home'), ANTHROPIC_BASE_URL: 'http://127.0.0.1:3425', ANTHROPIC_AUTH_TOKEN: CLAUDE_GATEWAY_TOKEN,
+        ANTHROPIC_SMALL_FAST_MODEL: 'zcode/GLM-5-Turbo', NO_PROXY: '127.0.0.1,localhost',
+      },
+    });
+    assert.equal(spec.claudeHost?.entry, site.entry);
+    assert.equal(spec.claudeHost?.verify(), null, 'the pins match');
+    assert.deepEqual(spec.cwd?.allowedRoots, [path.join(w.home, 'work')]);
+    assert.ok(fs.statSync(path.join(w.home, 'claude')).isDirectory());
+    assert.ok(w.out.some((l) => l.startsWith('orchestrad: owned Claude sessions on (model zcode/GLM-5.3 through http://127.0.0.1:3425;')), w.out.join('\n'));
+  });
+});
+
+test('--owned with a host file that does not match its pin: off as host-tampered, no claude-host gate', async (t) => {
+  if (!site.ok) return;
+  const tampered: typeof makeReadGate = (spec) => {
+    const real = makeReadGate(spec);
+    if (spec.pinnedFiles === undefined) return real;
+    return new Proxy(real, { get: (o, k) => (k === 'readFile' ? () => Buffer.from('tampered') : Reflect.get(o, k)) });
+  };
+  await working(t, {}, true, (w) => {
+    assert.deepEqual(w.o.ownedClaude, { on: false, why: 'host-tampered', detail: 'hosts/claude/host.mjs: changed' });
+    assert.ok(w.out.includes('orchestrad: owned Claude sessions are off: host-tampered (hosts/claude/host.mjs: changed)'), w.out.join('\n'));
+    assert.equal(w.specs.filter((x) => x.rules.includes('claude-host')).length, 0);
+  }, { readGate: tampered });
 });

@@ -8,7 +8,7 @@ import { after, every, fmtIso, nowMono, onFrame } from './clock.js';
 import { makePatcher } from './dom.js';
 import { getCsrf, getTheme, setCsrf, setTheme } from './prefs.js';
 import {
-  HOLD_MS, MODELS, SETTLE_MS, atBottom, chatNews, describeNew, describeOwned, describeOwnedDock, errText, isFeed, isOwnedList, mergeFeed, msgError, notifyText, ownedIdOf, pinExtra, pinWhole,
+  HOLD_MS, SETTLE_MS, modelsOf, atBottom, chatNews, describeNew, describeOwned, describeOwnedDock, errText, isFeed, isOwnedList, mergeFeed, msgError, notifyText, ownedIdOf, pinExtra, pinWhole,
 } from './owned.js';
 import { go, openFull, parse } from './route.js';
 import { FILTERS, buildRows, freeze, groupKey, indexOf, navigate, projectKey, towerFrame } from './tree.js';
@@ -404,7 +404,7 @@ const said = (a, ok) => a !== null && say(a.ok ? ok : errText(a.code));
 async function dispatch() {
   const text = val('nw-text');
   const why = msgError(text);
-  const a = why === null ? await op('owned/new', { text, harness: val('nw-harness') || 'codex', model: val('nw-model') || MODELS[0] }) : null;
+  const a = why === null ? await op('owned/new', { text, harness: val('nw-harness') || 'codex', model: val('nw-model') || modelsOf(val('nw-harness'))[0] }) : null;
   if (a?.ok !== true) return a === null && why === null ? undefined : dlgSay('new-dlg', why ?? errText(a.code));
   setVal('nw-text', '');
   closeDlg('new-dlg');
@@ -730,6 +730,10 @@ document.addEventListener('keydown', (e) => {
   else if (!e.repeat) holdStart(el);
 });
 // Typing holds the recipient (research §1.5).
+// The dispatch dialog's model list follows its harness at once.
+document.addEventListener('change', (e) => {
+  if (e.target instanceof Element && e.target.id === 'nw-harness') schedule();
+});
 document.addEventListener('input', (e) => {
   if (!(e.target instanceof Element) || e.target.id !== 'dock-in') return;
   state.to = val('dock-in') === '' ? null : (state.to ?? selTo());

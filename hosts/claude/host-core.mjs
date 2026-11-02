@@ -14,6 +14,12 @@ export const LINE_MAX_BYTES = 64 * 1024;
 export const TEXT_CHUNK_BYTES = 2048;
 /** An `ask` frame's preview (design §2.6): past this the preview is cut and `tooLong` is set. */
 export const PREVIEW_MAX_BYTES = 16 * 1024;
+/** The places an ask frame names, at most this many (a Glob or Grep names its root and its pattern's base). */
+export const ASK_PATHS_MAX = 8;
+/** A place longer than this (in UTF-16 units) is left out of an ask frame's `paths`. */
+export const ASK_PATH_MAX_CHARS = 1024;
+/** An ask frame's `subject`, in UTF-8 bytes. */
+export const SUBJECT_MAX_BYTES = 200;
 /** The SDK's turn cap. It counts per message (probe §10 item 4): hitting it ends that turn, not the session. */
 export const MAX_TURNS = 50;
 /** orchestrad's approval timeout when the start frame names none (design §8 item 7: 30 minutes). */
@@ -21,8 +27,16 @@ export const DEFAULT_ASK_TIMEOUT_MS = 30 * 60 * 1000;
 /** The host's own backstop runs this much after orchestrad's timeout, so a dead orchestrad cannot leave a tool hanging. */
 export const ASK_BACKSTOP_EXTRA_MS = 60 * 1000;
 
-/** The exact model ids a session may run (r4 §7.2's haiku-only guard). No pattern: an exact list. */
-export const MODEL_ALLOWLIST = Object.freeze(['opencode-go/claude-haiku-5-5']);
+/**
+ * The models a session may run: the local magpie gateway's zcode/* and opencode-go/* (orchestra app plan
+ * §2; the user's goal of 2026-11-02 widened r4 §7.2's haiku-only guard to these two families). codex/*
+ * speaks the Responses API, not Anthropic's Messages API, so it is not here. The start frame names one
+ * model of this grammar; from then on the guard is exact: init, every assistant message and every
+ * modelUsage key must name that model (or the small fast model the host's env names, below).
+ */
+export const MODEL_RE = /^(?:zcode|opencode-go)\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** The env variable naming the small fast model (orchestrad sets it); a model of MODEL_RE or ignored. */
+export const SMALL_FAST_ENV = 'ANTHROPIC_SMALL_FAST_MODEL';
 /** What the CLI writes as the model of an assistant message it made up itself (an API error, say); no model ran. */
 const SYNTHETIC_MODEL = '<synthetic>';
 
@@ -457,7 +471,7 @@ export function parseStart(f, env) {
   const bad = (field) => ({ ok: false, field });
   if (!onlyKeys(f, START_KEYS)) return bad('keys');
   if (typeof f.ownedId !== 'string' || !HEX20.test(f.ownedId)) return bad('ownedId');
-  if (typeof f.model !== 'string' || !MODEL_ALLOWLIST.includes(f.model)) return bad('model');
+  if (typeof f.model !== 'string' || !MODEL_RE.test(f.model)) return bad('model');
   const cwd = winAbsolute(f.cwd);
   if (cwd === null || cwd.length === 3) return bad('cwd');
   const configDir = winAbsolute(f.configDir);
@@ -483,19 +497,37 @@ export function parseStart(f, env) {
   // The host adds the roots it can name itself: your .claude, .dsh and .orchestra, and this session's
   // own config dir (design §2.2 rule 1).
   const roots = [...protectedRoots, `${home}\\.claude`, `${home}\\.dsh`, `${home}\\.orchestra`, configDir];
+  // The small fast model the CLI may use for its own side calls: allowed by the running guard too, when
+  // it is a model of the same grammar; anything else in that variable is ignored (and then any use of it stops the session).
+  const fast = envValue(env, SMALL_FAST_ENV);
+  const smallFast = typeof fast === 'string' && MODEL_RE.test(fast) ? fast : null;
   return {
     ok: true,
     start: Object.freeze({
       ownedId: f.ownedId, model: f.model, cwd, configDir, resume: f.resume, fork: f.fork === true, resumeAt: f.resumeAt,
       appendSystem: f.appendSystem, tainted: f.tainted, claudeExe, protectedRoots: Object.freeze(roots), askTimeoutMs, home,
+      hardRoots: Object.freeze([`${home}\\.claude`, `${home}\\.dsh`, configDir]),
+      models: Object.freeze(smallFast === null || smallFast === f.model ? [f.model] : [f.model, smallFast]),
     }),
   };
+}
+
+/**
+ * The owned work root exemption (src/os/cwd.ts does the same for the spawn gate's table): a session's
+ * cwd may lie in `<root>\work\<name>` of a protected root, because orchestrad keeps the owned work dirs
+ * in its data dir (ORCHESTRA_HOME\work, inside ~/.orchestra in the real profile). Below that root only
+ * this session's own cwd is open; the root itself, its `work` dir and every other session's dir stay
+ * protected. Returns the protected root the cwd sits in through this exemption, or null.
+ */
+function workRootOf(cwd, root) {
+  return isInside(cwd, `${root}\\work`) && cwd.toLowerCase() !== `${root}\\work`.toLowerCase() ? root : null;
 }
 
 /** The env claude.exe gets: the host's own, then the session's config dir and every default model pinned to the one model. */
 function sessionEnv(env, start) {
   const set = {
     CLAUDE_CONFIG_DIR: start.configDir,
+    ANTHROPIC_MODEL: start.model,
     ANTHROPIC_DEFAULT_SONNET_MODEL: start.model,
     ANTHROPIC_DEFAULT_OPUS_MODEL: start.model,
     ANTHROPIC_DEFAULT_HAIKU_MODEL: start.model,
@@ -699,7 +731,8 @@ export function runHost(powers) {
       for (const lexical of list) {
         const real = await realOf(lexical, realpath);
         for (const at of real === null ? [lexical] : [lexical, real]) {
-          if (guarded.some((g) => isInside(at, g) || (tree && isInside(g, at)))) isProtected = true;
+          const mine = isInside(at, start.cwd) || isInside(at, realCwd);
+          if (guarded.some((g) => (isInside(at, g.at) && !(g.open && mine)) || (tree && isInside(g.at, at)))) isProtected = true;
         }
         if (real === null || !isInside(real, realCwd)) inCwd = false;
       }
@@ -748,6 +781,22 @@ export function runHost(powers) {
   }
 
   const deny = (key) => ({ behavior: 'deny', message: DENY_MESSAGES[key] });
+
+  /**
+   * What an ask frame names besides its preview, for orchestrad to judge and title the card with: the
+   * places the call reaches (absolute, lexical, as toolReach places them; at most ASK_PATHS_MAX) and
+   * `subject`, one line: a shell command's first line, else the first place (redacted, invisible
+   * characters written out, at most SUBJECT_MAX_BYTES). The preview stays what the person allows.
+   */
+  function askPlaces(toolName, input) {
+    const reach = toolReach(toolName, input, start.cwd, start.home);
+    const all = [...reach.files, ...reach.trees];
+    // A place too long to name whole is not named: the card then says the call reaches somewhere unplaced.
+    const paths = all.filter((p) => p.length <= ASK_PATH_MAX_CHARS).slice(0, ASK_PATHS_MAX);
+    const raw = SHELL_TOOLS.includes(toolName) && typeof input.command === 'string' ? input.command.split('\n', 1)[0] : (paths[0] ?? '');
+    const subject = splitUtf8(escapeInvisible(redactSecrets(raw).text), SUBJECT_MAX_BYTES)[0] ?? '';
+    return { paths, unplaced: reach.unplaced || paths.length !== all.length, subject };
+  }
 
   async function canUseTool(toolName, toolInput, options) {
     if (finished) return deny('ending');
@@ -801,7 +850,10 @@ export function runHost(powers) {
         emit({ t: 'ask-gone', reqId });
         entry.settle(deny('timeout'));
       });
-      emit({ t: 'ask', reqId, toolName, toolUseId, preview: preview.preview, inputBytes, digest, redactions: preview.redactions, tooLong: preview.tooLong, risk: riskOf(toolName, false) });
+      emit({
+        t: 'ask', reqId, toolName, toolUseId, preview: preview.preview, inputBytes, digest, redactions: preview.redactions, tooLong: preview.tooLong, risk: riskOf(toolName, false),
+        ...askPlaces(toolName, toolInput),
+      });
       if (signal?.aborted === true) onAbort();
       else signal?.addEventListener?.('abort', onAbort, { once: true });
     });
@@ -829,7 +881,7 @@ export function runHost(powers) {
     if (m.type === 'assistant') {
       if (sessionId === null) return stop('no-init');
       const message = isPlainObject(m.message) ? m.message : {};
-      if (message.model !== undefined && message.model !== start.model && message.model !== SYNTHETIC_MODEL) return stop('model');
+      if (message.model !== undefined && !start.models.includes(message.model) && message.model !== SYNTHETIC_MODEL) return stop('model');
       const uuid = typeof m.uuid === 'string' ? m.uuid : null;
       for (const b of Array.isArray(message.content) ? message.content : []) {
         if (!isPlainObject(b)) continue;
@@ -840,7 +892,7 @@ export function runHost(powers) {
     }
     if (m.type === 'result') {
       if (sessionId === null) return stop('no-init');
-      if (m.modelUsage !== undefined && (!isPlainObject(m.modelUsage) || Object.keys(m.modelUsage).some((k) => k !== start.model))) return stop('model');
+      if (m.modelUsage !== undefined && (!isPlainObject(m.modelUsage) || Object.keys(m.modelUsage).some((k) => !start.models.includes(k)))) return stop('model');
       // error_max_turns ends this turn only (probe §10 item 4): the session goes on.
       emit({
         t: 'result',
@@ -881,12 +933,21 @@ export function runHost(powers) {
     if (realCwd === null) return finish('bad-start', 'cwd');
     const roots = [];
     for (const r of start.protectedRoots) {
-      roots.push(r);
+      const hard = start.hardRoots.includes(r);
+      roots.push({ at: r, hard, open: false });
       const real = await realOf(r, realpath);
-      if (real !== null) roots.push(real);
+      if (real !== null) roots.push({ at: real, hard, open: false });
+    }
+    // The cwd holds no protected root, and lies in one only through the owned work root exemption.
+    for (const g of roots) {
+      for (const c of [start.cwd, realCwd]) {
+        if (isInside(g.at, c)) return finish('bad-start', 'cwd-protected');
+        if (!isInside(c, g.at)) continue;
+        if (g.hard || workRootOf(c, g.at) === null) return finish('bad-start', 'cwd-protected');
+        g.open = true;
+      }
     }
     guarded = roots;
-    if (guarded.some((g) => isInside(start.cwd, g) || isInside(realCwd, g))) return finish('bad-start', 'cwd-protected');
     if (finished) return;
     try {
       q = query({ prompt: inbox, options: sdkOptions(start, env, { preToolUse, canUseTool }) });

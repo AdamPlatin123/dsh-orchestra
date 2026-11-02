@@ -7,8 +7,13 @@ import { fmtLeft, t } from './view.js';
 // Payloads: shared/owned-contract.js. A guard g: { unlocked, settle ('' or a countdown token), hold, busy
 // (aria-disabled: the focus stays), nowWall }.
 
-/** src/owned/models.ts: magpie's codex/, zcode/, opencode-go/. */
-export const MODELS = Object.freeze(['codex/gpt-6.1-sol', 'codex/gpt-6-astra', 'zcode/GLM-5.3', 'opencode-go/glm-5.3']);
+/** src/owned/models.ts per harness, the default first: Codex takes magpie's codex/, zcode/ and opencode-go/; Claude (Anthropic's API) only zcode/ and opencode-go/. */
+export const MODELS = Object.freeze({
+  codex: Object.freeze(['codex/gpt-6.1-sol', 'codex/gpt-6-astra', 'codex/gpt-6.1-terra', 'zcode/GLM-5.3', 'opencode-go/glm-5.3']),
+  claude: Object.freeze(['zcode/GLM-5.3', 'zcode/GLM-5.3-Flash', 'zcode/GLM-5.2', 'opencode-go/glm-5.3', 'opencode-go/kimi-k3', 'opencode-go/claude-haiku-5-5']),
+});
+/** The models of a harness (an unknown one reads as codex). */
+export const modelsOf = (harness) => (harness === 'claude' ? MODELS.claude : MODELS.codex);
 /** r4 §10.9: an allow is void this long after the list moved; a high-risk one is held this long. */
 export const SETTLE_MS = 750;
 export const HOLD_MS = 1000;
@@ -199,8 +204,10 @@ export function describeNew(list, harness, busy) {
   const h = list?.harnesses ?? {};
   return {
     hCodex: { attr: { disabled: h.codex ? null : '' } }, hClaude: { attr: { disabled: h.claude ? null : '' } },
-    why: { text: join([list === null ? t('new.noList') : !list.enabled && t('new.off', { why: whyText(list.disabledWhy ?? '') }), !h.claude && t('new.claudeOff')], 'sep.notes') },
-    model: { kids: MODELS.map((m) => ({ key: m, tpl: 'tpl-opt', text: m, attr: { value: m } })) },
+    why: { text: join([list === null ? t('new.noList') : !list.enabled && t('new.off', { why: whyText(list.disabledWhy ?? '') }), list !== null && !h.claude && t('new.claudeOff'), list !== null && !h.codex && list.enabled && t('new.codexOff')], 'sep.notes') },
+    // The list follows the harness: keyed by harness too, so a switch replaces the options (and the default is the first).
+    model: { kids: modelsOf(harness).map((m) => ({ key: `${harness}:${m}`, tpl: 'tpl-opt', text: m, attr: { value: m } })) },
+    note: { text: t(harness === 'claude' ? 'new.claudeNote' : 'new.sandbox') },
     go: { text: t(busy ? 'op.busy' : 'new.go'), attr: { disabled: busy || !list?.enabled || !h[harness] ? '' : null } },
   };
 }

@@ -7,7 +7,14 @@ import type { ReadGate } from '../fs/read-gate.ts';
 import type { WriteFence } from '../fs/write-fence.ts';
 import type { SpawnGateSpec } from '../os/node-proc.ts';
 import type { PidLog, SpawnGate } from '../os/spawn.ts';
+import type { Approvals } from '../owned/approvals.ts';
+import type { ClaudeOwned } from '../owned/claude-owned.ts';
 import type { CodexOwned } from '../owned/codex-owned.ts';
+import type { OwnedRegistry } from '../owned/registry.ts';
+import type { Redact } from '../owned/text.ts';
+import type { PathJudge } from '../owned/codex-session.ts';
+import type { CwdPolicySpec } from '../os/cwd.ts';
+import type { ProvenSystemRoot } from '../os/spawn.ts';
 import type { DbOpener, DbOpenerSpec } from '../store/db.ts';
 import type { ChainBreak } from '../store/journal.ts';
 import type { Store } from '../store/store.ts';
@@ -78,9 +85,17 @@ export type WorkingContext = {
   stopping: StopPort;
   /** --peek-port: serve the thin slice's peek page (src/server/http.ts) on this port. Absent: no HTTP at all. */
   peekPort?: number;
-  /** --owned: owned Codex sessions over codex app-server (orchestra app plan §2). Absent: off. */
+  /** --owned: owned Codex sessions over codex app-server and owned Claude sessions over the 0.2 host (orchestra app plan §2). Absent: off. */
   owned?: true;
 };
+
+/**
+ * The gateway the owned Claude sessions' host talks to (ANTHROPIC_BASE_URL): the same local magpie as
+ * the Codex sessions, without the /v1 the Messages API path adds itself. With --owned it is on by default,
+ * as for Codex; the 0.2 design's --claude-gateway flag is not taken (orchestra app step 4: one gateway,
+ * the one the plan measured).
+ */
+export const CLAUDE_GATEWAY_URL = 'http://127.0.0.1:3425';
 
 /** The local magpie gateway every owned session's model calls go to (orchestra app plan, measured 2026-11-02). */
 export const MAGPIE_BASE_URL = 'http://127.0.0.1:3425/v1';
@@ -93,6 +108,15 @@ export const MAGPIE_BASE_URL = 'http://127.0.0.1:3425/v1';
 export type OwnedCodexStatus =
   | { on: true; exe: string; codexHome: string; workRoot: string; model: string; gateway: string; restored: number }
   | { on: false; why: 'not-asked' | 'codex-appdata-unset' | 'codex-appdata-bad-path' | 'codex-missing' | 'codex-reparsed' | 'no-spawn-gate' | 'setup-failed'; detail: string | null };
+
+/**
+ * Whether owned Claude sessions run, and if not why (T1): not asked for, the host's node.exe, host.mjs or
+ * the SDK's claude.exe not found or behind a link (claude-site.ts), the pins not matching (host-tampered:
+ * a host file or the SDK changed since they were pinned), no spawn gate factory, or the setup failed.
+ */
+export type OwnedClaudeStatus =
+  | { on: true; node: string; entry: string; claudeExe: string; configRoot: string; model: string; gateway: string; restored: number }
+  | { on: false; why: 'not-asked' | 'claude-node-missing' | 'claude-host-missing' | 'claude-exe-missing' | 'claude-reparsed' | 'host-tampered' | 'no-spawn-gate' | 'setup-failed'; detail: string | null };
 
 export type WorkingOutcome =
   | { mode: 'lock-held'; code: typeof EXIT.lockHeld; pipe: string; holder: DaemonInfo | null }
@@ -115,6 +139,8 @@ export type WorkingOutcome =
     store: Store;
     /** Owned Codex sessions: on, or why not (also in the log and on the console). */
     ownedCodex: OwnedCodexStatus;
+    /** Owned Claude sessions: on, or why not (also in the log and on the console). */
+    ownedClaude: OwnedClaudeStatus;
     /** Ends this orchestrad through ctx.stopping.end (in main.ts: the process exits). */
     stop(): Promise<void>;
     /** Settles once stop() has given up the lock, whoever called it (in main.ts: never, the process is gone). */
@@ -267,11 +293,25 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   // Owned Codex sessions, only when asked for (--owned): loaded here so that a start without it
   // resolves none of src/owned/.
   let codexOwned: CodexOwned | null = null;
+  let claudeOwned: ClaudeOwned | null = null;
   let ownedCodex: OwnedCodexStatus = { on: false, why: 'not-asked', detail: null };
+  let ownedClaude: OwnedClaudeStatus = { on: false, why: 'not-asked', detail: null };
   if (ctx.owned === true) {
-    const set = await setUpOwnedCodex(ctx, fence, gate, home);
+    const shared = await setUpOwnedShared(ctx, fence, gate, home);
+    const set = shared.ok ? await setUpOwnedCodex(ctx, fence, home, shared.base) : { status: { on: false as const, why: shared.why, detail: shared.detail }, owned: null };
     ownedCodex = set.status;
     codexOwned = set.owned;
+    const cl = shared.ok ? await setUpOwnedClaude(ctx, fence, home, shared.base) : { status: { on: false as const, why: shared.why, detail: shared.detail }, owned: null };
+    ownedClaude = cl.status;
+    claudeOwned = cl.owned;
+    if (ownedClaude.on) {
+      log.info('owned-claude', { on: true, node: ownedClaude.node, claudeExe: ownedClaude.claudeExe, model: ownedClaude.model });
+      ctx.console.out(`orchestrad: owned Claude sessions on (model ${ownedClaude.model} through ${ownedClaude.gateway}; host ${ownedClaude.entry} under ${ownedClaude.node})`);
+      if (ownedClaude.restored > 0) ctx.console.out(`orchestrad: ${ownedClaude.restored} owned Claude session(s) from before the restart are listed again (not resumed; those that had not ended show as unknown)`);
+    } else {
+      log.warn('owned-claude', { on: false, why: ownedClaude.why, detail: ownedClaude.detail });
+      ctx.console.out(`orchestrad: owned Claude sessions are off: ${ownedClaude.why}${ownedClaude.detail === null ? '' : ` (${ownedClaude.detail})`}`);
+    }
     if (ownedCodex.on) {
       log.info('owned-codex', { on: true, exe: ownedCodex.exe, model: ownedCodex.model });
       ctx.console.out(`orchestrad: owned Codex sessions on (model ${ownedCodex.model} through ${ownedCodex.gateway}; work dirs in ${ownedCodex.workRoot})`);
@@ -291,9 +331,9 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
       const { startPeekServer } = await import('../server/http.ts');
       const { humanJournal } = await import('../server/owned.ts');
       const { ownedEnabled, registerOwnedHandlers } = await import('../server/owned-handlers.ts');
-      const deps = { codex: codexOwned, codexOff: ownedCodex.on ? 'on' : ownedCodex.why, claude: null, log };
+      const deps = { codex: codexOwned, codexOff: ownedCodex.on ? 'on' : ownedCodex.why, claude: claudeOwned, log };
       const wall = ctx.clock.port(null);
-      const owner = codexOwned;
+      const owners = [codexOwned, claudeOwned].filter((x): x is CodexOwned | ClaudeOwned => x !== null);
       const server = await startPeekServer({
         port: ctx.peekPort, gate, roots: ctx.roots, redact: (text) => redactor.redact({ text }).text, clock: ctx.clock.port(null), log, pairingCode: code, profile: ctx.profile.kind,
         // alpha 0.2's owned-session base (slice design §2.7): unlock codes go where the pairing code
@@ -308,7 +348,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
           enabled: ownedEnabled(deps),
           handlers: registerOwnedHandlers(deps),
         },
-        ...(owner === null ? {} : { ownedSeats: { seats: () => owner.towerSeats(), nowWall: () => wall.nowWall() } }),
+        ...(owners.length === 0 ? {} : { ownedSeats: { seats: () => owners.flatMap((o) => o.towerSeats()), nowWall: () => wall.nowWall() } }),
       });
       peek = server;
       ctx.console.out(`orchestrad: peek page at ${server.url} (read-only; pair with the code above)`);
@@ -327,6 +367,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
     uninstall();
     // The owned sessions first: their open approvals are declined while the children can still read it.
     if (codexOwned !== null) log.info('owned-codex-ended', { sessions: codexOwned.endAll() });
+    if (claudeOwned !== null) log.info('owned-claude-ended', { sessions: claudeOwned.endAll() });
     if (peek !== null) await peek.close();
     log.info('stopped', { pidSinkFailures: ctx.pidLog.failures() });
     // Nothing reaches ORCHESTRA_HOME from here on, then the process ends with the lock.
@@ -343,82 +384,196 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   log.info('working', { profile: ctx.profile.kind, pipe, bootId });
   // Last line of the startup: everything above is on disk and on the console before it.
   ctx.console.out(`orchestrad: working (${ctx.profile.kind} profile, pid ${ctx.pid}, data ${home})`);
-  return { mode: 'working', profile: ctx.profile.kind, home, pipe, pairing, testRoots, store, ownedCodex, stop, stopped };
+  return { mode: 'working', profile: ctx.profile.kind, home, pipe, pairing, testRoots, store, ownedCodex, ownedClaude, stop, stopped };
+}
+
+
+/** What both harnesses' owned sessions share: the one approval queue, the registry, the work root and its cwd table. */
+type OwnedBase = {
+  sys: ProvenSystemRoot;
+  approvals: Approvals;
+  registry: OwnedRegistry;
+  workRoot: string;
+  cwdSpec: CwdPolicySpec;
+  judge: PathJudge;
+  redact: Redact;
+  now(): number;
+};
+
+/**
+ * The owned sessions' common part (orchestra app plan §2-§4): the work root ORCHESTRA_HOME\work and the
+ * registry dir made through the fence, SystemRoot resolved for the spawn gates, the one approval queue
+ * (D8: what leaves it without a person is logged), the cwd table the gates and the approvals' paths are
+ * judged by (r4 §5.3's protected dirs: the data dir and every harness root).
+ */
+async function setUpOwnedShared(ctx: WorkingContext, fence: WriteFence, gate: ReadGate, home: string): Promise<{ ok: true; base: OwnedBase } | { ok: false; why: 'no-spawn-gate' | 'setup-failed'; detail: string | null }> {
+  if (ctx.makeSpawnGate === undefined) return { ok: false, why: 'no-spawn-gate', detail: null };
+  try {
+    const { resolveSystemRoot } = await import('../os/spawn.ts');
+    const { OWNED_DIRS } = await import('../owned/codex-home.ts');
+    const { Approvals: Queue } = await import('../owned/approvals.ts');
+    const { REGISTRY_DIR, makeOwnedRegistry } = await import('../owned/registry.ts');
+    const { CwdPolicy } = await import('../os/cwd.ts');
+    const sys = resolveSystemRoot(ctx.env, ctx.realpath);
+    if (!sys.ok) return { ok: false, why: 'setup-failed', detail: `SystemRoot ${sys.reason}` };
+    const workRoot = win.join(home, OWNED_DIRS.work);
+    fence.mkdirp(workRoot);
+    const registryDir = win.join(home, REGISTRY_DIR);
+    fence.mkdirp(registryDir);
+    const cwdSpec: CwdPolicySpec = { allowedRoots: [workRoot], protectedDirs: [home, ...ctx.roots.map((r) => r.path)], userHome: ctx.userHome, ownedWorkRoot: workRoot };
+    // The same table the gates check a cwd against judges the paths an approval names (orchestra app plan §4).
+    const places = new CwdPolicy({ spec: cwdSpec, env: ctx.env, systemRoot: sys.path, realpath: ctx.realpath });
+    const redactor = makeRedactor({ env: ctx.env });
+    const wall = ctx.clock.port(null);
+    const approvals = new Queue({
+      hub: ctx.clock,
+      onSettled: (v, o) => {
+        if (o.cause !== 'human') ctx.log.info('approval-settled', { approvalId: v.approvalId, ownedId: v.ownedId, kind: v.kind, decision: o.decision, cause: o.cause });
+      },
+    });
+    const registry = makeOwnedRegistry({
+      dir: registryDir,
+      writeAtomic: (file, text) => fence.writeAtomic(file, text),
+      readdir: (dir) => gate.readdir(dir),
+      readFile: (file) => gate.readFile(file).toString('utf8'),
+    });
+    return {
+      ok: true,
+      base: {
+        sys, approvals, registry, workRoot, cwdSpec, judge: (p) => places.place(p), now: () => wall.nowWall(),
+        redact: (text) => {
+          const r = redactor.redact({ text });
+          const v = r.verdict;
+          return { text: r.text, count: v.known + v.entropy + Object.values(v.format).reduce((a, b) => a + b, 0) + (v.dropped === null ? 0 : 1) };
+        },
+      },
+    };
+  } catch (e) {
+    return { ok: false, why: 'setup-failed', detail: describe(e) };
+  }
 }
 
 /**
  * The owned Codex sessions' wiring (orchestra app plan §2), in both profiles: codex.exe at its pinned
  * path below %APPDATA% (not found: off, with the reason), the private CODEX_HOME's config.toml written
- * through the fence, the work root ORCHESTRA_HOME\work made, and a spawn gate that allows only
- * codex-app-server, with CODEX_HOME as its one extra and a cwd policy whose only allowed root is the
- * work root (r4 §5.3's protected dirs: the data dir and every harness root).
+ * through the fence, and a spawn gate that allows only codex-app-server, with CODEX_HOME as its one
+ * extra and the shared cwd table, whose only allowed root is the work root.
  */
-async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, gate: ReadGate, home: string): Promise<{ status: OwnedCodexStatus; owned: CodexOwned | null }> {
+async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: string, base: OwnedBase): Promise<{ status: OwnedCodexStatus; owned: CodexOwned | null }> {
   const off = (why: Extract<OwnedCodexStatus, { on: false }>['why'], detail: string | null = null) => ({ status: { on: false as const, why, detail }, owned: null });
-  const { CODEX_APP_SERVER_ARGV, resolveCodexExe, resolveSystemRoot } = await import('../os/spawn.ts');
+  const { CODEX_APP_SERVER_ARGV, resolveCodexExe } = await import('../os/spawn.ts');
   const exe = resolveCodexExe(ctx.env, ctx.realpath);
   if (!exe.ok) return off(`codex-${exe.reason}`, exe.detail ?? null);
   if (ctx.makeSpawnGate === undefined) return off('no-spawn-gate');
   try {
     const { childPipe } = await import('../os/child-pipe.ts');
-    const { OWNED_DIRS, writeCodexHome } = await import('../owned/codex-home.ts');
+    const { writeCodexHome } = await import('../owned/codex-home.ts');
     const { DEFAULT_CODEX_MODEL } = await import('../owned/models.ts');
-    const { Approvals } = await import('../owned/approvals.ts');
     const { CodexOwned: Owned } = await import('../owned/codex-owned.ts');
-    const { REGISTRY_DIR, makeOwnedRegistry } = await import('../owned/registry.ts');
-    const { CwdPolicy } = await import('../os/cwd.ts');
-    const sys = resolveSystemRoot(ctx.env, ctx.realpath);
-    if (!sys.ok) return off('setup-failed', `SystemRoot ${sys.reason}`);
     const codexHome = writeCodexHome(fence, home, { model: DEFAULT_CODEX_MODEL, gatewayBaseUrl: MAGPIE_BASE_URL });
-    const workRoot = win.join(home, OWNED_DIRS.work);
-    fence.mkdirp(workRoot);
-    const registryDir = win.join(home, REGISTRY_DIR);
-    fence.mkdirp(registryDir);
-    const cwdSpec = { allowedRoots: [workRoot], protectedDirs: [home, ...ctx.roots.map((r) => r.path)], userHome: ctx.userHome, ownedWorkRoot: workRoot };
     const spawnGate = ctx.makeSpawnGate({
-      systemRoot: sys,
+      systemRoot: base.sys,
       rules: ['codex-app-server'],
       record: (e) => ctx.pidLog.record(e),
       realpath: ctx.realpath,
       clock: ctx.clock,
       env: ctx.env,
       envExtra: { 'codex-app-server': { CODEX_HOME: codexHome } },
-      cwd: cwdSpec,
+      cwd: base.cwdSpec,
     });
-    // The same table the gate checks a cwd against judges the paths an approval names (orchestra app plan §4).
-    const places = new CwdPolicy({ spec: cwdSpec, env: ctx.env, systemRoot: sys.path, realpath: ctx.realpath });
-    const redactor = makeRedactor({ env: ctx.env });
-    const wall = ctx.clock.port(null);
     const owned = new Owned({
-      // D8: what leaves the queue without a person (the 30-minute deadline, a stop, an end, a child gone) is logged.
-      approvals: new Approvals({
-        hub: ctx.clock,
-        onSettled: (v, o) => {
-          if (o.cause !== 'human') ctx.log.info('approval-settled', { approvalId: v.approvalId, ownedId: v.ownedId, kind: v.kind, decision: o.decision, cause: o.cause });
-        },
-      }),
+      approvals: base.approvals,
       makeWorkDir: (ownedId) => {
-        const dir = win.join(workRoot, ownedId);
+        const dir = win.join(base.workRoot, ownedId);
         fence.mkdirp(dir);
         return dir;
       },
       launch: (cwd) => childPipe(spawnGate.start({ exe: exe.path, argv: CODEX_APP_SERVER_ARGV, cwd })),
       hub: ctx.clock,
-      judge: (p) => places.place(p),
-      registry: makeOwnedRegistry({
-        dir: registryDir,
-        writeAtomic: (file, text) => fence.writeAtomic(file, text),
-        readdir: (dir) => gate.readdir(dir),
-        readFile: (file) => gate.readFile(file).toString('utf8'),
-      }),
-      now: () => wall.nowWall(),
-      redact: (text) => {
-        const r = redactor.redact({ text });
-        const v = r.verdict;
-        return { text: r.text, count: v.known + v.entropy + Object.values(v.format).reduce((a, b) => a + b, 0) + (v.dropped === null ? 0 : 1) };
-      },
+      judge: base.judge,
+      registry: base.registry,
+      now: base.now,
+      redact: base.redact,
     });
-    return { status: { on: true, exe: exe.path, codexHome, workRoot, model: DEFAULT_CODEX_MODEL, gateway: MAGPIE_BASE_URL, restored: owned.restored }, owned };
+    return { status: { on: true, exe: exe.path, codexHome, workRoot: base.workRoot, model: DEFAULT_CODEX_MODEL, gateway: MAGPIE_BASE_URL, restored: owned.restored }, owned };
+  } catch (e) {
+    return off('setup-failed', describe(e));
+  }
+}
+
+/**
+ * The owned Claude sessions' wiring (orchestra app step 4; alpha 0.2 design §2.1, §2.4), in both
+ * profiles: the host's node.exe, host.mjs and the SDK's claude.exe resolved (claude-site.ts), the three
+ * pinned files checked through a read gate whose only roots are those files (a mismatch: off,
+ * host-tampered), ORCHESTRA_HOME\claude-home (the host's own CLAUDE_CONFIG_DIR, a backstop: each session
+ * runs with its own ORCHESTRA_HOME\claude\<ownedId>) and ORCHESTRA_HOME\claude made, and a spawn gate
+ * that allows only claude-host, with the gateway, the placeholder token, the small fast model and
+ * NO_PROXY as its extras, the pin check again before every start, and the shared cwd table.
+ */
+async function setUpOwnedClaude(ctx: WorkingContext, fence: WriteFence, home: string, base: OwnedBase): Promise<{ status: OwnedClaudeStatus; owned: ClaudeOwned | null }> {
+  const off = (why: Extract<OwnedClaudeStatus, { on: false }>['why'], detail: string | null = null) => ({ status: { on: false as const, why, detail }, owned: null });
+  if (ctx.makeSpawnGate === undefined) return off('no-spawn-gate');
+  try {
+    const { CLAUDE_GATEWAY_TOKEN } = await import('../os/spawn.ts');
+    const { hostPipe } = await import('../os/owned-proc.ts');
+    const { MAIN_CHECKOUT, REPO_ROOT } = await import('../os/cwd.ts');
+    const { checkPins, pinnedFiles, resolveHostSite } = await import('../owned/claude-site.ts');
+    const { CLAUDE_SMALL_FAST_MODEL, DEFAULT_CLAUDE_MODEL } = await import('../owned/models.ts');
+    const { ClaudeOwned: Owned } = await import('../owned/claude-owned.ts');
+    const site = resolveHostSite(ctx.realpath);
+    if (!site.ok) return off(`claude-${site.reason}`, site.detail);
+    const pins = ctx.makeReadGate({ roots: [], pinnedFiles: pinnedFiles() });
+    const verify = () => checkPins((file) => pins.readFile(file));
+    const tampered = verify();
+    if (tampered !== null) return off('host-tampered', tampered);
+    const configHome = win.join(home, 'claude-home');
+    fence.mkdirp(configHome);
+    const configRoot = win.join(home, 'claude');
+    fence.mkdirp(configRoot);
+    const spawnGate = ctx.makeSpawnGate({
+      systemRoot: base.sys,
+      rules: ['claude-host'],
+      record: (e) => ctx.pidLog.record(e),
+      realpath: ctx.realpath,
+      clock: ctx.clock,
+      env: ctx.env,
+      envExtra: {
+        'claude-host': {
+          CLAUDE_CONFIG_DIR: configHome, ANTHROPIC_BASE_URL: CLAUDE_GATEWAY_URL, ANTHROPIC_AUTH_TOKEN: CLAUDE_GATEWAY_TOKEN,
+          ANTHROPIC_SMALL_FAST_MODEL: CLAUDE_SMALL_FAST_MODEL, NO_PROXY: '127.0.0.1,localhost',
+        },
+      },
+      cwd: base.cwdSpec,
+      claudeHost: { node: site.node, entry: site.entry, verify },
+    });
+    const owned = new Owned({
+      approvals: base.approvals,
+      makeWorkDir: (ownedId) => {
+        const dir = win.join(base.workRoot, ownedId);
+        fence.mkdirp(dir);
+        return dir;
+      },
+      makeConfigDir: (ownedId) => {
+        const dir = win.join(configRoot, ownedId);
+        fence.mkdirp(dir);
+        return dir;
+      },
+      launch: (cwd) => hostPipe(spawnGate.start({ exe: site.node, argv: [site.entry], cwd })),
+      claudeExe: site.claudeExe,
+      // The host denies every tool call into these (and into ~/.claude, ~/.dsh, ~/.orchestra and the
+      // session's own config dir, which it adds itself); a session's own work dir stays open through
+      // the work root exemption (hosts/claude/host-core.mjs workRootOf).
+      protectedRoots: [home, REPO_ROOT, ...(MAIN_CHECKOUT === null ? [] : [MAIN_CHECKOUT]), ...ctx.roots.map((r) => r.path)],
+      hub: ctx.clock,
+      judge: base.judge,
+      registry: base.registry,
+      now: base.now,
+      redact: base.redact,
+    });
+    return {
+      status: { on: true, node: site.node, entry: site.entry, claudeExe: site.claudeExe, configRoot, model: DEFAULT_CLAUDE_MODEL, gateway: CLAUDE_GATEWAY_URL, restored: owned.restored },
+      owned,
+    };
   } catch (e) {
     return off('setup-failed', describe(e));
   }

@@ -28,7 +28,8 @@ export const APPROVAL_LIMITS = frozen({
   settleMs: 750,
 });
 
-export const APPROVAL_KINDS = frozen(['command', 'file-change', 'permissions', 'question', 'elicitation'] as const);
+/** tool: an owned Claude session's other core tools (Read, Glob, Grep) when they reach outside its work dir. */
+export const APPROVAL_KINDS = frozen(['command', 'file-change', 'permissions', 'question', 'elicitation', 'tool'] as const);
 export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
 
 /** Slice design §2.6's risk classes, as far as a codex request tells them. */

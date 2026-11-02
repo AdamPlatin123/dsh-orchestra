@@ -68,7 +68,8 @@ export class CodexOwned {
     this.#opts = opts;
     this.#max = opts.maxActive ?? CODEX_OWNED_LIMITS.active;
     if (opts.registry !== undefined) {
-      const all = this.#load(opts.registry);
+      // The registry holds every harness's sessions; the owned Claude sessions list their own (claude-owned.ts).
+      const all = this.#load(opts.registry).filter((r) => r.harness === 'codex');
       // The newest kept, as #trim keeps them; older files stay on disk unread.
       for (const was of all.slice(-CODEX_OWNED_LIMITS.ended)) {
         const r = afterRestart(was);

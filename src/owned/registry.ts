@@ -23,7 +23,7 @@ export type OwnedRecordState = 'starting' | 'idle' | 'running' | 'ended' | 'fail
 export type OwnedRecord = {
   readonly v: 1;
   readonly ownedId: string;
-  readonly harness: 'codex';
+  readonly harness: 'codex' | 'claude';
   readonly model: string;
   readonly title: string;
   readonly createdAt: number;
@@ -45,14 +45,14 @@ export function parseOwnedRecord(text: string): OwnedRecord | null {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
   if (Object.keys(o).length !== KEYS.length || !KEYS.every((k) => Object.hasOwn(o, k))) return null;
-  if (o.v !== 1 || typeof o.ownedId !== 'string' || !OWNED_ID_RE.test(o.ownedId) || o.harness !== 'codex') return null;
+  if (o.v !== 1 || typeof o.ownedId !== 'string' || !OWNED_ID_RE.test(o.ownedId) || (o.harness !== 'codex' && o.harness !== 'claude')) return null;
   if (typeof o.model !== 'string' || !isOwnedModel(o.model)) return null;
   if (typeof o.title !== 'string' || utf8Length(o.title) > OWNED_BOUNDS.titleBytes) return null;
   if (!Number.isSafeInteger(o.createdAt) || (o.createdAt as number) < 0) return null;
   if (typeof o.state !== 'string' || !(OWNED_ENUMS.state as readonly string[]).includes(o.state)) return null;
   if (o.endReason !== null && (typeof o.endReason !== 'string' || !(OWNED_ENUMS.endReason as readonly string[]).includes(o.endReason))) return null;
   return Object.freeze({
-    v: 1, ownedId: o.ownedId, harness: 'codex', model: o.model, title: o.title, createdAt: o.createdAt as number,
+    v: 1, ownedId: o.ownedId, harness: o.harness, model: o.model, title: o.title, createdAt: o.createdAt as number,
     state: o.state as OwnedRecordState, endReason: o.endReason as string | null,
   });
 }
