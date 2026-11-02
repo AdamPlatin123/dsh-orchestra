@@ -454,6 +454,18 @@ export class ReadGate {
     return this.#io.readdirSync(decision.real).map((e) => e.name);
   }
 
+  /**
+   * Every entry of `target`, sorted by name, with its kind as listed and never followed: `link` for
+   * a symbolic link, a junction or any other reparse point, `dir` for a plain directory, `other` for
+   * the rest (a file, judged on its own when it is read). The import copy walks a tree with it.
+   */
+  entries(target: string): Array<{ name: string; kind: 'link' | 'dir' | 'other' }> {
+    const { decision } = this.#require(target, 'readdir');
+    return this.#io.readdirSync(decision.real)
+      .map((e) => ({ name: e.name, kind: e.isSymbolicLink() ? 'link' as const : e.isDirectory() ? 'dir' as const : 'other' as const }))
+      .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+  }
+
   /** Names of the subdirectories and links in `target`, sorted; links are listed, never followed. */
   subdirs(target: string): string[] {
     const { decision } = this.#require(target, 'readdir');

@@ -113,6 +113,17 @@ const CONFIG_KEYS = ['orchestraHome', 'harnessRoots', 'confine', 'io'] as const;
 
 export type RmResult = { removed: number };
 
+/**
+ * renameDir()'s outcome when the fence allowed both ends. `exists`: the target is there already and
+ * nothing moved. `busy`: Windows refused the rename (EPERM, EBUSY: a virus scanner or the indexer
+ * holding a handle in the tree for a moment); nothing moved, and the caller decides whether to try
+ * again (design §3.0: up to 5 times over about 2 s, through the Clock).
+ */
+export type RenameDirResult =
+  | { ok: true; from: string; to: string }
+  | { ok: false; reason: 'exists'; from: string; to: string }
+  | { ok: false; reason: 'busy'; code: 'EPERM' | 'EBUSY'; from: string; to: string };
+
 function code(e: unknown): string | undefined {
   return typeof e === 'object' && e !== null && 'code' in e ? String((e as { code: unknown }).code) : undefined;
 }
@@ -436,6 +447,54 @@ export class WriteFence {
       throw new WriteFenceError(d);
     }
     return made;
+  }
+
+  /**
+   * Moves the directory `stage` to `final` in one rename, the commit point of every import, as
+   * design §3.0 sets it. Both ends are judged like any other target (deny first, inside ORCHESTRA_HOME in both
+   * forms): `stage` as an entry leaving its place, `final` as a new one. `stage` must be a plain
+   * directory, not a link; `final` must not exist, and is never replaced. Once moved, `final` must
+   * still be placed inside ORCHESTRA_HOME, be that same directory (identity) and `stage` gone, or the
+   * call throws changed-during-open. EPERM and EBUSY are not retried here: they come back as `busy`.
+   */
+  renameDir(stage: string, final: string): RenameDirResult {
+    const from = this.#require(stage, 'rm');
+    const to = this.#require(final, 'write');
+    if (isWithin(to, from) || isWithin(from, to)) throw new RangeError(`write fence: renameDir ends overlap: ${from} -> ${to}`);
+    const st = this.#io.lstatSync(from);
+    if (st.isSymbolicLink()) throw new WriteFenceError({ allow: false, op: 'rm', path: from, reason: 'link', detail: 'entry' });
+    if (!st.isDirectory()) throw new Error(`write fence: renameDir moves a directory, not ${from}`);
+    const before = this.#io.statSync(from);
+    const id: FileId = { dev: before.dev, ino: before.ino };
+    if (existsEntry(this.#io, to)) return { ok: false, reason: 'exists', from, to };
+    this.#require(to, 'write');
+    try {
+      this.#io.renameSync(from, to);
+    } catch (e) {
+      const c = code(e);
+      // A target that appeared since the check refuses the rename too (EPERM on Windows); report it as what it is.
+      if (existsEntry(this.#io, to) && existsEntry(this.#io, from)) return { ok: false, reason: 'exists', from, to };
+      if (c === 'EPERM' || c === 'EBUSY') return { ok: false, reason: 'busy', code: c, from, to };
+      throw e;
+    }
+    const changed = (detail: ChangedDetail) => new WriteFenceError({ allow: false, op: 'write', path: to, reason: 'changed-during-open', detail });
+    const again = this.#placeAgain('write', to);
+    if (!again.ok) throw changed(again.detail);
+    let landed: EntryStat;
+    try {
+      landed = this.#io.lstatSync(to);
+    } catch {
+      throw changed('identity');
+    }
+    if (landed.isSymbolicLink()) throw changed('link');
+    let now: FenceStat;
+    try {
+      now = this.#io.statSync(again.real);
+    } catch {
+      throw changed('identity');
+    }
+    if (!landed.isDirectory() || now.dev !== id.dev || now.ino !== id.ino || existsEntry(this.#io, from)) throw changed('identity');
+    return { ok: true, from, to };
   }
 
   /**
