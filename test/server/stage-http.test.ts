@@ -14,11 +14,13 @@ import { PEEK_HOST, STAGE_CSP, startPeekServer } from '../../src/server/http.ts'
 import type { PeekServer } from '../../src/server/http.ts';
 import type { UiAsset } from '../../src/server/ui-assets.ts';
 import { validateSession, validateStage } from '../../shared/stage-contract.js';
+import { validateTower } from '../../shared/tower-contract.js';
 import { realIo } from '../helpers/read-io.ts';
 import { STAGE_CANARY, writeStageFixture } from '../helpers/stage-fixture.ts';
 import { withTmp } from '../helpers/tmp.ts';
 
-// The stage routes of the peek server over the stage fixture, in process, on a free loopback port.
+// The stage routes of the peek server over the stage fixture, in process, on a free loopback port,
+// and GET /api/tower (orchestra app plan §1) beside them, behind the same cookie and CSP.
 
 const CODE = '12345678';
 const BASE = 1_793_560_000_000;
@@ -148,4 +150,25 @@ test('without an embedded page /stage answers 503 ui-not-embedded', async (t) =>
   const r = await request(fx, 'GET', '/stage', { cookie });
   assert.deepEqual([r.status, r.body], [503, 'ui-not-embedded\n']);
   assert.equal(r.headers['content-security-policy'], STAGE_CSP);
+});
+
+test('GET /api/tower: 403 unpaired (and with a cookie the server never issued), 200 paired, valid, three harnesses', async (t) => {
+  const fx = await fixture(t);
+  assert.equal((await request(fx, 'GET', '/api/tower')).status, 403);
+  assert.equal((await request(fx, 'GET', '/api/tower', { cookie: 'orchestra_sid=forged' })).status, 403);
+  const cookie = await paired(fx);
+  const r = await request(fx, 'GET', '/api/tower', { cookie });
+  assert.equal(r.status, 200);
+  assert.equal(r.headers['content-type'], 'application/json; charset=utf-8');
+  assert.equal(r.headers['content-security-policy'], STAGE_CSP);
+  assert.equal(r.headers['cache-control'], 'no-store');
+  assert.equal(r.headers['access-control-allow-origin'], undefined);
+  const tower = JSON.parse(r.body) as { projects: { nodes: { harness: string }[] }[] };
+  assert.deepEqual(validateTower(tower).errors, []);
+  assert.deepEqual([...new Set(tower.projects.flatMap((p) => p.nodes.map((n) => n.harness)))].sort(), ['claude', 'codex', 'dsh']);
+  assert.equal(r.body.includes(STAGE_CANARY), false);
+  assert.equal(r.body.includes(JSON.stringify(fx.dir).slice(1, -1)), false);
+  // The tower is GET only, and the stage route stays beside it for now.
+  assert.equal((await request(fx, 'POST', '/api/tower', { cookie, origin: fx.origin })).status, 405);
+  assert.equal((await request(fx, 'GET', '/api/peek/stage', { cookie })).status, 200);
 });

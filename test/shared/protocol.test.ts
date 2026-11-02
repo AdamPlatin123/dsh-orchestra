@@ -196,7 +196,8 @@ test('shared/ imports nothing but shared/ and no builtin, for the static scan an
   const files = fs.readdirSync(dir).filter((f) => f.endsWith('.js'));
   // frozen.js: the one deep freeze of every exported table (finding N3). stage-contract.js: the stage
   // preview's contract, which the daemon's golden file and the page's sample both pass (alpha design §3).
-  assert.deepEqual(files.sort(), ['constants.js', 'frozen.js', 'protocol.js', 'stage-contract.js', 'strings.js']);
+  // tower-contract.js: the tower's contract (orchestra app plan §1), which GET /api/tower answers.
+  assert.deepEqual(files.sort(), ['constants.js', 'frozen.js', 'protocol.js', 'stage-contract.js', 'strings.js', 'tower-contract.js']);
   for (const f of files) {
     const text = fs.readFileSync(path.join(dir, f), 'utf8');
     assert.ok(text.startsWith('// @ts-check\n'), `${f} is checked JS`);

@@ -1,0 +1,326 @@
+{
+  "meta": {
+    "v": 1,
+    "rev": "0000000000000000",
+    "observedAt": 0,
+    "profile": "test",
+    "sources": {
+      "claude": {
+        "state": "ok",
+        "total": 1,
+        "shown": 1,
+        "registry": 1,
+        "error": null
+      },
+      "dsh": {
+        "state": "ok",
+        "total": 3,
+        "shown": 3,
+        "registry": null,
+        "error": null
+      },
+      "codex": {
+        "state": "ok",
+        "total": 3,
+        "shown": 3,
+        "registry": null,
+        "error": null
+      }
+    },
+    "clipped": {
+      "projects": 0,
+      "nodes": 0,
+      "sessions": {
+        "claude": 0,
+        "dsh": 0,
+        "codex": 0
+      }
+    }
+  },
+  "router": {
+    "kind": "human",
+    "dispatch": null
+  },
+  "projects": [
+    {
+      "id": "3891f96377d9f6d5dc7a",
+      "name": "shop",
+      "basis": "cwd",
+      "nodes": [
+        {
+          "id": "n:f07180f9976b75fbc989",
+          "session": "00000000000000000001",
+          "harness": "codex",
+          "ownership": "observed",
+          "layer": "agent",
+          "parent": null,
+          "depth": 0,
+          "title": "shop",
+          "activity": "Wire payments with [redacted:sk-ant]",
+          "state": "waiting",
+          "basis": "log",
+          "waiting": {
+            "kind": "approval",
+            "source": "inferred",
+            "deadline": null
+          },
+          "counts": {
+            "children": 2,
+            "errors": 0,
+            "waiting": 0
+          },
+          "groups": [],
+          "ageMs": 0,
+          "agentType": null
+        },
+        {
+          "id": "n:ecc2087bd3bea225d48c",
+          "session": "00000000000000000002",
+          "harness": "codex",
+          "ownership": "observed",
+          "layer": "subagent",
+          "parent": "n:f07180f9976b75fbc989",
+          "depth": 1,
+          "title": "docs",
+          "activity": "docs — Update the docs; token [redacted:sk-ant]",
+          "state": "running",
+          "basis": "log",
+          "waiting": null,
+          "counts": {
+            "children": 0,
+            "errors": 0,
+            "waiting": 0
+          },
+          "groups": [],
+          "ageMs": 0,
+          "agentType": "explorer"
+        },
+        {
+          "id": "n:ff3bc5e0efd65107263a",
+          "session": "00000000000000000003",
+          "harness": "codex",
+          "ownership": "observed",
+          "layer": "subagent",
+          "parent": "n:f07180f9976b75fbc989",
+          "depth": 1,
+          "title": "Ada",
+          "activity": "tests — Write the checkout tests",
+          "state": "returned",
+          "basis": "log",
+          "waiting": null,
+          "counts": {
+            "children": 0,
+            "errors": 0,
+            "waiting": 0
+          },
+          "groups": [],
+          "ageMs": 0,
+          "agentType": "worker"
+        },
+        {
+          "id": "n:432a4c806b9d285085e0",
+          "session": "00000000000000000004",
+          "harness": "claude",
+          "ownership": "observed",
+          "layer": "agent",
+          "parent": null,
+          "depth": 0,
+          "title": "shop",
+          "activity": "permission prompt",
+          "state": "waiting",
+          "basis": "registry",
+          "waiting": {
+            "kind": "approval",
+            "source": "native",
+            "deadline": null
+          },
+          "counts": {
+            "children": 4,
+            "errors": 0,
+            "waiting": 0
+          },
+          "groups": [],
+          "ageMs": 0,
+          "agentType": null
+        },
+        {
+          "id": "n:f0da593cb7e018d87617",
+          "session": "00000000000000000005",
+          "harness": "claude",
+          "ownership": "observed",
+          "layer": "subagent",
+          "parent": "n:432a4c806b9d285085e0",
+          "depth": 1,
+          "title": "Review diff",
+          "activity": "Review diff — Review checkout diff; the old key was [redacted:sk-ant]",
+          "state": "running",
+          "basis": "log",
+          "waiting": null,
+          "counts": {
+            "children": 1,
+            "errors": 0,
+            "waiting": 0
+          },
+          "groups": [],
+          "ageMs": 0,
+          "agentType": "code-reviewer"
+        },
+        {
+          "id": "n:d6fd0ebf29854932a86f",
+          "session": "00000000000000000006",
+          "harness": "claude",
+          "ownership": "observed",
+          "layer": "subagent",
+          "parent": "n:f0da593cb7e018d87617",
+          "depth": 2,
+          "title": "Run checkout tests",
+          "activity": "Run checkout tests — Run only the checkout tests and paste failures.",
+          "state": "running",
+          "basis": "log",
+          "waiting": null,
+          "counts": {
+            "children": 0,
+            "errors": 0,
+            "waiting": 0
+          },
+          "groups": [],
+          "ageMs": 0,
+          "agentType": "general-purpose"
+        },
+        {
+          "id": "n:4ed5663bc35e36685b4c",
+          "session": "00000000000000000007",
+          "harness": "claude",
+          "ownership": "observed",
+          "layer": "subagent",
+          "parent": "n:432a4c806b9d285085e0",
+          "depth": 1,
+          "title": "Scan legacy coupons",
+          "activity": null,
+          "state": "unknown",
+          "basis": "none",
+          "waiting": null,
+          "counts": {
+            "children": 0,
+            "errors": 0,
+            "waiting": 0
+          },
+          "groups": [],
+          "ageMs": 0,
+          "agentType": "Explore"
+        },
+        {
+          "id": "n:23d4685c6441a51ab6aa",
+          "session": "00000000000000000008",
+          "harness": "claude",
+          "ownership": "observed",
+          "layer": "subagent",
+          "parent": "n:432a4c806b9d285085e0",
+          "depth": 1,
+          "title": "Explore cart",
+          "activity": "Explore cart — Find cart code. Done when files listed.",
+          "state": "returned",
+          "basis": "log",
+          "waiting": null,
+          "counts": {
+            "children": 0,
+            "errors": 0,
+            "waiting": 0
+          },
+          "groups": [],
+          "ageMs": 0,
+          "agentType": "Explore"
+        },
+        {
+          "id": "n:e8523ae68da21e111627",
+          "session": "00000000000000000009",
+          "harness": "dsh",
+          "ownership": "observed",
+          "layer": "agent",
+          "parent": null,
+          "depth": 0,
+          "title": "shop",
+          "activity": "Implement",
+          "state": "running",
+          "basis": "mtime",
+          "waiting": null,
+          "counts": {
+            "children": 2,
+            "errors": 0,
+            "waiting": 0
+          },
+          "groups": [],
+          "ageMs": 0,
+          "agentType": null
+        },
+        {
+          "id": "n:1e53d9e5cf74b7dff31e",
+          "session": "0000000000000000000a",
+          "harness": "dsh",
+          "ownership": "observed",
+          "layer": "subagent",
+          "parent": "n:e8523ae68da21e111627",
+          "depth": 1,
+          "title": "impl",
+          "activity": "Implement checkout",
+          "state": "running",
+          "basis": "mtime",
+          "waiting": null,
+          "counts": {
+            "children": 0,
+            "errors": 0,
+            "waiting": 0
+          },
+          "groups": [],
+          "ageMs": 0,
+          "agentType": "worker"
+        },
+        {
+          "id": "n:b69d912394efe22b30f4",
+          "session": "0000000000000000000b",
+          "harness": "dsh",
+          "ownership": "observed",
+          "layer": "subagent",
+          "parent": "n:e8523ae68da21e111627",
+          "depth": 1,
+          "title": "reviewer",
+          "activity": "review diff",
+          "state": "idle",
+          "basis": "mtime",
+          "waiting": null,
+          "counts": {
+            "children": 0,
+            "errors": 0,
+            "waiting": 0
+          },
+          "groups": [],
+          "ageMs": 0,
+          "agentType": "reviewer"
+        }
+      ],
+      "groups": []
+    }
+  ],
+  "waitingBar": [
+    {
+      "node": "n:432a4c806b9d285085e0",
+      "kind": "approval",
+      "source": "native",
+      "deadline": null
+    },
+    {
+      "node": "n:f07180f9976b75fbc989",
+      "kind": "approval",
+      "source": "inferred",
+      "deadline": null
+    }
+  ],
+  "tally": {
+    "waiting": 2,
+    "error": 0,
+    "running": 5,
+    "unknown": 1,
+    "returned": 2,
+    "idle": 1
+  }
+}

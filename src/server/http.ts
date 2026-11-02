@@ -8,6 +8,7 @@ import type { Log } from '../runtime/log.ts';
 import type { PeekEvent, PeekView, Redact, SessionList } from '../sources/peek.ts';
 import { PEEK_LIMITS, findSession, listSessions, readSession } from '../sources/peek.ts';
 import { makeStageBuilder } from '../sources/stage.ts';
+import { makeTowerBuilder } from '../sources/tower.ts';
 import type { UiAsset } from './ui-assets.ts';
 import { UI_ASSETS } from './ui-assets.ts';
 import { frozen } from '../../shared/frozen.js';
@@ -34,6 +35,10 @@ import { frozen } from '../../shared/frozen.js';
 // hold no session data), and /api/peek/stage and /api/peek/session answer its polls with JSON. Those
 // routes carry STAGE_CSP: script and connections to self only, trusted types on with no policy, so the
 // page writes the DOM through textContent and attributes alone. Every other route keeps the scriptless CSP.
+//
+// GET /api/tower (orchestra app plan §1) answers the tower snapshot (shared/tower-contract.js), built
+// from the same stage builder, behind the same pairing cookie and under the same STAGE_CSP. The stage
+// routes stay until the tower page replaces them.
 
 export const PEEK_HOST = 'orchestra.localhost';
 export const PAIR_TTL_MS = 10 * 60 * 1000;
@@ -239,6 +244,7 @@ export async function startPeekServer(opts: PeekServerOptions): Promise<PeekServ
   const pairing = makePairing(opts.pairingCode, clock.nowMono());
   const sessions = new Set<string>();
   const stage = makeStageBuilder({ gate, roots, redact, clock, profile });
+  const tower = makeTowerBuilder(stage);
   // The embedded files, decoded once; looked up by exact name, nothing else reaches them.
   const assets = new Map<string, { type: string; etag: string; body: Buffer }>();
   const given = opts.assets ?? UI_ASSETS;
@@ -308,6 +314,7 @@ export async function startPeekServer(opts: PeekServerOptions): Promise<PeekServ
         return send(res, 200, page.type, page.body, STAGE_HEADERS);
       }
       if (url.pathname === '/api/peek/stage') return json(res, 200, stage.snapshot());
+      if (url.pathname === '/api/tower') return json(res, 200, tower.snapshot());
       if (url.pathname === '/api/peek/session') {
         const id = url.searchParams.get('id') ?? '';
         if (!HEX20.test(id)) return json(res, 400, { error: 'bad-id' });
