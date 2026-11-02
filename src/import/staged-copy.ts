@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import * as crypto from 'node:crypto';
 import type { ReadDecision, ReadGate } from '../fs/read-gate.ts';
 import type { RenameDirResult, WriteFence } from '../fs/write-fence.ts';
+import { WriteFenceError } from '../fs/write-fence.ts';
 import { checkPath, isWithin, pathKey } from '../fs/paths.ts';
 import { ownFields } from '../runtime/own.ts';
 import { frozen, frozenClass } from '../../shared/frozen.js';
@@ -11,7 +12,8 @@ import { frozen, frozenClass } from '../../shared/frozen.js';
 // staging folder beside the target, remove the leftovers of a copy that was killed, check for an
 // abort between entries, never replace what is there, write the receipt into the stage and move it
 // in with one final rename. What differs: every read goes through the read gate and every write
-// through the write fence; a link, junction or other reparse point anywhere in the copied tree voids
+// through the write fence; the stage lives in ORCHESTRA_HOME\tmp (design §3.0), not beside the
+// target, unless a caller asks; a link, junction or other reparse point anywhere in the copied tree voids
 // the whole import instead of being made again; there are size and count caps; no key is copied.
 //
 // Everything here is synchronous, like the gate and the fence: an abort is seen between entries.
@@ -53,6 +55,8 @@ export type ImportCopyReason =
   | 'target-exists'
   /** A source the caller named could not be listed or judged. */
   | 'source-unreadable'
+  /** The commit rename moved the stage but the fence's checks after it failed: the target may hold the copy. */
+  | 'commit-unverified'
   /** A call out of order: add after copy, commit before the receipt, anything after commit or discard. */
   | 'wrong-state';
 
@@ -90,18 +94,28 @@ export type CopyReport = { files: CopiedFile[]; skipped: SkippedEntry[]; bytes: 
 export type CommitResult = { ok: true; path: string } | { ok: false; reason: 'busy'; code: 'EPERM' | 'EBUSY' };
 
 /** What the copy uses of a read gate. */
-export type CopyGate = Pick<ReadGate, 'decide' | 'stat' | 'readRange' | 'readdir' | 'entries'>;
+export type CopyGate = Pick<ReadGate, 'decide' | 'stat' | 'openRead' | 'readdir' | 'entries'>;
 /** What the copy uses of a write fence. */
 export type CopyFence = Pick<WriteFence, 'check' | 'mkdirp' | 'writeAtomic' | 'append' | 'rm' | 'renameDir'>;
 
-export type ImportStagerConfig = { gate: CopyGate; fence: CopyFence; limits?: Partial<ImportLimits> };
+export type ImportStagerConfig = {
+  gate: CopyGate;
+  fence: CopyFence;
+  /**
+   * Required: where stages are made unless begin() names another place. The composition root passes
+   * ORCHESTRA_HOME\tmp (design §3.0), which data-dir.ts empties at every start, so a stage left by a
+   * killed orchestrad (a partial copy of a transcript) is swept at the next start and no lister of
+   * imports\ ever meets a `.import-*` entry.
+   */
+  stagingParent: string;
+  limits?: Partial<ImportLimits>;
+};
 
 export type BeginOptions = {
   /**
-   * Where the stage is made; the target's parent when absent (DS-Bot's `.import-<n>` beside the
-   * data). Design §3.0 names ORCHESTRA_HOME\tmp instead, which every start empties; either works, as
-   * long as it is on the target's drive. Leftover stages found here that this stager did not make
-   * are removed first.
+   * Where this stage is made instead of the stager's stagingParent, for a caller that asks for it
+   * explicitly (DS-Bot's `.import-<n>` beside the data, say). It must be on the target's drive.
+   * Leftover stages found here that this stager did not make are removed first.
    */
   stagingParent?: string;
   signal?: AbortSignal;
@@ -131,8 +145,10 @@ export type CopyOptions = {
   freeBytes?: number;
 };
 
-type Planned = { source: string; rel: string; length: number; before: SourceIdentity };
-type State = 'open' | 'copied' | 'receipt' | 'committed' | 'discarded';
+/** `real`: the canonical path checked link-free at plan time; the copy opens exactly that file. */
+type Planned = { source: string; real: string; rel: string; length: number; before: SourceIdentity };
+/** `unverified`: the commit rename happened but its after-checks failed; the stage is gone, the target may hold the copy. */
+type State = 'open' | 'copied' | 'receipt' | 'committed' | 'discarded' | 'unverified';
 
 function errText(e: unknown): string {
   return typeof e === 'object' && e !== null && 'code' in e ? String((e as { code: unknown }).code) : String(e);
@@ -160,10 +176,15 @@ export class ImportStager {
   readonly #gate: CopyGate;
   readonly #fence: CopyFence;
   readonly #live = new Set<string>();
+  readonly #stagingParent: string;
 
   constructor(config: ImportStagerConfig) {
-    const cfg = ownFields(config, ['gate', 'fence', 'limits'] as const);
+    const cfg = ownFields(config, ['gate', 'fence', 'stagingParent', 'limits'] as const);
     if (cfg.gate === undefined || cfg.fence === undefined) throw new Error('import copy: gate and fence are required');
+    if (typeof cfg.stagingParent !== 'string') throw new Error('import copy: stagingParent is required (ORCHESTRA_HOME\\tmp), there is no default');
+    const sp = checkPath(cfg.stagingParent);
+    if (!sp.ok) throw new Error(`import copy: stagingParent ${cfg.stagingParent} (${sp.reason})`);
+    this.#stagingParent = sp.path;
     this.#gate = cfg.gate;
     this.#fence = cfg.fence;
     const given = ownFields(cfg.limits ?? {}, ['maxBytes', 'maxFiles', 'chunkBytes'] as const);
@@ -193,7 +214,7 @@ export class ImportStager {
     const allowed = this.#fence.check(to, 'write');
     if (!allowed.allow) throw new ImportCopyError('bad-name', `target ${to} refused by the write fence (${allowed.reason})`);
     if (this.#exists(to)) throw new ImportCopyError('target-exists', to);
-    const pc = checkPath(o.stagingParent ?? win.dirname(to));
+    const pc = checkPath(o.stagingParent ?? this.#stagingParent);
     if (!pc.ok) throw new ImportCopyError('bad-name', `staging parent ${String(o.stagingParent)} (${pc.reason})`);
     const parent = pc.path;
     if (drive(parent) !== drive(to)) throw new ImportCopyError('bad-name', `staging parent ${parent} is not on the target's drive`);
@@ -429,7 +450,7 @@ export class Stage {
     const key = pathKey(rel);
     if (this.#names.has(key)) throw new ImportCopyError('duplicate-entry', rel);
     this.#names.add(key);
-    this.#planned.push({ source, rel, length, before });
+    this.#planned.push({ source, real: d.real, rel, length, before });
     this.#countCheck();
     this.#bytes += length;
     if (this.#bytes > this.#limits.maxBytes) throw new ImportCopyError('import-too-big', `${this.#bytes} bytes planned, at most ${this.#limits.maxBytes}`);
@@ -479,23 +500,37 @@ export class Stage {
     const dest = win.join(this.dir, ...p.rel.split('/'));
     this.#fence.mkdirp(win.dirname(dest));
     const hash = crypto.createHash('sha256');
-    let done = 0;
-    let first = true;
-    while (first || done < p.length) {
-      const want = Math.min(this.#limits.chunkBytes, p.length - done);
-      const chunk = want === 0 ? Buffer.alloc(0) : this.#gate.readRange(p.source, done, want);
-      if (chunk.length < want) throw new ImportCopyError('source-changed', `${p.source} shrank below ${p.length} bytes`);
-      hash.update(chunk);
-      if (first) this.#fence.writeAtomic(dest, chunk);
-      else this.#fence.append(dest, chunk, { fsync: done + chunk.length === p.length });
-      done += chunk.length;
-      first = false;
+    // One checked handle for every chunk: the path is resolved once, here, and must still be the
+    // file planned (same canonical path, same dev/ino). A junction swapped in between chunks, or
+    // between add and copy, cannot splice in another file's bytes.
+    let h: ReturnType<CopyGate['openRead']>;
+    try {
+      h = this.#gate.openRead(p.source);
+    } catch (e) {
+      throw new ImportCopyError('source-changed', `${p.source} (${errText(e)})`);
     }
     let after: SourceIdentity;
     try {
-      after = identity(this.#gate.stat(p.source));
-    } catch (e) {
-      throw new ImportCopyError('source-changed', `${p.source} (${errText(e)})`);
+      if (pathKey(h.real) !== pathKey(p.real)) throw new ImportCopyError('reparse-point', `${p.source} now leads to ${h.real}`);
+      const at = identity(h.stat());
+      // Another file under the same name voids the import even when the caller allows changes:
+      // only the planned file's size and mtime may move (design §3.1's fork at a cut).
+      if (at.dev !== p.before.dev || at.ino !== p.before.ino) throw new ImportCopyError('source-changed', `${p.source} is another file now`);
+      let done = 0;
+      let first = true;
+      while (first || done < p.length) {
+        const want = Math.min(this.#limits.chunkBytes, p.length - done);
+        const chunk = want === 0 ? Buffer.alloc(0) : h.read(done, want);
+        if (chunk.length < want) throw new ImportCopyError('source-changed', `${p.source} shrank below ${p.length} bytes`);
+        hash.update(chunk);
+        if (first) this.#fence.writeAtomic(dest, chunk);
+        else this.#fence.append(dest, chunk, { fsync: done + chunk.length === p.length });
+        done += chunk.length;
+        first = false;
+      }
+      after = identity(h.stat());
+    } finally {
+      h.close();
     }
     const changed = !sameIdentity(p.before, after);
     if (changed && strict) throw new ImportCopyError('source-changed', p.source);
@@ -524,11 +559,29 @@ export class Stage {
    */
   commit(): CommitResult {
     this.#expect('receipt');
-    const r: RenameDirResult = this.#guard(() => {
+    this.#guard(() => {
       abortPoint(this.#signal);
       this.#fence.mkdirp(win.dirname(this.target));
-      return this.#fence.renameDir(this.dir, this.target);
     });
+    let r: RenameDirResult;
+    try {
+      r = this.#fence.renameDir(this.dir, this.target);
+    } catch (e) {
+      // renameDir throws changed-during-open only from its checks after the rename: the stage has
+      // moved, so there is nothing to discard, and the whole copy, receipt included, may now sit at
+      // the target. Say so instead of removing a stage that is gone and losing track of the copy.
+      if (e instanceof WriteFenceError && e.decision.reason === 'changed-during-open') {
+        this.#state = 'unverified';
+        this.#release();
+        throw new ImportCopyError('commit-unverified', `${this.target}: moved, but the check after the rename failed (${e.decision.detail}); a copy may be left at this path`);
+      }
+      try {
+        this.discard();
+      } catch {
+        // As in #guard: the first failure is the one to report.
+      }
+      throw e;
+    }
     if (r.ok) {
       this.#state = 'committed';
       this.#release();
@@ -544,7 +597,7 @@ export class Stage {
   /** Removes the stage. Harmless after a discard; refused after a commit. */
   discard(): void {
     if (this.#state === 'discarded') return;
-    if (this.#state === 'committed') throw new ImportCopyError('wrong-state', 'stage is committed');
+    if (this.#state === 'committed' || this.#state === 'unverified') throw new ImportCopyError('wrong-state', `stage is ${this.#state}`);
     this.#state = 'discarded';
     try {
       this.#fence.rm(this.dir, { recursive: true });

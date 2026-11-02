@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { findImports } from '../helpers/scan-rules.ts';
 import { parseHtml } from '../helpers/fake-dom.ts';
 import { UI_ASSETS } from '../../src/server/ui-assets.ts';
+import { NOTES } from '../../ui/view.js';
+import { STAGE_TEXT } from '../../shared/strings.js';
 import { UI_FILES } from '../../scripts/embed-ui.ts';
 
 // ui/stage.html under the stage CSP of the 0.1 alpha design §1 (script-src 'self', style-src 'self',
@@ -74,6 +76,15 @@ test('motion: animations only under prefers-reduced-motion: no-preference, keyfr
   for (const id of ['nt1', 'nt2']) assert.equal(doc.getElementById(id)!.textContent, '', id);
   assert.match(HTML, /<g class="notes" data-slot="notes" aria-hidden="true">/);
   assert.match(HTML, /data-t="legend\.notes"/);
+  // The legend shows the still form (one note, as reduced motion draws it) and says only some bars carry notes.
+  assert.match(HTML, /<use class="notes" href="#nt1"/);
+  assert.ok(STAGE_TEXT['legend.notes'].includes(String(NOTES)), STAGE_TEXT['legend.notes']);
+  assert.doesNotMatch(STAGE_TEXT['legend.notes'], /飘/);
+  // Every subpath of a note is one straight segment: fill: currentColor then fills nothing between stem and flag.
+  for (const id of ['nt1', 'nt2']) {
+    const d = new RegExp(`<symbol id="${id}"[^>]*>.*?<path d="([^"]+)"`).exec(HTML)![1]!;
+    for (const sub of d.split('M').slice(1)) assert.match(sub, /^-?[\d.]+ ?-?[\d.]+[VvHhLl][-\d. ]+$/, `${id}: M${sub}`);
+  }
 });
 
 test('what the browser loads for /stage stays within budget: ui/ itself and the shared modules it imports', () => {

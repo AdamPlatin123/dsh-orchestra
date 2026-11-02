@@ -53,18 +53,19 @@ export const ENV_WHITELIST: Readonly<Record<SpawnRule, readonly string[]>> = Obj
 const isNever = (name: string) => ENV_NEVER.some((x) => x.toLowerCase() === name.toLowerCase());
 for (const names of Object.values(ENV_WHITELIST)) if (names.some(isNever)) throw new Error('spawn gate: a whitelist names NODE_OPTIONS or NODE_PATH');
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const PROXY_NAME = /^(?:https?|all)_proxy$/i;
+// Any name that mentions a proxy (HTTPS_PROXY, ftp_proxy, socks_proxy, npm_config_https_proxy,
+// GLOBAL_AGENT_HTTP_PROXY, NO_PROXY...): NO_PROXY carries no '@', so it passes the check below.
+const PROXY_NAME = /proxy/i;
 
 /** Fixed extras per rule, set once by the composition root (the claude-host rule's NO_PROXY and the like). */
 export type EnvExtra = Partial<Record<SpawnRule, Readonly<Record<string, string>>>>;
 
+// Not the URL parser: `user:pass@proxy:8080` parses as scheme `user:` with no userinfo, yet curl,
+// git and npm read it as credentials. The authority is whatever follows an optional scheme:// up to
+// the first / ? or #; an '@' in it is userinfo.
 function hasUserinfo(value: string): boolean {
-  try {
-    const u = new URL(value);
-    return u.username !== '' || u.password !== '';
-  } catch {
-    return value.includes('@');
-  }
+  const rest = value.replace(/^[A-Za-z][A-Za-z0-9+.-]*:\/\//, '');
+  return rest.split(/[/?#]/, 1)[0]!.includes('@');
 }
 
 /** One rule's child env: its whitelist read from the source, then its extras; frozen, without a prototype. */
@@ -77,11 +78,16 @@ function ruleEnv(rule: SpawnRule, source: Readonly<Record<string, string | undef
   }
   if (extraGiven !== undefined) {
     if (typeof extraGiven !== 'object' || extraGiven === null) throw new Error(`spawn gate: envExtra.${rule} must be a record of strings`);
+    // Windows env names are case-insensitive: two spellings of one name would leave the child's
+    // value to block order, not to the gate.
+    const extraSeen = new Set<string>();
     for (const key of Object.keys(extraGiven)) {
       const value = (extraGiven as Record<string, unknown>)[key];
       if (!ENV_NAME.test(key)) throw new Error(`spawn gate: envExtra.${rule}: bad variable name ${JSON.stringify(key)}`);
       if (isNever(key)) throw new Error(`spawn gate: envExtra.${rule}: ${key} is never handed to a child`);
       if (names.some((n) => n.toLowerCase() === key.toLowerCase())) throw new Error(`spawn gate: envExtra.${rule}: ${key} is already on the rule's whitelist`);
+      if (extraSeen.has(key.toLowerCase())) throw new Error(`spawn gate: envExtra.${rule}: ${key} is given twice (names are case-insensitive)`);
+      extraSeen.add(key.toLowerCase());
       if (typeof value !== 'string' || value.includes('\0')) throw new Error(`spawn gate: envExtra.${rule}.${key} must be a string without NUL`);
       if (PROXY_NAME.test(key) && hasUserinfo(value)) throw new Error(`spawn gate: envExtra.${rule}.${key}: a proxy URL with user:pass@ would reach the child's tools`);
       out[key] = value;

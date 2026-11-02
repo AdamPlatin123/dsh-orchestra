@@ -6,7 +6,7 @@ import type { TestContext } from 'node:test';
 import type { ProvenSystemRoot, SpawnDecision, SpawnGateConfig } from '../../src/os/spawn.ts';
 import { CSC_FLAGS, ENV_NEVER, ENV_WHITELIST, PROCGUARD_SOURCE, SpawnGate, WHOAMI_ARGV, resolveSystemRoot } from '../../src/os/spawn.ts';
 import type { CwdPolicySpec } from '../../src/os/cwd.ts';
-import { CwdPolicy, PROFILE_SUBDIRS, REPO_ROOT } from '../../src/os/cwd.ts';
+import { CwdPolicy, MAIN_CHECKOUT, PROFILE_SUBDIRS, REPO_ROOT } from '../../src/os/cwd.ts';
 import { realpath } from '../../src/fs/node-io.ts';
 import { makeRealClock } from '../../src/runtime/clock.ts';
 import { fakeSpawn } from '../helpers/fake-spawn.ts';
@@ -132,6 +132,15 @@ test('env: fixed extras reach only their own rule; a bad name, a non-string, a w
     [{ curl: { X: '1' } }, /unknown rule curl/],
     [{ procguard: { HTTPS_PROXY: 'http://user:secret@proxy.example:8080' } }, /user:pass@/],
     [{ procguard: { all_proxy: 'socks5://u@proxy.example:1080' } }, /user:pass@/],
+    // No scheme: the URL parser sees scheme `user:` and no userinfo; curl and npm read credentials.
+    [{ procguard: { HTTPS_PROXY: 'user:secret@proxy.example:8080' } }, /user:pass@/],
+    [{ procguard: { https_proxy: 'u@h:1' } }, /user:pass@/],
+    [{ procguard: { FTP_PROXY: 'http://u:p@proxy.example:21' } }, /user:pass@/],
+    [{ procguard: { socks_proxy: 'u:p@proxy.example:1080' } }, /user:pass@/],
+    [{ procguard: { npm_config_https_proxy: 'http://u:p@proxy.example:8080' } }, /user:pass@/],
+    [{ procguard: { GLOBAL_AGENT_HTTP_PROXY: 'u:p@proxy.example' } }, /user:pass@/],
+    [{ whoami: { Foo: '1', FOO: '2' } }, /given twice/],
+    [{ procguard: { NO_PROXY: 'a', no_proxy: 'b' } }, /given twice/],
     ['NO_PROXY=x', /envExtra must be a record per rule/],
   ];
   for (const [envExtra, re] of bad) assert.throws(() => r.gate({ envExtra: envExtra as never }), re, JSON.stringify(envExtra));
@@ -237,6 +246,25 @@ test('cwd policy: on the real file system a junction under the allowed root is r
   assert.ok(!j.ok && j.reason === 'reparsed', JSON.stringify(j));
   const missing = p.check(path.join(work, 'nope'));
   assert.ok(!missing.ok && missing.reason === 'unresolved', JSON.stringify(missing));
+});
+
+test('cwd policy: a redirected AppData and the main checkout of a worktree are refused too', () => {
+  const p = policy({
+    env: { ...CWD_ENV, APPDATA: 'D:\\Redirected\\AppData\\Roaming', LOCALAPPDATA: 'C:\\Users\\alice\\AppData\\Local' },
+    spec: { allowedRoots: ['D:\\'], repoRoots: ['D:\\other-checkout'] },
+  });
+  assert.equal(verdict(p.check('D:\\Redirected\\AppData\\Roaming\\Mozilla\\Firefox\\Profiles')), 'protected:user-profile\\AppData');
+  assert.equal(verdict(p.check('D:\\Redirected')), 'protected:user-profile\\AppData');
+  assert.equal(verdict(p.check('D:\\Redirected-not\\x')), 'ok');
+  // LOCALAPPDATA inside the profile's AppData adds no second row.
+  assert.equal(p.table().filter((e) => e.label === 'user-profile\\AppData').length, 2);
+  assert.equal(verdict(p.check('D:\\other-checkout\\.tools')), 'protected:repo');
+  if (MAIN_CHECKOUT !== null) {
+    // This copy runs from <main>\.claude\worktrees\<name>: the main checkout's code and the sibling worktrees are refused.
+    assert.equal(verdict(p.check(path.join(MAIN_CHECKOUT, 'src'))), 'protected:repo');
+    assert.equal(verdict(p.check(path.join(MAIN_CHECKOUT, '.claude', 'worktrees', 'sibling'))), 'protected:repo');
+  }
+  assert.throws(() => policy({ spec: { repoRoots: 'D:\\x' as never } }), /repoRoots must be a list/);
 });
 
 test('cwd policy: a work dir under %USERPROFILE%\\AppData\\Local\\Temp (where the test profile\'s dir lives by default) is refused by the AppData row; an open conflict, pinned here', () => {

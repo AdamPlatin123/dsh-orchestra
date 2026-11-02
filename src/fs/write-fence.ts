@@ -453,7 +453,12 @@ export class WriteFence {
    * Moves the directory `stage` to `final` in one rename, the commit point of every import, as
    * design §3.0 sets it. Both ends are judged like any other target (deny first, inside ORCHESTRA_HOME in both
    * forms): `stage` as an entry leaving its place, `final` as a new one. `stage` must be a plain
-   * directory, not a link; `final` must not exist, and is never replaced. Once moved, `final` must
+   * directory, not a link; `final` must not exist when checked. Between that check and the rename
+   * there is a gap the fence cannot close: on Windows Node's rename (MoveFileExW with
+   * MOVEFILE_REPLACE_EXISTING) fails on a directory that appeared there, but silently replaces a FILE
+   * that appeared there (a test pins this). The fence relies on the single-writer lock to keep that
+   * gap empty; a rename that cannot replace (MoveFileExW without the flag, via procguard) would close
+   * it. Once moved, `final` must
    * still be placed inside ORCHESTRA_HOME, be that same directory (identity) and `stage` gone, or the
    * call throws changed-during-open. EPERM and EBUSY are not retried here: they come back as `busy`.
    */

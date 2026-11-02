@@ -22,6 +22,8 @@ type Fx = {
   claude: string;
   orch: string;
   imports: string;
+  /** the tmp folder of ORCHESTRA_HOME, the stager's staging parent (design §3.0). */
+  tmp: string;
   transcript: string;
   sessionDir: string;
   gate: ReadGate;
@@ -47,12 +49,14 @@ function fixture(t: TestContext): Fx {
   const fenceWith = (io: Partial<WriteIo>) => new WriteFence({ orchestraHome: orch, harnessRoots: [claude], io: { ...realWriteIo, ...io } });
   const fence = fenceWith({});
   const stager = (opts: { gate?: CopyGate; fence?: WriteFence; limits?: Partial<ImportLimits> } = {}) =>
-    new ImportStager({ gate: opts.gate ?? gate, fence: opts.fence ?? fence, limits: opts.limits });
-  return { base, claude, orch, imports: path.join(orch, 'imports', 'claude'), transcript, sessionDir, gate, fence, fenceWith, stager };
+    new ImportStager({ gate: opts.gate ?? gate, fence: opts.fence ?? fence, stagingParent: path.join(orch, 'tmp'), limits: opts.limits });
+  return { base, claude, orch, imports: path.join(orch, 'imports', 'claude'), tmp: path.join(orch, 'tmp'), transcript, sessionDir, gate, fence, fenceWith, stager };
 }
 
 const sha = (b: string | Buffer) => crypto.createHash('sha256').update(b).digest('hex');
 const stagesIn = (dir: string) => (fs.existsSync(dir) ? fs.readdirSync(dir).filter((n) => n.startsWith(STAGE_PREFIX)) : []);
+/** Stages left anywhere a stage can be made: the tmp folder of ORCHESTRA_HOME and beside the target. */
+const leftovers = (fx: Fx) => [...stagesIn(fx.tmp), ...stagesIn(fx.imports)];
 
 function reason(r: string): (e: unknown) => boolean {
   return (e) => {
@@ -62,7 +66,7 @@ function reason(r: string): (e: unknown) => boolean {
   };
 }
 
-/** A gate that forwards to `gate` and runs `onRead` before each readRange. */
+/** A gate that forwards to `gate` and runs `onRead` before each chunk read from an openRead handle. */
 function gateWith(gate: ReadGate, onRead: (n: number) => void): CopyGate {
   let n = 0;
   return {
@@ -70,9 +74,18 @@ function gateWith(gate: ReadGate, onRead: (n: number) => void): CopyGate {
     stat: (p) => gate.stat(p),
     readdir: (p) => gate.readdir(p),
     entries: (p) => gate.entries(p),
-    readRange: (p, pos, len) => {
-      onRead(n++);
-      return gate.readRange(p, pos, len);
+    openRead: (p) => {
+      const h = gate.openRead(p);
+      return {
+        path: h.path,
+        real: h.real,
+        stat: () => h.stat(),
+        read: (pos, len) => {
+          onRead(n++);
+          return h.read(pos, len);
+        },
+        close: () => h.close(),
+      };
     },
   };
 }
@@ -87,7 +100,7 @@ test('copies through a stage, writes the receipt, commits with one rename; the s
   const before = snapshot(fx);
   const target = path.join(fx.imports, 'imp-1');
   const stage = fx.stager().begin(target);
-  assert.equal(path.dirname(stage.dir), fx.imports, 'the stage lies beside the target');
+  assert.equal(path.dirname(stage.dir), fx.tmp, 'the stage lies in the tmp folder of ORCHESTRA_HOME (design §3.0), which every start empties');
   assert.match(path.basename(stage.dir), /^\.import-[0-9a-f]{12}$/);
   stage.addFile(fx.transcript, 'transcript.jsonl');
   stage.addTree(path.join(fx.sessionDir, 'subagents'), 'subagents');
@@ -106,7 +119,7 @@ test('copies through a stage, writes the receipt, commits with one rename; the s
   assert.equal(fs.readFileSync(path.join(target, 'subagents', 'deep', 'agent-a2.jsonl'), 'utf8'), '{"type":"user","sub":2}\n');
   assert.ok(!fs.existsSync(path.join(target, 'subagents', '.credentials.json')));
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(target, 'imported.json'), 'utf8')).skipped, ['subagents/.credentials.json']);
-  assert.deepEqual(stagesIn(fx.imports), []);
+  assert.deepEqual(leftovers(fx), []);
   assert.deepEqual(snapshot(fx), before, 'source tree and mtimes unchanged');
 });
 
@@ -131,7 +144,7 @@ test('never overwrites: an existing target is refused up front, one that appears
   const existing = path.join(fx.imports, 'taken');
   put(path.join(existing, 'mine.txt'), 'keep');
   assert.throws(() => fx.stager().begin(existing), reason('target-exists'));
-  assert.deepEqual(stagesIn(fx.imports), []);
+  assert.deepEqual(leftovers(fx), []);
 
   const late = path.join(fx.imports, 'late');
   const stage = fx.stager().begin(late);
@@ -143,7 +156,7 @@ test('never overwrites: an existing target is refused up front, one that appears
   assert.equal(stage.state, 'discarded');
   assert.deepEqual(fs.readdirSync(late), ['mine.txt']);
   assert.equal(fs.readFileSync(path.join(late, 'mine.txt'), 'utf8'), 'keep too');
-  assert.deepEqual(stagesIn(fx.imports), []);
+  assert.deepEqual(leftovers(fx), []);
 
   // renameDir itself: an existing target, even an empty directory, is reported and nothing moves.
   const a = path.join(fx.orch, 'a');
@@ -184,7 +197,7 @@ test('out of bounds: targets, stages, sources and destination names outside thei
   st3.addFile(path.join(fx.claude, 'settings.json'), 'settings.json');
   assert.deepEqual(st3.copy().skipped.map((x) => x.reason), ['not-whitelisted']);
   st3.discard();
-  assert.deepEqual(stagesIn(fx.imports), []);
+  assert.deepEqual(leftovers(fx), []);
 
   // renameDir: both ends are judged by the fence.
   const a = path.join(fx.orch, 'a');
@@ -210,7 +223,7 @@ test('an abort between entries leaves nothing: no stage, no target', (t) => {
   assert.throws(() => stage.copy(), reason('aborted'));
   assert.equal(stage.state, 'discarded');
   assert.ok(!fs.existsSync(target));
-  assert.deepEqual(stagesIn(fx.imports), []);
+  assert.deepEqual(leftovers(fx), []);
 
   // Aborted before begin: nothing is made at all.
   const done = new AbortController();
@@ -227,7 +240,7 @@ test('an abort between entries leaves nothing: no stage, no target', (t) => {
   late.abort();
   assert.throws(() => st.commit(), reason('aborted'));
   assert.ok(!fs.existsSync(target));
-  assert.deepEqual(stagesIn(fx.imports), []);
+  assert.deepEqual(leftovers(fx), []);
 });
 
 test('EPERM on the rename comes back as busy; the stage stays until a retry commits or a discard removes it', (t) => {
@@ -249,7 +262,7 @@ test('EPERM on the rename comes back as busy; the stage stays until a retry comm
   assert.ok(fs.existsSync(path.join(stage.dir, 't.jsonl')));
   assert.ok(!fs.existsSync(target));
   assert.deepEqual(stage.commit(), { ok: true, path: target });
-  assert.deepEqual(stagesIn(fx.imports), []);
+  assert.deepEqual(leftovers(fx), []);
 
   // Always busy (EBUSY here): the caller gives up and discards; nothing is left.
   fails = Infinity;
@@ -261,7 +274,7 @@ test('EPERM on the rename comes back as busy; the stage stays until a retry comm
   for (let i = 0; i < 5; i++) assert.deepEqual(st.commit(), { ok: false, reason: 'busy', code: 'EBUSY' });
   st.discard();
   assert.ok(!fs.existsSync(path.join(fx.imports, 'never')));
-  assert.deepEqual(stagesIn(fx.imports), []);
+  assert.deepEqual(leftovers(fx), []);
 
   // Any other rename error is thrown, not turned into busy.
   fails = 1;
@@ -289,22 +302,22 @@ test('renameDir checks where the directory landed: same identity, stage gone', (
   assert.throws(() => fx.fence.renameDir(c, path.join(fx.orch, 'e')), /moves a directory/);
 });
 
-test('leftover stages beside the target are swept; a live stage of the same stager is not', (t) => {
+test('leftover stages in the staging parent are swept; a live stage of the same stager is not; stagingParent is required', (t) => {
   const fx = fixture(t);
-  put(path.join(fx.imports, '.import-0123456789ab', 'half.jsonl'), 'x');
-  put(path.join(fx.imports, 'keep-me', 'x'), 'x');
+  put(path.join(fx.tmp, '.import-0123456789ab', 'half.jsonl'), 'x');
+  put(path.join(fx.tmp, 'keep-me', 'x'), 'x');
+  assert.throws(() => new ImportStager({ gate: fx.gate, fence: fx.fence } as never), /stagingParent is required/);
   const s = fx.stager();
   const first = s.begin(path.join(fx.imports, 'one'));
   assert.equal(first.swept, 1);
-  assert.ok(!fs.existsSync(path.join(fx.imports, '.import-0123456789ab')));
+  assert.ok(!fs.existsSync(path.join(fx.tmp, '.import-0123456789ab')));
   const second = s.begin(path.join(fx.imports, 'two'));
   assert.equal(second.swept, 0);
   assert.ok(fs.existsSync(first.dir), 'a live stage is never swept');
   assert.equal(s.openStages().length, 2);
-  // A stage made elsewhere (design §3.0: ORCHESTRA_HOME\tmp) works the same way.
-  const tmp = path.join(fx.orch, 'tmp');
-  const third = s.begin(path.join(fx.imports, 'three'), { stagingParent: tmp });
-  assert.equal(path.dirname(third.dir), tmp);
+  // Beside the target (DS-Bot's layout) only when the caller asks for it.
+  const third = s.begin(path.join(fx.imports, 'three'), { stagingParent: fx.imports });
+  assert.equal(path.dirname(third.dir), fx.imports);
   third.addFile(fx.transcript, 't.jsonl');
   third.copy();
   third.writeReceipt('imported.json', {});
@@ -312,8 +325,8 @@ test('leftover stages beside the target are swept; a live stage of the same stag
   first.discard();
   second.discard();
   assert.deepEqual(s.openStages(), []);
-  assert.deepEqual(stagesIn(fx.imports), []);
-  assert.ok(fs.existsSync(path.join(fx.imports, 'keep-me')));
+  assert.deepEqual(leftovers(fx), []);
+  assert.ok(fs.existsSync(path.join(fx.tmp, 'keep-me')));
 });
 
 test('caps: total bytes, file count and the free space the caller gives', (t) => {
@@ -326,7 +339,7 @@ test('caps: total bytes, file count and the free space the caller gives', (t) =>
   const disk = fx.stager().begin(path.join(fx.imports, 'disk'));
   disk.addFile(fx.transcript, 't.jsonl');
   assert.throws(() => disk.copy({ freeBytes: 5 }), reason('import-too-big'));
-  assert.deepEqual(stagesIn(fx.imports), []);
+  assert.deepEqual(leftovers(fx), []);
   assert.equal(DEFAULT_IMPORT_LIMITS.maxBytes, 256 * 1024 * 1024);
   assert.throws(() => fx.stager({ limits: { maxBytes: 0 } }), RangeError);
 });
@@ -339,7 +352,7 @@ test('a source that changes during its copy voids the import, or is reported whe
   const strict = fx.stager({ gate: gateWith(fx.gate, grow), limits: { chunkBytes: 8 } }).begin(path.join(fx.imports, 'strict'));
   strict.addFile(fx.transcript, 't.jsonl');
   assert.throws(() => strict.copy(), reason('source-changed'));
-  assert.deepEqual(stagesIn(fx.imports), []);
+  assert.deepEqual(leftovers(fx), []);
 
   const cut = fs.statSync(fx.transcript).size;
   const lax = fx.stager({ gate: gateWith(fx.gate, grow) }).begin(path.join(fx.imports, 'lax'));
@@ -354,7 +367,7 @@ test('a source that changes during its copy voids the import, or is reported whe
   const shrink = fx.stager({ gate: gateWith(fx.gate, (n) => n === 0 && fs.truncateSync(fx.transcript, 3)) }).begin(path.join(fx.imports, 'shrink'));
   shrink.addFile(fx.transcript, 't.jsonl');
   assert.throws(() => shrink.copy({ requireUnchanged: false }), reason('source-changed'));
-  assert.deepEqual(stagesIn(fx.imports), []);
+  assert.deepEqual(leftovers(fx), []);
 });
 
 test('calls out of order are refused', (t) => {
@@ -396,7 +409,7 @@ test('a junction in the copied tree, or the tree itself a junction, voids the wh
   // A file reached through a junction is refused too.
   const st3 = fx.stager().begin(path.join(fx.imports, 'j'));
   assert.throws(() => st3.addFile(path.join(other, 'agent-a1.jsonl'), 'a.jsonl'), reason('reparse-point'));
-  assert.deepEqual(stagesIn(fx.imports), []);
+  assert.deepEqual(leftovers(fx), []);
   assert.equal(treeDigest(fx.claude), before);
 
   // renameDir never moves a link standing in for the stage.
@@ -404,4 +417,105 @@ test('a junction in the copied tree, or the tree itself a junction, voids the wh
   fs.mkdirSync(real);
   junction(fx.base, path.join(fx.orch, 'linked'), real);
   assert.throws(() => fx.fence.renameDir(path.join(fx.orch, 'linked'), path.join(fx.orch, 'moved')), (e: unknown) => e instanceof WriteFenceError && e.decision.reason === 'link');
+});
+
+test('a junction swapped onto the way to a planned file after it was added voids the import, whatever the caller allows', { skip: jp.ok ? false : jp.why }, (t) => {
+  const fx = fixture(t);
+  for (const requireUnchanged of [true, false]) {
+    const st = fx.stager().begin(path.join(fx.imports, `swap-${requireUnchanged}`));
+    st.addFile(fx.transcript, 't.jsonl');
+    // Between add and copy: the project folder becomes a junction to a decoy holding a file of the same name.
+    const project = path.dirname(fx.transcript);
+    const moved = `${project}-moved-${requireUnchanged}`;
+    const decoy = path.join(fx.claude, 'projects', `C--decoy-${requireUnchanged}`);
+    put(path.join(decoy, path.basename(fx.transcript)), '{"type":"user","decoy":true}\n');
+    fs.renameSync(project, moved);
+    junction(fx.base, project, decoy);
+    assert.throws(() => st.copy({ requireUnchanged }), reason('reparse-point'));
+    assert.equal(st.state, 'discarded');
+    fs.rmdirSync(project);
+    fs.renameSync(moved, project);
+  }
+  assert.deepEqual(leftovers(fx), []);
+});
+
+test('another file under the planned name voids the import even when changes are allowed; every chunk comes from the one checked handle', (t) => {
+  const fx = fixture(t);
+  const st = fx.stager().begin(path.join(fx.imports, 'other-file'));
+  st.addFile(fx.transcript, 't.jsonl');
+  fs.rmSync(fx.transcript);
+  put(fx.transcript, LINES);
+  assert.throws(() => st.copy({ requireUnchanged: false }), reason('source-changed'));
+  assert.deepEqual(leftovers(fx), []);
+
+  // One openRead per file, however many chunks: the path is not resolved again between them.
+  let opens = 0;
+  let reads = 0;
+  const counting: CopyGate = {
+    decide: (p, op) => fx.gate.decide(p, op),
+    stat: (p) => fx.gate.stat(p),
+    readdir: (p) => fx.gate.readdir(p),
+    entries: (p) => fx.gate.entries(p),
+    openRead: (p) => {
+      opens++;
+      const h = fx.gate.openRead(p);
+      return { path: h.path, real: h.real, stat: () => h.stat(), read: (pos, len) => (reads++, h.read(pos, len)), close: () => h.close() };
+    },
+  };
+  const many = fx.stager({ gate: counting, limits: { chunkBytes: 4 } }).begin(path.join(fx.imports, 'chunks'));
+  many.addFile(fx.transcript, 't.jsonl');
+  const r = many.copy();
+  assert.equal(opens, 1);
+  assert.ok(reads > 3, `${reads} chunk reads`);
+  assert.equal(r.files[0]!.sha256, sha(LINES));
+  assert.equal(fx.gate.openHandles(), 0, 'the handle is closed');
+  many.discard();
+});
+
+test('a commit whose rename happened but whose after-checks failed is reported as unverified, not discarded', (t) => {
+  const fx = fixture(t);
+  const target = path.join(fx.imports, 'landed');
+  // The real rename runs, then the landed folder is swapped for another one: renameDir's identity check fails.
+  const fence = fx.fenceWith({
+    renameSync: (from: string, to: string) => {
+      fs.renameSync(from, to);
+      if (path.resolve(to) === path.resolve(target)) {
+        fs.renameSync(to, `${to}-orig`);
+        fs.mkdirSync(to);
+      }
+    },
+  });
+  const st = fx.stager({ fence }).begin(target);
+  st.addFile(fx.transcript, 't.jsonl');
+  st.copy();
+  st.writeReceipt('imported.json', { v: 1 });
+  assert.throws(() => st.commit(), (e: unknown) => {
+    assert.ok(e instanceof ImportCopyError, String(e));
+    assert.equal(e.reason, 'commit-unverified');
+    assert.ok(e.detail.includes(target), e.detail);
+    return true;
+  });
+  assert.equal(st.state, 'unverified');
+  assert.throws(() => st.discard(), reason('wrong-state'));
+  assert.ok(fs.existsSync(path.join(`${target}-orig`, 'imported.json')), 'the moved copy is left where the rename put it');
+});
+
+// Pins a Windows gap renameDir cannot close (see its doc comment): Node's rename replaces a FILE that
+// appears at the target between the existence check and the rename. The single-writer lock is what
+// keeps that gap empty; this test keeps the gap visible until a no-replace rename exists.
+test('renameDir: a file that appears at the target after the check is replaced on Windows (known gap)', { skip: process.platform === 'win32' ? false : 'Windows rename semantics' }, (t) => {
+  const fx = fixture(t);
+  const stage = path.join(fx.orch, 'stage-gap');
+  put(path.join(stage, 'a.txt'), 'a');
+  const target = path.join(fx.orch, 'gap-target');
+  const fence = fx.fenceWith({
+    renameSync: (from: string, to: string) => {
+      if (path.resolve(to) === path.resolve(target)) fs.writeFileSync(to, 'raced in');
+      fs.renameSync(from, to);
+    },
+  });
+  const r = fence.renameDir(stage, target);
+  assert.equal(r.ok, true);
+  assert.ok(fs.statSync(target).isDirectory(), 'the raced-in file is gone, replaced by the stage');
+  assert.equal(fs.readFileSync(path.join(target, 'a.txt'), 'utf8'), 'a');
 });

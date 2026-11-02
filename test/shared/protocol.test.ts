@@ -177,7 +177,8 @@ test('strings: every error code, end class and outcome has a text, and no two in
   assert.deepEqual(Object.keys(END_TEXT), [...END_CLASSES]);
   assert.deepEqual(missingTexts(), []);
   assert.equal(ARG_UNKNOWN, '未知');
-  assert.ok(ERROR_TEXT['text-too-long'].includes(String(REMINDER_TEXT_MAX)));
+  // One code, two limits (a reminder's REMINDER_TEXT_MAX characters, an owned-session message's 2048 bytes): the text names neither.
+  assert.doesNotMatch(ERROR_TEXT['text-too-long'], /\d|提醒/);
 });
 
 test('constants: the numbers step 3 shares, as the plan states them', () => {

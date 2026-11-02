@@ -9,7 +9,8 @@ const win = path.win32;
 // Where a child the gate starts with a caller-chosen working directory may run (alpha 0.2 design §2.1,
 // §5 "cwd"; r4 §5.3). Two layers, both fail closed:
 //  1. a rejection table the gate builds itself: drive roots; the user profile itself and its AppData,
-//     .ssh, .aws, .claude, .dsh; %SystemRoot%; Program Files*; this repository; and the directories the
+//     .ssh, .aws, .claude, .dsh; a redirected %APPDATA% / %LOCALAPPDATA%; %SystemRoot%; Program Files*;
+//     this repository, its main checkout when this is a worktree, and spec.repoRoots; and the directories the
 //     composition root names (r4 §5.3: the Orchestra data dir, every DSH_HOME, every CLAUDE_CONFIG_DIR).
 //     A cwd is refused when it lies inside a table entry or contains one, so a parent of a protected
 //     directory (C:\Users, the folder holding this repo) is refused too.
@@ -25,6 +26,17 @@ const PROGRAM_FILES_TOP = /^program files/i;
 /** This repository's root (src/os/../..): a child never runs in Orchestra's own code. */
 export const REPO_ROOT = win.join(import.meta.dirname, '..', '..');
 
+/**
+ * The main checkout when this copy runs from a worktree Claude Code made (`<main>\.claude\worktrees\<name>`):
+ * its src\, shared\, hosts\, .tools\ and the sibling worktrees are Orchestra's code too, yet none lies
+ * inside REPO_ROOT. Found lexically (no file is read); a worktree kept elsewhere is named through
+ * spec.repoRoots instead.
+ */
+export const MAIN_CHECKOUT: string | null = /^(.+?)\\\.claude\\worktrees\\[^\\]+$/i.exec(REPO_ROOT)?.[1] ?? null;
+
+/** %APPDATA% and %LOCALAPPDATA%: where a redirected AppData (and the browser profiles in it) really is. */
+const APPDATA_VARS: readonly string[] = Object.freeze(['APPDATA', 'LOCALAPPDATA']);
+
 export type CwdRejectReason = 'bad-path' | 'drive-root' | 'protected' | 'unresolved' | 'reparsed' | 'outside-allowed';
 export type CwdVerdict = { ok: true; path: string } | { ok: false; reason: CwdRejectReason; detail?: string };
 
@@ -35,6 +47,8 @@ export type CwdPolicySpec = {
   protectedDirs: readonly string[];
   /** The user's home (main.ts's `home`); %USERPROFILE% from the env source is added when it differs. */
   userHome: string;
+  /** Other checkouts of Orchestra's code (a main checkout or worktree MAIN_CHECKOUT cannot find); refused like REPO_ROOT. */
+  repoRoots?: readonly string[];
 };
 
 /**
@@ -74,7 +88,8 @@ export class CwdPolicy {
   constructor(input: CwdPolicyInput) {
     const { spec, env, systemRoot, realpath } = ownFields(input, ['spec', 'env', 'systemRoot', 'realpath'] as const);
     if (typeof realpath !== 'function') throw new Error('cwd policy: realpath is required, there is no default');
-    const s = ownFields(spec, ['allowedRoots', 'protectedDirs', 'userHome'] as const);
+    const s = ownFields(spec, ['allowedRoots', 'protectedDirs', 'userHome', 'repoRoots'] as const);
+    if (s.repoRoots !== undefined && !Array.isArray(s.repoRoots)) throw new Error('cwd policy: repoRoots must be a list');
     if (!Array.isArray(s.allowedRoots)) throw new Error('cwd policy: allowedRoots is required (an empty list allows nothing)');
     if (!Array.isArray(s.protectedDirs)) throw new Error('cwd policy: protectedDirs is required (r4 §5.3: data dir, DSH_HOME, CLAUDE_CONFIG_DIR)');
     const table: Entry[] = [];
@@ -97,6 +112,15 @@ export class CwdPolicy {
       add('self', 'user-profile', p);
       for (const sub of PROFILE_SUBDIRS) add('tree', `user-profile\\${sub}`, win.join(p, sub));
     }
+    // A redirected AppData (folder redirection, a roaming profile, APPDATA pointed elsewhere) lies
+    // outside every profile's AppData row; it gets a row of its own under the same label.
+    for (const name of APPDATA_VARS) {
+      const v = envGet(env ?? {}, name);
+      const c = v === undefined ? null : checkPath(v);
+      if (c?.ok !== true || c.path.length === 3) continue;
+      if (profiles.some((p) => isWithin(c.path, win.join(p, 'AppData')))) continue;
+      add('tree', 'user-profile\\AppData', trimSep(c.path));
+    }
     add('tree', 'system-root', mustPath(systemRoot, 'systemRoot'));
     for (const name of PROGRAM_FILES_VARS) {
       const v = envGet(env ?? {}, name);
@@ -104,6 +128,8 @@ export class CwdPolicy {
       if (c?.ok === true) add('tree', 'program-files', c.path);
     }
     add('tree', 'repo', REPO_ROOT);
+    if (MAIN_CHECKOUT !== null) add('tree', 'repo', MAIN_CHECKOUT);
+    for (const r of s.repoRoots ?? []) add('tree', 'repo', mustPath(r, 'repo root'));
     for (const d of s.protectedDirs) add('tree', 'protected', mustPath(d, 'protected dir'));
     this.#table = Object.freeze(table.map((e) => Object.freeze(e)));
     this.#allowed = Object.freeze(s.allowedRoots.map((r) => {

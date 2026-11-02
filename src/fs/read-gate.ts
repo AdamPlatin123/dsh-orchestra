@@ -200,6 +200,15 @@ export type TailHandle = {
   close(): void;
 };
 
+/** A short-lived checked 'r' handle (openRead): reads and stats go to the opened file only. */
+export type ReadHandle = {
+  readonly path: string;
+  readonly real: string;
+  stat(): FileStat;
+  read(position: number, length: number): Buffer;
+  close(): void;
+};
+
 function errCode(e: unknown): string {
   return typeof e === 'object' && e !== null && 'code' in e ? String((e as { code: unknown }).code) : String(e);
 }
@@ -411,6 +420,40 @@ export class ReadGate {
     } finally {
       this.#close(fd);
     }
+  }
+
+  /**
+   * One checked 'r' handle for a run of reads (the import copy): every range comes from the file
+   * that was opened and checked, never from a path resolved again between chunks. The caller compares
+   * `real` and `stat()` with what it planned, and closes the handle when done.
+   */
+  openRead(target: string): ReadHandle {
+    const { decision, stat } = this.#require(target, 'read');
+    const fd = this.#openChecked(decision, stat);
+    let closed = false;
+    const live = () => {
+      if (closed) throw new Error(`read gate: read handle closed: ${decision.path}`);
+    };
+    return {
+      path: decision.path,
+      real: decision.real,
+      stat: () => {
+        live();
+        return this.#io.fstatSync(fd);
+      },
+      read: (position, length) => {
+        live();
+        if (!Number.isSafeInteger(position) || position < 0 || !Number.isSafeInteger(length) || length < 0) {
+          throw new RangeError('read gate: position and length must be non-negative integers');
+        }
+        return this.#readAt(fd, position, length);
+      },
+      close: () => {
+        if (closed) return;
+        closed = true;
+        this.#close(fd);
+      },
+    };
   }
 
   /** A long-lived 'r' handle, only for files whose rule allows tailing in this milestone. */
