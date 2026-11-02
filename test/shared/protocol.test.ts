@@ -171,7 +171,7 @@ test('compareRows: group, then severity, then committedJseq (older first), then 
 });
 
 test('strings: every error code, end class and outcome has a text, and no two in a table share one (P1)', () => {
-  assert.deepEqual(missingTexts(), []);
+  assert.deepEqual(missingTexts(ERROR_CODES, END_CLASSES, ACTION_OUTCOMES), []);
   for (const table of [ERROR_TEXT, END_TEXT, OUTCOME_TEXT]) {
     const texts = Object.values(table);
     assert.equal(new Set(texts).size, texts.length);
@@ -181,7 +181,7 @@ test('strings: every error code, end class and outcome has a text, and no two in
   // R3-7: every table keyed by its enum exactly, so missingTexts() is not the only check of the outcome and end tables.
   assert.deepEqual(Object.keys(OUTCOME_TEXT), [...ACTION_OUTCOMES]);
   assert.deepEqual(Object.keys(END_TEXT), [...END_CLASSES]);
-  assert.deepEqual(missingTexts(), []);
+  assert.deepEqual(missingTexts(ERROR_CODES, END_CLASSES, ACTION_OUTCOMES), []);
   assert.equal(ARG_UNKNOWN, '未知');
   // One code, two limits (a reminder's REMINDER_TEXT_MAX characters, an owned-session message's 2048 bytes): the text names neither.
   assert.doesNotMatch(ERROR_TEXT['text-too-long'], /\d|提醒/);

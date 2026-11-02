@@ -13,6 +13,7 @@ import { makeRedactor } from '../../src/store/redact.ts';
 import { PEEK_HOST, UI_CSP, startPeekServer } from '../../src/server/http.ts';
 import type { PeekServer } from '../../src/server/http.ts';
 import type { UiAsset } from '../../src/server/ui-assets.ts';
+import type { OwnedSeats } from '../../src/sources/tower.ts';
 import { UI_ASSETS } from '../../src/server/ui-assets.ts';
 import { validateSession, validateStage } from '../../shared/stage-contract.js';
 import { validateTower } from '../../shared/tower-contract.js';
@@ -36,7 +37,7 @@ const PAGE: Record<string, UiAsset> = {
 
 type Fx = { server: PeekServer; host: string; origin: string; dir: string };
 
-async function fixture(t: TestContext, assets: Record<string, UiAsset> = PAGE): Promise<Fx> {
+async function fixture(t: TestContext, assets: Record<string, UiAsset> = PAGE, ownedSeats?: OwnedSeats): Promise<Fx> {
   const dir = fs.realpathSync.native(withTmp(t));
   writeStageFixture(dir, BASE);
   const roots: HarnessRoot[] = (['claude', 'dsh', 'codex'] as const).map((kind) => {
@@ -47,7 +48,7 @@ async function fixture(t: TestContext, assets: Record<string, UiAsset> = PAGE): 
   const redactor = makeRedactor({ env: {} });
   const server = await startPeekServer({
     port: 0, gate: new ReadGate({ roots, io: realIo, testDirs: [dir] }), roots, redact: (text) => redactor.redact({ text }).text,
-    clock, log: new Log({ clock }), pairingCode: CODE, profile: 'test', assets,
+    clock, log: new Log({ clock }), pairingCode: CODE, profile: 'test', assets, ...(ownedSeats === undefined ? {} : { ownedSeats }),
   });
   t.after(() => server.close());
   const host = `${PEEK_HOST}:${server.port}`;
@@ -222,4 +223,20 @@ test('GET /api/tower: 403 unpaired (and with a cookie the server never issued), 
   // The tower is GET only; the stage snapshot it is built from still answers, for tools.
   assert.equal((await request(fx, 'POST', '/api/tower', { cookie, origin: fx.origin })).status, 405);
   assert.equal((await request(fx, 'GET', '/api/peek/stage', { cookie })).status, 200);
+});
+
+test('GET /api/tower holds each snapshot to the contract: one that breaks it is 500, never sent to the page', async (t) => {
+  // An owned seat whose deadline is no integer makes a wait the contract refuses (the page no longer
+  // loads the validator: the daemon is where the contract is held, as for the owned routes' replies).
+  const seat = { ownedId: 'a'.repeat(20), harness: 'codex' as const, title: 'x', state: 'idle' as const, endReason: null, lastAt: null, waiting: { kind: 'approval' as const, deadline: 1.5, title: 'x' } };
+  let seats = [seat];
+  const fx = await fixture(t, PAGE, { seats: () => seats, nowWall: () => BASE });
+  const cookie = await paired(fx);
+  const bad = await request(fx, 'GET', '/api/tower', { cookie });
+  assert.equal(bad.status, 500);
+  assert.equal(bad.body.includes('"projects"'), false);
+  seats = [{ ...seat, waiting: { ...seat.waiting, deadline: BASE + 60_000 } }];
+  const good = await request(fx, 'GET', '/api/tower', { cookie });
+  assert.equal(good.status, 200);
+  assert.deepEqual(validateTower(JSON.parse(good.body)).errors, []);
 });

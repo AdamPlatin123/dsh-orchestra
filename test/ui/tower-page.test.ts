@@ -41,7 +41,7 @@ test('tower.html carries no inline script, style, handler, form or named input; 
   assert.ok(icons[0]!.startsWith('data:image/svg+xml,'));
 });
 
-test('tower.html: an ARIA tree, a polite live region, an alert, and every template ui/view.js names', () => {
+test('tower.html: an ARIA tree, a polite live region, an alert, and every template ui/view.js and ui/owned.js name', () => {
   const doc = parseHtml(HTML);
   const tree = doc.getElementById('tree')!;
   assert.equal(tree.getAttribute('role'), 'tree');
@@ -49,9 +49,9 @@ test('tower.html: an ARIA tree, a polite live region, an alert, and every templa
   assert.equal(doc.getElementById('tree-name')!.getAttribute('data-t'), 'tree.label');
   assert.equal(doc.getElementById('live')!.getAttribute('aria-live'), 'polite');
   assert.equal(doc.getElementById('alert')!.getAttribute('role'), 'alert');
-  const view = read('ui/view.js');
+  const view = read('ui/view.js') + read('ui/owned.js');
   const named = [...new Set([...view.matchAll(/tpl: '(tpl-[a-z]+)'/g)].map((m) => m[1]!))].sort();
-  assert.deepEqual(named, ['tpl-arow', 'tpl-ev', 'tpl-group', 'tpl-kv', 'tpl-node', 'tpl-pin', 'tpl-proj', 'tpl-rule', 'tpl-src']);
+  assert.deepEqual(named, ['tpl-arow', 'tpl-btn', 'tpl-card', 'tpl-ev', 'tpl-group', 'tpl-kv', 'tpl-msg', 'tpl-node', 'tpl-opt', 'tpl-pin', 'tpl-proj', 'tpl-rule', 'tpl-src', 'tpl-tool']);
   for (const id of named) assert.ok(doc.getElementById(id)?.content?.firstElementChild, `no <template id=${id}>`);
   for (const id of ['tpl-node', 'tpl-proj', 'tpl-group']) {
     const li = doc.getElementById(id)!.content!.firstElementChild!;
@@ -186,6 +186,10 @@ test('narrow screens: one column, rows 44px tall, the node page full screen, not
   assert.ok(narrow.some((r) => r.sel.includes(':root[data-view=node] .tower') && /display: none/.test(r.body)));
   assert.ok(phone.some((r) => r.sel === ':root' && /--row: 44px/.test(r.body)));
   assert.ok(phone.some((r) => r.sel === '.count' && /min-height: 44px/.test(r.body)));
+  // A button acting on an owned session (an approval card's, the composer's) is 44px tall at any width;
+  // on a phone every button is, the waiting bar's included.
+  assert.ok(rules.some((r) => r.sel === '.acts .btn' && r.at === '' && /min-height: 44px/.test(r.body)));
+  assert.ok(phone.some((r) => r.sel === '.op, .btn' && /min-height: 44px/.test(r.body)));
   // No fixed width past 375px outside the wide-screen query; long text ellipsizes instead of pushing.
   for (const r of rules.filter((x) => !x.at.includes('min-width: 900px'))) {
     for (const m of r.body.matchAll(/(?:^|;|\s)(?:min-)?width: (\d+)px/g)) assert.ok(Number(m[1]) <= 375, `${r.sel}: ${m[0]}`);
@@ -207,7 +211,9 @@ test('what the browser loads for / stays within budget: ui/ itself and the share
   };
   walk('ui/app.js');
   const shared = [...seen].filter((f) => f.startsWith('shared/')).sort();
-  assert.deepEqual(shared, ['shared/constants.js', 'shared/frozen.js', 'shared/protocol.js', 'shared/strings.js', 'shared/tower-contract.js']);
+  // strings.js imports only frozen.js, and the daemon holds each tower to its contract before it answers:
+  // the page loads neither protocol.js nor tower-contract.js (orchestra app, owned sessions in the tower).
+  assert.deepEqual(shared, ['shared/frozen.js', 'shared/strings.js']);
   // The daemon embeds the page (src/server/ui-assets.ts, made by scripts/embed-ui.ts from UI_FILES):
   // every module the page loads must be in both, or the browser meets a 404 halfway through the graph.
   for (const f of [...seen, 'ui/tower.html', 'ui/tower.css']) {

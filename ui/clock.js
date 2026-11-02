@@ -1,7 +1,7 @@
 // @ts-check
-// The page's one clock (0.1 alpha design §5, T7; kept for the tower, orchestra app plan §5): monotonic
-// time, the frame callback, the poll timers, the one-shot quiet timer and the wall-time formatting. A time the page shows is the daemon's observedAt plus a monotonic delta
-// measured here; the browser's wall clock is never subtracted from the daemon's.
+// The page's one clock (0.1 alpha design §5, T7; orchestra app plan §5): monotonic time, frames, timers
+// and wall-time formatting. A time shown is the daemon's observedAt plus a monotonic delta measured here;
+// the browser's wall clock is never set against the daemon's.
 
 /** Monotonic milliseconds. */
 export const nowMono = () => performance.now();

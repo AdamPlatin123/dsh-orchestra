@@ -1,36 +1,49 @@
 // @ts-check
-// The tower page's boot (orchestra app plan §5), the one module with top-level effects: the 2 s poll of
-// /api/tower (stopped while the page is hidden), the hash route, clicks and keys, and one render per
-// frame. Read only: nothing here asks orchestrad to change anything (M0).
+// The tower page's boot (orchestra app plan §5), the one module with top-level effects: the 2 s poll
+// (stopped while hidden), the hash route, clicks and keys, one render per frame. The tower is read only;
+// Orchestra's own sessions are driven from here once this tab is unlocked (slice design §2.7), each
+// allow under r4 §10.9's guards (D8). ui/owned.js says what shows.
 //
-// While the pointer or focus is in the tree, its order holds still (research §1.5): fresh data still
-// reaches the rows that stay, and what would appear, go or move is counted on the "↻ N" button, applied
-// on a click or 5 s after the pointer and focus have left.
-import { getSession, getTower, oneAtATime } from './api.js';
+// While the pointer or focus is in the tree its order holds (research §1.5): fresh data reaches the rows
+// that stay; what would appear, go or move is counted on "↻ N", applied on a click or 5 s after leaving.
+import { getFeed, getOwned, getSession, getTower, oneAtATime, post } from './api.js';
 import { after, every, fmtIso, nowMono, onFrame } from './clock.js';
 import { makePatcher } from './dom.js';
-import { getTheme, setTheme } from './prefs.js';
+import { getCsrf, getTheme, setCsrf, setTheme } from './prefs.js';
+import {
+  HOLD_MS, MODELS, SETTLE_MS, describeNew, describeOwned, describeOwnedDock, errText, isFeed, isOwnedList, mergeFeed, msgError, notifyText, ownedIdOf, pinExtra, pinWhole,
+} from './owned.js';
 import { go, openFull, parse } from './route.js';
-import { FILTERS, buildRows, freeze, groupKey, indexOf, navigate, projectKey } from './tree.js';
+import { FILTERS, buildRows, freeze, groupKey, indexOf, navigate, projectKey, towerFrame } from './tree.js';
 import { clippedSessions, describeAbout, describeBar, describeDetail, describeDock, describePins, describeTower, detectsError, t } from './view.js';
-import { validateTower } from '../shared/tower-contract.js';
 
-/** @typedef {import('../shared/tower-contract.js').TowerSnapshot} TowerSnapshot */
-/** @typedef {import('./tree.js').Row} Row */
-/** @typedef {import('./tree.js').Filter} Filter */
-/** @typedef {import('./view.js').Detail} Detail */
+/**
+ * @typedef {import('../shared/tower-contract.js').TowerSnapshot} TowerSnapshot
+ * @typedef {import('./tree.js').Row} Row
+ * @typedef {import('./tree.js').Filter} Filter
+ * @typedef {import('./view.js').Detail} Detail
+ */
 
 const POLL_MS = 2000;
 const STALE_MS = 10000;
 const QUIET_MS = 5000;
-/** How long a changed row lights up (research §1.5), and the CSS animation's length. */
+const HIDDEN_MS = 10000;
+const NOTE_MS = 8000;
+/** Ending a session takes a second click this soon. */
+const ARM_MS = 3000;
+/** A changed row lights up this long (research §1.5; the CSS animation's length). */
 const FLASH_MS = 1200;
-/** Below this width there is no right pane: a node opens its own page (tower.css, narrow screens). */
+/** Below this width a node opens its own page (tower.css). */
 const NARROW = '(max-width: 899px)';
 const narrow = () => window.matchMedia(NARROW).matches;
 const dom = makePatcher(document);
 const treeEl = dom.byId('tree');
 const towerEl = dom.byId('tower');
+const pinsEl = dom.byId('pins');
+/** @param {string} id */
+const val = (id) => String(/** @type {any} */ (dom.byId(id)).value ?? '');
+/** @param {string} id @param {string} v */
+const setVal = (id, v) => { /** @type {any} */ (dom.byId(id)).value = v; };
 
 const state = {
   /** @type {TowerSnapshot | null} */ snap: null,
@@ -51,14 +64,43 @@ const state = {
   /** @type {Detail | null} */ detail: null,
   detailRev: '',
   /** @type {Map<string, string>} */ lastState: new Map(),
-  /** A row whose state changed: the new state, lit until `until` (monotonic), once. @type {Map<string, { state: string, until: number }>} */ flash: new Map(),
-  /** The view of the last render, to move the focus when the node page opens or closes. @type {string} */ lastView: 'tower',
+  /** A changed row's new state, lit until `until` (monotonic), once. @type {Map<string, { state: string, until: number }>} */ flash: new Map(),
+  /** The last render's view, to move the focus when the node page opens or closes. */ lastView: 'tower',
   /** @type {number | null} */ lastWaiting: null,
   /** A row to focus after the next render. @type {string | null} */ focusKey: null,
   queued: false,
+  // Owned sessions. csrf: this tab's controller token, null while locked; pinSig: the waiting bar and
+  // queue as last drawn (a change starts the 750 ms); to: the recipient, held once you type (§1.5).
+  csrf: getCsrf(),
+  owned: null,
+  /** @type {Map<string, any>} */ feeds: new Map(),
+  feedFor: null,
+  feedOut: false,
+  pinSig: '',
+  changedMono: -Infinity,
+  settleTok: 'a',
+  pinHover: false,
+  pinFocus: false,
+  pinOrder: null,
+  hold: null,
+  heldMono: -Infinity,
+  busy: false,
+  note: null,
+  noteOff: null,
+  to: null,
+  endArm: null,
+  told: new Set(),
 };
 
 const frozen = () => state.hover || state.focusIn || state.quiet !== null;
+const settling = () => nowMono() - state.changedMono < SETTLE_MS;
+const guard = () => ({ unlocked: state.csrf !== null, settle: settling() ? state.settleTok : '', hold: state.hold?.id ?? null, busy: state.busy, nowWall: nowWall() });
+/** The selected owned session as a recipient, or null. */
+function selTo() {
+  const n = state.snap === null || state.sel === null ? undefined : indexOf(state.snap).byId.get(state.sel)?.node;
+  const id = ownedIdOf(n);
+  return id === null || n === undefined ? null : { id, title: n.title };
+}
 
 function schedule() {
   if (state.queued || document.hidden) return;
@@ -82,7 +124,12 @@ function render() {
   dom.paintId('alert', { text: state.error ?? '', data: { hide: state.error === null ? '1' : '0' } });
   const ageMs = state.okMono === null ? null : nowMono() - state.okMono;
   const snap = state.snap;
-  dom.paintId('bar', describeBar(snap, { filter: state.filter, ageMs, stale: ageMs !== null && ageMs > STALE_MS, theme: state.theme, view }));
+  const bar = describeBar(snap, { filter: state.filter, ageMs, stale: ageMs !== null && ageMs > STALE_MS, theme: state.theme, view });
+  const open = state.csrf !== null;
+  Object.assign(/** @type {any} */ (bar.slots), { new: { text: t(open ? 'bar.new' : 'bar.newLocked') }, unlock: { text: t(open ? 'bar.unlocked' : 'bar.unlock'), attr: { 'aria-pressed': String(open) } } });
+  dom.paintId('bar', bar);
+  dom.paintId('note', { text: state.note ?? '', data: { hide: state.note === null ? '1' : '0' } });
+  dom.paintId('new-dlg', { slots: describeNew(state.owned, val('nw-h') || 'codex', state.busy) });
   if (snap === null) return;
   const waiting = snap.tally.waiting;
   dom.title(waiting > 0 ? t('page.titleWait', { n: waiting }) : t('page.title'));
@@ -95,8 +142,7 @@ function render() {
   state.rows = rows;
 
   const wall = nowWall();
-  // A flash plays once: past its time the row loses it, so a row put back later (unfolded, refiltered,
-  // shown again) does not light up for a change long gone.
+  // A flash plays once: a row shown again later does not light up for a change long gone.
   /** @type {Map<string, string>} */
   const flash = new Map();
   const mono = nowMono();
@@ -104,16 +150,37 @@ function render() {
     if (mono < f.until) flash.set(id, f.state);
     else state.flash.delete(id);
   }
-  dom.paintId('pins', describePins(snap, { sel: state.sel, nowWall: wall }));
+  const pinBar = holdPins(snap);
+  // The bar or queue moved: allows are void for SETTLE_MS (r4 §10.9), a hold lets go.
+  const sig = `${pinBar.map((e) => e.node).join()}|${state.owned?.rev ?? ''}`;
+  if (sig !== state.pinSig) {
+    state.pinSig = sig;
+    state.changedMono = nowMono();
+    state.settleTok = state.settleTok === 'a' ? 'b' : 'a';
+    cancelHold();
+    after(SETTLE_MS + 20, schedule);
+  }
+  const g = guard();
+  dom.paintId('pins', describePins(snap, { sel: state.sel, nowWall: wall, bar: pinBar, extra: (e) => pinExtra(e, state.owned, g) }));
   dom.paintId('tower', describeTower(rows, { filter: state.filter, pending, sel: state.sel, peek: state.peek, flash, detectsError: detectsError(snap), clipped: clippedSessions(snap) }));
-  dom.paintId('detail', describeDetail(snap, state.sel, rows, detailFor(snap), { nowWall: wall, fmtIso }));
-  dom.paintId('dock', describeDock(snap, state.sel));
+  const detail = describeDetail(snap, state.sel, rows, detailFor(snap), { nowWall: wall, fmtIso });
+  const mine = selTo();
+  if ((mine?.id ?? null) !== state.feedFor) {
+    state.feedFor = mine?.id ?? null;
+    void pollFeed();
+  }
+  Object.assign(/** @type {any} */ (detail.slots), mine === null ? { ownBox: { data: { hide: '1' } } } : describeOwned(mine.id, state.owned, state.feeds.get(mine.id), g));
+  dom.paintId('detail', detail);
+  const dock = describeDock(snap, state.sel);
+  const to = state.to ?? mine;
+  Object.assign(/** @type {any} */ (dock.slots), describeOwnedDock(to, state.owned, g, state.to !== null, to !== null && state.endArm === to.id), state.to === null ? {} : { to: { text: t('dock.to', { who: state.to.title }) } });
+  dom.paintId('dock', { ...dock, attr: { 'aria-disabled': String(to === null || !g.unlocked) } });
   const about = dom.byId('about');
   dom.paint(about, { data: { hide: view === 'about' ? '0' : '1' } });
   if (view === 'about') dom.paint(about, describeAbout(snap));
 
-  // On a narrow screen the node page replaces the tree: the focus goes to its title when it opens, and
-  // back to the row it came from when it closes (a hidden element cannot hold it).
+  // On a narrow screen the node page replaces the tree: the focus goes to its title, and back to the
+  // row it came from when it closes (a hidden element cannot hold it).
   const was = state.lastView;
   state.lastView = view;
   if (view === 'node' && was !== 'node' && narrow()) {
@@ -129,10 +196,7 @@ function render() {
   }
 }
 
-/**
- * The selected node's session detail, read once per session and snapshot revision.
- * @param {TowerSnapshot} snap @returns {Detail | null}
- */
+/** The selected node's session detail, read once per session and revision. @param {TowerSnapshot} snap @returns {Detail | null} */
 function detailFor(snap) {
   const hit = state.sel === null ? undefined : indexOf(snap).byId.get(state.sel);
   const id = hit?.node.session ?? null;
@@ -160,17 +224,10 @@ async function poll() {
   const body = /** @type {any} */ (a.body);
   const same = state.snap !== null && body !== null && typeof body === 'object' && body.meta?.rev === state.snap.meta.rev;
   if (!same) {
-    // A new revision is held to the contract before it is shown (T1-T3 travel with the payload). A
-    // checker that throws all the same (a payload deeper than the stack) is a shape error too.
-    /** @type {{ ok: boolean, errors: string[] }} */
-    let v;
-    try {
-      v = validateTower(body);
-    } catch (e) {
-      v = { ok: false, errors: [e instanceof Error ? e.name : 'throw'] };
-    }
-    if (!v.ok) {
-      state.error = t('err.shape', { why: v.errors[0] ?? '' });
+    // The daemon holds each snapshot to its contract (src/server/http.ts); the page checks the frame it reads.
+    const why = towerFrame(body);
+    if (why !== null) {
+      state.error = t('err.shape', { why });
       return schedule();
     }
   }
@@ -201,17 +258,207 @@ async function poll() {
 let timers = [];
 function wake() {
   timers.forEach((stop) => stop());
-  timers = [];
-  if (document.hidden) return;
-  void poll();
-  timers = [every(POLL_MS, () => void poll()), every(1000, schedule)];
+  timers = document.hidden ? [every(HIDDEN_MS, pollOwned)] : [every(POLL_MS, () => { void poll(); pollOwned(); pollFeed(); }), every(1000, schedule)];
+  if (!document.hidden) void poll();
+  pollOwned();
 }
 
-/**
- * Makes `key` visible and selected: its ancestors unfold, the group it sits in opens, and a filter it
- * does not pass is dropped.
- * @param {string} key @param {boolean} focus
- */
+// == owned sessions, once unlocked (hidden: the queue only, for notifications)
+const ownedOnce = oneAtATime(async () => (state.csrf === null ? null : getOwned(state.csrf)));
+async function pollOwned() {
+  const csrf = state.csrf;
+  const a = await ownedOnce();
+  if (a == null || csrf !== state.csrf) return;
+  if (!a.ok && (a.code === 'not-unlocked' || a.code === 'unpaired')) lock();
+  else if (a.ok && isOwnedList(a.body)) {
+    const first = state.owned === null;
+    state.owned = a.body;
+    tell(a.body, first);
+  }
+  schedule();
+}
+
+async function pollFeed() {
+  const id = selTo()?.id;
+  if (id === undefined || state.csrf === null || state.feedOut) return;
+  state.feedOut = true;
+  const a = await getFeed(state.csrf, id, state.feeds.get(id)?.to ?? 0);
+  state.feedOut = false;
+  if (!a.ok && a.code === 'not-unlocked') lock();
+  const b = a.ok ? a.body : null;
+  if (isFeed(b) && b.ownedId === id) state.feeds.set(id, mergeFeed(state.feeds.get(id), b));
+  schedule();
+}
+
+/** Notifies approvals that came while hidden, if granted; never an allow (r4 §10.9). @param {any} list @param {boolean} first */
+function tell(list, first) {
+  for (const a of list.approvals) {
+    if (!state.told.has(a.approvalId) && !first && document.hidden && globalThis.Notification?.permission === 'granted') {
+      try {
+        new Notification(t('notify.title'), { body: notifyText(a, list.owned.find((/** @type {any} */ o) => o.ownedId === a.ownedId)?.title || t('bar.brand')), tag: a.approvalId });
+      } catch {} // refused (a phone): the title still counts
+    }
+    state.told.add(a.approvalId);
+  }
+}
+
+/** @param {string} text */
+function say(text) {
+  state.note = text;
+  state.noteOff?.();
+  state.noteOff = after(NOTE_MS, () => { state.note = null; schedule(); });
+  schedule();
+}
+
+/** The token is no good (a restart): locked again. */
+function lock() {
+  setCsrf((state.csrf = null));
+  state.owned = null;
+  state.feeds.clear();
+  cancelHold();
+  say(t('unlock.lost'));
+}
+
+/** @param {string} id @param {string} focus */
+function openDlg(id, focus) {
+  const d = /** @type {any} */ (dom.byId(id));
+  if (!d.open) d.showModal();
+  /** @type {any} */ (dom.byId(focus)).focus();
+  schedule();
+}
+/** @param {string} id */
+const closeDlg = (id) => /** @type {any} */ (dom.byId(id)).close();
+/** A dialog's own line (the note under the bar sits behind a modal). @param {string} id @param {string} text */
+const dlgSay = (id, text) => dom.paintId(id, { slots: { msg: { text } } });
+
+/** The daemon prints a code on its console (204: never in a reply). */
+async function unlockStart() {
+  if (state.csrf !== null) return say(t('unlock.ok'));
+  const a = await post(null, 'owned/unlock-code', null);
+  if (!a.ok) return say(a.code === 'http-503' ? t('unlock.off') : a.code === 'unpaired' ? t('unlock.closed') : errText(a.code));
+  dlgSay('unlock-dlg', '');
+  openDlg('unlock-dlg', 'ul-code');
+}
+
+async function unlockGo() {
+  const code = val('ul-code').trim();
+  const a = /^[0-9]{8}$/.test(code) ? await post(null, 'owned/unlock', { code }) : null;
+  const csrf = a?.ok ? a.body?.csrf : null;
+  if (!/^[\w-]{43}$/.test(csrf)) {
+    return dlgSay('unlock-dlg', a === null ? t('unlock.format') : a.ok || a.code === 'not-unlocked' ? t('unlock.wrong') : errText(a.code));
+  }
+  setCsrf((state.csrf = csrf));
+  setVal('ul-code', '');
+  closeDlg('unlock-dlg');
+  say(t('unlock.ok'));
+  if (globalThis.Notification?.permission === 'default') void Notification.requestPermission();
+  pollOwned();
+  pollFeed();
+}
+
+/** One owned POST at a time, on one thing (no batch). @param {string} path @param {object} body @returns {Promise<any>} */
+async function op(path, body) {
+  if (state.busy || state.csrf === null) return null;
+  state.busy = true;
+  schedule();
+  const a = await post(state.csrf, path, { actionId: crypto.randomUUID(), ...body });
+  state.busy = false;
+  if (!a.ok && a.code === 'not-unlocked') lock();
+  pollOwned();
+  pollFeed();
+  return a;
+}
+/** @param {any} a @param {string} ok */
+const said = (a, ok) => a !== null && say(a.ok ? ok : errText(a.code));
+
+/** Nothing leaves until 派出 (orchestra app plan §3). */
+async function dispatch() {
+  const text = val('nw-text');
+  const why = msgError(text);
+  const a = why === null ? await op('owned/new', { text, harness: val('nw-h') || 'codex', model: val('nw-model') || MODELS[0] }) : null;
+  if (a?.ok !== true) return a === null && why === null ? undefined : dlgSay('new-dlg', why ?? errText(a.code));
+  setVal('nw-text', '');
+  closeDlg('new-dlg');
+  say(t('new.sent'));
+  void poll();
+  const id = a.body?.ownedId;
+  if (/^[0-9a-f]{20}$/.test(id)) openNode(`n:${id}`);
+}
+
+async function sendMsg() {
+  const to = state.to ?? selTo();
+  const text = val('dock-in');
+  const why = msgError(text);
+  if (to === null || why !== null) return why === null || say(why);
+  const a = await op(`owned/${to.id}/message`, { text });
+  if (a?.ok) {
+    setVal('dock-in', '');
+    state.to = null;
+  }
+  said(a, t('op.done', { what: to.title }));
+}
+
+/** Two stops; ending takes a second click within ARM_MS. @param {'interrupt' | 'end'} verb */
+async function stop(verb) {
+  const to = state.to ?? selTo();
+  if (to === null) return;
+  if (verb === 'end' && state.endArm !== to.id) {
+    state.endArm = to.id;
+    after(ARM_MS, () => { state.endArm = null; schedule(); });
+    return schedule();
+  }
+  state.endArm = null;
+  said(await op(`owned/${to.id}/${verb}`, {}), t('op.done', { what: t(`dock.${verb}`) }));
+}
+
+/** An allow carries the shown request's digest and the queue revision. @param {string} id @param {boolean} held @param {boolean} inPin */
+async function allow(id, held, inPin) {
+  const list = state.owned;
+  const a = list?.approvals.find((/** @type {any} */ x) => x.approvalId === id);
+  if (!list || !a || !a.canAccept || a.tooLong || (inPin && !pinWhole(a))) return;
+  if (settling() || (a.high && !held)) return say(t(settling() ? 'appr.settling' : 'appr.holdHint'));
+  said(await op(`approvals/${id}/allow`, { digest: a.digest, rev: list.rev }), t('appr.allowed'));
+}
+
+/** A high-risk allow is held HOLD_MS (pointer or Enter); letting go or a moving list cancels it. @param {any} el */
+function holdStart(el) {
+  const rev = state.owned?.rev;
+  if (state.hold !== null || rev === undefined || state.busy) return;
+  if (settling()) return say(t('appr.settling'));
+  const id = el.dataset.appr ?? '';
+  const cancel = after(HOLD_MS, () => {
+    if (state.hold?.id !== id) return;
+    state.hold = null;
+    state.heldMono = nowMono();
+    if (state.owned?.rev === rev) void allow(id, true, el.closest('.pin') !== null);
+    schedule();
+  });
+  state.hold = { id, cancel };
+  schedule();
+}
+function cancelHold() {
+  state.hold?.cancel();
+  state.hold = null;
+  schedule();
+}
+/** @param {EventTarget | null} target */
+const holdBtn = (target) => {
+  const el = target instanceof Element ? /** @type {any} */ (target.closest('[data-act=allow]')) : null;
+  return el?.dataset.high === '1' ? el : null;
+};
+
+/** The waiting bar holds its order under the pointer or focus (r4 §10.9); newcomers go last. */
+const pinsHeld = () => state.pinHover || state.pinFocus;
+/** @param {TowerSnapshot} snap */
+function holdPins(snap) {
+  const bar = snap.waitingBar;
+  const pos = new Map((state.pinOrder ?? []).map((k, i) => [k, i]));
+  const out = !pinsHeld() ? bar : [...bar.filter((e) => pos.has(e.node)).sort((p, q) => Number(pos.get(p.node)) - Number(pos.get(q.node))), ...bar.filter((e) => !pos.has(e.node))];
+  state.pinOrder = out.map((e) => e.node);
+  return out;
+}
+
+/** Makes `key` visible and selected: ancestors unfold, its group opens, a filter it fails drops. @param {string} key @param {boolean} focus */
 function select(key, focus) {
   state.sel = key;
   const snap = state.snap;
@@ -248,16 +495,13 @@ function setOpen(key, open) {
   schedule();
 }
 
-/** Folds or unfolds a row that can (under a filter none can: every signpost stays open). @param {Row} r */
+/** Folds or unfolds a row that can (none can under a filter). @param {Row} r */
 const toggle = (r) => {
   if (r.expandable) setOpen(r.key, !r.expanded);
   else schedule();
 };
 
-/**
- * Opens a node: its detail beside the tree on a wide screen (a selection: no history entry), its own
- * page on a narrow one (Back closes it). @param {string} key
- */
+/** Opens a node: its detail beside the tree when wide (no history entry), its own page when narrow. @param {string} key */
 function openNode(key) {
   select(key, false);
   go({ view: 'tower', node: key }, !narrow());
@@ -279,7 +523,7 @@ function hold() {
     state.quiet();
     state.quiet = null;
   }
-  // The layout on screen now is the one that holds (a fold or filter you choose lays out afresh).
+  // The layout on screen holds (a fold or filter you choose lays out afresh).
   if (state.held === null && state.rows.length > 0) state.held = state.rows;
 }
 function release() {
@@ -312,6 +556,22 @@ function act(el) {
     return schedule();
   }
   const a = t0.dataset.act;
+  const appr = t0.dataset.appr ?? '';
+  if (a === 'unlock' || (a === 'new' && state.csrf === null)) return void unlockStart();
+  if (a === 'unlockGo') return void unlockGo();
+  if (a === 'close') return /** @type {any} */ (t0.closest('dialog')).close();
+  if (a === 'new') {
+    dlgSay('new-dlg', '');
+    pollOwned();
+    return openDlg('new-dlg', 'nw-text');
+  }
+  if (a === 'dispatch') return void dispatch();
+  if (a === 'send') return void sendMsg();
+  if (a === 'interrupt' || a === 'end') return void stop(a);
+  if (a === 'deny') return void op(`approvals/${appr}/deny`, {}).then((r) => said(r, t('appr.denied')));
+  // A high-risk allow goes by holding; the click ending a hold is its own.
+  if (a === 'allow') return t0.dataset.high !== '1' ? void allow(appr, false, t0.closest('.pin') !== null) : nowMono() - state.heldMono > 600 && say(t('appr.holdHint'));
+  if (a === 'see') return openNode(/** @type {any} */ (t0.closest('.pin')).dataset.node);
   if (a === 'theme') {
     state.theme = state.theme === 'auto' ? 'light' : state.theme === 'light' ? 'dark' : 'auto';
     setTheme(state.theme);
@@ -333,7 +593,7 @@ function act(el) {
     if (hit !== undefined && hit.node.session !== null) openFull(hit.node.session);
     return;
   }
-  // A waiting-bar entry opens its node; on a wide screen the focus follows to its row in the tree.
+  // A waiting-bar entry opens its node; when wide the focus follows to its row.
   const pin = t0.classList.contains('pin-go') ? t0.closest('.pin') : null;
   const node = pin === null ? undefined : /** @type {HTMLElement} */ (pin).dataset.node;
   if (node !== undefined) {
@@ -395,6 +655,29 @@ treeEl.addEventListener('keydown', (e) => {
     return schedule();
   }
   setOpen(to.toggle, to.open);
+});
+
+pinsEl.addEventListener('pointerenter', () => { state.pinHover = true; });
+pinsEl.addEventListener('pointerleave', () => { state.pinHover = false; schedule(); });
+pinsEl.addEventListener('focusin', () => { state.pinFocus = true; });
+pinsEl.addEventListener('focusout', (e) => { if (!(e.relatedTarget instanceof Node && pinsEl.contains(e.relatedTarget))) state.pinFocus = false; schedule(); });
+document.addEventListener('pointerdown', (e) => { const el = holdBtn(e.target); if (el !== null) holdStart(el); });
+for (const ty of ['pointerup', 'pointercancel']) document.addEventListener(ty, cancelHold);
+document.addEventListener('pointerout', (e) => { if (holdBtn(e.target) !== null) cancelHold(); });
+document.addEventListener('keyup', (e) => { if (e.key === 'Enter') cancelHold(); });
+document.addEventListener('keydown', (e) => {
+  const el = holdBtn(e.target);
+  const id = e.target instanceof Element ? e.target.id : '';
+  if (e.key !== 'Enter' || e.isComposing || (el === null && id !== 'ul-code')) return;
+  e.preventDefault();
+  if (el === null) void unlockGo();
+  else if (!e.repeat) holdStart(el);
+});
+// Typing holds the recipient (research §1.5).
+document.addEventListener('input', (e) => {
+  if (!(e.target instanceof Element) || e.target.id !== 'dock-in') return;
+  state.to = val('dock-in') === '' ? null : (state.to ?? selTo());
+  schedule();
 });
 
 window.addEventListener('hashchange', () => {

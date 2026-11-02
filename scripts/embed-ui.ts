@@ -19,12 +19,12 @@ const REPO = fileURLToPath(new URL('../', import.meta.url));
 export const OUT = path.join(REPO, 'src', 'server', 'ui-assets.ts');
 
 /** The files the page may load, in this order; those not on disk are left out: the page, its style, the
- *  ui/ modules, and the shared modules they import (strings.js imports protocol.js, which imports
- *  constants.js; route.js and app.js import tower-contract.js, whose validator checks every new
- *  revision before it is shown). The page never loads shared/stage-contract.js. */
+ *  ui/ modules, and the shared modules they import (strings.js, which imports only frozen.js). The
+ *  daemon holds each tower to shared/tower-contract.js before it answers, so the page loads neither
+ *  that nor shared/protocol.js or shared/stage-contract.js. */
 export const UI_FILES: readonly string[] = Object.freeze([
-  'ui/tower.html', 'ui/tower.css', 'ui/app.js', 'ui/api.js', 'ui/clock.js', 'ui/view.js', 'ui/tree.js', 'ui/dom.js', 'ui/route.js', 'ui/prefs.js',
-  'shared/strings.js', 'shared/protocol.js', 'shared/constants.js', 'shared/frozen.js', 'shared/tower-contract.js',
+  'ui/tower.html', 'ui/tower.css', 'ui/app.js', 'ui/api.js', 'ui/clock.js', 'ui/view.js', 'ui/owned.js', 'ui/tree.js', 'ui/dom.js', 'ui/route.js', 'ui/prefs.js',
+  'shared/strings.js', 'shared/frozen.js',
 ]);
 
 const TYPES: Readonly<Record<string, string>> = Object.freeze({

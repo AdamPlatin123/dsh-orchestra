@@ -1,8 +1,9 @@
 // @ts-check
-// The hash route of the tower page (orchestra app plan §5): #/ is the tower, #/n/<nodeId> the tower with
-// that node open (on a phone, its full-screen page), #/about the about view. This is the one module that
-// navigates: the hash, and the server-rendered full record of a session (openFull).
-import { NODE_ID_RE, TOWER_HEX20_RE } from '../shared/tower-contract.js';
+// The hash route (orchestra app plan §5): #/ the tower, #/n/<nodeId> a node open (full screen on a
+// phone), #/about the about view. The one module that navigates (the hash, and openFull).
+/** As shared/tower-contract.js has them (the page does not load the contract). */
+const NODE_ID_RE = /^n:[0-9a-f]{20}$/;
+const TOWER_HEX20_RE = /^[0-9a-f]{20}$/;
 
 /** @typedef {{ view: 'tower' | 'about', node: string | null }} Route */
 
@@ -31,10 +32,8 @@ export function format(r) {
 }
 
 /**
- * Writes the route into the hash; hashchange brings it back. A history entry, so Back closes a node
- * page; with `replace`, none (a selection on a wide screen, where no page opens: ten clicks in the tree
- * are not ten presses of Back).
- * @param {Route} r @param {boolean} [replace]
+ * Writes the route into the hash (hashchange brings it back): a history entry, so Back closes a node
+ * page; with `replace`, none (a wide-screen selection opens no page). @param {Route} r @param {boolean} [replace]
  */
 export function go(r, replace = false) {
   const h = format(r);

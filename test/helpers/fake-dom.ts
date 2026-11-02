@@ -150,6 +150,7 @@ export class FakeElement extends FakeParent {
   }
 
   get tagName(): string { return this.namespaceURI === HTML_NS ? this.localName.toUpperCase() : this.localName; }
+  get id(): string { return this.attrs.get('id') ?? ''; }
   get nextElementSibling(): FakeElement | null {
     const p = this.parentNode;
     if (p === null) return null;

@@ -1,30 +1,21 @@
 // @ts-check
-// The page's one DOM writer (orchestra app plan §5): a keyed patcher. Nodes are <template> clones; a
-// write (textContent, dataset, classList, setAttribute from ATTRS) is skipped when the value is there,
-// so an identical render writes nothing. No markup is parsed (trusted-types 'none'). A keyed node keeps
-// its identity across renders (so focus and a CSS animation stay on it) and moves only when its place
-// changed: a poll patches the rows it changed and leaves the rest alone.
+// The page's one DOM writer (orchestra app plan §5): a keyed patcher of <template> clones. A write is
+// skipped when the value is there (an identical render writes nothing); no markup is parsed. A keyed
+// node keeps its identity (focus, animations) and moves only when its place changed.
 import { frozen } from '../shared/frozen.js';
 import { TOWER_TEXT } from '../shared/strings.js';
 
 /**
- * What one element gets: text, data-* fields, classes, attributes (null removes one) from ATTRS, the
- * paints of named descendants (data-slot) and a keyed list of children.
- * @typedef {{
- *   text?: string,
- *   data?: Record<string, string>,
- *   cls?: string,
- *   attr?: Record<string, string | null>,
- *   slots?: Record<string, Paint>,
- *   kids?: readonly Desc[],
- * }} Paint
+ * What one element gets: text, data-*, classes, attributes from ATTRS (null removes one), named
+ * descendants (data-slot) and keyed children.
+ * @typedef {{ text?: string, data?: Record<string, string>, cls?: string, attr?: Record<string, string | null>, slots?: Record<string, Paint>, kids?: readonly Desc[] }} Paint
  * @typedef {Paint & { key: string, tpl: string }} Desc
  */
 
-/** What setAttribute may write: the tree's ARIA state, roving tabindex and a title. Never href, style or on*. */
+/** What setAttribute may write: ARIA, tabindex, title, disabled, value. Never href, style or on*. */
 export const ATTRS = frozen([
   'aria-pressed', 'aria-current', 'aria-level', 'aria-expanded', 'aria-selected', 'aria-setsize', 'aria-posinset',
-  'aria-busy', 'aria-label', 'tabindex', 'title',
+  'aria-busy', 'aria-label', 'aria-disabled', 'tabindex', 'title', 'disabled', 'value',
 ]);
 
 /** @param {{ key: string, isComposing?: boolean }} e */

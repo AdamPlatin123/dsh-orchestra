@@ -1,37 +1,40 @@
 // @ts-check
 // The tower's rows (orchestra app plan §5, tower panel research §1.3, §1.5): a pure function from a
-// TowerSnapshot and the page's own choices (filter, folds, opened groups) to the flat list of treeitems
-// the page shows, in tree order. One row format for every layer; the depth says where a row hangs.
-// Nothing here touches the page: ui/view.js turns rows into descriptors, ui/app.js holds the state.
-//
-// Rules carried here:
-// - Counts are filters (T3): under a filter the rows that count are exactly the nodes in that state
-//   (row.match), so their number is the top bar's count; their ancestors show as signposts only.
-// - Folding follows the snapshot: a group row stands where its first member would, and opens in place.
-//   Running, waiting and failed nodes never fold (the contract checks it), so a filter needs no group.
-// - Freezing (§1.5): while the pointer or focus is in the tree the order holds still; fresh data still
-//   reaches every row that stays, and what would appear, go or move is counted, not shown.
+// TowerSnapshot and the page's choices (filter, folds, opened groups) to the flat treeitems in tree
+// order, one row format for every layer. ui/view.js paints them; ui/app.js holds the state.
+// - Counts are filters (T3): under a filter the rows that match are exactly the nodes in that state, so
+//   their number is the top bar's count; their ancestors show as signposts only.
+// - A group row stands where its first member would and opens in place; running, waiting and failed
+//   nodes never fold (the contract checks it), so a filter needs no group.
+// - Freezing (§1.5): while the pointer or focus is in the tree the order holds; fresh data reaches the
+//   rows that stay, and what would appear, go or move is counted, not shown.
 
-/** @typedef {import('../shared/tower-contract.js').TowerSnapshot} TowerSnapshot */
-/** @typedef {import('../shared/tower-contract.js').Project} Project */
-/** @typedef {import('../shared/tower-contract.js').Node} Node */
-/** @typedef {import('../shared/tower-contract.js').Group} Group */
-/** @typedef {'waiting' | 'error' | 'running'} Filter */
 /**
+ * @typedef {import('../shared/tower-contract.js').TowerSnapshot} TowerSnapshot
+ * @typedef {import('../shared/tower-contract.js').Project} Project
+ * @typedef {import('../shared/tower-contract.js').Node} Node
+ * @typedef {import('../shared/tower-contract.js').Group} Group
+ * @typedef {'waiting' | 'error' | 'running'} Filter
  * @typedef {{
  *   key: string, kind: 'project' | 'node' | 'group', level: number, parentKey: string | null,
  *   expandable: boolean, expanded: boolean, match: boolean, setsize: number, posinset: number,
  *   project: Project, node: Node | null, group: Group | null, gone: boolean,
  * }} Row
- *   level: the aria-level, a project is 1, an agent 2, a subagent 3 and down; parentKey: the row it
- *   hangs from, null for a project; match: the row counts toward the active filter; gone: a frozen row
- *   whose node the latest snapshot no longer has; expandable: it folds or unfolds now (never under a
- *   filter, which keeps every signpost open).
+ *   level: aria-level (project 1, agent 2, subagent 3 on); match: counts toward the filter; gone: a
+ *   frozen row whose node is no longer there; expandable: folds now (never under a filter).
  * @typedef {{ filter: Filter | null, collapsed: ReadonlySet<string>, open: ReadonlySet<string> }} TreeUi
  * @typedef {{ byId: Map<string, { node: Node, project: Project }>, kids: Map<string, Node[]> }} TowerIndex
  */
 
 export const FILTERS = Object.freeze(/** @type {const} */ (['waiting', 'error', 'running']));
+
+/** Where a tower misses the frame the page reads, or null; the daemon holds the whole contract. @param {any} b */
+export function towerFrame(b) {
+  const m = b?.meta;
+  if (m?.v !== 1 || !/^[0-9a-f]{16}$/.test(m.rev) || !Number.isSafeInteger(m.observedAt)) return '$.meta';
+  for (const k of ['projects', 'waitingBar']) if (!Array.isArray(b[k])) return `$.${k}`;
+  return typeof b.tally === 'object' && b.tally !== null && typeof m.sources === 'object' && Array.isArray(m.rules) ? null : '$.tally';
+}
 
 /** @param {string} id */
 export const projectKey = (id) => `p:${id}`;
@@ -60,10 +63,7 @@ export function indexOf(snap) {
   return ix;
 }
 
-/**
- * The names from the project down to the node: the path a waiting entry shows (你 › project › … › node).
- * @param {TowerSnapshot} snap @param {string} id @returns {string[]}
- */
+/** The names from the project down to the node (a waiting entry's path). @param {TowerSnapshot} snap @param {string} id @returns {string[]} */
 export function pathOf(snap, id) {
   const ix = indexOf(snap);
   const hit = ix.byId.get(id);
@@ -168,8 +168,8 @@ function numberSiblings(rows) {
 }
 
 /**
- * The frozen layout: `held` in its order, each row with its fresh data where the key is still there
- * (a vanished node stays as it was, marked gone), and the number of rows that would appear, go or move.
+ * The frozen layout: `held` in its order with fresh data where the key remains (a vanished node stays,
+ * marked gone), and how many rows would appear, go or move.
  * @param {readonly Row[]} fresh @param {readonly Row[]} held
  * @returns {{ rows: Row[], pending: number }}
  */
@@ -187,8 +187,7 @@ export function freeze(fresh, held) {
 }
 
 /**
- * Where a key press on the row at `i` leads (tree view keyboard pattern): the index to select, or a
- * fold change on the row itself.
+ * Where a key on row `i` leads (tree view pattern): an index to select, or a fold change.
  * @param {readonly Row[]} rows @param {number} i @param {string} key
  * @returns {{ select: number } | { toggle: string, open: boolean } | null}
  */

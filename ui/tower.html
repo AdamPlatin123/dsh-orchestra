@@ -20,9 +20,11 @@
   </div>
   <p class="srcs" data-slot="srcBox" data-hide="1"><span class="sr" data-t="bar.sources"></span><span class="src-list" data-slot="srcs"></span></p>
   <p class="fresh" data-slot="fresh" data-fresh="none"><span class="fdot" aria-hidden="true"></span><span data-slot="freshT"></span></p>
+  <p class="ops"><button type="button" class="op" data-act="new" data-slot="new"></button><button type="button" class="op" data-act="unlock" data-slot="unlock"></button></p>
   <p class="nav"><button type="button" class="link" data-act="about" aria-pressed="false" data-slot="about"></button><button type="button" class="link" data-act="theme" data-slot="theme"></button></p>
 </header>
 <p id="alert" class="alert" role="alert" data-hide="1"></p>
+<p id="note" class="note" role="status" data-hide="1"></p>
 <p id="live" class="sr" aria-live="polite"></p>
 
 <main id="main" class="main">
@@ -57,14 +59,21 @@
   <p class="dt-empty" data-slot="empty"></p>
   <dl class="facts" data-slot="facts"></dl>
   <section class="dt-sec" data-slot="actBox" data-hide="1"><h3 data-t="detail.activity"></h3><p class="dt-act" data-slot="act"></p></section>
+  <section class="dt-sec own" data-slot="ownBox" data-hide="1">
+    <p class="own-st" data-slot="ownSt"></p><p class="acts" data-slot="ownActs"></p>
+    <h3 data-slot="cardsH" data-hide="1"></h3><ol class="cards" data-slot="cards"></ol>
+    <section data-slot="chatBox" data-hide="1"><h3 data-t="own.title"></h3><p class="ev-note" data-slot="chatNote"></p><ol class="chat" data-slot="chat"></ol></section>
+  </section>
   <section class="dt-sec" data-slot="evBox" data-hide="1"><h3 data-t="detail.events"></h3><p class="ev-note" data-slot="evNote"></p><ol class="events" data-slot="events"></ol><p class="dt-full"><button type="button" class="link" data-act="full" data-slot="full" data-t="detail.full"></button></p></section>
 </aside>
 </div>
 
 <div id="dock" class="dock" aria-disabled="true">
-  <p class="dock-to" data-slot="to"></p>
-  <p class="dock-field" aria-hidden="true"></p>
-  <p class="dock-note" data-t="dock.readonly"></p>
+  <p class="dock-to" id="dock-to" data-slot="to"></p>
+  <p class="dock-st" data-slot="st"></p>
+  <textarea id="dock-in" class="dock-in" rows="2" aria-labelledby="dock-to" data-slot="in" data-hide="1"></textarea>
+  <p class="acts" data-slot="btns"></p>
+  <p class="dock-note" data-slot="note"></p>
 </div>
 </main>
 
@@ -91,8 +100,34 @@
   </section>
 </section>
 
+<dialog id="unlock-dlg" class="dlg" aria-labelledby="ul-h">
+  <h2 id="ul-h" data-t="unlock.title"></h2>
+  <p class="dlg-p" data-t="unlock.how"></p>
+  <input id="ul-code" class="dlg-in" inputmode="numeric" autocomplete="one-time-code" maxlength="8" aria-labelledby="ul-h">
+  <p class="dlg-msg" data-slot="msg" role="status"></p>
+  <p class="acts"><button type="button" class="btn" data-act="unlockGo" data-t="unlock.go"></button><button type="button" class="btn" data-act="close" data-t="dlg.cancel"></button></p>
+</dialog>
+<dialog id="new-dlg" class="dlg" aria-labelledby="nw-h">
+  <h2 id="nw-h" data-t="new.title"></h2>
+  <label class="dlg-l" for="nw-text" data-t="new.task"></label>
+  <textarea id="nw-text" class="dlg-in" rows="3"></textarea>
+  <label class="dlg-l" for="nw-h" data-t="new.harness"></label>
+  <select id="nw-h" class="dlg-in"><option value="codex" data-slot="hCodex" data-t="harness.codex"></option><option value="claude" data-slot="hClaude" data-t="harness.claude"></option></select>
+  <p class="dlg-p" data-slot="why"></p>
+  <label class="dlg-l" for="nw-model" data-t="new.model"></label>
+  <select id="nw-model" class="dlg-in" data-slot="model"></select>
+  <p class="dlg-p" data-t="new.cwd"></p>
+  <p class="dlg-msg" data-slot="msg" role="status"></p>
+  <p class="acts"><button type="button" class="btn" data-act="dispatch" data-slot="go"></button><button type="button" class="btn" data-act="close" data-t="dlg.cancel"></button></p>
+</dialog>
+
+<template id="tpl-btn"><button type="button" class="btn"></button></template>
+<template id="tpl-opt"><option></option></template>
+<template id="tpl-card"><li class="card" data-waiting="1"><p class="card-h"><span data-slot="kind"></span><span data-slot="left"></span></p><p class="card-t" data-slot="title"></p><pre class="pv" data-slot="pv"></pre><p class="card-note" data-slot="note"></p><p class="acts" data-slot="acts"></p></li></template>
+<template id="tpl-msg"><li class="msg"><span class="msg-who" data-slot="who"></span><span class="msg-tx" data-slot="tx"></span></li></template>
+<template id="tpl-tool"><li class="msg"><details><summary data-slot="sum"></summary><pre class="pv" data-slot="body"></pre></details></li></template>
 <template id="tpl-src"><span class="src"><span class="sdot" aria-hidden="true"></span><span class="src-h" data-slot="h" aria-hidden="true"></span><span class="sr" data-slot="sr"></span></span></template>
-<template id="tpl-pin"><li class="pin"><button type="button" class="pin-go"><span class="ico" aria-hidden="true" data-slot="ico"></span><span class="pin-kind" data-slot="kind"></span><span class="pin-path" data-slot="path"></span><span class="pin-clock" data-slot="clock"></span><span class="pin-hint" data-slot="hint"></span></button></li></template>
+<template id="tpl-pin"><li class="pin"><button type="button" class="pin-go"><span class="ico" aria-hidden="true" data-slot="ico"></span><span class="pin-kind" data-slot="kind"></span><span class="pin-path" data-slot="path"></span><span class="pin-clock" data-slot="clock"></span><span class="pin-hint" data-slot="hint"></span></button><span class="pin-pv" data-slot="pv"></span><span class="pin-acts" data-slot="acts"></span></li></template>
 <template id="tpl-proj"><li class="row proj" role="treeitem" tabindex="-1"><span class="tw" aria-hidden="true"></span><span class="nm" data-slot="name"></span><span class="act" data-slot="act"></span><span class="kids" aria-hidden="true"><span class="k-e" data-slot="ke"></span><span class="k-w" data-slot="kw"></span></span><span class="sr" data-slot="kidsSr"></span></li></template>
 <template id="tpl-group"><li class="row group" role="treeitem" tabindex="-1"><span class="ind" aria-hidden="true" data-slot="ind"></span><span class="tw" aria-hidden="true"></span><span class="ico" aria-hidden="true" data-slot="ico"></span><span class="nm" data-slot="name"></span><span class="act" data-slot="act"></span></li></template>
 <template id="tpl-node"><li class="row node" role="treeitem" tabindex="-1">

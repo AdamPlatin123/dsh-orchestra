@@ -1,0 +1,362 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { FakeElement, parseHtml, type FakeDocument } from '../helpers/fake-dom.ts';
+import { TOWER_TEXT } from '../../shared/strings.js';
+import { towerFromStage, type OwnedSeat } from '../../src/sources/tower.ts';
+import { busyStage } from '../helpers/tower-fixture.ts';
+import { apprActs, describeChat, mergeFeed, msgError, notifyText, pinExtra, type Approval, type Guard } from '../../ui/owned.js';
+
+// Orchestra's own sessions on the tower page (orchestra app plan §2-§5): ui/app.js booted against the
+// real ui/tower.html in the fake DOM, with the network, the clock, the timers, session storage and
+// notifications stubbed. It proves the unlock flow, the dispatch dialog's request, the chat, and the
+// approval guards of r4 §10.9 under D8: an allow carries the digest and the queue revision, is void for
+// 750 ms after the list moved, is held for a high-risk request, never shows for a request the waiting bar
+// cannot show whole or for a native or inferred wait, and no notification or title says allow.
+// Synthetic data only.
+
+const HTML = fs.readFileSync(fileURLToPath(new URL('../../ui/tower.html', import.meta.url)), 'utf8');
+const APP = pathToFileURL(fileURLToPath(new URL('../../ui/app.js', import.meta.url))).href;
+const ALLOW = TOWER_TEXT['appr.allow']!;
+const CSRF = 'A'.repeat(43);
+const ID = { a: 'a'.repeat(20), b: 'b'.repeat(20), c: 'c'.repeat(20), n: 'd'.repeat(20) };
+const AP = { a: '1'.repeat(32), b: '2'.repeat(32), c: '3'.repeat(32), d: '4'.repeat(32) };
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+type Listener = (e: any) => void;
+const listeners = new WeakMap<object, Map<string, Listener[]>>();
+const on = (target: object, type: string, fn: Listener) => {
+  let m = listeners.get(target);
+  if (m === undefined) listeners.set(target, (m = new Map()));
+  m.set(type, [...(m.get(type) ?? []), fn]);
+};
+const fire = (target: object, type: string, e: Record<string, unknown> = {}) => {
+  const ev = { preventDefault() { (ev as any).prevented = true; }, isComposing: false, ...e };
+  for (const fn of listeners.get(target)?.get(type) ?? []) fn(ev);
+  return ev as any;
+};
+
+const OBSERVED = towerFromStage(busyStage()).meta.observedAt;
+const MIN = 60_000;
+const seat = (ownedId: string, title: string, state: OwnedSeat['state'], deadline: number | null): OwnedSeat => ({
+  ownedId, harness: 'codex', title, state, endReason: null, lastAt: OBSERVED, waiting: deadline === null ? null : { kind: 'approval', deadline, title: 'req' },
+});
+const approval = (id: string, ownedId: string, over: Partial<Approval> & { rev: number }) => ({
+  approvalId: id, ownedId, kind: 'command', title: 'req', preview: 'command: npm test\ncwd: work', tooLong: false, redactions: 0,
+  digest: id.slice(0, 1).repeat(64), risk: 'write', high: false, canAccept: true, canText: false, deadline: OBSERVED + 20 * MIN, ...over,
+});
+const LONG = Array.from({ length: 12 }, (_, i) => `+ line ${i} of a long diff that will not fit on the waiting bar`).join('\n');
+
+test('owned sessions: unlock, the guarded approvals, the chat, the composer, dispatch, notifications', async () => {
+  const doc: FakeDocument = parseHtml(HTML);
+  const frames: (() => void)[] = [];
+  const intervals: { fn: () => void; ms: number }[] = [];
+  const timeouts: { fn: () => void; ms: number; off: boolean }[] = [];
+  const requests: { method: string; url: string; headers: Record<string, string>; body: any }[] = [];
+  const notes: { title: string; body: string }[] = [];
+  const store = new Map<string, string>();
+  let mono = 1000;
+  let seats: OwnedSeat[] = [seat(ID.a, 'fix the css', 'running', OBSERVED + 20 * MIN), seat(ID.b, 'run tests', 'idle', OBSERVED + 10 * MIN), seat(ID.c, 'refactor', 'idle', OBSERVED + 25 * MIN)];
+  let list: Record<string, any> = {
+    v: 1, kind: 'owned-list', rev: 3, enabled: true, disabledWhy: null, harnesses: { codex: true, claude: false },
+    owned: [
+      { ownedId: ID.a, harness: 'codex', model: 'codex/gpt-6.1-sol', title: 'fix the css', state: 'running', endReason: null, waiting: AP.a, queued: 0, tokens: { input: 1, cachedInput: 0, output: 1, total: 2 }, lastSeq: 7, createdAt: 1 },
+      { ownedId: ID.b, harness: 'codex', model: 'codex/gpt-6.1-sol', title: 'run tests', state: 'idle', endReason: null, waiting: AP.b, queued: 0, tokens: null, lastSeq: 1, createdAt: 2 },
+      { ownedId: ID.c, harness: 'codex', model: 'zcode/GLM-5.3', title: 'refactor', state: 'idle', endReason: null, waiting: AP.c, queued: 0, tokens: null, lastSeq: 1, createdAt: 3 },
+    ],
+    approvals: [
+      approval(AP.a, ID.a, { kind: 'file-change', preview: '--- update src/a.css\n-a\n+b', rev: 1 }),
+      approval(AP.b, ID.b, { risk: 'shell', high: true, deadline: OBSERVED + 10 * MIN, rev: 2 }),
+      approval(AP.c, ID.c, { kind: 'file-change', preview: LONG, deadline: OBSERVED + 25 * MIN, rev: 3 }),
+    ],
+    limits: { maxOwned: 4, active: 3 },
+  };
+  const feed = {
+    v: 1, kind: 'owned-feed', ownedId: ID.a, from: 0, to: 7, clipped: false,
+    events: [
+      { seq: 1, at: 1, kind: 'you', ref: null, uuid: '00000000-0000-4000-8000-000000000000', text: 'please fix the css', state: null, redactions: 0, live: false, exitCode: null, tokens: null },
+      { seq: 2, at: 2, kind: 'lifecycle', ref: 't1', uuid: null, text: null, state: 'turn-started', redactions: 0, live: false, exitCode: null, tokens: null },
+      { seq: 3, at: 3, kind: 'text', ref: 'm1', uuid: null, text: 'Looking at the css', state: 'final', redactions: 0, live: false, exitCode: null, tokens: null },
+      { seq: 4, at: 4, kind: 'tool', ref: 'i1', uuid: null, text: 'command: rg color\ncwd: work', state: 'command', redactions: 0, live: false, exitCode: null, tokens: null },
+      { seq: 5, at: 5, kind: 'tool-result', ref: 'i1', uuid: null, text: 'a.css:1 color: red', state: 'ran', redactions: 0, live: false, exitCode: 0, tokens: null },
+      { seq: 6, at: 6, kind: 'ask', ref: AP.a, uuid: null, text: 'edit 1 file', state: 'file-change', redactions: 0, live: false, exitCode: null, tokens: null },
+      { seq: 7, at: 7, kind: 'note', ref: null, uuid: null, text: null, state: 'tokens', redactions: 0, live: true, exitCode: null, tokens: { input: 1, cachedInput: 0, output: 1, total: 2 } },
+    ],
+  };
+  const tower = () => towerFromStage(busyStage(), { seats, nowWall: OBSERVED });
+  const loc = { hash: '', href: '', pathname: '/', search: '', replace(u: string) { this.hash = u.slice(u.indexOf('#')); } };
+  const win = {};
+  Object.assign(doc, { hidden: false, addEventListener: (t: string, fn: Listener) => on(doc, t, fn) });
+  (FakeElement.prototype as any).addEventListener = function (this: object, t: string, fn: Listener) { on(this, t, fn); };
+  const g = globalThis as any;
+  const keys = ['document', 'location', 'window', 'fetch', 'performance', 'requestAnimationFrame', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Element', 'Node', 'localStorage', 'sessionStorage', 'Notification'];
+  const saved = Object.fromEntries(keys.map((k) => [k, Object.getOwnPropertyDescriptor(g, k)]));
+  const define = (k: string, v: unknown) => Object.defineProperty(g, k, { configurable: true, writable: true, value: v });
+  define('document', doc);
+  define('location', loc);
+  define('window', { addEventListener: (t: string, fn: Listener) => on(win, t, fn), matchMedia: () => ({ matches: false }) });
+  define('performance', { now: () => mono });
+  define('requestAnimationFrame', (fn: () => void) => { frames.push(fn); return frames.length; });
+  define('setInterval', (fn: () => void, ms: number) => { intervals.push({ fn, ms }); return intervals.length; });
+  define('clearInterval', () => {});
+  define('setTimeout', (fn: () => void, ms: number) => { timeouts.push({ fn, ms, off: false }); return timeouts.length; });
+  define('clearTimeout', (id: number) => { const t = timeouts[id - 1]; if (t !== undefined) t.off = true; });
+  define('Element', FakeElement);
+  define('Node', FakeElement);
+  define('localStorage', { getItem: () => null, setItem: () => {} });
+  define('sessionStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) });
+  define('Notification', class { static permission = 'granted'; constructor(title: string, o: { body: string }) { notes.push({ title, body: o.body }); } });
+  const reply = (status: number, body?: unknown) => ({ status, ok: status >= 200 && status < 300, json: async () => { if (body === undefined) throw new SyntaxError('no body'); return structuredClone(body); } });
+  define('fetch', async (url: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) => {
+    const method = init.method ?? 'GET';
+    const headers = init.headers ?? {};
+    const body = init.body === undefined ? undefined : JSON.parse(init.body);
+    requests.push({ method, url, headers, body });
+    const token = headers['x-orchestra-csrf'] === CSRF;
+    if (url === '/api/tower') return reply(200, tower());
+    if (url === '/api/owned/unlock-code') return reply(204);
+    if (url === '/api/owned/unlock') return body.code === '12345678' ? reply(200, { csrf: CSRF }) : reply(403, { error: 'not-unlocked' });
+    if (!token) return reply(403, { error: 'not-unlocked' });
+    if (url === '/api/owned') return reply(200, list);
+    if (url.startsWith(`/api/owned/${ID.a}/feed`)) return reply(200, url.endsWith('after=0') ? feed : { ...feed, from: 7, events: [] });
+    if (url === '/api/owned/new') return reply(200, { ownedId: ID.n, actionId: body.actionId, accepted: true, jseq: 9 });
+    return reply(200, { actionId: body?.actionId, accepted: true, jseq: 10 });
+  });
+  const flush = async () => {
+    for (let i = 0; i < 8; i++) await new Promise((r) => setImmediate(r));
+    while (frames.length > 0) frames.shift()!();
+  };
+  const click = async (el: FakeElement | null) => {
+    assert.ok(el !== null, 'nothing to click');
+    fire(doc, 'click', { target: el });
+    await flush();
+  };
+  const tick = async () => { intervals.find((i) => i.ms === 1000)!.fn(); await flush(); };
+  const posts = (part: string) => requests.filter((r) => r.method === 'POST' && r.url.includes(part));
+  const pins = () => doc.getElementById('pins')!.querySelectorAll('.pin');
+  const pinOf = (id: string) => pins().find((p) => p.getAttribute('data-node') === `n:${id}`)!;
+  const btns = (el: FakeElement) => el.querySelectorAll('button').filter((b) => b.classList.contains('btn'));
+  const act = (el: FakeElement, a: string) => btns(el).find((b) => b.getAttribute('data-act') === a) ?? null;
+  try {
+    await import(APP);
+    await flush();
+
+    // Locked: the bar offers to unlock; each Orchestra entry of the waiting bar offers only that; a
+    // native or inferred wait has no button at all. No owned route is read without the token.
+    const bar = doc.getElementById('bar')!;
+    assert.equal(bar.querySelector('[data-act=unlock]')!.textContent, TOWER_TEXT['bar.unlock']);
+    assert.equal(pins().length, 5);
+    for (const id of [ID.a, ID.b, ID.c]) assert.deepEqual(btns(pinOf(id)).map((b) => b.textContent), [TOWER_TEXT['op.lock']]);
+    const foreign = pins().filter((p) => p.getAttribute('data-src') !== 'orchestra');
+    assert.deepEqual(foreign.map((p) => p.getAttribute('data-src')).sort(), ['inferred', 'native']);
+    for (const p of foreign) assert.equal(btns(p).length, 0);
+    assert.ok(!requests.some((r) => r.url.startsWith('/api/owned') || r.url.startsWith('/api/approvals')));
+
+    // Unlock: the daemon is asked to print a code (no body), the dialog takes it; a wrong code says so.
+    await click(bar.querySelector('[data-act=unlock]'));
+    assert.deepEqual(posts('/api/owned/unlock-code').map((r) => r.body), [undefined]);
+    const dlg = doc.getElementById('unlock-dlg')!;
+    assert.equal(dlg.open, true);
+    (doc.getElementById('ul-code') as any).value = '00000000';
+    await click(dlg.querySelector('[data-act=unlockGo]'));
+    assert.equal(dlg.querySelector('[data-slot=msg]')!.textContent, TOWER_TEXT['unlock.wrong']);
+    assert.equal(store.size, 0);
+    (doc.getElementById('ul-code') as any).value = '12345678';
+    fire(doc, 'keydown', { target: doc.getElementById('ul-code'), key: 'Enter' });
+    await flush();
+    assert.equal(dlg.open, false);
+    assert.deepEqual([...store.values()], [CSRF], 'the token is kept in this tab\'s session storage');
+    const read = requests.find((r) => r.url === '/api/owned')!;
+    assert.equal(read.headers['x-orchestra-csrf'], CSRF);
+    assert.equal(bar.querySelector('[data-act=unlock]')!.textContent, TOWER_TEXT['bar.unlocked']);
+
+    // The waiting bar: the allow shows only where the whole request shows; a long one offers 去看.
+    assert.deepEqual(btns(pinOf(ID.a)).map((b) => b.getAttribute('data-act')), ['deny', 'allow']);
+    assert.equal(pinOf(ID.a).querySelector('[data-slot=pv]')!.textContent, list.approvals[0].preview);
+    assert.deepEqual(btns(pinOf(ID.c)).map((b) => b.getAttribute('data-act')), ['deny', 'see']);
+    assert.equal(pinOf(ID.c).querySelector('[data-slot=pv]')!.textContent, '');
+    assert.equal(act(pinOf(ID.b), 'allow')!.textContent, TOWER_TEXT['appr.hold']);
+    for (const p of foreign) assert.ok(!p.textContent.includes(ALLOW), 'a native or inferred wait never offers an allow');
+
+    // Within 750 ms of the list's change an allow is void and shows it; afterwards it carries the
+    // digest of what is shown and the queue revision it was drawn from.
+    const allowA = act(pinOf(ID.a), 'allow')!;
+    assert.equal(allowA.getAttribute('aria-disabled'), 'true');
+    assert.match(allowA.getAttribute('data-settle')!, /^[ab]$/);
+    mono += 100;
+    await click(allowA);
+    assert.equal(posts('/allow').length, 0, 'an allow within 750 ms of a change is not sent');
+    assert.equal(doc.getElementById('note')!.textContent, TOWER_TEXT['appr.settling']);
+    mono += 700;
+    await tick();
+    assert.equal(allowA.getAttribute('aria-disabled'), null);
+    assert.equal(allowA.getAttribute('data-settle'), '');
+    await click(allowA);
+    const sent = posts(`/api/approvals/${AP.a}/allow`);
+    assert.equal(sent.length, 1);
+    assert.deepEqual(Object.keys(sent[0]!.body).sort(), ['actionId', 'digest', 'rev']);
+    assert.equal(sent[0]!.body.digest, list.approvals[0].digest);
+    assert.equal(sent[0]!.body.rev, list.rev);
+    assert.match(sent[0]!.body.actionId, UUID_RE);
+    assert.equal(sent[0]!.headers['x-orchestra-csrf'], CSRF);
+    assert.equal(sent[0]!.headers['content-type'], 'application/json');
+
+    // A high-risk allow: a click does nothing; let go early and nothing goes; held 1 s (pointer or Enter) it goes.
+    const allowB = act(pinOf(ID.b), 'allow')!;
+    await click(allowB);
+    assert.equal(posts(`/api/approvals/${AP.b}/allow`).length, 0);
+    fire(doc, 'pointerdown', { target: allowB });
+    await flush();
+    assert.equal(allowB.getAttribute('data-hold'), '1');
+    fire(doc, 'pointerup', { target: allowB });
+    await flush();
+    for (const t of timeouts.filter((x) => x.ms === 1000)) if (!t.off) t.fn();
+    await flush();
+    assert.equal(posts(`/api/approvals/${AP.b}/allow`).length, 0, 'let go before 1 s: nothing is sent');
+    fire(doc, 'keydown', { target: allowB, key: 'Enter' });
+    const hold = timeouts.at(-1)!;
+    assert.equal(hold.ms, 1000);
+    hold.fn();
+    await flush();
+    const held = posts(`/api/approvals/${AP.b}/allow`);
+    assert.equal(held.length, 1);
+    assert.deepEqual([held[0]!.body.digest, held[0]!.body.rev], [list.approvals[1].digest, list.rev]);
+    fire(doc, 'keyup', { target: allowB, key: 'Enter' });
+
+    // A deny is one request about one approval: no batch.
+    await click(act(pinOf(ID.c), 'deny'));
+    assert.deepEqual(posts('/deny').map((r) => [r.url, Object.keys(r.body)]), [[`/api/approvals/${AP.c}/deny`, ['actionId']]]);
+
+    // The node page of an owned session: the card in full with its buttons, the chat with each command
+    // folded under one line.
+    const row = doc.getElementById('tree')!.querySelectorAll('[data-key]').find((r) => r.getAttribute('data-key') === `n:${ID.a}`)!;
+    fire(doc, 'click', { target: row.querySelector('[data-slot=act]') });
+    assert.equal(loc.hash, `#/n/n:${ID.a}`);
+    fire(win, 'hashchange');
+    await flush();
+    await flush(); // the feed is read once the page shows the session
+    const detail = doc.getElementById('detail')!;
+    assert.equal(detail.querySelector('[data-slot=ownBox]')!.getAttribute('data-hide'), '0');
+    assert.equal(detail.querySelector('[data-slot=evBox]')!.getAttribute('data-hide'), '1');
+    const cards = detail.querySelectorAll('.card');
+    assert.equal(cards.length, 1);
+    assert.equal(cards[0]!.querySelector('[data-slot=pv]')!.textContent, list.approvals[0].preview);
+    assert.match(cards[0]!.querySelector('[data-slot=left]')!.textContent, /^剩 \d+:\d\d 自动拒$/);
+    assert.deepEqual(btns(cards[0]!).map((b) => b.getAttribute('data-act')), ['deny', 'allow']);
+    for (const b of btns(cards[0]!)) assert.ok(b.parentNode !== null && (b.parentNode as FakeElement).classList.contains('acts'), 'card buttons sit in .acts (44px)');
+    assert.ok(requests.some((r) => r.url === `/api/owned/${ID.a}/feed?after=0`));
+    const chat = detail.querySelector('[data-slot=chat]')!;
+    const items = chat.children;
+    assert.equal(items.length, 5, 'you, turn started, its text, one folded command, the ask (the token count is not a message)');
+    const tool = items.find((li) => li.querySelector('details') !== null)!;
+    assert.match(tool.querySelector('summary')!.textContent, /rg color · 已返回 · 退出码 0$/);
+    assert.match(tool.querySelector('[data-slot=body]')!.textContent, /a\.css:1 color: red/);
+    assert.equal(doc.textContent.includes('完成'), false, 'T2');
+
+    // The composer: to this session; a running turn takes the message as a steer.
+    const dock = doc.getElementById('dock')!;
+    assert.equal(dock.getAttribute('aria-disabled'), 'false');
+    assert.equal(act(dock, 'send')!.textContent, TOWER_TEXT['dock.sendSteer']);
+    (doc.getElementById('dock-in') as any).value = '/model x';
+    await click(act(dock, 'send'));
+    assert.equal(posts('/message').length, 0, 'a slash command never leaves the page');
+    (doc.getElementById('dock-in') as any).value = 'use the theme colour';
+    fire(doc, 'input', { target: doc.getElementById('dock-in') });
+    await click(act(dock, 'send'));
+    assert.deepEqual(posts('/message').map((r) => [r.url, r.body.text, Object.keys(r.body).sort()]), [[`/api/owned/${ID.a}/message`, 'use the theme colour', ['actionId', 'text']]]);
+    // Ending takes a second click; interrupting does not.
+    await click(act(dock, 'end'));
+    assert.equal(posts('/end').length, 0);
+    assert.equal(act(dock, 'end')!.textContent, TOWER_TEXT['dock.endSure']);
+    await click(act(dock, 'end'));
+    assert.equal(posts(`/api/owned/${ID.a}/end`).length, 1);
+    await click(act(dock, 'interrupt'));
+    assert.equal(posts(`/api/owned/${ID.a}/interrupt`).length, 1);
+
+    // Dispatch: Claude greyed with why; nothing goes until 派出; the request names harness and model.
+    await click(bar.querySelector('[data-act=new]'));
+    const nd = doc.getElementById('new-dlg')!;
+    assert.equal(nd.open, true);
+    assert.equal(nd.querySelector('[data-slot=hClaude]')!.getAttribute('disabled'), '', 'Claude greyed');
+    assert.equal(nd.querySelector('[data-slot=hCodex]')!.getAttribute('disabled'), null);
+    assert.ok(nd.querySelector('[data-slot=why]')!.textContent.includes(TOWER_TEXT['new.claudeOff']!));
+    assert.deepEqual(doc.getElementById('nw-model')!.querySelectorAll('option').map((o) => o.getAttribute('value')), ['codex/gpt-6.1-sol', 'codex/gpt-6-astra', 'zcode/GLM-5.3', 'opencode-go/glm-5.3']);
+    assert.equal(posts('/api/owned/new').length, 0);
+    (doc.getElementById('nw-text') as any).value = 'write the release notes';
+    (doc.getElementById('nw-model') as any).value = 'zcode/GLM-5.3';
+    await click(nd.querySelector('[data-act=dispatch]'));
+    const made = posts('/api/owned/new');
+    assert.equal(made.length, 1);
+    assert.deepEqual(Object.keys(made[0]!.body).sort(), ['actionId', 'harness', 'model', 'text']);
+    assert.deepEqual([made[0]!.body.text, made[0]!.body.harness, made[0]!.body.model], ['write the release notes', 'codex', 'zcode/GLM-5.3']);
+    assert.equal(nd.open, false);
+    assert.equal(loc.hash, `#/n/n:${ID.n}`, 'the new session opens');
+
+    // The waiting bar holds its order while the pointer is in it; the move shows once it leaves.
+    loc.hash = '#/';
+    fire(win, 'hashchange');
+    const pinsEl = doc.getElementById('pins')!;
+    const order = () => pins().filter((p) => p.getAttribute('data-src') === 'orchestra').map((p) => p.getAttribute('data-node'));
+    assert.deepEqual(order(), [`n:${ID.b}`, `n:${ID.a}`, `n:${ID.c}`]);
+    fire(pinsEl, 'pointerenter');
+    seats = [seat(ID.a, 'fix the css', 'running', OBSERVED + 5 * MIN), ...seats.slice(1)];
+    intervals.find((i) => i.ms === 2000)!.fn();
+    await flush();
+    assert.deepEqual(order(), [`n:${ID.b}`, `n:${ID.a}`, `n:${ID.c}`]);
+    fire(pinsEl, 'pointerleave');
+    await flush();
+    assert.deepEqual(order(), [`n:${ID.a}`, `n:${ID.b}`, `n:${ID.c}`]);
+
+    // Hidden: a new approval is notified with who and what; no notification and no title says allow.
+    // While hidden only the queue is read, every 10 s.
+    list = { ...list, rev: 4, approvals: [...list.approvals, approval(AP.d, ID.b, { rev: 4 })] };
+    doc.hidden = true;
+    fire(doc, 'visibilitychange');
+    await flush();
+    assert.equal(intervals.at(-1)!.ms, 10_000);
+    assert.equal(notes.length, 1);
+    assert.equal(notes[0]!.title, TOWER_TEXT['notify.title']);
+    assert.ok(notes[0]!.body.startsWith('run tests'));
+    for (const n of notes) assert.ok(!n.title.includes(ALLOW) && !n.body.includes(ALLOW));
+    assert.ok(!doc.title.includes(ALLOW));
+  } finally {
+    await flush();
+    for (const [k, d] of Object.entries(saved)) {
+      if (d === undefined) delete g[k];
+      else Object.defineProperty(g, k, d);
+    }
+    delete (FakeElement.prototype as any).addEventListener;
+  }
+});
+
+test('owned descriptors: no allow for a cut request or a native wait, words for refusals, the feed merge', () => {
+  const g: Guard = { unlocked: true, settle: '', hold: null, busy: false, nowWall: 0 };
+  const a = approval(AP.a, ID.a, { rev: 1 }) as Approval;
+  const acts = (x: Approval, where: 'pin' | 'card') => apprActs(x, g, where).map((d) => d.data!.act);
+  assert.deepEqual(acts(a, 'pin'), ['deny', 'allow']);
+  assert.deepEqual(acts({ ...a, preview: LONG }, 'pin'), ['deny', 'see']);
+  assert.deepEqual(acts({ ...a, preview: LONG }, 'card'), ['deny', 'allow'], 'the card shows the request in full');
+  assert.deepEqual(acts({ ...a, tooLong: true }, 'card'), ['deny'], 'cut short: only the refusal');
+  assert.deepEqual(acts({ ...a, canAccept: false }, 'pin'), ['deny', 'see']);
+  assert.deepEqual(apprActs(a, { ...g, unlocked: false }, 'pin').map((d) => d.text), [TOWER_TEXT['op.lock']]);
+  const settling = apprActs(a, { ...g, settle: 'b' }, 'pin')[1]!;
+  assert.deepEqual([settling.attr!['aria-disabled'], settling.data!.settle], ['true', 'b']);
+  for (const source of ['native', 'inferred']) assert.deepEqual(pinExtra({ node: `n:${ID.a}`, source }, null, g), { acts: { kids: [] }, pv: { text: '' } });
+  // Every text a notification can carry: no allow (r4 §10.9).
+  for (const [k, v] of Object.entries(TOWER_TEXT)) if (k.startsWith('notify.') || k.startsWith('page.')) assert.ok(!v.includes(ALLOW), k);
+  for (const kind of ['command', 'file-change', 'permissions', 'question', 'elicitation', 'unknown-kind']) assert.ok(!notifyText({ ...a, kind }, 'x').includes(ALLOW), kind);
+  assert.equal(msgError(''), TOWER_TEXT['msg.empty']);
+  assert.equal(msgError(' /config'), TOWER_TEXT['msg.slash']);
+  assert.equal(msgError('字'.repeat(683)), '太长：最多 2048 字节，现在 2049');
+  assert.equal(msgError('ok'), null);
+  // A live event is replaced by the next of its kind and ref; the chat folds a result into its command.
+  const ev = (seq: number, kind: string, ref: string | null, state: string | null, live: boolean, text: string | null = 'x') => ({ seq, kind, ref, text, state, live, exitCode: null });
+  let f = mergeFeed(undefined, { to: 2, clipped: false, events: [ev(1, 'text', 'm', 'partial', true, 'he'), ev(2, 'tool-result', 'i', 'running', true)] });
+  f = mergeFeed(f, { to: 4, clipped: true, events: [ev(3, 'text', 'm', 'final', false, 'hello'), ev(4, 'tool-result', 'i', 'ran', false)] });
+  assert.deepEqual(f.events.map((e) => e.seq), [3, 4]);
+  assert.equal(f.clipped, true);
+  const c = describeChat(f);
+  assert.equal(c.kids.length, 2);
+  assert.ok(c.note.includes(TOWER_TEXT['chat.clipped']!), 'T1: what the daemon no longer holds is said');
+});

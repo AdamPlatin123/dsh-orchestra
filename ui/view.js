@@ -1,42 +1,35 @@
 // @ts-check
-// The tower page's descriptors (orchestra app plan §5, tower panel research §1-§3): pure functions from
-// a TowerSnapshot, the rows of ui/tree.js and the page's choices to the Paint values ui/dom.js writes.
-// Every word comes from shared/strings.js (TOWER_TEXT) through t(); source strings (titles, activity,
-// event text) are written as text, never parsed. Time arrives as arguments: the page's clock is ui/clock.js.
+// The tower page's descriptors (orchestra app plan §5, tower panel research §1-§3): pure functions to the
+// Paint values ui/dom.js writes. Every word comes from shared/strings.js through t(); source strings are
+// written as text, never parsed; time arrives as arguments (the clock is ui/clock.js).
 
 import { TOWER_TEXT } from '../shared/strings.js';
 import { indexOf, pathOf } from './tree.js';
 
-/** @typedef {import('./dom.js').Paint} Paint */
-/** @typedef {import('./dom.js').Desc} Desc */
-/** @typedef {import('./tree.js').Row} Row */
-/** @typedef {import('./tree.js').Filter} Filter */
-/** @typedef {import('../shared/tower-contract.js').TowerSnapshot} TowerSnapshot */
-/** @typedef {import('../shared/tower-contract.js').Node} Node */
-/** @typedef {import('../shared/tower-contract.js').Group} Group */
-/** @typedef {'claude' | 'dsh' | 'codex'} Harness */
-/** @typedef {{ session: { id: string }, events: { at: string | null, type: string, text: string }[], unparsed: number, note: string | null }} SessionDetail */
-/** @typedef {{ id: string, body: SessionDetail | { error: string } | null }} Detail */
+/**
+ * @typedef {import('./dom.js').Paint} Paint
+ * @typedef {import('./dom.js').Desc} Desc
+ * @typedef {import('./tree.js').Row} Row
+ * @typedef {import('./tree.js').Filter} Filter
+ * @typedef {import('../shared/tower-contract.js').TowerSnapshot} TowerSnapshot
+ * @typedef {import('../shared/tower-contract.js').Node} Node
+ * @typedef {import('../shared/tower-contract.js').Group} Group
+ * @typedef {'claude' | 'dsh' | 'codex'} Harness
+ * @typedef {{ session: { id: string }, events: { at: string | null, type: string, text: string }[], unparsed: number, note: string | null }} SessionDetail
+ * @typedef {{ id: string, body: SessionDetail | { error: string } | null }} Detail
+ */
 
 export const HARNESSES = Object.freeze(/** @type {const} */ (['claude', 'dsh', 'codex']));
 /** How many of a session's last events the detail shows, newest first. */
 export const EVENTS_SHOWN = 12;
 
-/**
- * The text under `key` with each {name} filled from `args`. An unknown key throws: every key the page
- * names is in TOWER_TEXT (test/ui/tower-strings.test.ts walks them all).
- * @param {string} key @param {Record<string, string | number>} [args]
- */
+/** TOWER_TEXT[key], each {name} filled from args; an unknown key throws. @param {string} key @param {Record<string, string | number>} [args] */
 export function t(key, args = {}) {
   if (!Object.hasOwn(TOWER_TEXT, key)) throw new Error(`no text ${key}`);
   return TOWER_TEXT[key].replace(/\{(\w+)\}/g, (m, k) => (Object.hasOwn(args, k) ? String(args[k]) : m));
 }
 
-/**
- * A duration in one coarse unit: `age` for the row column (6 分), `ago` for a sentence (6 分钟前).
- * Null, negative or not a number is the dash: not known is never 0 (T1).
- * @param {number | null} ms @param {'age' | 'ago'} [unit]
- */
+/** A duration in one unit: `age` (6 分) or `ago` (6 分钟前); not known is the dash, never 0 (T1). @param {number | null} ms @param {'age' | 'ago'} [unit] */
 export function fmtAge(ms, unit = 'age') {
   if (ms === null || !Number.isFinite(ms) || ms < 0) return t('dash');
   const s = Math.floor(ms / 1000);
@@ -67,11 +60,7 @@ export function iconOf(n) {
   return n.waiting !== null ? t(`icon.${n.waiting.kind}`) : t(`icon.${n.state}`);
 }
 
-/**
- * The one line a row says about what it does or waits on. An inferred wait says only that it may be
- * waiting (research §1.5: no tool name or argument for a guess).
- * @param {Node} n
- */
+/** What a row does or waits on; an inferred wait names no tool or argument (research §1.5). @param {Node} n */
 export function activityOf(n) {
   if (n.waiting !== null) {
     if (n.waiting.source === 'inferred') return t('wait.inferred');
@@ -121,9 +110,8 @@ function clockOf(w, harness, nowWall) {
 export const detectsError = (snap) => snap === null || snap.meta.detects?.error !== false;
 
 /**
- * The top bar: counts that are filters, a source only when it failed (research §1.2: health takes no
- * room; the about view has every source), the freshness of the data. With no rule that reads a
- * failure, no error count is shown: 出错 0 would read as "none" where it means "not looked" (T1).
+ * The top bar: counts that are filters, a source only when it failed (research §1.2), freshness. With no
+ * rule that reads a failure no error count shows: 出错 0 would read "none" for "not looked" (T1).
  * @param {TowerSnapshot | null} snap
  * @param {{ filter: Filter | null, ageMs: number | null, stale: boolean, theme: string, view: string }} ctx
  * @returns {Paint}
@@ -179,17 +167,15 @@ function describeSrc(snap, h) {
 }
 
 /**
- * The waiting bar: one entry per waiting node, in the snapshot's order (deadlines first). In M0 every
- * entry is native or inferred: nothing to approve or deny, only where to go (research §1.5); the
- * entry itself is a button that opens its node.
- * @param {TowerSnapshot} snap @param {{ sel: string | null, nowWall: number }} ctx
- * @returns {Paint}
+ * The waiting bar in the snapshot's order (ctx.bar's while held); an entry opens its node. A native or
+ * inferred one only says where to go (research §1.5); Orchestra's own adds ctx.extra (ui/owned.js
+ * pinExtra). @param {TowerSnapshot} snap @param {any} ctx @returns {Paint}
  */
 export function describePins(snap, ctx) {
   const ix = indexOf(snap);
   /** @type {Desc[]} */
   const kids = [];
-  for (const e of snap.waitingBar) {
+  for (const e of ctx.bar ?? snap.waitingBar) {
     const hit = ix.byId.get(e.node);
     if (hit === undefined) continue;
     const n = hit.node;
@@ -204,6 +190,8 @@ export function describePins(snap, ctx) {
         path: { text: [t('pin.you'), ...pathOf(snap, e.node)].join(t('sep.path')) },
         clock: { text: clockOf(w, n.harness, ctx.nowWall) },
         hint: { text: e.source === 'orchestra' ? '' : t(e.source === 'inferred' ? 'wait.goNativeGuess' : 'wait.goNative', { h }) },
+        acts: { kids: [] }, pv: { text: '' },
+        ...ctx.extra?.(e),
       },
     });
   }
@@ -315,8 +303,8 @@ function nodeRow(r, attr, base, ctx) {
 }
 
 /**
- * The tree's frame: the filter line, the pending changes of a frozen tree, the rows, the empty line,
- * and how many sessions the limits left out (T1: a session not drawn is said, here where the tree is).
+ * The tree's frame: filter line, pending changes, rows, empty line, and the sessions the limits left out
+ * (T1: a session not drawn is said where the tree is).
  * @param {readonly Row[]} rows
  * @param {{ filter: Filter | null, pending: number, sel: string | null, peek: ReadonlySet<string>, flash: ReadonlyMap<string, string>, detectsError?: boolean, clipped?: number }} ctx
  * @returns {Paint}
@@ -344,7 +332,7 @@ export const clippedSessions = (snap) => HARNESSES.reduce((k, h) => k + snap.met
 const kv = (k, v) => ({ key: k, tpl: 'tpl-kv', slots: { k: { text: t(`detail.${k}`) }, v: { text: v } } });
 
 /**
- * The right pane (the node page on a phone): the selected row's fields, its basis, its last events.
+ * The right pane (a phone's node page): the selected row's fields, basis and last events.
  * @param {TowerSnapshot} snap @param {string | null} sel @param {readonly Row[]} rows
  * @param {Detail | null} detail
  * @param {{ nowWall: number, fmtIso: (s: string) => string }} ctx
@@ -442,7 +430,7 @@ function events(session, detail, fmtIso) {
 }
 
 /**
- * The reserved composer: in M0 it only says who a message would go to and that it cannot be sent yet.
+ * The composer's recipient; ui/owned.js adds the rest for an owned session.
  * @param {TowerSnapshot} snap @param {string | null} sel @returns {Paint}
  */
 export function describeDock(snap, sel) {

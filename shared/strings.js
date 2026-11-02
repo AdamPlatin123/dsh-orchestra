@@ -3,7 +3,7 @@
 // may not be shown, and the text of each error code, end class and action outcome. One symbol, one
 // meaning (P1): codes that ask you for different things never share a text (test/shared/protocol.test.ts).
 // Step 4 freezes the keys. TOWER_TEXT, at the end, holds the tower page's texts (orchestra app plan §5).
-import { END_CLASSES, ERROR_CODES, ACTION_OUTCOMES, TITLE_ARG_NAMES } from './protocol.js';
+// Imports only frozen.js, so the page loads no protocol.js: the enums come in as arguments (missingTexts).
 import { frozen } from './frozen.js';
 
 /** What a tool name or version title arg shows when the source's string fails its grammar (UI design 一 2). */
@@ -29,7 +29,8 @@ export const TITLE_TEXT = Object.freeze({
   'item.unknown-outcome': '{project} 的动作结果不明',
 });
 
-const PLACEHOLDER = new RegExp(`\\{(${TITLE_ARG_NAMES.join('|')})\\}`, 'g');
+/** A title arg's placeholder; test/shared/titles.test.ts holds each one in TITLE_TEXT to protocol.js TITLE_ARG_NAMES. */
+const PLACEHOLDER = /\{([a-z]+)\}/g;
 
 /**
  * The text of a title (already through protocol.js titleError): each placeholder takes its arg, or
@@ -95,8 +96,12 @@ export const OUTCOME_TEXT = Object.freeze({
   unknown: '结果不明',
 });
 
-/** Every enum value has a text: the check the tests run, kept beside the tables it checks. @returns {string[]} */
-export function missingTexts() {
+/**
+ * Every enum value has a text: the check the tests run, kept beside the tables it checks. The enums are
+ * protocol.js's ERROR_CODES, END_CLASSES and ACTION_OUTCOMES.
+ * @param {readonly string[]} ERROR_CODES @param {readonly string[]} END_CLASSES @param {readonly string[]} ACTION_OUTCOMES @returns {string[]}
+ */
+export function missingTexts(ERROR_CODES, END_CLASSES, ACTION_OUTCOMES) {
   return [
     ...ERROR_CODES.filter((c) => !Object.hasOwn(ERROR_TEXT, c)).map((c) => `error:${c}`),
     ...END_CLASSES.filter((c) => !Object.hasOwn(END_TEXT, c)).map((c) => `end:${c}`),
@@ -272,7 +277,7 @@ export const TOWER_TEXT = frozen({
   'dock.to': '发给 → {who}',
   'dock.none': '发给 → （先选中一个会话）',
   'dock.notNode': '发给 → （项目和折叠组收不了消息，请选中其中一个会话）',
-  'dock.readonly': '这一版只读：发消息、审批和停止在下一阶段接上，而且只对 Orchestra 自己开的会话',
+  'dock.readonly': '只读：发消息、审批和停止只对 Orchestra 自己开的会话，而且要先解锁',
   'about.title': '关于数据',
   'about.sources': '来源',
   'about.colSrc': '来源',
@@ -292,11 +297,11 @@ export const TOWER_TEXT = frozen({
   'about.rulesNote': '状态和关联是按这些规则从记录里读出来的。用上了不等于对：没在真实样本上核对过的，一律写没测过',
   'about.noRules': '这次快照没带规则清单',
   'about.honest': '诚实声明',
-  'about.h1': '这一版只读：只观察你的会话，不驱动、不批准、不停止任何一个',
+  'about.h1': '观察到的会话只读：Orchestra 不驱动、不批准、不停止它们；只有 Orchestra 自己开的会话能在解锁后操作',
   'about.h2': '≈ 表示推测：状态是从会话记录或文件最后写入的时间推出来的，不是会话自己登记的',
   'about.h3': '已回报只表示分身把结果交回去了，不是验收通过；这里没有哪一行会被标成做好了',
   'about.h4': '计数等于列表：顶栏每个数字点开，就是同样多的行',
-  'about.h5': '等你分三种来源：Orchestra 审批队列（有倒计时，到点自动拒）、原生（Claude / DSH / Codex 自己说的，不计时）、推测（≈）。这一版只有后两种',
+  'about.h5': '等你分三种来源：Orchestra 审批队列（有倒计时，到点自动拒）、原生（Claude / DSH / Codex 自己说的，不计时）、推测（≈）。只有第一种能在这里允许或拒绝',
   'about.h6': '原生界面里的成功标记只表示回合正常结束，不是验收',
   'about.h7': '时间以 Orchestra 后台看到的为准，不用你电脑的时钟去算',
   'about.h8': '这一版不判定出错：顶栏不显示出错计数，节点也不会标成出错。Codex 的回合被中断时，节点写状态未知，不写已回报',
@@ -330,4 +335,122 @@ export const TOWER_TEXT = frozen({
   'err.shape': '数据格式不对，没有显示：{why}',
   'err.http': '读取失败：{code}',
   'live.wait': '等你的事：{n} 件',
+  // Owned sessions (orchestra app plan §2-§5): unlock, dispatch, the chat, approvals, the composer. The
+  // allow button's word appears only on a button of the paired page (D8, r4 §10.9): never in the title or a notification.
+  'bar.unlock': '解锁操作',
+  'bar.unlocked': '已解锁',
+  'bar.new': '新会话',
+  'bar.newLocked': '新会话 · 先解锁',
+  'op.lock': '先解锁',
+  'op.busy': '处理中…',
+  'op.unknown': '没收到回复，结果不明：请看对话记录',
+  'op.err': '没办成：{code}',
+  'op.done': '已送达：{what}',
+  'unlock.title': '解锁操作',
+  'unlock.how': '解锁码刚打印在 orchestrad 的控制台窗口里：8 位数字，10 分钟内有效，只对这个标签页有效。',
+  'unlock.go': '解锁',
+  'unlock.format': '解锁码是 8 位数字',
+  'unlock.wrong': '解锁码不对或已过期；连错 5 次要重新要码',
+  'unlock.off': '这台 orchestrad 的控制台不显示解锁码，无法解锁',
+  'unlock.closed': '解锁已关闭或还没配对：重启 orchestrad 后再试',
+  'unlock.ok': '已解锁：这个标签页可以操作 Orchestra 自己开的会话',
+  'unlock.lost': '解锁失效了（orchestrad 可能重启过），请重新解锁',
+  'dlg.cancel': '取消',
+  'new.title': '派一个新会话',
+  'new.task': '一句话任务',
+  'new.harness': 'Harness',
+  'new.model': '模型',
+  'new.cwd': '工作目录：将在 Orchestra 自建的工作目录里运行',
+  'new.go': '派出',
+  'new.claudeOff': 'Claude：自有会话还没接上 orchestrad，暂时不能选',
+  'new.off': '现在不能新开会话（{why}）',
+  'new.noList': '还没读到哪些 harness 可用',
+  'new.sent': '派出了一个新会话',
+  'msg.empty': '先写点内容',
+  'msg.slash': '消息不能以 / 开头',
+  'msg.long': '太长：最多 2048 字节，现在 {n}',
+  'kind.command': '执行命令',
+  'kind.file-change': '改文件',
+  'kind.permissions': '要更多权限',
+  'kind.question': '提问',
+  'kind.elicitation': '工具服务器提问',
+  'risk.shell': 'shell',
+  'risk.write': '写工作目录',
+  'risk.net': '联网',
+  'risk.protected': '受保护路径或工作目录外',
+  'risk.other': '其他',
+  'appr.high': '高风险',
+  'appr.allow': '允许',
+  'appr.hold': '按住 1 秒允许',
+  'appr.deny': '拒绝',
+  'appr.see': '去看',
+  'appr.cut': '内容太长，页面没法完整显示：只能拒绝',
+  'appr.noAccept': '这一类这版只能拒绝',
+  'appr.redacted': '有 {n} 处疑似密钥被遮住',
+  'appr.settling': '列表刚变过，等它停稳再允许',
+  'appr.holdHint': '高风险：按住按钮 1 秒（或按住 Enter）才算数',
+  'appr.allowed': '允许已送达',
+  'appr.denied': '拒绝已送达',
+  'own.title': '对话',
+  'own.locked': '解锁后才能看这个会话的对话和审批',
+  'own.missing': '列表里还没有这个会话',
+  'own.st': '{model} · {state}',
+  'own.queued': '排队 {n} 条',
+  'own.tokens': '用量 {n} token',
+  'own.cards': '等你审批 {n} 条',
+  'state.starting': '正在启动',
+  'state.ended': '已结束',
+  'state.failed': '出错结束',
+  'chat.none': '还没有消息',
+  'chat.clipped': '更早的消息已从后台内存移出，这里没有',
+  'chat.cut': '只显示最近 {n} 条',
+  'chat.you': '你',
+  'chat.agent': '它',
+  'chat.out': '输出',
+  'chat.exit': '退出码 {n}',
+  'chat.live': '…',
+  'chat.ask': '等你审批：{t}',
+  'chat.accept': '你允许了',
+  'chat.decline': '你拒绝了',
+  'chat.answered': '你回答了',
+  'chat.clock': '超时，自动拒绝',
+  'chat.interrupt': '中断时自动拒绝',
+  'chat.end': '结束时自动拒绝',
+  'chat.life': '{s}',
+  'life.started': '会话开始',
+  'life.turn-started': '回合开始',
+  'life.turn-ended': '这一回合已返回',
+  'life.turn-interrupted': '这一回合被中断',
+  'life.turn-failed': '这一回合出错',
+  'life.turn-unknown': '这一回合结束方式未知',
+  'life.ended': '会话已结束',
+  'life.exited': '进程退出了',
+  'life.start-failed': '没能启动',
+  'life.policy-mismatch': '设置和要求不符，Orchestra 停了它',
+  'fnote.withdrawn': '撤回了 {t} 条排队消息',
+  'fnote.ask-withdrawn': '一条审批被收回了',
+  'fnote.other': '提示 {s}',
+  'dock.locked': '解锁后才能发消息',
+  'dock.ended': '会话已结束，不能再发',
+  'dock.steer': '这一回合还在跑：发出的消息插进当前回合（steer）',
+  'dock.idle': '发出的消息开始新的一回合',
+  'dock.lockedTo': '目标已锁定：清空输入框才换收件人',
+  'dock.send': '发送',
+  'dock.sendSteer': '插话',
+  'dock.interrupt': '中断这一回合',
+  'dock.end': '结束会话',
+  'dock.endSure': '再点一次确认结束',
+  'dock.noBrake': '刹车（停整棵进程树）后台还没有，这里只有前两档',
+  'notify.title': 'Orchestra：有审批在等你',
+  'notify.body': '{who} · {what}。请回到 Orchestra 页面处理',
+  'tool.command': '命令',
+  'tool.file-change': '改文件',
+  'tool.mcp': 'MCP 工具',
+  'tool.web-search': '搜索',
+  'tool.tool': '工具',
+  'res.ran': '已返回',
+  'res.failed': '失败',
+  'res.declined': '被拒绝',
+  'res.running': '在跑',
+  'res.unknown': '状态未知',
 });

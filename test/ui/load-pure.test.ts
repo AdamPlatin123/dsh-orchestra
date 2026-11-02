@@ -20,7 +20,7 @@ test('every ui module but app.js imports without touching the page, the network 
   }
   const mods = fs.readdirSync(UI).filter((f) => f.endsWith('.js')).sort();
   try {
-    assert.deepEqual(mods, ['api.js', 'app.js', 'clock.js', 'dom.js', 'prefs.js', 'route.js', 'tree.js', 'view.js']);
+    assert.deepEqual(mods, ['api.js', 'app.js', 'clock.js', 'dom.js', 'owned.js', 'prefs.js', 'route.js', 'tree.js', 'view.js']);
     for (const f of mods.filter((m) => m !== 'app.js')) {
       await import(pathToFileURL(`${UI}${f}`).href);
       assert.deepEqual(touched, [], `${f} touched ${touched.join(', ')} on import`);

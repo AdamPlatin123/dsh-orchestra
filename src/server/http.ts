@@ -10,6 +10,7 @@ import { PEEK_LIMITS, findSession, readSession } from '../sources/peek.ts';
 import { makeStageBuilder } from '../sources/stage.ts';
 import type { OwnedSeats } from '../sources/tower.ts';
 import { makeTowerBuilder } from '../sources/tower.ts';
+import { validateTower } from '../../shared/tower-contract.js';
 import type { OwnedAnswer, OwnedApiOptions } from './owned.ts';
 import { makeOwnedApi } from './owned.ts';
 import type { UiAsset } from './ui-assets.ts';
@@ -47,6 +48,10 @@ import { frozen } from '../../shared/frozen.js';
 // check chain after the Host check here: the pairing cookie, Origin, Sec-Fetch-Site, JSON, and the
 // controller token an unlock code buys. Without `owned` they do not exist. With `ownedSeats` the tower
 // draws the owned sessions too, in a project of their own (src/sources/tower.ts).
+//
+// GET /api/tower answers a snapshot only once it passes shared/tower-contract.js (T1-T3 travel with the
+// payload), the way the owned routes hold their replies to theirs; one that does not is logged and
+// answered 500, and the page keeps the last good one. The page itself checks only the frame it reads.
 
 export const PEEK_HOST = 'orchestra.localhost';
 export const PAIR_TTL_MS = 10 * 60 * 1000;
@@ -344,7 +349,13 @@ export async function startPeekServer(opts: PeekServerOptions): Promise<PeekServ
         return html(res, 200, sessionPage(profile, readSession(gate, s, redact)));
       }
       if (url.pathname === '/api/peek/stage') return json(res, 200, stage.snapshot());
-      if (url.pathname === '/api/tower') return json(res, 200, tower.snapshot());
+      if (url.pathname === '/api/tower') {
+        const t = tower.snapshot();
+        const v = validateTower(t);
+        if (v.ok) return json(res, 200, t);
+        log.warn('tower-misshapen', { errors: v.errors.slice(0, 8) });
+        return plain(res, 500, 'tower misshapen');
+      }
       if (url.pathname === '/api/peek/session') {
         const id = url.searchParams.get('id') ?? '';
         if (!HEX20.test(id)) return json(res, 400, { error: 'bad-id' });

@@ -1,7 +1,6 @@
-/* The tower page, "chart" direction (tower panel research §3): a cool grey sheet of drafting paper,
-   fine rules, indentation, and three signal colours with one meaning each (P1). Yellow is only for what
-   waits on you, vermilion only for what failed, teal only for what runs; text stays in ink. Classes and
-   data-* only: the page writes no style. Light tokens first, dark ones by preference or data-theme. */
+/* The tower page, "chart" direction (tower panel research §3): drafting paper, fine rules, and three
+   signal colours with one meaning each (P1): yellow waits on you, vermilion failed, teal runs; text in
+   ink. Classes and data-* only. Light tokens first, dark by preference or data-theme. */
 
 :root {
   color-scheme: light;
@@ -105,8 +104,7 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
 .filter { display: flex; gap: 12px; font-size: 12.5px; color: var(--ink2); }
 .changes { margin-left: auto; padding: 1px 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--panel); font-size: 12.5px; color: var(--ink); }
 .cols, .router, .row .line, .row.proj, .row.group { display: flex; align-items: center; gap: 10px; min-height: var(--row); padding: 0 16px 0 20px; }
-/* One column grid for the header and every node row (research §1.3: one row format for every layer),
-   so what each row does starts at the same place whatever its name or depth. */
+/* One column grid for the header and every node row (research §1.3: one row format for every layer). */
 .cols, .row .line { display: grid; grid-template-columns: minmax(0, 40%) minmax(0, 1fr) 76px 52px 44px; }
 .c1 { display: flex; align-items: center; gap: 6px; min-width: 0; align-self: stretch; }
 .cols { min-height: 22px; font-size: 12.5px; color: var(--ink2); border-bottom: 1px solid var(--line); }
@@ -159,8 +157,7 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
 .peek { display: none; }
 .row[data-peek="1"] .peek { display: flex; flex-wrap: wrap; gap: 2px 18px; padding: 2px 16px 8px 64px; font-size: 12.5px; color: var(--ink2); }
 .peek > span:empty { display: none; }
-/* A gone row and, under a filter, a signpost row step back by colour, not opacity: their secondary text
-   keeps its contrast. A gone row's name is struck through as well. */
+/* A gone row and a signpost row step back by colour, not opacity (contrast holds); a gone name is struck. */
 .row[data-gone="1"] .nm, .row[data-gone="1"] .act { color: var(--ink2); }
 .row[data-gone="1"] .nm { text-decoration: line-through 1px; }
 :root:not([data-filter=""]) .row.node[data-match="0"] .nm { color: var(--ink2); }
@@ -193,11 +190,48 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
 .ev-tx { grid-column: 1 / -1; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 4; overflow: hidden; }
 .dt-full { margin-top: 10px; }
 
-/* == reserved composer (next phase): where "send to" and stop will sit; read-only for now */
-.dock { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 4px 14px; padding: 8px 20px; border-top: 1px solid var(--line); background: var(--panel); color: var(--ink2); }
+/* == composer: "send to" and the stops, live only for an owned session on an unlocked page */
+.dock { display: grid; grid-template-columns: minmax(0, 1fr); align-items: center; gap: 4px 14px; padding: 8px 20px; border-top: 1px solid var(--line); background: var(--panel); color: var(--ink2); }
 .dock-to { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.dock-field { height: 28px; border: 1px dashed var(--line); border-radius: 3px; }
 .dock-note { grid-column: 1 / -1; font-size: 12.5px; }
+
+/* == owned sessions: unlock, dispatch, chat, approvals (session buttons 44px) */
+.ops, .acts { display: flex; flex-wrap: wrap; gap: 8px; }
+.op, .btn { position: relative; min-height: 32px; padding: 2px 12px; overflow: hidden; border: 1px solid var(--line); border-radius: 3px; background: none; }
+.op:hover, .btn:hover { background: var(--hover); }
+.btn[disabled], .btn[aria-disabled=true] { color: var(--ink2); cursor: not-allowed; }
+.btn[aria-pressed=true], .btn[data-armed="1"], .btn[data-high="1"] { border-color: var(--ink); font-weight: 600; }
+.acts .btn { min-height: 44px; min-width: 44px; }
+/* An allow's bar: grey while void (750 ms), ink while held. */
+.btn[data-act=allow]::after { content: ""; position: absolute; left: 0; bottom: 0; width: 100%; height: 3px; background: var(--ink); transform: scaleX(0); transform-origin: left; }
+.btn[data-settle=a]::after, .btn[data-settle=b]::after { transform: scaleX(1); background: var(--ink2); }
+.btn[data-hold="1"]::after { transform: scaleX(1); }
+.note { padding: 6px 20px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 13px; }
+.pin { display: flex; flex-wrap: wrap; align-items: center; }
+.pin-go { flex: 1 1 320px; }
+.pin-pv { flex: 1 1 100%; padding: 0 10px 4px 40px; }
+.pin-acts { display: flex; gap: 6px; padding: 4px 8px; }
+.pin-pv:empty, .pin-acts:empty, .card-note:empty { display: none; }
+.cards { display: grid; gap: 10px; margin-top: 6px; }
+.card[data-waiting] { padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--wait); background: var(--paper); }
+.card-h { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--ink2); }
+.card-t { margin: 4px 0; font-weight: 600; overflow-wrap: anywhere; }
+.pv { margin: 0 0 8px; padding: 6px 8px; max-height: 40vh; overflow: auto; border: 1px solid var(--rule); background: var(--panel); }
+.pv, .pin-pv { font: 12.5px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.card-note, .dock-st, .own-st { font-size: 12.5px; color: var(--ink2); }
+.msg { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 0 8px; padding: 6px 0; border-bottom: 1px solid var(--rule); font-size: 13px; }
+.msg-tx { white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg-who, .msg[data-live="1"] .msg-tx, .msg[data-kind=life] .msg-tx, .msg[data-kind=note] .msg-tx, .msg[data-kind=auto] .msg-tx { color: var(--ink2); }
+.msg[data-kind=you] .msg-tx { font-weight: 600; }
+.msg details { grid-column: 1 / -1; }
+.msg summary { cursor: pointer; font: 12.5px var(--mono); overflow-wrap: anywhere; }
+.dock-to, .dock-st, .dock-note, .dock-in { grid-column: 1 / -1; }
+.dlg { width: calc(100% - 32px); max-width: 520px; padding: 16px 18px; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); color: var(--ink); }
+.dlg-l { display: block; margin-top: 10px; font-weight: 600; }
+.dlg-p, .dlg-msg { margin-top: 6px; font-size: 12.5px; }
+.dlg-p { color: var(--ink2); }
+.dlg-in, .dock-in { width: 100%; min-height: 44px; margin-top: 4px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 3px; background: var(--panel); color: var(--ink); font: inherit; }
+.dlg .acts { margin-top: 12px; }
 
 /* == about */
 .about { padding: 16px 20px 32px; max-width: 960px; }
@@ -257,6 +291,8 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
   .kids { width: auto; }
   /* The fold triangle is a 44px target, not a 10px one; the indent steps shrink to make room. */
   .row .tw { width: 44px; align-self: stretch; }
+  .op, .btn { min-height: 44px; }
+  .pin-pv { padding-left: 10px; }
   .row .line, .row.proj, .row.group { padding-left: 4px; }
   .ind { background-image: repeating-linear-gradient(90deg, transparent 0 5px, var(--line) 5px 6px, transparent 6px 12px); }
   .ind[data-depth="1"] { width: 12px; }
@@ -275,8 +311,14 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
   .row[data-flash=unknown]::after { animation: flash-unknown 1.2s ease-out; }
   .row[data-flash=returned]::after { animation: flash-returned 1.2s ease-out; }
   .row[data-flash=idle]::after { animation: flash-idle 1.2s ease-out; }
+  .btn[data-settle=a]::after { animation: settle-a .75s linear forwards; }
+  .btn[data-settle=b]::after { animation: settle-b .75s linear forwards; }
+  .btn[data-hold="1"]::after { animation: hold 1s linear forwards; }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes settle-a { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@keyframes settle-b { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@keyframes hold { from { transform: scaleX(0); } to { transform: scaleX(1); } }
 /* One name per state: a state change swaps the name, and a new name plays once. */
 @keyframes flash-waiting { from { opacity: 1; } to { opacity: 0; } }
 @keyframes flash-error { from { opacity: 1; } to { opacity: 0; } }
