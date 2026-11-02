@@ -15,8 +15,8 @@
 
 文中路径缩写：
 - `r4` = `G:\_Projects\dsh-orchestra\docs\specs\2026-10-27-dsh-orchestra-design-r4.md`（现行规格，主检出目录版本，只读）
-- `$N` = `C:\Users\Calx\AppData\Roaming\npm\node_modules\@deepseek-ai\dsh\node_modules\@deepseek-ai`（本机 DSH 包）
-- `$BSB` = `C:\Users\Calx\.dsh\profiles\web\node_modules\.pnpm\dsh-better-sidebar@0.26.1_i5mvkq3arbbqwn5vjk7hrqlcsa\node_modules\dsh-better-sidebar`
+- `$N` = `%APPDATA%\npm\node_modules\@deepseek-ai\dsh\node_modules\@deepseek-ai`（本机 DSH 包）
+- `$BSB` = `%USERPROFILE%\.dsh\profiles\web\node_modules\.pnpm\dsh-better-sidebar@0.26.1_i5mvkq3arbbqwn5vjk7hrqlcsa\node_modules\dsh-better-sidebar`
 
 ---
 
