@@ -17,7 +17,8 @@ import { mustOpen, storeFixture } from '../helpers/store.ts';
 // alpha 0.2's protocol commit (slice design §2.7, §7 step 4) widens it on purpose: nine owned-session
 // human verbs with their routes, nineteen error codes, and with the verbs the `human` and
 // `human.result` bodies' verb enum (it only grows, so an older journal still replays). OWNED_ROUTES
-// below pins the owned-session routes themselves, frozen before any handler acts on them.
+// below pins the owned-session routes themselves, frozen before any handler acts on them. Step 5 (the
+// check chain) adds one code on purpose: body-too-big 413, an owned-session body over 64 KiB.
 
 const PROTOCOL = {
   "ACK_PHASES": ["dispatched","shown","error"],
@@ -30,8 +31,8 @@ const PROTOCOL = {
   "CWD_TAIL_MAX": 32,
   "CWD_TAIL_RE": "/^[^\\p{Cc}\\p{Cf}\\p{Cs}\\p{Zl}\\p{Zp}\\\\/]{1,32}$/u",
   "END_CLASSES": ["acted","auto-cleared","expired"],
-  "ERROR_CODES": ["in-flight","actionId-reused","actionId-missing","verb-not-allowed","ui-only","item-unknown","text-too-long","brake-unavailable","not-test-root","procguard-timeout","plan-expired","not-unlocked","owned-disabled","owned-limit","slash-command","digest-mismatch","approval-gone","stale-view","still-running","source-live","cwd-gone","cwd-forbidden","unfinished-frame","source-changed","newer-format","reparse-point","import-too-big","gateway-real-data","rename-busy","host-tampered"],
-  "ERROR_STATUS": {"in-flight":409,"actionId-reused":422,"actionId-missing":400,"verb-not-allowed":422,"ui-only":503,"item-unknown":404,"text-too-long":422,"brake-unavailable":503,"not-test-root":422,"procguard-timeout":503,"plan-expired":409,"not-unlocked":403,"owned-disabled":409,"owned-limit":409,"slash-command":422,"digest-mismatch":409,"approval-gone":409,"stale-view":409,"still-running":409,"source-live":409,"cwd-gone":409,"cwd-forbidden":409,"unfinished-frame":409,"source-changed":409,"newer-format":409,"reparse-point":409,"import-too-big":413,"gateway-real-data":409,"rename-busy":503,"host-tampered":503},
+  "ERROR_CODES": ["in-flight","actionId-reused","actionId-missing","verb-not-allowed","ui-only","item-unknown","text-too-long","brake-unavailable","not-test-root","procguard-timeout","plan-expired","not-unlocked","owned-disabled","owned-limit","slash-command","digest-mismatch","approval-gone","stale-view","still-running","source-live","cwd-gone","cwd-forbidden","unfinished-frame","source-changed","newer-format","reparse-point","import-too-big","gateway-real-data","rename-busy","host-tampered","body-too-big"],
+  "ERROR_STATUS": {"in-flight":409,"actionId-reused":422,"actionId-missing":400,"verb-not-allowed":422,"ui-only":503,"item-unknown":404,"text-too-long":422,"brake-unavailable":503,"not-test-root":422,"procguard-timeout":503,"plan-expired":409,"not-unlocked":403,"owned-disabled":409,"owned-limit":409,"slash-command":422,"digest-mismatch":409,"approval-gone":409,"stale-view":409,"still-running":409,"source-live":409,"cwd-gone":409,"cwd-forbidden":409,"unfinished-frame":409,"source-changed":409,"newer-format":409,"reparse-point":409,"import-too-big":413,"gateway-real-data":409,"rename-busy":503,"host-tampered":503,"body-too-big":413},
   "FRAME_KINDS": ["snapshot","status","tick","notify","bye"],
   "GROUPS": ["fermatas","wrong-notes","ready-for-review","reminders"],
   "HUMAN_VERBS": ["seen","snooze","acted","remind","brake","roots-add","roots-confirm","protect-add","protect-remove","dsh-connect","self-rating","owned-new","owned-message","owned-interrupt","owned-end","owned-retry","approval-allow","approval-deny","import-claude","import-dsh"],

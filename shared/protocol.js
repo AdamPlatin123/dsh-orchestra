@@ -94,6 +94,8 @@ export const ERROR_STATUS = Object.freeze(/** @type {const} */ ({
   'gateway-real-data': 409,
   'rename-busy': 503,
   'host-tampered': 503,
+  // alpha 0.2 step 5: an owned-session body over OWNED_BODY_MAX_BYTES (src/server/routes.ts), refused before it is read as JSON
+  'body-too-big': 413,
 }));
 /** @typedef {keyof typeof ERROR_STATUS} ErrorCode */
 /** @type {readonly ErrorCode[]} */

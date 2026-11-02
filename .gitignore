@@ -1,4 +1,6 @@
 node_modules/
+# the Claude host's SDK, installed by the user with npm ci (alpha 0.2 design §1); never committed
+hosts/claude/node_modules/
 dist/
 build/
 *.log

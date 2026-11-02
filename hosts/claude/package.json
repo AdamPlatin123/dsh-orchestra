@@ -1,0 +1,9 @@
+{
+  "name": "dsh-orchestra-claude-host",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The Claude host child process of orchestrad (alpha 0.2). The SDK is installed by the user with npm ci; it is never committed.",
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.287"
+  }
+}

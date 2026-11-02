@@ -9,6 +9,8 @@ import type { PeekEvent, PeekView, Redact } from '../sources/peek.ts';
 import { PEEK_LIMITS, findSession, readSession } from '../sources/peek.ts';
 import { makeStageBuilder } from '../sources/stage.ts';
 import { makeTowerBuilder } from '../sources/tower.ts';
+import type { OwnedAnswer, OwnedApiOptions } from './owned.ts';
+import { makeOwnedApi } from './owned.ts';
 import type { UiAsset } from './ui-assets.ts';
 import { UI_ASSETS } from './ui-assets.ts';
 import { frozen } from '../../shared/frozen.js';
@@ -38,6 +40,11 @@ import { frozen } from '../../shared/frozen.js';
 // form, and /session, the full record of one session the tower's detail links to. The old stage page is
 // gone: /stage answers a redirect to /. GET /api/peek/stage still answers the stage snapshot the tower
 // is built from (shared/stage-contract.js), for tools and tests; no page polls it.
+//
+// alpha 0.2 (slice design §2.7): when given `owned`, the owned-session routes of routes.ts (the unlock
+// pair, /api/owned/*, /api/approvals/*, /api/import/*) go to src/server/owned.ts, which runs their
+// check chain after the Host check here: the pairing cookie, Origin, Sec-Fetch-Site, JSON, and the
+// controller token an unlock code buys. Without `owned` they do not exist.
 
 export const PEEK_HOST = 'orchestra.localhost';
 export const PAIR_TTL_MS = 10 * 60 * 1000;
@@ -76,6 +83,8 @@ export type PeekServerOptions = {
   profile: 'real' | 'test';
   /** The embedded page files: UI_ASSETS unless a test hands its own. */
   assets?: Readonly<Record<string, UiAsset>>;
+  /** The owned-session API (alpha 0.2); absent, its routes do not exist. */
+  owned?: OwnedApiOptions;
 };
 
 export type PeekServer = { port: number; url: string; close(): Promise<void> };
@@ -249,6 +258,12 @@ export async function startPeekServer(opts: PeekServerOptions): Promise<PeekServ
   for (const name of Object.keys(given)) assets.set(name, { type: given[name]!.type, etag: given[name]!.etag, body: Buffer.from(given[name]!.hex, 'hex') });
   let host = '';
   let origin = '';
+  const owned = opts.owned === undefined ? null : makeOwnedApi({ ...opts.owned, clock, log, origin: () => origin, readBody });
+  const answer = (res: ServerResponse, a: OwnedAnswer): void => {
+    if (a.json !== undefined) return json(res, a.status, a.json);
+    if (a.text !== undefined) return plain(res, a.status, a.text, UI_HEADERS);
+    return send(res, a.status, 'text/plain; charset=utf-8', '', UI_HEADERS);
+  };
 
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     if (req.headers.host !== host) return plain(res, 403, 'wrong host');
@@ -277,7 +292,11 @@ export async function startPeekServer(opts: PeekServerOptions): Promise<PeekServ
       log.info('peek-pair', { outcome });
       if (outcome === 'ok') {
         const sid = randomBytes(32).toString('base64url');
-        if (sessions.size >= LIMITS.sessions) sessions.delete(sessions.values().next().value!);
+        if (sessions.size >= LIMITS.sessions) {
+          const oldest = sessions.values().next().value!;
+          sessions.delete(oldest);
+          owned?.forget(oldest);
+        }
         sessions.add(sid);
         res.setHeader('Location', '/');
         return html(res, 303, '', [['Set-Cookie', `${COOKIE}=${sid}; HttpOnly; SameSite=Strict; Path=/`]]);
@@ -294,6 +313,10 @@ export async function startPeekServer(opts: PeekServerOptions): Promise<PeekServ
 
     const sid = cookieOf(req);
     const paired = sid !== null && sessions.has(sid);
+    if (owned !== null) {
+      const a = await owned.handle(req, url, paired ? sid : null);
+      if (a !== null) return answer(res, a);
+    }
     if (req.method !== 'GET') return plain(res, 405, 'method not allowed');
     // The old stage page is gone; a bookmark of it lands on the tower (or on pairing).
     if (url.pathname === '/stage') {

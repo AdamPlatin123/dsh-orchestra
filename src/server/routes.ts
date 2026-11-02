@@ -47,7 +47,7 @@ export const SEQ_RE = frozen(/^(?:0|[1-9][0-9]{0,15})$/);
 export const CONTROL_HEADER = 'x-orchestra-csrf';
 /**
  * The largest body an owned-session POST may send (slice design §2.7 check 7). Over it the request is
- * refused before its shape is read; the design gives that refusal no code, so step 5 picks the status.
+ * refused before its shape is read: 413 body-too-big (the design gave it no code; step 5 added one).
  */
 export const OWNED_BODY_MAX_BYTES = 64 * 1024;
 /**
@@ -101,16 +101,18 @@ export type Check = {
  *
  * The owned-session routes (alpha 0.2) keep this order. Their `auth` step is slice design §2.7's checks
  * 1 to 6 (Host, cookie, Origin, Sec-Fetch-Site same-origin, JSON content type, and for 'unlocked' the
- * controller token: 403 not-unlocked); the body cap (check 7) comes before the shape. A message over
- * OWNED_TEXT_MAX_BYTES is the `own` step's 422 text-too-long, after dedup as for a reminder (the design
- * lists it before the shape check: its status is the same either way, and a 4xx writes nothing). The
+ * controller token: 403 not-unlocked); the body cap (check 7) comes before the shape, in the actionId
+ * step: a body over OWNED_BODY_MAX_BYTES is 413 body-too-big (step 5's code). A message over
+ * OWNED_TEXT_MAX_BYTES is 422 text-too-long and one starting with `/` is 422 slash-command, codes of the
+ * `own` step; src/server/owned.ts runs both before the shape, in the design's order (its status is the
+ * same either way, and a 4xx writes nothing). The
  * `item` step looks up the owned session or the stage session the route names (404 item-unknown); an
  * approval that is unknown or gone is the `own` step's approval-gone.
  */
 export const CHECKS: readonly Check[] = Object.freeze([
   { step: 'auth', status: 403, codes: ['not-unlocked'] },
   { step: 'ui-only', status: 503, codes: ['ui-only'], reservedBy: 'D-17' },
-  { step: 'actionId', status: 400, codes: ['actionId-missing'] },
+  { step: 'actionId', status: 400, codes: ['actionId-missing', 'body-too-big'] },
   { step: 'shape', status: 400, codes: [] },
   { step: 'dedup', status: null, codes: ['in-flight', 'actionId-reused'] },
   { step: 'item', status: 404, codes: ['item-unknown'] },
