@@ -14,21 +14,22 @@
 // The router model's title and reason are its words about a synthetic sentence; only their lengths are
 // printed. Never a code, a token or a path outside the test dir. The test dir is removed unless --keep.
 //
+// A dispatched session is ended through orchestrad and the stop order waited out before orchestrad is
+// killed; the children it recorded are looked for afterwards (scripts/live-common.ts).
+//
 // Listed in EXEMPT_SCRIPTS (test/helpers/scan-rules.ts), as live-smoke.ts: it spawns orchestrad, speaks
 // HTTP to it on 127.0.0.1 and waits on timers; it touches no harness root.
 import { spawn } from 'node:child_process';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
-import * as http from 'node:http';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { endAndWait, leftovers, request, sleep } from './live-common.ts';
 
 const REPO = fileURLToPath(new URL('../', import.meta.url));
 const SENTENCES = ['把 README 翻成英文', '用 codex 修一个测试', '解释一下这段代码'];
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -38,25 +39,6 @@ function freePort(): Promise<number> {
       const p = (s.address() as net.AddressInfo).port;
       s.close(() => resolve(p));
     });
-  });
-}
-
-type Reply = { status: number; headers: http.IncomingHttpHeaders; body: string; json: any };
-
-function request(port: number, host: string, method: string, pathname: string, headers: Record<string, string>, body?: string): Promise<Reply> {
-  return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, method, path: pathname, headers: { host, ...headers } }, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', (c: Buffer) => chunks.push(c));
-      res.on('end', () => {
-        const text = Buffer.concat(chunks).toString('utf8');
-        let json: unknown = null;
-        if ((res.headers['content-type'] ?? '').startsWith('application/json')) json = JSON.parse(text);
-        resolve({ status: res.statusCode ?? 0, headers: res.headers, body: text, json });
-      });
-    });
-    req.on('error', reject);
-    req.end(body);
   });
 }
 
@@ -138,7 +120,10 @@ async function main(): Promise<number> {
       const made = await request(port, host, 'POST', '/api/owned/new', h, JSON.stringify({ actionId: crypto.randomUUID(), text, harness: first.harness, model: first.model, routeId: card.routeId }));
       report.dispatch = { status: made.status, harness: first.harness, model: first.model };
       if (made.status === 200) {
-        await request(port, host, 'POST', `/api/owned/${made.json.ownedId}/end`, h, JSON.stringify({ actionId: crypto.randomUUID() }));
+        const id = String(made.json.ownedId);
+        const list = () => request(port, host, 'GET', '/api/owned', { cookie, origin, 'sec-fetch-site': 'same-origin', 'x-orchestra-csrf': h['x-orchestra-csrf'] });
+        const end = await endAndWait(() => request(port, host, 'POST', `/api/owned/${id}/end`, h, JSON.stringify({ actionId: crypto.randomUUID() })), async () => (await list()).json?.owned?.find((o: { ownedId: string }) => o.ownedId === id)?.state ?? null);
+        report.dispatchEnded = end;
         const tower = (await request(port, host, 'GET', '/api/tower', { cookie, origin, 'sec-fetch-site': 'same-origin' })).json;
         const d = tower?.router?.dispatch ?? null;
         report.routerRow = d === null ? null : { harness: d.harness, model: d.model, linked: d.node !== null, titleChars: [...String(d.title)].length };
@@ -151,6 +136,7 @@ async function main(): Promise<number> {
   } finally {
     child.kill();
     await Promise.race([exited, sleep(5000)]);
+    report.leftovers = leftovers(testDir);
     if (!keep) {
       for (let i = 0; i < 10; i++) {
         try {

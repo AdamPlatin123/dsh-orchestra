@@ -89,15 +89,18 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
   let dispatched: { ownedId: string; harness: 'codex' | 'claude'; model: string; at: number; title: string } | null = null;
   const tower = () => towerFromStage(busyStage(), { seats, nowWall: OBSERVED, dispatch: dispatched });
   const SUGGESTION = {
-    routeId: 'e'.repeat(20), title: '写发布说明', taskClass: 'general', rules: ['fallback'],
+    routeId: 'e'.repeat(20), title: '写发布说明', titleSource: 'model', taskClass: 'general', rules: ['fallback'],
     router: { model: 'zcode/GLM-5.3', state: 'answered', why: null, pick: 0 },
     candidates: [
       { harness: 'codex', model: 'zcode/GLM-5.3', source: 'model', rule: null, reason: '纯文字活' },
       { harness: 'codex', model: 'codex/gpt-6.1-sol', source: 'rule', rule: 'fallback', reason: null },
     ],
     off: ['claude'],
+    full: false,
   };
   let suggestion: Record<string, any> = SUGGESTION;
+  /** While set, a suggestion's reply waits for it (the router model takes its time). */
+  let suggestHold: Promise<void> | null = null;
   const loc = { hash: '', href: '', pathname: '/', search: '', replace(u: string) { this.hash = u.slice(u.indexOf('#')); } };
   const win = {};
   Object.assign(doc, { hidden: false, addEventListener: (t: string, fn: Listener) => on(doc, t, fn) });
@@ -137,7 +140,10 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     if (url === '/api/owned') return reply(200, list);
     if (url.startsWith(`/api/owned/${ID.a}/feed`)) return reply(200, url.endsWith('after=0') ? feed : { ...feed, from: 7, events: [] });
     if (url === '/api/owned/new') return reply(200, { ownedId: ID.n, actionId: body.actionId, accepted: true, jseq: 9 });
-    if (url === '/api/route/suggest') return reply(200, suggestion);
+    if (url === '/api/route/suggest') {
+      if (suggestHold !== null) await suggestHold;
+      return reply(200, suggestion);
+    }
     return reply(200, { actionId: body?.actionId, accepted: true, jseq: 10 });
   });
   const flush = async () => {
@@ -348,7 +354,8 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     assert.equal(suggested[0]!.headers['x-orchestra-csrf'], CSRF);
     assert.equal(posts('/api/owned/new').length, 1, 'a suggestion dispatches nothing');
     assert.equal(card.getAttribute('data-hide'), '0');
-    assert.equal(nd.querySelector('[data-slot=rtTitle]')!.textContent, '标题：写发布说明');
+    // The model's title says it is the model's (the sentence is the person's own).
+    assert.equal(nd.querySelector('[data-slot=rtTitle]')!.textContent, TOWER_TEXT['route.taskTitleModel']!.replace('{t}', '写发布说明'));
     const cands = () => nd.querySelector('[data-slot=cands]')!.querySelectorAll('.cand');
     assert.deepEqual(cands().map((c) => [c.querySelector('[data-slot=rank]')!.textContent, c.querySelector('[data-slot=hm]')!.textContent, c.querySelector('[data-slot=src]')!.textContent, c.querySelector('[data-slot=why]')!.textContent]), [
       [TOWER_TEXT['route.first'], 'Codex · zcode/GLM-5.3', TOWER_TEXT['route.src.model'], '纯文字活'],
@@ -356,6 +363,9 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     ]);
     const pressed = () => cands().map((c) => c.querySelector('button')!.getAttribute('aria-pressed'));
     assert.deepEqual(pressed(), ['true', 'false'], 'the first is picked');
+    // A reader hears rank, harness and model, source and reason apart; the dialog's own line says what was picked.
+    assert.equal(cands()[0]!.querySelector('button')!.getAttribute('aria-label'), `${TOWER_TEXT['route.first']}：Codex · zcode/GLM-5.3；来源：${TOWER_TEXT['route.src.model']}；理由：纯文字活`);
+    assert.ok(nd.querySelector('[data-slot=msg]')!.textContent.startsWith(TOWER_TEXT['route.picked']!.replace('{h}', 'Codex').replace('{m}', 'zcode/GLM-5.3')), nd.querySelector('[data-slot=msg]')!.textContent);
     assert.equal((doc.getElementById('nw-model') as any).value, 'zcode/GLM-5.3');
     await click(cands()[1]!.querySelector('button'));
     assert.deepEqual(pressed(), ['false', 'true']);
@@ -372,7 +382,8 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     await click(bar.querySelector('[data-act=new]'));
     (doc.getElementById('nw-text') as any).value = '再写一份';
     await click(nd.querySelector('[data-act=suggest]'));
-    assert.ok(nd.querySelector('[data-slot=rtNote]')!.textContent.startsWith('路由模型这次没回答，下面只是规则给的建议'));
+    assert.ok(nd.querySelector('[data-slot=rtNote]')!.textContent.startsWith(`没用上路由模型（${TOWER_TEXT['route.no.timeout']}）`), nd.querySelector('[data-slot=rtNote]')!.textContent);
+    assert.equal(nd.querySelector('[data-slot=rtTitle]')!.textContent, TOWER_TEXT['route.taskTitleModel']!.replace('{t}', '写发布说明'));
     (doc.getElementById('nw-model') as any).value = 'codex/gpt-6-astra';
     fire(doc, 'change', { target: doc.getElementById('nw-model') });
     await flush();
@@ -383,6 +394,29 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     assert.equal(card.getAttribute('data-stale'), '1');
     await click(nd.querySelector('[data-act=dispatch]'));
     assert.equal(Object.hasOwn(posts('/api/owned/new').at(-1)!.body, 'routeId'), false, 'a stale card goes without its routeId');
+
+    // A reply that comes after the person chose by hand changes nothing they chose; one that comes after
+    // the dialog closed is dropped.
+    suggestion = { ...SUGGESTION, routeId: 'a'.repeat(20) };
+    let letGo!: () => void;
+    suggestHold = new Promise<void>((r) => { letGo = r; });
+    await click(bar.querySelector('[data-act=new]'));
+    (doc.getElementById('nw-text') as any).value = '第三份';
+    await click(nd.querySelector('[data-act=suggest]'));
+    (doc.getElementById('nw-model') as any).value = 'codex/gpt-6.1-terra';
+    fire(doc, 'change', { target: doc.getElementById('nw-model') });
+    letGo();
+    await flush();
+    assert.equal((doc.getElementById('nw-model') as any).value, 'codex/gpt-6.1-terra', 'the hand-made choice stays');
+    assert.equal(nd.querySelector('[data-slot=card]')!.getAttribute('data-hide'), '0', 'the card still shows');
+    suggestion = { ...SUGGESTION, routeId: 'b'.repeat(20) };
+    suggestHold = new Promise<void>((r) => { letGo = r; });
+    await click(nd.querySelector('[data-act=suggest]'));
+    nd.close();
+    letGo();
+    await flush();
+    suggestHold = null;
+    assert.equal((doc.getElementById('nw-model') as any).value, 'codex/gpt-6.1-terra', 'a closed dialog is not filled');
 
     // The router row ("你") shows the last dispatch once the tower says it.
     dispatched = { ownedId: ID.n, harness: 'codex', model: 'codex/gpt-6.1-sol', at: OBSERVED - 2 * MIN, title: '写发布说明' };
@@ -517,7 +551,15 @@ test('the chat (live run fixes): a command told again moves below its approval; 
   const partial = describeChat({ clipped: false, events: [ev(7, 'text', 'm1', 'partial', 'Writ', true)] }).kids[0]!.key;
   const final = describeChat({ clipped: false, events: [ev(9, 'text', 'm1', 'final', 'Wrote hello.txt'), ev(10, 'text', 'm1', 'final', 'part two')] }).kids.map((k) => k.key);
   assert.equal(final[0], partial);
-  assert.notEqual(final[1], partial);
+  // A long reply's chunks (one ref, final, adjacent) are one message under the first chunk's key; another ref is another message.
+  const chunks = describeChat({ clipped: false, events: [ev(9, 'text', 'm1', 'final', 'first half, '), ev(10, 'text', 'm1', 'final', 'second half'), ev(11, 'text', 'm3', 'final', 'next')] });
+  assert.deepEqual(chunks.kids.map((k: any) => k.slots.tx.text), ['first half, second half', 'next']);
+  assert.equal(chunks.kids[0]!.key, partial);
+  assert.equal(chatNews({ clipped: false, events: [ev(9, 'text', 'm1', 'final', 'first half, '), ev(10, 'text', 'm1', 'final', 'second half')] }, 0).split(TOWER_TEXT['sep.notes']!).length, 1, 'heard as one');
+  // An automatic refusal this page has no words for says its code, never "timed out" (T1).
+  const odd = describeChat({ clipped: false, events: [ev(12, 'auto-denied', 'toolu_9', 'host', 'Write'), ev(13, 'auto-denied', 'toolu_8', 'ending', 'Write')] }).kids.map((k: any) => k.slots.tx.text);
+  assert.ok(!odd[0].includes(TOWER_TEXT['chat.clock']!) && odd[0].includes('host'), odd[0]);
+  assert.equal(odd[1], TOWER_TEXT['chat.ending']!.replace('{t}', 'Write'));
   // Only what is new, not your own words, not a live one; at most the last three.
   const feed = { clipped: false, events: [ev(1, 'text', 'm0', 'final', 'old words'), ev(2, 'you', null, null, 'mine'), ev(3, 'text', 'm1', 'final', 'Wrote hello.txt'), ev(4, 'text', 'm2', 'partial', 'stre', true)] };
   const heard = chatNews(feed, 1);

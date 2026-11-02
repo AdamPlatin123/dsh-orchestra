@@ -1,7 +1,11 @@
 // The live end-to-end run of an owned session (orchestra app step 4): orchestrad in the test profile with
 // --owned, driven over HTTP exactly as the page drives it, against the real codex.exe or the Claude host
 // and the local magpie gateway (http://127.0.0.1:3425, no key). Not part of the test run.
-//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--keep]
+//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--outside] [--keep]
+//
+// --outside: the task is instead to read a synthetic file the script writes in the test dir, outside the
+// session's work dir; the report says whether the harness asked about it (approvals by kind and risk) or
+// ran it without asking (ran-unasked notes). It answers whether a read outside the work dir is asked about.
 //
 // What it does: makes %TEMP%\orchestra-test-smoke-XXXX (the test profile's dir, its data dir inside),
 // starts orchestrad from this repository (src/boot.ts) with --test-profile --test-dir <it> --peek-port
@@ -14,8 +18,14 @@
 // disk, ends the session and stops orchestrad.
 //
 // What it prints: event kinds and counts, the session's states, the approvals by kind, whether the file
-// is there with the content asked for. Never the model's words, a path outside the test dir, a code or a
-// token. The test dir is removed at the end unless --keep is given.
+// is there with the content asked for, and what was left running (scripts/live-common.ts leftovers). Never
+// the model's words, a path outside the test dir, a code or a token. The test dir is removed at the end
+// unless --keep is given.
+//
+// Leaving nothing behind: every request has a 30 s deadline, and the loop checks the time limit after each
+// one; whatever happens, a session that was dispatched is ended through orchestrad (POST /end, then the
+// stop order is waited out) before orchestrad is killed, and the children orchestrad recorded are looked
+// for afterwards (and ended, with their trees, when still there).
 //
 // Listed in EXEMPT_SCRIPTS (test/helpers/scan-rules.ts): it spawns orchestrad, speaks HTTP to it on
 // 127.0.0.1, waits on timers and reads the one file the session wrote in its test dir; it touches no
@@ -23,11 +33,11 @@
 import { spawn } from 'node:child_process';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
-import * as http from 'node:http';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { endAndWait, leftovers, request, sleep } from './live-common.ts';
 
 const REPO = fileURLToPath(new URL('../', import.meta.url));
 const FILE = 'smoke.txt';
@@ -35,22 +45,26 @@ const WORD = 'orchestra-smoke-ok';
 const TASK = `Create a file named ${FILE} in the current working directory containing exactly the text ${WORD}, then read the file back and tell me what it contains.`;
 const LIMIT_MS = 6 * 60 * 1000;
 
-function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean } {
+const OUTSIDE_FILE = 'outside-probe.txt';
+const OUTSIDE_WORD = 'orchestra-outside-probe';
+const outsideTask = (file: string) => `Run a shell command that prints the contents of the file ${file} and tell me the word it contains. Do not change any file.`;
+
+function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean; outside: boolean } {
   const a = process.argv.slice(2);
   let harness: string | null = null;
   let model: string | null = null;
   let keep = false;
+  let outside = false;
   for (let i = 0; i < a.length; i++) {
     if (a[i] === '--harness') harness = a[++i] ?? null;
     else if (a[i] === '--model') model = a[++i] ?? null;
     else if (a[i] === '--keep') keep = true;
+    else if (a[i] === '--outside') outside = true;
     else throw new Error(`live-smoke: unknown argument ${a[i]}`);
   }
   if (harness !== 'codex' && harness !== 'claude') throw new Error('live-smoke: --harness codex|claude');
-  return { harness, model, keep };
+  return { harness, model, keep, outside };
 }
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -63,27 +77,9 @@ function freePort(): Promise<number> {
   });
 }
 
-type Reply = { status: number; headers: http.IncomingHttpHeaders; body: string; json: any };
-
-function request(port: number, host: string, method: string, pathname: string, headers: Record<string, string>, body?: string): Promise<Reply> {
-  return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, method, path: pathname, headers: { host, ...headers } }, (res) => {
-      const chunks: Buffer[] = [];
-      res.on('data', (c: Buffer) => chunks.push(c));
-      res.on('end', () => {
-        const text = Buffer.concat(chunks).toString('utf8');
-        let json: unknown = null;
-        if ((res.headers['content-type'] ?? '').startsWith('application/json')) json = JSON.parse(text);
-        resolve({ status: res.statusCode ?? 0, headers: res.headers, body: text, json });
-      });
-    });
-    req.on('error', reject);
-    req.end(body);
-  });
-}
 
 async function main(): Promise<number> {
-  const { harness, model, keep } = args();
+  const { harness, model, keep, outside } = args();
   const testDir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'orchestra-test-smoke-'));
   fs.mkdirSync(path.join(testDir, 'roots'));
   const port = await freePort();
@@ -115,6 +111,9 @@ async function main(): Promise<number> {
   };
   const report: Record<string, unknown> = { harness };
   let code = 1;
+  /** Set once a session is dispatched: the finally ends it through orchestrad, whatever else happened. */
+  let ownedId: string | null = null;
+  let endIt: (() => Promise<void>) | null = null;
   try {
     const pair = (await waitLine(/pairing code (\d{8})/))[1]!;
     await waitLine(/peek page at /);
@@ -136,9 +135,17 @@ async function main(): Promise<number> {
     const get = (p: string) => request(port, host, 'GET', p, { cookie, origin, 'sec-fetch-site': 'same-origin', 'x-orchestra-csrf': h['x-orchestra-csrf'] });
     const post = (p: string, body: Record<string, unknown>) => request(port, host, 'POST', p, h, JSON.stringify({ actionId: crypto.randomUUID(), ...body }));
 
-    const made = await post('/api/owned/new', { text: TASK, harness, ...(model === null ? {} : { model }) });
+    const probe = path.join(testDir, OUTSIDE_FILE);
+    if (outside) fs.writeFileSync(probe, `${OUTSIDE_WORD}\n`);
+    const made = await post('/api/owned/new', { text: outside ? outsideTask(probe) : TASK, harness, ...(model === null ? {} : { model }) });
     if (made.status !== 200) throw new Error(`live-smoke: new answered ${made.status} ${made.body}`);
-    const ownedId = String(made.json.ownedId);
+    const id = String(made.json.ownedId);
+    ownedId = id;
+    endIt = async () => {
+      const r = await endAndWait(() => post(`/api/owned/${id}/end`, {}), async () => (await get('/api/owned')).json?.owned?.find((o: { ownedId: string }) => o.ownedId === id)?.state ?? null);
+      report.endAnswer = r.endAnswer;
+      report.settledAs = r.settled;
+    };
     const states: string[] = [];
     const allowed: Record<string, number> = {};
     const refusals: Record<string, number> = {};
@@ -149,9 +156,10 @@ async function main(): Promise<number> {
     for (;;) {
       if (Date.now() - t0 > LIMIT_MS) throw new Error('live-smoke: no reply within the time limit');
       const list = (await get('/api/owned')).json;
-      const me = list.owned.find((o: { ownedId: string }) => o.ownedId === ownedId);
+      if (Date.now() - t0 > LIMIT_MS) throw new Error('live-smoke: no reply within the time limit');
+      const me = list.owned.find((o: { ownedId: string }) => o.ownedId === id);
       if (me !== undefined && states.at(-1) !== me.state) states.push(me.state);
-      for (const a of list.approvals.filter((x: { ownedId: string }) => x.ownedId === ownedId)) {
+      for (const a of list.approvals.filter((x: { ownedId: string }) => x.ownedId === id)) {
         if (!a.canAccept) {
           await post(`/api/approvals/${a.approvalId}/deny`, {});
           continue;
@@ -161,10 +169,10 @@ async function main(): Promise<number> {
         const fresh = (await get('/api/owned')).json;
         if (!fresh.approvals.some((x: { approvalId: string }) => x.approvalId === a.approvalId)) continue;
         const r = await post(`/api/approvals/${a.approvalId}/allow`, { digest: a.digest, rev: fresh.rev });
-        if (r.status === 200) allowed[a.kind] = (allowed[a.kind] ?? 0) + 1;
+        if (r.status === 200) allowed[`${a.kind}/${a.risk}`] = (allowed[`${a.kind}/${a.risk}`] ?? 0) + 1;
         else refusals[String(r.json?.error ?? r.status)] = (refusals[String(r.json?.error ?? r.status)] ?? 0) + 1;
       }
-      const feed = (await get(`/api/owned/${ownedId}/feed?after=${after}`)).json;
+      const feed = (await get(`/api/owned/${id}/feed?after=${after}`)).json;
       for (const e of feed.events) events.push({ kind: e.kind, state: e.state, text: e.text });
       after = feed.to;
       replied = events.some((e) => e.kind === 'text' && e.state !== 'partial' && (e.text ?? '').length > 0);
@@ -173,29 +181,33 @@ async function main(): Promise<number> {
       if (replied && turnOver && me?.state === 'idle') break;
       await sleep(1000);
     }
-    const file = path.join(testDir, 'orchestra', 'work', ownedId, FILE);
+    const file = path.join(testDir, 'orchestra', 'work', id, FILE);
     const written = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
-    const mentions = events.some((e) => e.kind === 'text' && (e.text ?? '').includes(WORD));
-    const ended = await post(`/api/owned/${ownedId}/end`, {});
-    await sleep(1500);
-    const last = (await get('/api/owned')).json.owned.find((o: { ownedId: string }) => o.ownedId === ownedId);
+    const mentions = events.some((e) => e.kind === 'text' && (e.text ?? '').includes(outside ? OUTSIDE_WORD : WORD));
+    await endIt();
+    endIt = null;
+    const last = (await get('/api/owned')).json.owned.find((o: { ownedId: string }) => o.ownedId === id);
     const count: Record<string, number> = {};
     for (const e of events) {
       const k = `${e.kind}${e.state === null ? '' : `:${e.state}`}`;
       count[k] = (count[k] ?? 0) + 1;
     }
     Object.assign(report, {
-      states, endState: last === undefined ? null : `${last.state}/${last.endReason}`, endAnswer: ended.status,
+      states, endState: last === undefined ? null : `${last.state}/${last.endReason}`,
       approvalsAllowed: allowed, approvalRefusals: refusals, feedEvents: count, replyInFeed: replied, replyNamesTheWord: mentions,
       fileWritten: written !== null, fileContentAsAsked: written !== null && written.trim() === WORD,
     });
-    code = replied && written !== null && written.trim() === WORD ? 0 : 1;
+    if (outside) report.ranUnasked = events.filter((e) => e.kind === 'note' && e.state === 'ran-unasked').length;
+    code = outside ? (replied ? 0 : 1) : replied && written !== null && written.trim() === WORD ? 0 : 1;
   } catch (e) {
     report.error = e instanceof Error ? e.message : String(e);
     report.orchestradSaid = lines.filter((l) => /owned|refus|failed|error/i.test(l) && !/code \d{8}/.test(l)).map((l) => l.replace(testDir, '<testDir>'));
   } finally {
+    // A session the run did not get to end (an error on the way) is ended through orchestrad first.
+    if (ownedId !== null && endIt !== null) await endIt().catch(() => {});
     child.kill();
     await Promise.race([exited, sleep(5000)]);
+    report.leftovers = leftovers(testDir);
     if (!keep) {
       // The host and claude.exe may still be leaving: a few tries.
       for (let i = 0; i < 10; i++) {

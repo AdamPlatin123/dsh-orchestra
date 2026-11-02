@@ -32,6 +32,8 @@ export type TaskClass = (typeof TASK_CLASSES)[number];
 /** What the router model did for a suggestion: answered, failed to (no-answer), was not asked because the rules settled it (skipped), or is off. */
 export const ROUTER_STATES = frozen(['answered', 'no-answer', 'skipped', 'off'] as const);
 export type RouterState = (typeof ROUTER_STATES)[number];
+/** What a RouteDecision record says of the router model: a suggestion's state, or not-asked (a dispatch with no suggestion for its sentence). */
+export const ROUTE_RECORD_ROUTER = frozen([...ROUTER_STATES, 'not-asked'] as const);
 /** The one dispatch mode the desk has (r4 §9.5: manual from M1; shadow and active come later). */
 export const ROUTE_MODES = frozen(['manual'] as const);
 /** A RouteDecision's reason chip: the rule of the candidate taken, router-model for the model's pick, manual for a choice by hand. */

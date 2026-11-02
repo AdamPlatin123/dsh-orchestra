@@ -38,6 +38,9 @@ export const EXEMPT_SCRIPTS: readonly string[] = [
   // The dispatch desk's live run (orchestra app plan §3), the same kind as live-smoke: it starts orchestrad
   // in the test profile, speaks HTTP to it on 127.0.0.1 and waits on timers; it touches no harness root.
   'scripts/live-route.ts',
+  // What the two live runs share (phase 3 review): HTTP to orchestrad with a deadline, the end of a session
+  // waited out, and the children orchestrad recorded in the test dir's run/pids.jsonl ended when left over.
+  'scripts/live-common.ts',
 ];
 
 // test/ is scanned for in-process-start-only-in-helper alone: every other rule's scope excludes it.

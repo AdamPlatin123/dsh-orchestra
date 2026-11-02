@@ -67,6 +67,10 @@ export function describeChat(feed) {
   const fates = new Map(feed.events.filter((e) => e.kind === 'note' && MSG.test(e.state ?? '')).map((e) => [e.ref, e]));
   /** @type {Map<string, number>} */
   const parts = new Map();
+  // A long reply comes in chunks of one ref (2 KB each, src/owned/text.ts): adjacent final chunks are one
+  // message, under the first chunk's key, so it reads (and is heard) as one.
+  /** @type {{ ref: string, node: any } | null} */
+  let lastText = null;
   for (const e of feed.events) {
     if (e.kind === 'note' && MSG.test(e.state ?? '')) continue;
     const tx = e.text ?? '';
@@ -75,6 +79,10 @@ export function describeChat(feed) {
     const n = parts.get(k) ?? 0;
     if (e.kind === 'text' && e.ref !== null) parts.set(k, n + 1);
     const key = e.kind === 'text' && e.ref !== null ? `m${k}:${n}` : `e${e.seq}`;
+    if (e.kind === 'text' && e.ref !== null && !e.live && lastText !== null && lastText.ref === e.ref && kids[kids.length - 1] === lastText.node) {
+      lastText.node.slots.tx.text += tx;
+      continue;
+    }
     const msg = (who, text, kind) => kids.push({ key, tpl: 'tpl-msg', data: { kind, live: e.live ? '1' : '0' }, slots: { who: { text: who }, tx: { text } } });
     // A command told again moves below the approval that decided it (src/owned/codex-session.ts).
     if (e.kind === 'tool' && tools.has(k)) kids.splice(kids.indexOf(tools.get(k)), 1);
@@ -91,10 +99,13 @@ export function describeChat(feed) {
     } else if (e.kind === 'you') {
       const f = fates.get(e.uuid);
       msg(join([t('chat.you'), f && tk('msgst', f.state, 'msgst.other', { t: f.text ?? '' })]), tx, 'you');
-    } else if (e.kind === 'text' || e.kind === 'result') msg(t('chat.agent'), e.live ? tx + t('chat.live') : tx, 'agent');
-    else if (e.kind === 'ask') msg(t('icon.approval'), t('chat.ask', { t: tx }), 'ask');
+    } else if (e.kind === 'text' || e.kind === 'result') {
+      msg(t('chat.agent'), e.live ? tx + t('chat.live') : tx, 'agent');
+      if (e.kind === 'text' && e.ref !== null && !e.live) lastText = { ref: e.ref, node: kids[kids.length - 1] };
+    } else if (e.kind === 'ask') msg(t('icon.approval'), t('chat.ask', { t: tx }), 'ask');
     else if (e.kind === 'answer') msg(t('chat.you'), tk('chat', e.state, 'chat.answered'), 'answer');
-    else if (e.kind === 'auto-denied') msg('', tk('chat', e.state, 'chat.clock', { t: tx }), 'auto');
+    // An automatic refusal says its reason; one this page has no words for says its code, never "timed out" (T1).
+    else if (e.kind === 'auto-denied') msg('', tk('chat', e.state, 'chat.autoOther', { t: tx }), 'auto');
     else if (e.kind === 'lifecycle') msg('', join([tk('life', e.state, 'chat.life'), tx]), 'life');
     else if (e.kind === 'note' && e.state !== 'tokens') msg('', tk('fnote', e.state, 'fnote.other', { t: tx }), 'note');
   }
@@ -223,33 +234,35 @@ export const pickedIndex = (reply, harness, model) => (reply === null ? -1 : rep
 /**
  * The card: first and alternatives, each with its harness, model, reason and where it came from; what
  * the router model did; the pick the selects hold. A sentence edited after the suggestion makes it stale
- * (its dispatch carries no routeId). `desk`: { text, reply } or null; `now`: { text, harness, model, asking }.
+ * (its dispatch carries no routeId). `desk`: { text, reply } or null; `now`: { text, harness, model, asking,
+ * enabled (false: orchestrad has no owned sessions, so no desk either: the button stays off), maxOwned }.
  */
 export function describeDesk(desk, now) {
   const reply = desk?.reply ?? null;
   const stale = desk !== null && desk.text !== now.text;
-  const ask = { text: t(now.asking ? 'new.asking' : 'new.ask'), attr: { 'aria-disabled': now.asking ? 'true' : null } };
+  const ask = { text: t(now.asking ? 'new.asking' : 'new.ask'), attr: { 'aria-disabled': now.asking || now.enabled === false ? 'true' : null } };
   if (reply === null) return { ask, card: { data: { hide: '1', stale: '0' } }, rtTitle: { text: '' }, rtNote: { text: '' }, cands: { kids: [] }, rtPick: { text: '' } };
   const i = pickedIndex(reply, now.harness, now.model);
   const r = reply.router;
   const noWhy = r.why === null ? '' : tk('route.no', r.why, 'route.no.other');
   const state = tk('route.state', r.state, 'route.state.off', { m: r.model, why: noWhy });
-  const cands = reply.candidates.map((c, k) => ({
-    key: `${reply.routeId}:${k}`, tpl: 'tpl-cand', data: { pick: String(k), harness: c.harness },
-    slots: {
-      b: { attr: { 'aria-pressed': k === i ? 'true' : 'false' } },
-      rank: { text: t(k === 0 ? 'route.first' : 'route.alt') },
-      hm: { text: `${t(`harness.${c.harness}`)} · ${c.model}` },
-      src: { text: t(c.source === 'model' ? 'route.src.model' : r.pick === k ? 'route.src.both' : 'route.src.rule') },
-      why: { text: c.source === 'model' ? c.reason ?? t('route.why.model') : tk('route.why', c.rule, 'route.why.fallback') },
-    },
-  }));
+  const cands = reply.candidates.map((c, k) => {
+    const rank = t(k === 0 ? 'route.first' : 'route.alt');
+    const hm = `${t(`harness.${c.harness}`)} · ${c.model}`;
+    const src = t(c.source === 'model' ? 'route.src.model' : r.pick === k ? 'route.src.both' : 'route.src.rule');
+    const why = c.source === 'model' ? c.reason ?? t('route.why.model') : tk('route.why', c.rule, 'route.why.fallback');
+    return {
+      key: `${reply.routeId}:${k}`, tpl: 'tpl-cand', data: { pick: String(k), harness: c.harness },
+      // A reader hears the parts apart (the spans alone run into one another).
+      slots: { b: { attr: { 'aria-pressed': k === i ? 'true' : 'false', 'aria-label': t('route.candLabel', { rank, hm, src, why }) } }, rank: { text: rank }, hm: { text: hm }, src: { text: src }, why: { text: why } },
+    };
+  });
   const offH = reply.off.length === 0 ? '' : t('route.offH', { h: reply.off.map((h) => t(`harness.${h}`)).join(t('sep.parts')) });
   return {
     ask,
     card: { data: { hide: '0', stale: stale ? '1' : '0' } },
-    rtTitle: { text: t('route.taskTitle', { t: reply.title }) },
-    rtNote: { text: join([state, offH, reply.candidates.length === 0 && t('route.none')], 'sep.notes') },
+    rtTitle: { text: t(reply.titleSource === 'model' ? 'route.taskTitleModel' : 'route.taskTitle', { t: reply.title }) },
+    rtNote: { text: join([state, reply.full === true && t('route.full', { n: now.maxOwned ?? '?' }), offH, reply.candidates.length === 0 && t('route.none')], 'sep.notes') },
     cands: { kids: cands },
     rtPick: { text: stale ? t('route.stale') : i < 0 ? t('route.manual') : t('route.picked', { h: t(`harness.${now.harness}`), m: now.model }) },
   };

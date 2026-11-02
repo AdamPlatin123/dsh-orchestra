@@ -80,6 +80,21 @@ export const CODEX_SESSION_LIMITS = frozen({
 
 export const CODEX_CLIENT_INFO = frozen({ name: 'orchestra', title: 'Orchestra', version: '0.2.0' });
 
+/**
+ * The codex-cli versions this driver was measured on: the app-server protocol, the private CODEX_HOME's
+ * [skills] keys (codex-home.ts: a key a later version does not know is ignored without a word) and the
+ * Windows sandbox findings (orchestra app plan, "已实测"). codex.exe is the user's global npm install and
+ * updates with it; a session whose initialize reply names another version ends as policy-mismatch.
+ */
+export const CODEX_VERSIONS = frozen(['0.165.0']);
+
+/** The codex-cli version in initialize's userAgent ("<client name>/0.165.0 (Windows ...) ..."), or null. */
+export function codexVersionOf(userAgent: unknown): string | null {
+  if (typeof userAgent !== 'string') return null;
+  const m = /^[^/\s]{1,64}\/(\d{1,4}\.\d{1,4}\.\d{1,6}(?:-[0-9A-Za-z.-]{1,32})?)(?:\s|$)/.exec(userAgent);
+  return m === null ? null : m[1]!;
+}
+
 /** The JSON-RPC error code a server request Orchestra does not answer gets: method not found. */
 export const UNANSWERED_REQUEST_CODE = -32601;
 
@@ -87,7 +102,8 @@ export const CODEX_DEADLINES = frozen({ startMs: 60_000, turnMs: 60_000, interru
 
 /** unknown: a session an earlier orchestrad started (its registry entry outlived a restart); nobody here holds its child. */
 export type CodexSessionState = 'starting' | 'idle' | 'running' | 'ended' | 'failed' | 'unknown';
-export type CodexEndReason = 'you-ended' | 'exited' | 'start-failed' | 'policy-mismatch' | 'daemon-restart';
+/** daemon-stop: orchestrad ended it on its own way out (nobody pressed end); the rest: shared/owned-contract.js. */
+export type CodexEndReason = 'you-ended' | 'exited' | 'start-failed' | 'policy-mismatch' | 'daemon-restart' | 'daemon-stop';
 /** No child of it runs here any more (or, unknown, none ever did in this orchestrad). */
 export const isOver = (state: CodexSessionState): boolean => state === 'ended' || state === 'failed' || state === 'unknown';
 
@@ -137,7 +153,8 @@ export type CodexSession = {
   readonly ready: Promise<boolean>;
   send(text: string, uuid: string): SendResult;
   interrupt(): Promise<{ withdrawn: number; denied: number }>;
-  end(): { denied: number };
+  /** Ends the session: a person's end (you-ended) unless orchestrad itself is stopping (daemon-stop). */
+  end(why?: 'you-ended' | 'daemon-stop'): { denied: number };
   stats(): { rpc: RpcStats | null; stderrTail: string; failure: string | null };
 };
 
@@ -198,6 +215,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   const toolEvents = new Map<string, { seq: number; input: FeedInput; hidden: boolean }>();
   /** Approval -> the item it decides, while it is open. */
   const askItem = new Map<string, string>();
+  /** Items of this turn codex asked about (any answer, an automatic refusal too): a command or file change that ran without one is said (ran-unasked). */
+  const askedItems = new Set<string>();
 
   let settleReady!: (ok: boolean) => void;
   const ready = new Promise<boolean>((r) => {
@@ -458,6 +477,16 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     }
   };
 
+  /**
+   * A command or file change that ran (completed or failed) though codex never asked about it: it is
+   * said in the feed (ran-unasked), so a run past the approval queue (codex runs what it judges safe
+   * without asking, and on Windows its sandbox is only read-only) is never just another row (D8, r4 §10.9).
+   */
+  const ranUnasked = (iid: string, status: string | null, what: string) => {
+    if (askedItems.has(iid) || (status !== 'completed' && status !== 'failed')) return;
+    note('ran-unasked', what.split('\n', 1)[0] ?? '');
+  };
+
   const STATUS: Readonly<Record<string, string>> = { completed: 'ran', failed: 'failed', declined: 'declined', inProgress: 'running' };
 
   const itemCompleted = (item: Obj) => {
@@ -481,6 +510,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       });
       if (keep.length === 0) feed.push({ kind: 'text', ref: iid, text: '', state: 'final' });
     } else if (type === 'commandExecution') {
+      ranUnasked(iid, str(item.status), it?.command ?? str(item.command) ?? '');
       feed.settle(`out:${iid}`);
       const raw = (str(item.aggregatedOutput) ?? it?.out ?? '').slice(-L.outputChars);
       const s = shownFeed(raw, 'tail');
@@ -491,6 +521,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       });
     } else if (type === 'fileChange') {
       const changes = changesOf(item.changes) ?? it?.changes ?? [];
+      ranUnasked(iid, str(item.status), changeSummary(changes, feedPath));
       const s = shownFeed(changeSummary(changes, feedPath), 'head');
       feed.push({ kind: 'tool-result', ref: iid, text: s.text, state: STATUS[str(item.status) ?? ''] ?? 'unknown', redactions: s.redactions });
     } else if (type === 'mcpToolCall' || type === 'dynamicToolCall' || type === 'webSearch') {
@@ -544,6 +575,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
           state = 'idle';
         }
         items.clear();
+        askedItems.clear();
         showAllTools();
         toolEvents.clear();
         const err = str(obj(turn.error).message);
@@ -747,6 +779,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       return;
     }
     const ask = { ...make(obj(params)), item: id(obj(params).itemId) };
+    if (ask.item !== null && askedItems.size < 4096) askedItems.add(ask.item);
     // A session that is ending answers what still arrives with the refusal.
     if (terminal()) {
       rpc.respond(rid, ask.reply({ decision: 'decline' }));
@@ -769,7 +802,13 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
 
   void (async () => {
     try {
-      await rpc.request('initialize', { clientInfo: { ...CODEX_CLIENT_INFO } }, D.startMs);
+      const init = obj(await rpc.request('initialize', { clientInfo: { ...CODEX_CLIENT_INFO } }, D.startMs));
+      if (terminal()) return;
+      const version = codexVersionOf(init.userAgent);
+      if (version === null || !CODEX_VERSIONS.includes(version)) {
+        fail('policy-mismatch', `codex-cli ${version ?? 'version unknown'}; Orchestra was measured on ${CODEX_VERSIONS.join(', ')}`);
+        return;
+      }
       rpc.notify('initialized');
       const r = obj(await rpc.request('thread/start', { cwd, model, approvalPolicy: 'on-request', sandbox: 'workspace-write' }, D.startMs));
       if (terminal()) return;
@@ -843,11 +882,11 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       changed();
       return { withdrawn, denied };
     },
-    end() {
+    end(why: 'you-ended' | 'daemon-stop' = 'you-ended') {
       if (terminal()) return { denied: 0 };
       const denied = approvals.declineOwned(ownedId, 'end');
       state = 'ended';
-      endReason = 'you-ended';
+      endReason = why === 'daemon-stop' ? 'daemon-stop' : 'you-ended';
       turnId = null;
       withdrawAll();
       feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'ended' });

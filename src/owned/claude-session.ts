@@ -57,7 +57,13 @@ export const CLAUDE_SESSION_LIMITS = frozen({
 export const CLAUDE_DEADLINES = frozen({ initMs: 120_000 });
 
 export type ClaudeSessionState = 'starting' | 'idle' | 'running' | 'ended' | 'failed' | 'unknown';
-export type ClaudeEndReason = 'you-ended' | 'exited' | 'start-failed' | 'safety-stop' | 'daemon-restart';
+/**
+ * you-ended: a person ended it; daemon-stop: orchestrad ended it on its way out; interrupt-unsure: an
+ * interrupt left something queued in the CLI, so Orchestra ended it (design §2.5); protocol-error: the
+ * host said something Orchestra cannot read, so Orchestra stopped it; exited: the host went away by
+ * itself; start-failed, safety-stop, daemon-restart: shared/owned-contract.js.
+ */
+export type ClaudeEndReason = 'you-ended' | 'exited' | 'start-failed' | 'safety-stop' | 'daemon-restart' | 'interrupt-unsure' | 'protocol-error' | 'daemon-stop';
 export const isClaudeOver = (state: ClaudeSessionState): boolean => state === 'ended' || state === 'failed' || state === 'unknown';
 
 export type ClaudeSessionOptions = {
@@ -101,10 +107,14 @@ export type ClaudeSession = {
   readonly feed: Feed;
   /** Settles true once init passed, false when the session ended or failed before that. */
   readonly ready: Promise<boolean>;
+  /** Settles once the host process closed (at once for a session an earlier orchestrad left: nothing of it runs here). */
+  readonly exited: Promise<void>;
   send(text: string, uuid: string): ClaudeSendResult;
   interrupt(): Promise<{ withdrawn: number; denied: number }>;
-  end(): { denied: number };
-  stats(): { stderrTail: string; failure: string | null; exit: { reason: string; detail: string | null } | null };
+  /** Ends the session: a person's end (you-ended) unless orchestrad itself is stopping (daemon-stop). */
+  end(why?: 'you-ended' | 'daemon-stop'): { denied: number };
+  /** closed: the host process closed (or none of it runs here). */
+  stats(): { stderrTail: string; failure: string | null; exit: { reason: string; detail: string | null } | null; closed: boolean };
 };
 
 export type ClaudeStartResult = { ok: true; session: ClaudeSession } | { ok: false; reason: 'model-refused' | 'spawn-refused'; detail: string };
@@ -164,6 +174,8 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
   let closed = false;
   let stderrTail = '';
   const queue: { text: string; uuid: string }[] = [];
+  /** Messages written to the host whose receipt it has not confirmed yet (a lifecycle frame of the uuid, or the turn's result). */
+  const written = new Set<string>();
   /** reqId -> the approval it waits on. */
   const asked = new Map<string, string>();
   /** A tool call's announcement: hidden while an approval about it is open. */
@@ -174,6 +186,10 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
   let settleReady!: (ok: boolean) => void;
   const ready = new Promise<boolean>((r) => {
     settleReady = r;
+  });
+  let settleExited!: () => void;
+  const exited = new Promise<void>((r) => {
+    settleExited = r;
   });
 
   // --- timers (the init deadline, the stop order) on the Clock -----------------------------------------
@@ -209,10 +225,14 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     const s = text === null ? null : shownFeed(text, 'head');
     feed.push({ kind: 'note', ref: null, text: s?.text ?? null, state: stateName, redactions: s?.redactions ?? 0 });
   };
-  const fate = (uuid: string, stateName: 'msg-queued' | 'msg-sent' | 'msg-not-sent' | 'msg-withdrawn', text: string | null = null) => {
+  // msg-queued: waiting here; msg-written: written to the host, its receipt not confirmed yet; msg-sent:
+  // the host confirmed it (a lifecycle frame of its uuid, or the turn's result); msg-unsure: written, and
+  // the session ended or the host went away before it confirmed anything (T1: never "sent" unconfirmed).
+  const fate = (uuid: string, stateName: 'msg-queued' | 'msg-written' | 'msg-sent' | 'msg-not-sent' | 'msg-withdrawn' | 'msg-unsure', text: string | null = null) => {
     if (uuid === '') return;
+    if (stateName !== 'msg-written') written.delete(uuid);
     const ev = { kind: 'note' as const, ref: uuid, text, state: stateName };
-    if (stateName === 'msg-queued') {
+    if (stateName === 'msg-queued' || stateName === 'msg-written') {
       feed.upsert(`msg:${uuid}`, ev);
     } else {
       feed.settle(`msg:${uuid}`);
@@ -224,6 +244,14 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     for (const m of lost) fate(m.uuid, 'msg-withdrawn');
     if (lost.length > 0) note('withdrawn', `${lost.length}`);
     return lost.length;
+  };
+  /** What was written and never confirmed: its fate is unknown now. */
+  const unsureAll = () => {
+    for (const uuid of [...written]) fate(uuid, 'msg-unsure', 'the host did not confirm it before the session ended');
+  };
+  /** The turn's result: the host took every message written so far (one user frame per turn). */
+  const confirmAll = () => {
+    for (const uuid of [...written]) fate(uuid, 'msg-sent');
   };
   const hideTool = (id: string | null) => {
     const t = id === null ? undefined : toolEvents.get(id);
@@ -272,6 +300,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     failure = detail;
     turn = false;
     withdrawAll();
+    unsureAll();
     showAllTools();
     feed.push({ kind: 'lifecycle', ref: null, text: shownFeed(detail, 'head').text, state: reason });
     stopHost();
@@ -283,11 +312,16 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     closed = true;
     cancelStop();
     cancelInit();
-    if (terminal()) return;
-    // Nobody can answer what the host asked any more.
+    settleExited();
+    // Nobody can answer what the host asked any more, however the session ended: a card an ask frame
+    // brought in while it was ending would otherwise wait on a host that is gone.
     approvals.forgetOwned(ownedId);
     asked.clear();
     askTool.clear();
+    if (terminal()) {
+      changed();
+      return;
+    }
     showAllTools();
     const why = exitFrame !== null ? `${exitFrame.reason}${exitFrame.detail === null ? '' : `: ${exitFrame.detail}`}` : code !== null ? `exit code ${code}` : `signal ${String(signal)}`;
     state = 'failed';
@@ -296,6 +330,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     turn = false;
     feed.push({ kind: 'lifecycle', ref: null, text: shownFeed(why, 'head').text, state: endReason });
     withdrawAll();
+    unsureAll();
     settleReady(false);
     changed();
   });
@@ -312,7 +347,8 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     turn = true;
     if (state === 'idle') state = 'running';
     write({ t: 'user', uuid: m.uuid, text: m.text });
-    fate(m.uuid, 'msg-sent');
+    if (m.uuid !== '') written.add(m.uuid);
+    fate(m.uuid, 'msg-written');
   };
   const pump = () => {
     if (terminal() || turn || queue.length === 0) return;
@@ -359,10 +395,18 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     const digest = str(f.digest);
     const toolUseId = str(f.toolUseId);
     if (reqId === null || !REQ_ID.test(reqId) || digest === null || !DIGEST.test(digest) || toolUseId === null || toolUseId.length > TOOL_ID_MAX || typeof f.preview !== 'string') {
-      fail('exited', 'the host sent an ask frame Orchestra cannot read');
+      fail('protocol-error', 'the host sent an ask frame Orchestra cannot read');
       return;
     }
     const perm = (allow: boolean) => write({ t: 'perm', reqId, allow, digest });
+    // A session that is ending answers what still arrives with the refusal, no card (as codex-session.ts does).
+    if (terminal()) {
+      perm(false);
+      const s = shownFeed(str(f.toolName) ?? '', 'head');
+      feed.push({ kind: 'auto-denied', ref: toolUseId, text: s.text, state: 'ending', redactions: s.redactions });
+      changed();
+      return;
+    }
     const a = askOf(f);
     if (a.hit !== null) {
       // A protected row of the spawn gate's table: declined at once, no card (D8 forbids only automatic allows).
@@ -415,6 +459,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
         if (uuid === null) return;
         if (f.state === 'refused') fate(uuid, 'msg-not-sent', 'refused by the host');
         else if (f.state === 'cancelled') fate(uuid, 'msg-withdrawn');
+        else if (written.has(uuid)) fate(uuid, 'msg-sent');
         return;
       }
       case 'text': {
@@ -457,12 +502,13 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
         // Something the CLI still holds would run after the stop (design §2.5): the session is closed.
         if (f.stillQueued !== 0) {
           note('interrupt-unsure', f.stillQueued === null ? null : String(f.stillQueued));
-          endSession('end');
+          endSession('end', 'interrupt-unsure');
         }
         return;
       }
       case 'result': {
         turn = false;
+        confirmAll();
         if (state === 'running') state = 'idle';
         const sub = str(f.subtype) ?? '';
         feed.push({ kind: 'lifecycle', ref: str(f.uuid), text: null, state: TURN_END[sub] ?? 'turn-unknown' });
@@ -485,7 +531,11 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
   };
 
   // --- stdout lines ----------------------------------------------------------------------------------
+  // Once the session ended or failed only two frames still count: exit (why the host left) and ask
+  // (answered with the refusal, onAsk); the rest is dropped, and a line past the bound is skipped up to
+  // its newline instead of growing the buffer until the host is stopped.
   let buf = Buffer.alloc(0);
+  let skipping = false;
   pipe.onStdout((chunk) => {
     if (closed) return;
     buf = Buffer.concat([buf, chunk]);
@@ -494,19 +544,28 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
       if (nl < 0) break;
       const line = buf.subarray(0, nl).toString('utf8');
       buf = buf.subarray(nl + 1);
+      if (skipping) {
+        skipping = false;
+        continue;
+      }
       if (line.trim() === '') continue;
       let f: unknown;
       try {
         f = JSON.parse(line);
       } catch {
-        fail('exited', 'the host wrote a line that is not JSON');
-        return;
+        fail('protocol-error', 'the host wrote a line that is not JSON');
+        continue;
       }
       if (!isObj(f) || typeof f.t !== 'string') continue;
+      if (terminal() && f.t !== 'exit' && f.t !== 'ask') continue;
       onFrame(f);
       changed();
     }
-    if (buf.length > L.lineBytes) fail('exited', 'the host wrote a line over 64 KiB');
+    if (buf.length > L.lineBytes) {
+      buf = Buffer.alloc(0);
+      skipping = true;
+      fail('protocol-error', 'the host wrote a line over 64 KiB');
+    }
   });
 
   /** The work dir's own realpath, for the place of what lies below it. */
@@ -532,13 +591,14 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     });
   }
 
-  function endSession(cause: 'end'): { denied: number } {
+  function endSession(cause: 'end', why: 'you-ended' | 'daemon-stop' | 'interrupt-unsure' = 'you-ended'): { denied: number } {
     if (terminal()) return { denied: 0 };
     const denied = approvals.declineOwned(ownedId, cause);
     state = 'ended';
-    endReason = 'you-ended';
+    endReason = why;
     turn = false;
     withdrawAll();
+    unsureAll();
     showAllTools();
     feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'ended' });
     stopHost();
@@ -570,6 +630,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     },
     feed,
     ready,
+    exited,
     send(text: string, uuid: string): ClaudeSendResult {
       if (terminal()) return { ok: false, reason: 'ended' };
       const now = !turn && queue.length === 0;
@@ -600,8 +661,8 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
       changed();
       return { withdrawn, denied };
     },
-    end: () => endSession('end'),
-    stats: () => ({ stderrTail, failure, exit: exitFrame }),
+    end: (why: 'you-ended' | 'daemon-stop' = 'you-ended') => endSession('end', why === 'daemon-stop' ? 'daemon-stop' : 'you-ended'),
+    stats: () => ({ stderrTail, failure, exit: exitFrame, closed }),
   };
   return Object.freeze(session);
 }

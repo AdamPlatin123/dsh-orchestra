@@ -208,7 +208,7 @@ test('the RouteDecision: the candidates, the pick, the reason chip, mode manual;
       { harness: 'claude', model: 'zcode/GLM-5.3', source: 'model', rule: null },
       { harness: 'codex', model: 'codex/gpt-6.1-sol', source: 'rule', rule: 'code-or-command' },
     ],
-    chosen: { harness: 'codex', model: 'codex/gpt-6.1-sol' }, pick: 1, reason: 'code-or-command', router: 'answered', mode: 'manual',
+    chosen: { harness: 'codex', model: 'codex/gpt-6.1-sol' }, pick: 1, reason: 'code-or-command', router: 'answered', routerModel: 'zcode/GLM-5.3', routerWhy: null, mode: 'manual',
   });
   assert.equal(checkBody('route', rec.body, null), null);
   assert.equal(d.take(r.routeId, '把 README 翻成英文'), null, 'a decision uses the suggestion up');
@@ -237,4 +237,65 @@ test('the RouteDecision: the candidates, the pick, the reason chip, mode manual;
   assert.deepEqual(d.last(), { ownedId: 'abcdefabcdefabcdefab', harness: 'codex', model: 'codex/gpt-6.1-sol', at: 1_761_868_800_000 });
   assert.deepEqual(dispatchOf(rec.body, 42), { ownedId: 'abcdefabcdefabcdefab', harness: 'codex', model: 'codex/gpt-6.1-sol', at: 42 });
   assert.equal(dispatchOf({ ownedId: 1 }, 42), null);
+});
+
+test('"不要用 codex": the router model\'s pick of codex is refused (harness-excluded), so the card does not lead with what the person ruled out', async () => {
+  const post: LoopbackPost = async () => ok(completion(JSON.stringify({ harness: 'codex', model: 'codex/gpt-6.1-sol', title: '修 bug', reason: '改代码' })));
+  const r = await desk(post).d.suggest('不要用 codex，帮我修复登录的 bug');
+  assert.deepEqual([r.router.state, r.router.why, r.router.pick], ['no-answer', 'harness-excluded', null]);
+  assert.ok(r.candidates.every((c) => c.harness !== 'codex'), JSON.stringify(r.candidates));
+  assert.equal(r.candidates[0]!.harness, 'claude');
+  assert.deepEqual([r.title, r.titleSource], ['不要用 codex，帮我修复登录的 bug', 'rule']);
+  assert.equal(readRouterReply(ok(completion(JSON.stringify({ harness: 'codex', model: 'codex/gpt-6.1-sol', title: 't' }))), BOTH, (x) => x, ['codex']).ok, false);
+  // Both ruled out or off: the model is not asked at all.
+  let calls = 0;
+  const counting: LoopbackPost = async () => { calls++; return ok(completion('{}')); };
+  const none = await desk(counting, { on: () => ({ codex: false, claude: true }) }).d.suggest('不要用 claude，随便聊聊');
+  assert.deepEqual([none.router.state, none.router.why, calls], ['no-answer', 'nothing-usable', 0]);
+});
+
+test('at most two router-model questions at once: a third suggestion is the rules\' alone (busy); a full pool says so and lists both harnesses as off', async () => {
+  const waiting: (() => void)[] = [];
+  const post: LoopbackPost = () => new Promise((r) => { waiting.push(() => r(ok(completion(JSON.stringify({ harness: 'claude', model: 'zcode/GLM-5.3', title: 't', reason: 'r' }))))); });
+  const { d } = desk(post);
+  const a = d.suggest('帮我想想下周的计划');
+  const b = d.suggest('帮我想想下下周的计划');
+  const c = await d.suggest('帮我想想明年的计划');
+  assert.deepEqual([c.router.state, c.router.why], ['no-answer', 'busy']);
+  assert.equal(DESK_LIMITS.inFlight, 2);
+  for (const w of waiting) w();
+  assert.equal((await a).router.state, 'answered');
+  assert.equal((await b).router.state, 'answered');
+  const full = await desk(null, { on: () => ({ codex: false, claude: false }), full: () => true }).d.suggest('解释一下');
+  assert.deepEqual([full.full, [...full.off], full.candidates.length], [true, ['codex', 'claude'], 0]);
+});
+
+test('the model\'s title is said as the model\'s, and names the session only when the person takes the candidate it chose', async () => {
+  const post: LoopbackPost = async () => ok(completion(JSON.stringify({ harness: 'claude', model: 'zcode/GLM-5.3', title: '修 bug', reason: '它说的' })));
+  const { d } = desk(post);
+  const r = await d.suggest('nothing works at all');
+  assert.deepEqual([r.title, r.titleSource, r.router.pick], ['修 bug', 'model', 0]);
+  const k = d.take(r.routeId, 'nothing works at all')!;
+  assert.equal(d.titleFor(k, 'claude', 'zcode/GLM-5.3'), '修 bug');
+  assert.equal(d.titleFor(k, 'codex', 'codex/gpt-6.1-sol'), null, 'another candidate: the sentence\'s first line');
+  assert.equal(d.titleFor(k, 'claude', 'opencode-go/kimi-k3'), null, 'set by hand: the sentence\'s first line');
+});
+
+test('a dispatch with no suggestion for its sentence is a RouteDecision too (r4 §9.5): the rules\' taskClass, no routeId, no candidates, router not-asked', () => {
+  const { d } = desk(null);
+  const rec = d.manual('帮我修复登录的 bug', { actionId: '44444444-4444-4444-8444-444444444444', ownedId: 'abcdefabcdefabcdefab', harness: 'claude', model: 'zcode/GLM-5.3' });
+  const { decisionId, ...rest } = rec.body;
+  assert.match(String(decisionId), /^[0-9a-f]{64}$/);
+  assert.deepEqual(rest, {
+    actionId: '44444444-4444-4444-8444-444444444444', routeId: null, ownedId: 'abcdefabcdefabcdefab', taskClass: 'code', rules: ['code-or-command', 'fallback'],
+    candidates: [], chosen: { harness: 'claude', model: 'zcode/GLM-5.3' }, pick: null, reason: 'manual', router: 'not-asked', routerModel: null, routerWhy: null, mode: 'manual',
+  });
+  assert.equal(checkBody('route', rec.body, null), null);
+  assert.deepEqual(dispatchOf(rec.body, 7), { ownedId: 'abcdefabcdefabcdefab', harness: 'claude', model: 'zcode/GLM-5.3', at: 7 });
+  // The journal holds the fields together: not-asked exactly without a routeId; a why exactly for no-answer; a model named only when asked.
+  assert.equal(checkBody('route', { ...rec.body, router: 'off' }, null)?.reason, 'consistency');
+  assert.equal(checkBody('route', { ...rec.body, routeId: 'aaaaaaaaaaaaaaaaaaaa' }, null)?.reason, 'consistency');
+  assert.equal(checkBody('route', { ...rec.body, routerWhy: 'timeout' }, null)?.reason, 'consistency');
+  assert.equal(checkBody('route', { ...rec.body, routerModel: 'zcode/GLM-5.3' }, null)?.reason, 'consistency');
+  assert.equal(checkBody('route', { ...rec.body, candidates: [{ harness: 'claude', model: 'zcode/GLM-5.3', source: 'rule', rule: 'fallback' }] }, null)?.reason, 'consistency');
 });

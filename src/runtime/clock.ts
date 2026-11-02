@@ -336,6 +336,29 @@ export function makeRealClock(): ClockHub {
   return Object.freeze(hub);
 }
 
+/**
+ * One-shot deadlines on the hub (r4 invariant 21: time only through the Clock port): `after(ms, fn)`
+ * runs `fn` once, `ms` from now on the monotonic clock, and returns a function that cancels it. Timer ids
+ * are deadline:<name>:<seq>; `name` must fit TIMER_ENTITY_RE.
+ */
+export function oneShot(hub: ClockHub, name: string): (ms: number, fn: () => void) => () => void {
+  const fns = new Map<string, () => void>();
+  let seq = 0;
+  const clock = hub.port((f: Fired) => {
+    const fn = fns.get(f.timerId);
+    fns.delete(f.timerId);
+    fn?.();
+  });
+  return (ms, fn) => {
+    const id = `deadline:${name}:${seq++}`;
+    fns.set(id, fn);
+    clock.schedule({ timerId: id, class: 'deadline', clock: 'mono', due: clock.nowMono() + ms });
+    return () => {
+      if (fns.delete(id)) clock.cancel(id);
+    };
+  };
+}
+
 /** Runs `fire` once, `ms` milliseconds from now; it runs once, and nothing can cancel or move it. */
 export type ExitTimer = (ms: number, fire: () => void) => void;
 

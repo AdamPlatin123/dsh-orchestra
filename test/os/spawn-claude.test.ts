@@ -10,7 +10,7 @@ import { realpath } from '../../src/fs/node-io.ts';
 import { CLAUDE_GATEWAY_TOKEN, CLAUDE_HOST_FIXED_ENV, ENV_WHITELIST, SpawnGate, resolveSystemRoot } from '../../src/os/spawn.ts';
 import { makeRealClock } from '../../src/runtime/clock.ts';
 import { CLAUDE_HOST_PINS } from '../../src/owned/claude-pins.ts';
-import { CLAUDE_HOST_REL, checkPins, resolveHostSite } from '../../src/owned/claude-site.ts';
+import { CLAUDE_HOST_REL, checkExe, checkPins, exeMark, resolveHostSite } from '../../src/owned/claude-site.ts';
 import { fakeSpawn } from '../helpers/fake-spawn.ts';
 import { CLAUDE_EXTRA, HOST_ENTRY } from '../helpers/claude-host.ts';
 import { withTmp } from '../helpers/tmp.ts';
@@ -131,4 +131,25 @@ test('resolveHostSite: node.exe of the repository (or of the main checkout), hos
   assert.equal((resolveHostSite(realpath, repo, main) as { node: string }).node, own, 'the copy\'s own node.exe first');
   const moved = (p: string) => (p === own ? path.join(dir, 'elsewhere', 'node.exe') : realpath(p));
   assert.equal((resolveHostSite(moved, repo, main) as { reason: string }).reason, 'reparsed');
+});
+
+test('claude.exe: its size, mtime and file id at startup are held; another one in its place is "claude.exe: changed" (the gate refuses as host-tampered); an unreadable one says why', () => {
+  let now = { size: 247_736_480n, mtimeMs: 1_793_652_254_222n, ino: 42n };
+  let closes = 0;
+  const open = (file: string) => {
+    if (file.endsWith('gone.exe')) throw Object.assign(new Error('nope'), { decision: { reason: 'not-found' } });
+    return { stat: () => now, close: () => { closes++; } };
+  };
+  const mark = exeMark(open, 'C:\\x\\claude.exe');
+  assert.ok(mark.ok);
+  assert.equal(closes, 1, 'the handle is closed');
+  assert.equal(checkExe(open, 'C:\\x\\claude.exe', mark.mark), null);
+  now = { ...now, size: now.size + 1n };
+  assert.equal(checkExe(open, 'C:\\x\\claude.exe', mark.mark), 'claude.exe: changed');
+  now = { size: 247_736_480n, mtimeMs: 1_793_652_254_223n, ino: 42n };
+  assert.equal(checkExe(open, 'C:\\x\\claude.exe', mark.mark), 'claude.exe: changed');
+  now = { size: 247_736_480n, mtimeMs: 1_793_652_254_222n, ino: 43n };
+  assert.equal(checkExe(open, 'C:\\x\\claude.exe', mark.mark), 'claude.exe: changed');
+  assert.deepEqual(exeMark(open, 'C:\\x\\gone.exe'), { ok: false, detail: 'claude.exe: unreadable (not-found)' });
+  assert.equal(checkExe(open, 'C:\\x\\gone.exe', mark.mark), 'claude.exe: unreadable (not-found)');
 });

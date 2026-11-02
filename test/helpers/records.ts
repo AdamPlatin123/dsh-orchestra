@@ -75,7 +75,7 @@ export function routeRec(actionId: string, ownedId: string, over: Record<string,
       { harness: 'claude', model: 'zcode/GLM-5.3', source: 'model', rule: null },
       { harness: 'codex', model: 'codex/gpt-6.1-sol', source: 'rule', rule: 'code-or-command' },
     ],
-    chosen: { harness: 'claude', model: 'zcode/GLM-5.3' }, pick: 0, reason: 'router-model', router: 'answered', mode: 'manual', ...over,
+    chosen: { harness: 'claude', model: 'zcode/GLM-5.3' }, pick: 0, reason: 'router-model', router: 'answered', routerModel: 'zcode/GLM-5.3', routerWhy: null, mode: 'manual', ...over,
   };
   return { kind: 'route', body: { decisionId: canonicalDigest(body), ...body } };
 }

@@ -130,6 +130,7 @@ export function initMessage(over: Msg = {}): Msg {
     type: 'system',
     subtype: 'init',
     session_id: '11111111-2222-4333-8444-555555555555',
+    claude_code_version: '2.1.287',
     model: 'opencode-go/claude-haiku-5-5',
     permissionMode: 'default',
     tools: ['Edit', 'Glob', 'Grep', 'PowerShell', 'Read', 'Write'],

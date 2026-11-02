@@ -18,6 +18,7 @@
 | Codex CLI 0.165.0 经 magpie | 私有 `CODEX_HOME` 里写 `model_provider = magpie`（`base_url = http://127.0.0.1:3425/v1`，`wire_api = responses`），`codex exec` 用 `codex/gpt-6.1-sol` 跑通；会话落在 `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-*.jsonl` |
 | Codex app-server 协议 | `codex app-server generate-json-schema` 可本地生成 JSON Schema（v2），有命令审批、文件改动审批的服务端请求 |
 | Codex skills 隔离（联调后） | 私有 `CODEX_HOME` 下仍列出 `~/.agents/skills`；`[skills] include_instructions = false` 后 rollout 里不再有用户目录下的 `.agents` 路径，也没有 `skills_instructions`（`codex exec` 和 app-server 两条路都测了） |
+| Codex app-server 版本 | initialize 回复的 userAgent 形如 `orchestra/0.165.0 (Windows 10.0.26200; x86_64) unknown (orchestra; 0.2.0)`（客户端名在前，版本在斜杠后）；`skills/list` 在私有 CODEX_HOME 下仍列出用户目录的 skills |
 | Codex 在 Windows 上的沙箱 | `workspace-write` 被降为 `readOnly`；`[windows] sandbox = "unelevated"` 时命令挂住；`elevated` 需要管理员装 setup 程序。保持只读，每次写和跑都问人 |
 | Claude CLI 经 magpie | 私有 `CLAUDE_CONFIG_DIR` + `ANTHROPIC_BASE_URL=http://127.0.0.1:3425` + 占位 `ANTHROPIC_AUTH_TOKEN` + `ANTHROPIC_MODEL=zcode/GLM-5.3`，`claude -p` 跑通（CLI 报 unrecognized_model 警告，不影响） |
 | 真实数据 | Claude 60 个会话进快照（13 个活着）；subagent 111/111 挂得到上级，109/111 状态未知，最深 1 层；DSH 磁盘上 92 个会话被 60 个名额挤掉却显示 empty（bug）；Codex 会话是 `~/.codex/sessions/**/rollout-*.jsonl.zst`（zstd，Node 24 有 `zlib.zstdDecompressSync`）和 `archived_sessions/` |
@@ -50,7 +51,7 @@
 
 ### 3. 路由（superagent 层）
 - 「派活台」：人输入一句话 → 先跑确定性规则（D9：确定性规则先、LLM 后），再请 magpie 上的路由模型（默认 `zcode/GLM-5.3`，chat completions，只要 JSON）给出建议：harness、模型、cwd、标题、理由。
-- 建议只是「Route to?」卡片：人点「派出」才起会话；从不自动派（r4 Route to?：拿不准时出卡请你选，绝不默认派活）。每次派活写一条 RouteDecision（候选、理由、模式=manual）。
+- 建议只是「Route to?」卡片：人点「派出」才起会话；从不自动派（r4 Route to?：拿不准时出卡请你选，绝不默认派活）。每次派活写一条 RouteDecision（候选、理由、模式=manual）：带建议派出的记候选和人选了哪个；没要建议、建议过期或改过句子再派出的，也记一条（没有候选，router 记 not-asked），对应 r4 §9.5「M1 起每次派活都记一条 mode=manual 的 RouteDecision」。
 - 路由模型拿不到时退回纯规则，卡片照出。
 
 ### 4. 审批（D8）
@@ -62,7 +63,7 @@
 - **0.2 设计第 134 行 vs 本计划 §4（旧版）**：0.2 设计要求受保护路径直接拒；本计划旧版只写「要按住」，代码曾按较松的一边做。现已改成直接拒，以 0.2 设计为准。
 - **0.2 设计第 528 行「真实 profile 下 owned-disabled」**：被本计划 §2（真实 profile 用 `ORCHESTRA_HOME\work\<会话>`）取代。现在两种 profile 下都是「带 --owned 启动并找到 codex.exe 才开」。若要恢复 0.2 的限制，在 `setUpOwnedCodex` 开头对真实 profile 返回 off('not-asked')，由用户定。
 - **进程树没有 Job 回收（D4 残余）**：结束、出错、进程退出时只杀 codex.exe 本身，它跑的命令启动的子进程可能残留。feed 里会写一条 children-may-remain，页面显示「只结束了 codex 本身：它跑的命令启动的子进程可能还在」。长期做法：procguard 提供 run-in-job 后，codex-app-server 规则改经 Job 启动。0.2 设计第 8 节第 3 条原本只记了 Claude host，这里把 codex 补上。
-- **页面体积上限放宽（2026-11-02，真实 codex 联调后）**：用户先前定的上限是 `ui/` 目录 120 KiB、页面加载总量 168 KiB；联调前 `ui/` 只剩约 31 字节余量，读屏播报和自动滚动（第 29 条）因此没做。用户现在的目标是做到整体可用，后面还要加派活台等界面，所以放宽到 `ui/` 200 KiB、页面总量 240 KiB（`test/ui/tower-page.test.ts` 里的断言同步改了）。仍是零依赖、无构建，页面本身没有引入新库。
+- **页面体积上限放宽（2026-11-02，真实 codex 联调后）**：用户先前定的上限是 `ui/` 目录 120 KiB、页面加载总量 168 KiB；联调前（f390437 的上一个提交）`ui/` 是 122859 字节，离上限 122880 字节只剩 21 字节，对话区的读屏播报和新消息自动滚动因此一直没做。放宽后已在 f390437 加上：对话区旁有一个 aria-live 播报区，只播新到的、不是你自己说的话；停在底部时才跟着新消息滚动。用户现在的目标是做到整体可用，后面还要加派活台等界面，所以放宽到 `ui/` 200 KiB、页面总量 240 KiB（`test/ui/tower-page.test.ts` 里的断言同步改了）。仍是零依赖、无构建，页面本身没有引入新库。
 - **自有 Codex 会话读用户全局 skills（已修，有残余）**：私有 `CODEX_HOME` 挡不住 skills。codex-cli 0.165.0 按 USERPROFILE 找 `~/.agents/skills`，把清单和路径写进模型的指令；联调时模型请求运行 `Get-Content <用户目录>/.agents/skills/.../SKILL.md`。现在 `config.toml` 写 `[skills] include_instructions = false`（清单和根目录都不进提示词；实测在消息里点名 `$技能名` 也不注入）和 `[skills.bundled] enabled = false`（不往私有目录解包自带 skills）。实测 `[[skills.config]]` 按根目录禁用、`skip_host_skill_discovery` 特性都去不掉那个根。残余：codex 进程自己是否仍扫描该目录（读 SKILL.md 的开头元数据）**未知**，模型看不到。没有改子进程的 USERPROFILE（会影响 codex 跑的每条命令的 `~`、PowerShell 配置等，副作用面太大）。另外命令审批卡上，codex 报告的读取/列目录/搜索路径在工作目录外时，会单独列一行「outside the work dir: …」。
 - **Windows 沙箱只能只读（保持现状）**：`sandbox_mode = "workspace-write"` 在 Windows 上不生效，`thread/start` 回 `readOnly`，codex 说「The filesystem sandbox is read-only」，于是每次写文件、跑命令都来申请审批。要写入型沙箱，需要 `[windows] sandbox = "elevated"`（要 `codex-windows-sandbox-setup.exe` 以管理员身份建沙箱用户）或 `"unelevated"`。npm 装的 codex 只带 `codex.exe` 和 `codex-code-mode-host.exe`，没有 setup 和 `codex-command-runner.exe`；实测 `"unelevated"` 下 codex 声称 workspace-write，但第一条命令挂住不返回（150 秒超时）。需要提权或额外安装，所以不开，每次都问人（更安全）。派活对话框写明「Codex 在 Windows 上的沙箱只能只读：它每次写文件、跑命令，都会先来问你」。
 - **对话流顺序（已修）**：codex 先发 `item/started`（命令开始），再发审批请求，所以「命令 · … · 被拒绝」曾排在它的「等你审批」卡片前面。现在审批打开期间先把那条命令从 feed 里撤下，回答后（或自动拒绝、codex 自己撤回审批后）再以新的 seq 重发；页面收到同一条命令的第二次通告，就把那一行挪到后面。feed 读起来是：等你审批 → 你的回答 → 命令和结果。
@@ -70,17 +71,29 @@
   - 模型：0.2 设计（r4 §7.2 的 haiku-only）只许 `opencode-go/claude-haiku-5-5`；按用户目标放宽到 `zcode/*`、`opencode-go/*`，默认 `zcode/GLM-5.3`。`codex/*` 走 Responses API，Claude 不收。host 从 start 帧起仍是精确守卫：init、每条回复、`modelUsage` 只认这个模型和 `ANTHROPIC_SMALL_FAST_MODEL`（`zcode/GLM-5-Turbo`）。
   - 网关：不加 0.2 设计的 `--claude-gateway`；和 Codex 一样，带 `--owned` 就用 magpie（`ANTHROPIC_BASE_URL=http://127.0.0.1:3425`，闸只认回环地址；`ANTHROPIC_AUTH_TOKEN` 是固定占位串）。
   - 配置目录：host 进程自己的 `CLAUDE_CONFIG_DIR` 是 `ORCHESTRA_HOME\claude-home`（兜底）；每个会话实际用 `ORCHESTRA_HOME\claude\<ownedId>`（0.2 设计 §3.1），由 start 帧给。
-  - claude.exe：用 SDK 自带的 `@anthropic-ai/claude-agent-sdk-win32-x64\claude.exe`（2.1.287，跟 SDK 版本走），不用用户自己会自动更新的 claude.exe。它约 240 MB，不算哈希，只查存在且没有链接；host.mjs、host-core.mjs、sdk.mjs 三个文件的 sha256 钉在 `src/owned/claude-pins.ts`（`scripts/pin-claude-host.ts` 生成），启动时查一次，spawn 前闸再查一次。
+  - claude.exe：用 SDK 自带的 `@anthropic-ai/claude-agent-sdk-win32-x64\claude.exe`（2.1.287，跟 SDK 版本走），不用用户自己会自动更新的 claude.exe。它约 240 MB，不算哈希：启动时查存在、没有链接，并记下大小、mtime 和文件 id；每次 spawn 前闸和三个钉子一起复查，变了就拒（host-tampered）。host 另查 init 帧的 `claude_code_version` 必须是 2.1.287（host-core.mjs 的 CLI_VERSION），不是就 safety-stop（cli-version）。host.mjs、host-core.mjs、sdk.mjs 三个文件的 sha256 钉在 `src/owned/claude-pins.ts`（`scripts/pin-claude-host.ts` 生成），启动时查一次，spawn 前闸再查一次。
+  - 和 0.2 设计第 82 行的差别：设计写「claude.exe 变了就在页面告警」，这里更严，直接拒绝启动。node.exe（`.tools\node24\node.exe`）仍只查存在、没有链接，没有哈希，也没有大小和 mtime 的复查（残余风险）。
+  - 花费：对话流里的「花费」是 SDK result 的 `total_cost_usd`，是 Claude CLI 按它自己的价目表用 token 数估的，不是 magpie 报的。走 magpie 的 zcode / opencode-go 模型不在它的价目表里，这个数不代表真实花费（真实花费未知），页面这样写明。0.2 设计「只显示 total_cost_usd，超 $1 提示」的前提（这个数是真钱）在这里不成立，「超 $1 提示」没做。
   - 受保护根：host 原来把 `~/.orchestra` 整个拒掉，真实 profile 下工作目录就在里面。改成和 cwd 拒绝表一样的「工作根豁免」：会话自己的 `<受保护根>\work\<id>` 放开，根的其他部分（别的会话、登记、库）仍拒。
   - 对话流里没有工具结果：host 协议只报工具名，不报输出（0.2 设计如此）。
   - 结束顺序：close 帧 → 3 s 后关 stdin → 2 s 后才杀 host；杀了的话 feed 写「claude.exe 可能还在」（D4 残余，同 Codex）。
 - **派活台（阶段 5，2026-11-02 接上）**：和 r4 不同或简化的几处：
   - r4 D9 和 §9.2 要分叉 adaptive-router 的 `router-core`（硬过滤、Wilson 证据门、滞回），这里没做：只有五条确定性规则（点名模型、点名 harness/「不要用 X」、改代码跑命令、短问答、默认），之后问一次 magpie 上的路由模型（`zcode/GLM-5.3`，chat completions，JSON 模式，20 秒）。只有规则把 harness 和模型都定了时才不问模型（D9「只有模糊时才用 LLM」的最小版）。证据门、影子模式留到 M4。
-  - 候选只列能用的 harness（关着的不列，卡片写明哪个不可用），没有 r4 §9.2 第 5 步的类型化拒绝码。
-  - RouteDecision（journal 的 `route` 记录）没有 `input`（那句话）、`confidence`、`overriddenBy`：journal 不收自由文本（records.ts 的规则），那句话已作为会话第一条消息进了会话自己的对话流；置信度这一版不知道（T1：不写成 0）。有 `pick`（人选了第几个候选，手动改了就是 null）和 `reason`（理由 chip：规则 id、router-model、manual）。只有 mode=manual。
-  - 派出时只认「同一句话」的建议：建议后改过句子，派出不带 routeId，不写 RouteDecision。建议只在内存里存 30 分钟、最多 64 条；重启后作废。
+  - 候选只列能用的 harness（关着的、并发已满的都不列，卡片写明哪个不可用、是否已满），没有 r4 §9.2 第 5 步的类型化拒绝码。路由模型只能从规则留下的 harness 里选（r4 §9.2 第 9 步）：句子里说了「不要用 X」，模型还选 X，就拒掉它的答案（why 记 harness-excluded），卡片只剩规则的建议。同时在问路由模型的建议最多 2 个，再多的不问模型（busy）。
+  - 路由模型起的标题在卡片上标明「路由模型起的」；只有人派给模型选的那一项时，才用它作会话名，否则会话名是那句话的第一行。
+  - RouteDecision（journal 的 `route` 记录）没有 `input`（那句话）、`confidence`、`overriddenBy`：journal 不收自由文本（records.ts 的规则），那句话已作为会话第一条消息进了会话自己的对话流；置信度这一版不知道（T1：不写成 0）。有 `pick`（人选了第几个候选，手动改了就是 null）、`reason`（理由 chip：规则 id、router-model、manual）、`routerModel`（问了哪个路由模型，没问是 null）和 `routerWhy`（它的答案为什么没用上：没回、回了被拒、没问，见 router-model.ts 的 ROUTER_WHY）。只有 mode=manual。2026-11-02 第 3 阶段复核时加了 routerModel、routerWhy，routeId 改成可空：当时本机真实 profile 的数据目录里还没有任何 route 记录（最后写入是 11-01），所以没做旧记录迁移。
+  - 派出时只认「同一句话」的建议：建议后改过句子，派出不带 routeId，记成一条手动的 RouteDecision（router not-asked）。建议只在内存里存 30 分钟、最多 64 条；重启后作废。塔表顶上「你」那一行显示最近一次派活（任何一次，不只带建议的）；不带 --owned 启动时派活台不开，也不读以前的记录，那一行写「没有读到派活记录」，不说「没派过」。
   - 联网：守护进程唯一的出站调用在 `src/net/magpie.ts`，只许 POST 到 http://127.0.0.1（组合根常量 `MAGPIE_CHAT_URL`）；builtin 表只给它 `node:http` 的 `request`，扫描规则 `net:magpie-post-loopback-only` 钉住 host 和方法。
-- **自有会话跨重启**：每个会话一份 `ORCHESTRA_HOME\owned\<ownedId>.json`（0.2 设计 §2.4）。重启后没结束的会话显示「状态未知」、endReason daemon-restart，不续跑、不重发；对话内容只在旧进程内存里，重启后看不到。
+- **自有会话跨重启**：每个会话一份 `ORCHESTRA_HOME\owned\<ownedId>.json`（0.2 设计 §2.4）。重启后没结束的会话显示「状态未知」、endReason daemon-restart，不续跑、不重发；对话内容只在旧进程内存里，重启后看不到。某个 harness 这次没开（SDK 不在、host 被改、找不到 codex.exe、准备失败）时，它以前的会话仍按同样规则只读列出（`src/owned/restored.ts`），不会从页面上消失。
+- **第 3 阶段复核后补记（2026-11-02）**：
+  - 并发上限：两家合计同时最多 3 个（0.2 设计 §2.4 的「同时最多 3 个活动的自有会话」，§4 的「同时最多 3 个，先结束一个」），之前误做成每家各 3 个。派活台把满了的 harness 当作不可用。
+  - 结束原因新增三个：interrupt-unsure（你按了中断，但 Claude 还有没处理的消息，为免停不住，Orchestra 结束了它）、protocol-error（host 发来读不懂的内容，Orchestra 停了它）、daemon-stop（orchestrad 停机时结束的）。以前这三种分别记成 you-ended、exited、you-ended，和实际不符。
+  - 停机：orchestrad 停机时先结束所有自有会话，再最多等 6 s 让每个 Claude host 走完停止顺序（close 帧 → 3 s 后关 stdin → 2 s 后杀），然后才关库退出；日志记下还没关掉的个数。Codex 的停止是关 stdin 后立即杀，不等。
+  - Claude 的消息状态：写进 host 的 stdin 时是「已写给它的 host，还没确认收到」；host 回了这条的 lifecycle 帧或这一轮的 result 才算「已交给它」；host 在确认前就没了，记「发出了但不知道它收到没有」。
+  - 会话结束后 host 还发来的审批请求：直接回拒，不建卡；host 关闭时不论会话怎么结束都清掉它名下的卡。
+  - Codex 版本：codex.exe 是用户全局 npm 装的，会随 `npm i -g` 升级。现在每个会话从 initialize 回复的 userAgent 里读版本（实测格式 `orchestra/0.165.0 (Windows …) …`），不在钉死的列表（目前只有 0.165.0）里就以 policy-mismatch 结束，写明实际版本。没做「thread/start 后查 skills 列表必须为空」：实测 app-server 的 `skills/list` 在私有 CODEX_HOME 下照样列出用户目录的 skills（隔离靠的是不写进提示词，不是不列），这个断言会永远失败。
+  - Codex 没来问就跑的命令：命令或文件改动跑完（completed/failed）却没有对应的审批请求时，对话流写一条「这一条它没来问你就跑了」。工作目录外的只读命令 codex 是否一定来申请审批：只实测过一次（`node scripts/live-smoke.ts --harness codex --outside`，2026-11-02，codex-cli 0.165.0，经 magpie）：让它读测试目录里、工作目录外的一个合成文件，它来申请了审批（命令卡，shell 风险），没有没问就跑的。同样的探测对 Claude 也是先来问（命令卡）。一次不代表总是如此，仍算未知。
+  - 联调脚本：`scripts/live-smoke.ts`、`scripts/live-route.ts` 的每个请求有 30 s 期限；不论成败，派出过的会话都先经 orchestrad 结束并等完停止顺序，再杀 orchestrad；之后按测试目录里 run/pids.jsonl 记下的 pid 查残留，映像名对得上的连同子树结束，并在报告里写数量。orchestrad 读到 stdin EOF 自己停机（父进程被杀时也能收尾）还没做。
 
 ### 5. 界面：塔表
 - 首页 `/`：顶栏（计数即筛选、刹车）、「等你」钉栏（按剩余时间）、跨项目树表（你 → agent → subagent，同一行格式，缩进表层级，子树小框 `子·错·等`）、右栏详情、底部「发给 → X」输入框和停止键。

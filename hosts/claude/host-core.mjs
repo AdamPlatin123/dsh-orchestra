@@ -70,6 +70,14 @@ export const PINNED_SKILLS = Object.freeze([
 ]);
 export const PINNED_PLUGINS = Object.freeze(['cc-plugin-agents-md', 'cc-plugin-telemetry', 'cc-plugin-plugin-authoring']);
 
+/**
+ * The CLI build the SDK 0.3.287 brings (its package.json claudeCodeVersion; the claude.exe of
+ * @anthropic-ai/claude-agent-sdk-win32-x64 carries the same VERSION). The checks above were measured
+ * against a CLI; a session whose init reports another version is stopped (safety-stop cli-version):
+ * a reinstalled CLI alone, with sdk.mjs unchanged, could change what those checks rely on.
+ */
+export const CLI_VERSION = '2.1.287';
+
 const HEX20 = /^[0-9a-f]{20}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const REQ_ID = /^[0-9a-f]{32}$/;
@@ -579,6 +587,7 @@ export function sdkOptions(start, env, gate) {
 
 /** Why a system/init frame stops the session, or null when it passes (design §2.2 startup checks). */
 export function initProblem(m, model) {
+  if (m.claude_code_version !== CLI_VERSION) return 'cli-version';
   if (m.model !== model) return 'model';
   if (m.permissionMode !== 'default') return 'permission-mode';
   if (typeof m.session_id !== 'string' || !UUID.test(m.session_id)) return 'session-id';

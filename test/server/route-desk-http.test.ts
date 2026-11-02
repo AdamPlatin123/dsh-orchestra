@@ -149,7 +149,7 @@ test('dispatch with the card\'s routeId: the session takes its title, and the Ro
   assert.deepEqual({ ...rec, decisionId: '-' }, {
     decisionId: '-', actionId, routeId: card.routeId, ownedId: r.json.ownedId, taskClass: 'named', rules: ['named-harness', 'code-or-command', 'fallback'],
     candidates: [{ harness: 'codex', model: 'codex/gpt-6.1-sol', source: 'rule', rule: 'named-harness' }, { harness: 'codex', model: 'codex/gpt-6.1-terra', source: 'model', rule: null }],
-    chosen: { harness: 'codex', model: 'codex/gpt-6.1-terra' }, pick: 1, reason: 'router-model', router: 'answered', mode: 'manual',
+    chosen: { harness: 'codex', model: 'codex/gpt-6.1-terra' }, pick: 1, reason: 'router-model', router: 'answered', routerModel: 'zcode/GLM-5.3', routerWhy: null, mode: 'manual',
   });
   assert.equal(fx.desk.last()?.ownedId, r.json.ownedId);
   assert.deepEqual(lastDispatchIn(fx.store.db), { ownedId: r.json.ownedId, harness: 'codex', model: 'codex/gpt-6.1-terra', at: lastDispatchIn(fx.store.db)!.at }, 'a restart finds it in the journal');
@@ -158,20 +158,25 @@ test('dispatch with the card\'s routeId: the session takes its title, and the Ro
   assert.equal(again.json.replayed, true);
   assert.equal(fx.made.length, 1);
   assert.equal(rows(fx).length, 3);
-  // The card is used up: its routeId on another dispatch records nothing.
+  // The card is used up: its routeId on another dispatch takes nothing from it; that dispatch is a decision by hand (r4 §9.5).
   await request(fx, 'POST', '/api/owned/new', h, JSON.stringify({ actionId: uuid(), text, harness: 'codex', routeId: card.routeId }));
-  assert.deepEqual(rows(fx).map((x) => x.kind), ['human', 'human.result', 'route', 'human', 'human.result']);
+  assert.deepEqual(rows(fx).map((x) => x.kind), ['human', 'human.result', 'route', 'human', 'human.result', 'route']);
+  assert.deepEqual([rows(fx)[5]!.body.routeId, rows(fx)[5]!.body.router, rows(fx)[5]!.body.candidates], [null, 'not-asked', []]);
 });
 
-test('a routeId for another sentence (edited after the card) or unknown: the session starts as asked, with no decision and its own title', async (t) => {
+test('a routeId for another sentence (edited after the card) or unknown: the session starts as asked, with its own title and a decision by hand (router not-asked)', async (t) => {
   const fx = await fixture(t, ANSWER);
   const h = await unlocked(fx);
   const card = (await request(fx, 'POST', '/api/route/suggest', h, JSON.stringify({ text: '修一下登录的测试' }))).json;
   const r = await request(fx, 'POST', '/api/owned/new', h, JSON.stringify({ actionId: uuid(), text: '修一下注册的测试', harness: 'codex', routeId: card.routeId }));
   assert.equal(r.status, 200, r.body);
   assert.equal(fx.made[0]!.title, undefined);
-  assert.deepEqual(rows(fx).map((x) => x.kind), ['human', 'human.result']);
-  assert.equal(fx.desk.last(), null);
+  assert.deepEqual(rows(fx).map((x) => x.kind), ['human', 'human.result', 'route']);
+  const rec = rows(fx)[2]!.body;
+  assert.equal(checkBody('route', rec, null), null);
+  assert.deepEqual([rec.routeId, rec.router, rec.pick, rec.reason, rec.candidates, rec.taskClass], [null, 'not-asked', null, 'manual', [], 'code']);
+  // The router row shows every dispatch from the desk, not only those with a suggestion.
+  assert.equal(fx.desk.last()?.ownedId, r.json.ownedId);
   assert.equal((await request(fx, 'POST', '/api/owned/new', h, JSON.stringify({ actionId: uuid(), text: 'x', harness: 'codex', routeId: 'not-hex' }))).status, 400);
 });
 

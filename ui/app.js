@@ -9,7 +9,7 @@ import { makePatcher } from './dom.js';
 import { getCsrf, getTheme, setCsrf, setTheme } from './prefs.js';
 import {
   HOLD_MS, SETTLE_MS, modelsOf, atBottom, chatNews, describeDesk, describeNew, describeOwned, describeOwnedDock, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError, notifyText, ownedIdOf,
-  pinExtra, pinWhole,
+  pinExtra, pinWhole, whyText,
 } from './owned.js';
 import { go, openFull, parse } from './route.js';
 import { FILTERS, buildRows, freeze, groupKey, indexOf, navigate, projectKey, towerFrame } from './tree.js';
@@ -95,6 +95,8 @@ const state = {
   // The dispatch desk: the last suggestion and the sentence it was for (null: none); a suggestion out.
   /** @type {{ text: string, reply: any } | null} */ desk: null,
   asking: false,
+  // Bumped when a dispatch or a closed dialog makes a suggestion still out void: its reply is dropped.
+  deskTok: 0,
 };
 
 const frozen = () => state.hover || state.focusIn || state.quiet !== null;
@@ -134,7 +136,10 @@ function render() {
   Object.assign(/** @type {any} */ (bar.slots), { new: { text: t(open ? 'bar.new' : 'bar.newLocked') }, unlock: { text: t(open ? 'bar.unlocked' : 'bar.unlock') } });
   dom.paintId('bar', bar);
   dom.paintId('note', { text: state.note ?? '', data: { hide: state.note === null ? '1' : '0' } });
-  const nowDesk = { text: val('nw-text'), harness: val('nw-harness') || 'codex', model: val('nw-model'), asking: state.asking };
+  const nowDesk = {
+    text: val('nw-text'), harness: val('nw-harness') || 'codex', model: val('nw-model'), asking: state.asking,
+    enabled: state.owned?.enabled !== false, maxOwned: state.owned?.limits?.maxOwned,
+  };
   dom.paintId('new-dlg', { slots: { ...describeNew(state.owned, nowDesk.harness, state.busy), ...describeDesk(state.desk, nowDesk) } });
   if (snap === null) return;
   const waiting = snap.tally.waiting;
@@ -407,26 +412,40 @@ async function op(path, body) {
 /** @param {any} a @param {string} ok */
 const said = (a, ok) => a !== null && say(a.ok ? ok : errText(a.code));
 
-/** The dispatch desk: a "Route to?" card for the sentence; it starts nothing (orchestra app plan §3). */
+/**
+ * The dispatch desk: a "Route to?" card for the sentence; it starts nothing (orchestra app plan §3). The
+ * reply fills the two selects only if, meanwhile, the dialog stayed open, the sentence and both selects
+ * stayed as they were, and nothing was dispatched: a choice made by hand is never overwritten.
+ */
 async function suggest() {
   const text = val('nw-text');
   const why = msgError(text);
   if (why !== null) return dlgSay('new-dlg', why);
+  // orchestrad without owned sessions has no desk (POST /api/route/suggest is 501): say why, not the code.
+  if (state.owned !== null && state.owned.enabled === false) return dlgSay('new-dlg', t('new.off', { why: whyText(state.owned.disabledWhy ?? '') }));
   if (state.asking || state.csrf === null) return;
+  const tok = ++state.deskTok;
+  const before = { harness: val('nw-harness'), model: val('nw-model') };
   state.asking = true;
   dlgSay('new-dlg', '');
   schedule();
   const a = await post(state.csrf, 'route/suggest', { text });
   state.asking = false;
+  if (tok !== state.deskTok) return schedule();
   if (!a.ok || !isSuggestion(a.body)) {
     if (!a.ok && a.code === 'not-unlocked') lock();
     schedule();
-    return dlgSay('new-dlg', a.ok ? t('op.unknown') : errText(a.code));
+    // No suggestion is no harm: nothing was started or written; the person can pick by hand.
+    const reason = a.ok ? t('route.failed.shape') : a.code === 'network' || /^http-5(?!01)\d\d$/.test(a.code) ? t('route.failed.none') : errText(a.code);
+    return dlgSay('new-dlg', t('route.failed', { why: reason }));
   }
   state.desk = { text, reply: a.body };
+  const open = /** @type {any} */ (dom.byId('new-dlg')).open === true;
+  const untouched = open && val('nw-text') === text && val('nw-harness') === before.harness && val('nw-model') === before.model;
   const first = a.body.candidates[0];
-  if (first !== undefined) pick(first);
-  dlgSay('new-dlg', t('route.nothing'));
+  if (first !== undefined && untouched) pick(first);
+  const now = { h: val('nw-harness') || 'codex', m: val('nw-model') };
+  dlgSay('new-dlg', [first !== undefined && untouched && t('route.picked', { h: t(`harness.${now.h}`), m: now.m }), t('route.nothing')].filter(Boolean).join(t('sep.notes')));
   schedule();
 }
 
@@ -447,6 +466,7 @@ async function dispatch() {
   const a = why === null ? await op('owned/new', body) : null;
   if (a?.ok !== true) return a === null && why === null ? undefined : dlgSay('new-dlg', why ?? errText(a.code));
   state.desk = null;
+  state.deskTok++;
   setVal('nw-text', '');
   closeDlg('new-dlg');
   say(t('new.sent'));
@@ -780,7 +800,14 @@ document.addEventListener('keydown', (e) => {
 // Typing holds the recipient (research §1.5).
 // The dispatch dialog's model list follows its harness at once.
 document.addEventListener('change', (e) => {
-  if (e.target instanceof Element && (e.target.id === 'nw-harness' || e.target.id === 'nw-model')) schedule();
+  if (!(e.target instanceof Element) || (e.target.id !== 'nw-harness' && e.target.id !== 'nw-model')) return;
+  // A new harness redraws its model list first, so the card reads the model the select really shows (as pick() does).
+  if (e.target.id === 'nw-harness') render();
+  schedule();
+});
+// A closed dispatch dialog drops the suggestion still out (its reply would change nothing on screen).
+dom.byId('new-dlg')?.addEventListener('close', () => {
+  if (state.asking) state.deskTok++;
 });
 document.addEventListener('input', (e) => {
   // An edited sentence makes the card stale at once.

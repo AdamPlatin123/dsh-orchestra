@@ -13,8 +13,13 @@ import { ROUTE_HARNESSES, ROUTE_MODELS, canonicalModel, clip } from './rules.ts'
 
 /** The router model the composition root asks by default (orchestra app plan §3). */
 export const DEFAULT_ROUTER_MODEL = 'zcode/GLM-5.3';
-/** Why the router model's answer was not used. */
-export const ROUTER_WHY = frozen(['timeout', 'network', 'too-big', 'http-error', 'bad-json', 'bad-shape', 'model-not-allowed', 'harness-off'] as const);
+/**
+ * Why the router model's answer was not used. It did not answer: timeout, network, too-big, http-error.
+ * It answered, and the answer was refused: bad-json, bad-shape, model-not-allowed, harness-off (a harness
+ * that cannot start a session now), harness-excluded (the one the sentence said not to use, "不要用 X").
+ * It was not asked: busy (too many suggestions in flight), nothing-usable (no harness can start a session).
+ */
+export const ROUTER_WHY = frozen(['timeout', 'network', 'too-big', 'http-error', 'bad-json', 'bad-shape', 'model-not-allowed', 'harness-off', 'harness-excluded', 'busy', 'nothing-usable'] as const);
 export type RouterWhy = (typeof ROUTER_WHY)[number];
 /** Code points kept of the model's title and reason. */
 export const ROUTER_TEXT = frozen({ titleCp: 40, reasonCp: 160 });
@@ -62,11 +67,12 @@ function contentObject(content: string): unknown {
 }
 
 /**
- * The router model's answer to one POST. `on` says which harnesses can start a session now; `redact`
- * runs over the title and the reason before they are kept (the model saw the person's sentence and may
- * echo what was in it).
+ * The router model's answer to one POST. `on` says which harnesses can start a session now; `excluded`
+ * the ones the sentence ruled out (rules.ts: r4 §9.2 step 9, the model picks only among what survived
+ * the rules); `redact` runs over the title and the reason before they are kept (the model saw the
+ * person's sentence and may echo what was in it).
  */
-export function readRouterReply(r: LoopbackPostResult, on: Readonly<Record<RouteHarness, boolean>>, redact: (s: string) => string): RouterAnswer {
+export function readRouterReply(r: LoopbackPostResult, on: Readonly<Record<RouteHarness, boolean>>, redact: (s: string) => string, excluded: readonly RouteHarness[] = []): RouterAnswer {
   const no = (why: RouterWhy): RouterAnswer => ({ ok: false, why });
   if (!r.ok) return no(r.why);
   if (r.status !== 200) return no('http-error');
@@ -88,6 +94,7 @@ export function readRouterReply(r: LoopbackPostResult, on: Readonly<Record<Route
   const h = harness as RouteHarness;
   const model = canonicalModel(o.model.trim(), h);
   if (model === null) return no('model-not-allowed');
+  if (excluded.includes(h)) return no('harness-excluded');
   if (!on[h]) return no('harness-off');
   const title = clip(redact(o.title), ROUTER_TEXT.titleCp);
   if (title === '') return no('bad-shape');

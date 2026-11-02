@@ -59,7 +59,7 @@ test('handshake: the gate starts node.exe with [host.mjs] in the work dir, with 
   assert.equal(await s.ready, true);
   assert.equal(s.state, 'running', 'the first message\'s turn runs');
   assert.equal(s.sessionId, '11111111-2222-4333-8444-555555555555');
-  assert.deepEqual(kinds(s).slice(0, 3), ['you:', 'note:msg-sent', 'lifecycle:started']);
+  assert.deepEqual(kinds(s).slice(0, 3), ['you:', 'note:msg-written', 'lifecycle:started']);
   // The tower: harness claude, owned.
   const seat = r.owned.towerSeats()[0]!;
   assert.deepEqual([seat.harness, seat.ownedId, seat.state], ['claude', ownedId, 'running']);

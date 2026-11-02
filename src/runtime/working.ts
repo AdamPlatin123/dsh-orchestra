@@ -9,7 +9,9 @@ import type { SpawnGateSpec } from '../os/node-proc.ts';
 import type { PidLog, SpawnGate } from '../os/spawn.ts';
 import type { Approvals } from '../owned/approvals.ts';
 import type { ClaudeOwned } from '../owned/claude-owned.ts';
-import type { CodexOwned } from '../owned/codex-owned.ts';
+import type { CodexOwned, OwnedPool } from '../owned/codex-owned.ts';
+import type { RestoredOwned } from '../owned/restored.ts';
+import type { OwnedSeat } from '../sources/tower.ts';
 import type { OwnedRegistry } from '../owned/registry.ts';
 import type { Redact } from '../owned/text.ts';
 import type { PathJudge } from '../owned/codex-session.ts';
@@ -29,6 +31,7 @@ import { rootDenyList } from '../fs/harness-roots.ts';
 import { pathKey } from '../fs/paths.ts';
 import { makeRedactor } from '../store/redact.ts';
 import { openStore } from '../store/store.ts';
+import { oneShot } from './clock.ts';
 import { checkDataDir, describeDataDir, prepareDataDir } from './data-dir.ts';
 import { acquireLock, encodeDaemonInfo, heldMessage, lockPipeName, parseDaemonInfo } from './lock.ts';
 import { EXIT, describeNote } from './startup.ts';
@@ -108,6 +111,8 @@ export const MAGPIE_BASE_URL = 'http://127.0.0.1:3425/v1';
  */
 export const MAGPIE_CHAT_URL = 'http://127.0.0.1:3425/v1/chat/completions';
 export const ROUTER_TIMEOUT_MS = 20_000;
+/** How long a stopping orchestrad waits for its owned Claude hosts to close: the stop order's 3 s + 2 s (src/os/owned-proc.ts HOST_STOP_MS) and a margin. */
+export const OWNED_STOP_WAIT_MS = 6_000;
 /** The most of a reply read from the router model (JSON with its reasoning text). */
 export const ROUTER_REPLY_MAX_BYTES = 256 * 1024;
 
@@ -307,14 +312,34 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   let claudeOwned: ClaudeOwned | null = null;
   let ownedCodex: OwnedCodexStatus = { on: false, why: 'not-asked', detail: null };
   let ownedClaude: OwnedClaudeStatus = { on: false, why: 'not-asked', detail: null };
+  /** The running-session limit both harnesses share (slice design §2.4: 3 in all). */
+  let pool: OwnedPool | null = null;
+  /** Sessions an earlier orchestrad left for a harness that is off now: listed read only (src/owned/restored.ts). */
+  const restoredOff: RestoredOwned[] = [];
   if (ctx.owned === true) {
-    const shared = await setUpOwnedShared(ctx, fence, gate, home);
+    const { OWNED_POOL_MAX } = await import('../owned/codex-owned.ts');
+    pool = Object.freeze({ max: OWNED_POOL_MAX, active: () => (codexOwned?.active() ?? 0) + (claudeOwned?.active() ?? 0) });
+    const shared = await setUpOwnedShared(ctx, fence, gate, home, pool);
     const set = shared.ok ? await setUpOwnedCodex(ctx, fence, home, shared.base) : { status: { on: false as const, why: shared.why, detail: shared.detail }, owned: null };
     ownedCodex = set.status;
     codexOwned = set.owned;
     const cl = shared.ok ? await setUpOwnedClaude(ctx, fence, home, shared.base) : { status: { on: false as const, why: shared.why, detail: shared.detail }, owned: null };
     ownedClaude = cl.status;
     claudeOwned = cl.owned;
+    if (shared.ok && (codexOwned === null || claudeOwned === null)) {
+      const { restoredOwned } = await import('../owned/restored.ts');
+      if (codexOwned === null) {
+        const { restoredSession } = await import('../owned/codex-owned.ts');
+        restoredOff.push(restoredOwned('codex', shared.base.registry, shared.base.now, restoredSession));
+      }
+      if (claudeOwned === null) {
+        const { restoredSession } = await import('../owned/claude-owned.ts');
+        restoredOff.push(restoredOwned('claude', shared.base.registry, shared.base.now, restoredSession));
+      }
+      for (const r of restoredOff) {
+        if (r.restored > 0) ctx.console.out(`orchestrad: ${r.restored} owned ${r.harness} session(s) from before the restart are listed read only (${r.harness} is off now; those that had not ended show as unknown)`);
+      }
+    }
     if (ownedClaude.on) {
       log.info('owned-claude', { on: true, node: ownedClaude.node, claudeExe: ownedClaude.claudeExe, model: ownedClaude.model });
       ctx.console.out(`orchestrad: owned Claude sessions on (model ${ownedClaude.model} through ${ownedClaude.gateway}; host ${ownedClaude.entry} under ${ownedClaude.node})`);
@@ -352,19 +377,24 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
         desk = makeDesk({
           post: makeLoopbackPost({ url: MAGPIE_CHAT_URL, after: makeAfter(ctx.clock), timeoutMs: ROUTER_TIMEOUT_MS, maxBytes: ROUTER_REPLY_MAX_BYTES }),
           routerModel: DEFAULT_ROUTER_MODEL,
-          on: () => ({ codex: codexOwned !== null, claude: claudeOwned !== null }),
+          // A harness that is on but at the shared limit cannot start a session now either (owned-limit).
+          on: () => ({ codex: codexOwned !== null && !codexOwned.full(), claude: claudeOwned !== null && !claudeOwned.full() }),
+          full: () => pool !== null && pool.active() >= pool.max,
           redact: (text) => redactor.redact({ text }).text,
           nowMono: () => wall.nowMono(),
           nowWall: () => wall.nowWall(),
           restored: lastDispatchIn(store.db),
         });
       }
-      const deps = { codex: codexOwned, codexOff: ownedCodex.on ? 'on' : ownedCodex.why, claude: claudeOwned, desk, log };
-      const owners = [codexOwned, claudeOwned].filter((x): x is CodexOwned | ClaudeOwned => x !== null);
+      const deps = {
+        codex: codexOwned, codexOff: ownedCodex.on ? 'on' : ownedCodex.why, claude: claudeOwned, desk, log, restored: restoredOff,
+        ...(pool === null ? {} : { maxOwned: pool.max }),
+      };
+      const owners: { towerSeats(): OwnedSeat[] }[] = [...[codexOwned, claudeOwned].filter((x): x is CodexOwned | ClaudeOwned => x !== null), ...restoredOff];
       const lastDispatch = () => {
         const d = desk?.last() ?? null;
         if (d === null) return null;
-        const meta = (d.harness === 'codex' ? codexOwned : claudeOwned)?.meta(d.ownedId) ?? null;
+        const meta = (d.harness === 'codex' ? codexOwned : claudeOwned)?.meta(d.ownedId) ?? restoredOff.find((r) => r.harness === d.harness)?.meta(d.ownedId) ?? null;
         return { ...d, title: meta?.title ?? '' };
       };
       const server = await startPeekServer({
@@ -400,7 +430,20 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
     uninstall();
     // The owned sessions first: their open approvals are declined while the children can still read it.
     if (codexOwned !== null) log.info('owned-codex-ended', { sessions: codexOwned.endAll() });
-    if (claudeOwned !== null) log.info('owned-claude-ended', { sessions: claudeOwned.endAll() });
+    if (claudeOwned !== null) {
+      // Each host is stopped in the design's order, whose last two steps run on the Clock: the process
+      // waits for every host to close, at most OWNED_STOP_WAIT_MS (the order's 5 s and a margin), so the
+      // stdin close and the kill do run (alpha 0.2 design §2.1 "停止顺序").
+      const { ended, exited } = claudeOwned.endAll();
+      if (ended > 0) {
+        const after = oneShot(ctx.clock, 'daemon-stop');
+        let cancel: () => void = () => {};
+        await Promise.race([exited, new Promise<void>((r) => { cancel = after(OWNED_STOP_WAIT_MS, r); })]);
+        cancel();
+      }
+      // T1: a host that did not close in time is said, never taken for gone.
+      log.info('owned-claude-ended', { sessions: ended, stillOpen: claudeOwned.open() });
+    }
     if (peek !== null) await peek.close();
     log.info('stopped', { pidSinkFailures: ctx.pidLog.failures() });
     // Nothing reaches ORCHESTRA_HOME from here on, then the process ends with the lock.
@@ -423,6 +466,8 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
 
 /** What both harnesses' owned sessions share: the one approval queue, the registry, the work root and its cwd table. */
 type OwnedBase = {
+  /** The running-session limit both managers count against. */
+  pool: OwnedPool;
   sys: ProvenSystemRoot;
   approvals: Approvals;
   registry: OwnedRegistry;
@@ -439,7 +484,7 @@ type OwnedBase = {
  * (D8: what leaves it without a person is logged), the cwd table the gates and the approvals' paths are
  * judged by (r4 §5.3's protected dirs: the data dir and every harness root).
  */
-async function setUpOwnedShared(ctx: WorkingContext, fence: WriteFence, gate: ReadGate, home: string): Promise<{ ok: true; base: OwnedBase } | { ok: false; why: 'no-spawn-gate' | 'setup-failed'; detail: string | null }> {
+async function setUpOwnedShared(ctx: WorkingContext, fence: WriteFence, gate: ReadGate, home: string, pool: OwnedPool): Promise<{ ok: true; base: OwnedBase } | { ok: false; why: 'no-spawn-gate' | 'setup-failed'; detail: string | null }> {
   if (ctx.makeSpawnGate === undefined) return { ok: false, why: 'no-spawn-gate', detail: null };
   try {
     const { resolveSystemRoot } = await import('../os/spawn.ts');
@@ -473,7 +518,7 @@ async function setUpOwnedShared(ctx: WorkingContext, fence: WriteFence, gate: Re
     return {
       ok: true,
       base: {
-        sys, approvals, registry, workRoot, cwdSpec, judge: (p) => places.place(p), now: () => wall.nowWall(),
+        pool, sys, approvals, registry, workRoot, cwdSpec, judge: (p) => places.place(p), now: () => wall.nowWall(),
         redact: (text) => {
           const r = redactor.redact({ text });
           const v = r.verdict;
@@ -525,6 +570,7 @@ async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: str
       hub: ctx.clock,
       judge: base.judge,
       registry: base.registry,
+      pool: base.pool,
       now: base.now,
       redact: base.redact,
     });
@@ -550,13 +596,19 @@ async function setUpOwnedClaude(ctx: WorkingContext, fence: WriteFence, home: st
     const { CLAUDE_GATEWAY_TOKEN } = await import('../os/spawn.ts');
     const { hostPipe } = await import('../os/owned-proc.ts');
     const { MAIN_CHECKOUT, REPO_ROOT } = await import('../os/cwd.ts');
-    const { checkPins, pinnedFiles, resolveHostSite } = await import('../owned/claude-site.ts');
+    const { checkExe, checkPins, exeMark, pinnedFiles, resolveHostSite } = await import('../owned/claude-site.ts');
     const { CLAUDE_SMALL_FAST_MODEL, DEFAULT_CLAUDE_MODEL } = await import('../owned/models.ts');
     const { ClaudeOwned: Owned } = await import('../owned/claude-owned.ts');
     const site = resolveHostSite(ctx.realpath);
     if (!site.ok) return off(`claude-${site.reason}`, site.detail);
-    const pins = ctx.makeReadGate({ roots: [], pinnedFiles: pinnedFiles() });
-    const verify = () => checkPins((file) => pins.readFile(file));
+    // The three pinned files are hashed; claude.exe (too large for that) is held to its size, mtime and file id at startup.
+    const pins = ctx.makeReadGate({ roots: [], pinnedFiles: [...pinnedFiles(), site.claudeExe] });
+    const open = (file: string) => pins.openRead(file);
+    const changed = checkPins((file) => pins.readFile(file));
+    if (changed !== null) return off('host-tampered', changed);
+    const mark = exeMark(open, site.claudeExe);
+    if (!mark.ok) return off('host-tampered', mark.detail);
+    const verify = () => checkPins((file) => pins.readFile(file)) ?? checkExe(open, site.claudeExe, mark.mark);
     const tampered = verify();
     if (tampered !== null) return off('host-tampered', tampered);
     const configHome = win.join(home, 'claude-home');
@@ -600,6 +652,7 @@ async function setUpOwnedClaude(ctx: WorkingContext, fence: WriteFence, home: st
       hub: ctx.clock,
       judge: base.judge,
       registry: base.registry,
+      pool: base.pool,
       now: base.now,
       redact: base.redact,
     });

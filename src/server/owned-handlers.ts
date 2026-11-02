@@ -5,6 +5,7 @@ import type { CodexOwned } from '../owned/codex-owned.ts';
 import type { CodexSession } from '../owned/codex-session.ts';
 import { isOver } from '../owned/codex-session.ts';
 import type { FeedEvent } from '../owned/feed.ts';
+import type { RestoredOwned } from '../owned/restored.ts';
 import type { Desk } from '../route/desk.ts';
 import type { Log } from '../runtime/log.ts';
 import type { OwnedCall, OwnedHandlers, OwnedOutcome } from './owned.ts';
@@ -21,9 +22,11 @@ import { makeOwnedHandlers } from './owned.ts';
 //                                       the rules, then the router model; it starts nothing, writes nothing.
 //   POST /api/owned/new                 {text, harness, model?, routeId?}: a new session on codex (app-server)
 //                                       or claude (the 0.2 host); a harness that is off is owned-disabled.
-//                                       With the routeId of a suggestion for this very sentence, the
-//                                       session takes its title and a RouteDecision (mode manual) joins
-//                                       the batch of the human records; any other routeId changes nothing.
+//                                       A RouteDecision (mode manual, r4 §9.5) joins the batch of the human
+//                                       records on every dispatch: with the routeId of a suggestion for this
+//                                       very sentence it names that suggestion's candidates (and the session
+//                                       takes the router model's title if the person took its pick); without
+//                                       one (none, aged out, another sentence) it is router not-asked.
 //   POST /api/owned/:id/message         {text}: turn/start, turn/steer, or waits (queued); the reply says
 //                                       which (via), and the uuid of the message in the feed is the
 //                                       actionId of its human record (its fate follows as msg-* notes).
@@ -49,6 +52,10 @@ export type OwnedRoutesDeps = {
   claude: ClaudeOwned | null;
   /** The dispatch desk; null: POST /api/route/suggest has no handler (501) and a routeId changes nothing. */
   desk?: Desk | null;
+  /** Sessions an earlier orchestrad left for a harness that is off now (src/owned/restored.ts): listed read only. */
+  restored?: readonly RestoredOwned[];
+  /** The limit of running sessions both harnesses share (codex-owned.ts OWNED_POOL_MAX); absent: each manager's own, summed. */
+  maxOwned?: number;
   log: Log;
 };
 
@@ -79,13 +86,14 @@ function feedEntry(e: FeedEvent) {
 }
 
 /** GET /api/owned's reply: every session the manager keeps, the open approvals in queue order, the limits. */
-export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'codexOff'>) {
+export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'codexOff' | 'restored' | 'maxOwned'>) {
   const { codex, claude } = deps;
   const queue = queueOf(deps);
   const approvals = queue === null ? [] : queue.list();
   const sessions: { s: AnySession; harness: 'codex' | 'claude'; meta: { title: string; createdAt: number } | null }[] = [
     ...(codex === null ? [] : codex.list().map((s) => ({ s: s as AnySession, harness: 'codex' as const, meta: codex.meta(s.ownedId) }))),
     ...(claude === null ? [] : claude.list().map((s) => ({ s: s as AnySession, harness: 'claude' as const, meta: claude.meta(s.ownedId) }))),
+    ...(deps.restored ?? []).flatMap((r) => r.list().map((s) => ({ s, harness: r.harness, meta: r.meta(s.ownedId) }))),
   ].sort((a, b) => (a.meta?.createdAt ?? 0) - (b.meta?.createdAt ?? 0));
   const owned = sessions.map(({ s, harness, meta }) => {
     const mine = approvals.filter((a) => a.ownedId === s.ownedId);
@@ -102,7 +110,7 @@ export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'code
     v: OWNED_V, kind: 'owned-list', rev: queue === null ? 0 : queue.rev, enabled, disabledWhy: enabled ? null : deps.codexOff,
     harnesses: { codex: codex !== null, claude: claude !== null },
     owned, approvals: approvals.map(approvalEntry),
-    limits: { maxOwned: (codex === null ? 0 : codex.maxActive) + (claude === null ? 0 : claude.maxActive), active: sessions.filter(({ s }) => !FINAL(s)).length },
+    limits: { maxOwned: deps.maxOwned ?? (codex === null ? 0 : codex.maxActive) + (claude === null ? 0 : claude.maxActive), active: sessions.filter(({ s }) => !FINAL(s)).length },
   };
 }
 
@@ -112,7 +120,11 @@ const refuse = (error: Extract<OwnedOutcome, { ok: false }>['error']): OwnedOutc
 export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHandlers = makeOwnedHandlers()): OwnedHandlers {
   const { codex, claude, log } = deps;
   const desk = deps.desk ?? null;
-  const session = (call: OwnedCall): AnySession | null => (call.id === null ? null : codex?.get(call.id) ?? claude?.get(call.id) ?? null);
+  const session = (call: OwnedCall): AnySession | null => {
+    if (call.id === null) return null;
+    const id = call.id;
+    return codex?.get(id) ?? claude?.get(id) ?? (deps.restored ?? []).map((r) => r.get(id)).find((x) => x !== null) ?? null;
+  };
   const queue = queueOf(deps);
 
   handlers.register('GET', '/api/owned', () => ({ ok: true, reply: ownedList(deps) }));
@@ -144,10 +156,12 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     const text = String(body.text);
     const routeId = typeof body.routeId === 'string' ? body.routeId : null;
     const kept = routeId === null || desk === null ? null : desk.take(routeId, text);
-    // A suggestion that aged out, or was made for another sentence: the session starts all the same, with no decision recorded.
+    // A suggestion that aged out, or was made for another sentence: the session starts all the same, its decision a manual one.
     if (routeId !== null && kept === null) log.info('route-not-kept', { routeId });
+    // The router model's title names the session only when the person took the candidate it chose; else the sentence's first line does.
+    const title = kept === null || desk === null || typeof body.model !== 'string' ? null : desk.titleFor(kept, harness, body.model);
     const made = manager.create({
-      text, uuid: call.actionId!, ...(typeof body.model === 'string' ? { model: body.model } : {}), ...(kept === null ? {} : { title: kept.reply.title }),
+      text, uuid: call.actionId!, ...(typeof body.model === 'string' ? { model: body.model } : {}), ...(title === null ? {} : { title }),
     });
     if (!made.ok) {
       if (made.reason === 'owned-limit') return refuse('owned-limit');
@@ -157,11 +171,13 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
       return refuse(made.reason === 'model-refused' ? 'owned-disabled' : 'spawn-failed');
     }
     log.info('owned-started', { harness, ownedId: made.ownedId, model: made.session.model });
-    if (kept === null || desk === null) return { ok: true, reply: { ownedId: made.ownedId }, targetId: made.ownedId };
+    if (desk === null) return { ok: true, reply: { ownedId: made.ownedId }, targetId: made.ownedId };
+    // Every dispatch is a RouteDecision (r4 §9.5), from a suggestion for this very sentence or by hand.
     const d = { ownedId: made.ownedId, harness, model: made.session.model } as const;
+    const decision = kept === null ? desk.manual(text, { actionId: call.actionId!, ...d }) : desk.decision(kept, { actionId: call.actionId!, ...d });
     return {
       ok: true, reply: { ownedId: made.ownedId }, targetId: made.ownedId,
-      records: [desk.decision(kept, { actionId: call.actionId!, ...d })],
+      records: [decision],
       after: () => desk.dispatched(d),
     };
   });

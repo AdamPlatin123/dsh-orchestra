@@ -9,6 +9,7 @@ import type { OwnedRecord, OwnedRegistry } from './registry.ts';
 import type { Redact } from './text.ts';
 import { APPROVAL_LIMITS } from './approvals.ts';
 import { isClaudeOver, startClaudeSession } from './claude-session.ts';
+import type { OwnedPool } from './codex-owned.ts';
 import { recentOf } from './codex-owned.ts';
 import { Feed } from './feed.ts';
 import { DEFAULT_CLAUDE_MODEL, isClaudeModel } from './models.ts';
@@ -27,7 +28,7 @@ import { frozen, frozenClass } from '../../shared/frozen.js';
 // when they had not ended, never resumed and never sent anything again (r4 §8.3 rule 5).
 
 export const CLAUDE_OWNED_LIMITS = frozen({
-  /** Sessions running at once (slice design §2.4's suggested 3). */
+  /** Claude sessions running at once when no shared pool is given (tests); with one (codex-owned.ts OWNED_POOL_MAX), the pool's total counts too. */
   active: 3,
   /** Ended sessions kept for their feed; the oldest go first. */
   ended: 50,
@@ -58,6 +59,8 @@ export type ClaudeOwnedOptions = {
   registry?: OwnedRegistry;
   /** The approval timeout the host's own backstop counts from (default: the queue's 30 minutes). */
   askTimeoutMs?: number;
+  /** The limit both harnesses share (codex-owned.ts OWNED_POOL_MAX); without one only this manager's own count limits it. */
+  pool?: OwnedPool;
 };
 
 export type NewClaude =
@@ -104,7 +107,13 @@ export class ClaudeOwned {
   }
 
   get maxActive(): number {
-    return this.#max;
+    return this.#opts.pool?.max ?? this.#max;
+  }
+
+  /** Whether a new session would be refused as owned-limit now. */
+  full(): boolean {
+    const pool = this.#opts.pool;
+    return this.active() >= this.#max || (pool !== undefined && pool.active() >= pool.max);
   }
 
   #save(r: OwnedRecord): void {
@@ -124,7 +133,7 @@ export class ClaudeOwned {
   create(req: { model?: string; text?: string; uuid?: string; title?: string } = {}): NewClaude {
     const model = req.model ?? DEFAULT_CLAUDE_MODEL;
     if (!isClaudeModel(model)) return { ok: false, reason: 'model-refused', detail: String(model) };
-    if (this.active() >= this.#max) return { ok: false, reason: 'owned-limit', detail: `${this.#max} running` };
+    if (this.full()) return { ok: false, reason: 'owned-limit', detail: `${this.maxActive} running` };
     const o = this.#opts;
     const ownedId = crypto.randomBytes(10).toString('hex');
     let cwd: string;
@@ -191,15 +200,25 @@ export class ClaudeOwned {
     });
   }
 
-  /** Ends every running session (orchestrad stops): their open approvals are declined first. */
-  endAll(): number {
-    let n = 0;
+  /**
+   * Ends every running session as orchestrad stops (endReason daemon-stop, not you-ended: nobody pressed
+   * end). Each host is stopped in the design's order (close frame, stdin closed after 3 s, a kill after 2 s
+   * more); `exited` settles once every one of them closed. The caller waits for it, with a bound, before it
+   * ends the process: the order's last two steps run on the Clock and would never run otherwise.
+   */
+  endAll(): { ended: number; exited: Promise<void> } {
+    const waits: Promise<void>[] = [];
     for (const s of this.#sessions.values()) {
       if (isClaudeOver(s.state)) continue;
-      s.end();
-      n++;
+      s.end('daemon-stop');
+      waits.push(s.exited);
     }
-    return n;
+    return { ended: waits.length, exited: Promise.all(waits).then(() => undefined) };
+  }
+
+  /** Sessions whose host has not closed yet (after endAll: those still stopping). */
+  open(): number {
+    return [...this.#sessions.values()].filter((s) => !s.stats().closed).length;
   }
 
   #trim(): void {
@@ -215,15 +234,15 @@ frozenClass(ClaudeOwned);
 const RESTORED = 'listed again after a restart';
 
 /** A session an earlier orchestrad left: no host, nothing sent to it; its feed says only that orchestrad restarted. */
-function restoredSession(r: OwnedRecord, now: () => number): ClaudeSession {
+export function restoredSession(r: OwnedRecord, now: () => number): ClaudeSession {
   const feed = new Feed(now);
   feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'daemon-restart' });
   return Object.freeze({
     ownedId: r.ownedId, harness: 'claude' as const, model: r.model, cwd: '', state: r.state as ClaudeSessionState, endReason: r.endReason as ClaudeEndReason | null,
-    sessionId: null, tokens: null, costUsd: null, queued: 0, feed, ready: Promise.resolve(false),
+    sessionId: null, tokens: null, costUsd: null, queued: 0, feed, ready: Promise.resolve(false), exited: Promise.resolve(),
     send: () => ({ ok: false as const, reason: 'ended' as const }),
     interrupt: async () => ({ withdrawn: 0, denied: 0 }),
     end: () => ({ denied: 0 }),
-    stats: () => ({ stderrTail: '', failure: RESTORED, exit: null }),
+    stats: () => ({ stderrTail: '', failure: RESTORED, exit: null, closed: true }),
   });
 }

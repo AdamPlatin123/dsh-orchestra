@@ -15,7 +15,7 @@ import { VirtualClock } from '../../src/runtime/clock.ts';
 import { makeRedactor } from '../../src/store/redact.ts';
 import { APPROVAL_LIMITS, Approvals } from '../../src/owned/approvals.ts';
 import { CodexOwned } from '../../src/owned/codex-owned.ts';
-import { UNANSWERED_REQUEST_CODE, startCodexSession } from '../../src/owned/codex-session.ts';
+import { CODEX_VERSIONS, UNANSWERED_REQUEST_CODE, codexVersionOf, startCodexSession } from '../../src/owned/codex-session.ts';
 import { DEFAULT_CODEX_MODEL } from '../../src/owned/models.ts';
 import { withTmp } from '../helpers/tmp.ts';
 
@@ -39,7 +39,7 @@ type Rig = {
   answers(): [string, unknown][];
 };
 
-async function withRig(t: TestContext, body: (r: Rig) => Promise<void>, opts: { rpcLineMaxBytes?: number } = {}): Promise<void> {
+async function withRig(t: TestContext, body: (r: Rig) => Promise<void>, opts: { rpcLineMaxBytes?: number; ua?: string } = {}): Promise<void> {
   const dir = fs.realpathSync.native(withTmp(t));
   const home = path.join(dir, 'orchestra');
   const workRoot = path.join(home, 'work');
@@ -57,7 +57,7 @@ async function withRig(t: TestContext, body: (r: Rig) => Promise<void>, opts: { 
     realpath,
     clock,
     env: process.env,
-    envExtra: { 'codex-app-server-fake': { CODEX_HOME: codexHome, FAKE_CODEX_LOG: log } },
+    envExtra: { 'codex-app-server-fake': { CODEX_HOME: codexHome, FAKE_CODEX_LOG: log, ...(opts.ua === undefined ? {} : { FAKE_CODEX_UA: opts.ua }) } },
     cwd: { allowedRoots: [workRoot], protectedDirs: [home], userHome: os.homedir(), ownedWorkRoot: workRoot },
     fakeCodexNode: process.execPath,
   });
@@ -161,6 +161,37 @@ test('handshake: initialize, then initialized, then thread/start with the cwd, t
     for (const k of lower) assert.ok(allowed.includes(k), `unexpected ${k}`);
     assert.ok(lower.includes('path'), 'libuv adds PATH: if this fails, the gate keeps PATH out and spawn.ts LIBUV_ADDED_ENV is stale');
     assert.ok(has(s, 'lifecycle', 'started'));
+  });
+});
+
+test('a codex-cli version Orchestra was not measured on (or none in the userAgent) ends the session as policy-mismatch before thread/start', async (t) => {
+  assert.equal(codexVersionOf('orchestra/0.165.0 (Windows 10.0.26200; x86_64) unknown (orchestra; 0.2.0)'), '0.165.0');
+  assert.equal(codexVersionOf('codex_cli_rs/0.166.0-alpha.1 (Linux)'), '0.166.0-alpha.1');
+  for (const bad of [undefined, 42, '', 'orchestra', 'orchestra/latest (x)', 'a/b/0.165.0']) assert.equal(codexVersionOf(bad), null, String(bad));
+  assert.deepEqual([...CODEX_VERSIONS], ['0.165.0']);
+  for (const ua of ['orchestra/0.166.0 (Windows 10.0.26200; x86_64) unknown (orchestra; 0.2.0)', 'fake-codex']) {
+    await withRig(t, async (r) => {
+      const s = await newSession(r);
+      assert.equal(await s.ready, false);
+      assert.equal(s.state, 'failed');
+      assert.equal(s.endReason, 'policy-mismatch');
+      const life = events(s).find((e) => e.kind === 'lifecycle' && e.state === 'policy-mismatch');
+      assert.match(life?.text ?? '', /measured on 0.165.0/);
+      assert.ok(!r.received().some((m) => m.method === 'thread/start'), 'no thread was started');
+    }, { ua });
+  }
+});
+
+test('a command codex ran without asking is said in the feed (ran-unasked); one it asked about is not', async (t) => {
+  await withRig(t, async (r) => {
+    const s = await newSession(r);
+    await s.ready;
+    s.send('run-unasked', U(1));
+    await until('the card', () => r.approvals.list().length === 1);
+    r.approvals.allow(r.approvals.list()[0]!.approvalId, { digest: r.approvals.list()[0]!.digest, rev: r.approvals.rev });
+    await until('the turn ends', () => has(s, 'lifecycle', 'turn-ended'));
+    const notes = events(s).filter((e) => e.kind === 'note' && e.state === 'ran-unasked');
+    assert.deepEqual(notes.map((e) => e.text), ['Get-ChildItem']);
   });
 });
 

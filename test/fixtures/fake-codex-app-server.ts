@@ -110,6 +110,13 @@ async function runTurn(turnId: string, n: number, text: string): Promise<void> {
       return runCommand(turnId, n, rest.join(' ') || 'echo hi', false);
     case 'read-outside':
       return runCommand(turnId, n, 'Get-Content ../elsewhere/SKILL.md', false, [{ type: 'read', command: 'Get-Content ../elsewhere/SKILL.md', name: 'SKILL.md', path: '../elsewhere/SKILL.md' }, { type: 'read', command: 'Get-Content a.txt', name: 'a.txt', path: 'a.txt' }]);
+    case 'run-unasked': {
+      // A command codex runs without asking (it judges some read-only commands safe), then one it asks about.
+      const itemId = `cmd_${n}_quiet`;
+      notify('item/started', { threadId: THREAD, turnId, startedAtMs: 0, item: { type: 'commandExecution', id: itemId, command: 'Get-ChildItem', cwd, status: 'inProgress', commandActions: [] } });
+      notify('item/completed', { threadId: THREAD, turnId, completedAtMs: 0, item: { type: 'commandExecution', id: itemId, command: 'Get-ChildItem', cwd, status: 'completed', exitCode: 0, aggregatedOutput: 'a.txt\n' } });
+      return runCommand(turnId, n, 'echo asked', false);
+    }
     case 'run-then-hold':
       return runCommand(turnId, n, 'echo held', true);
     case 'run-crash':
@@ -167,7 +174,8 @@ function onRequest(m: Msg): void {
   switch (m.method) {
     case 'initialize':
       record(JSON.stringify({ env: Object.keys(process.env).sort() }));
-      send({ id: m.id, result: { userAgent: 'fake-codex/0.0.0' } });
+      // codex-cli 0.165.0's shape (measured 2026-11-02): the client's name, then the version; FAKE_CODEX_UA plays another.
+      send({ id: m.id, result: { userAgent: process.env.FAKE_CODEX_UA ?? 'orchestra/0.165.0 (Windows 10.0.26200; x86_64) unknown (orchestra; 0.2.0)' } });
       return;
     case 'thread/start': {
       if (p.model === 'codex/fake-die') process.exit(7);

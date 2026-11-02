@@ -28,11 +28,14 @@ export const OWNED_ENUMS = frozen({
   harness: ['codex', 'claude'],
   state: ['starting', 'idle', 'running', 'ended', 'failed', 'unknown'],
   /**
-   * you-ended: a person ended it; exited: the child went away; start-failed, policy-mismatch: it never
-   * started work; daemon-restart: an earlier orchestrad held it (state unknown); safety-stop: an owned
-   * Claude session's host stopped it on a safety check (a model, a tool, a plugin it may not have).
+   * you-ended: a person ended it; exited: the child went away by itself; start-failed, policy-mismatch:
+   * it never started work; daemon-restart: an earlier orchestrad held it (state unknown); safety-stop: an
+   * owned Claude session's host stopped it on a safety check (a model, a tool, a plugin it may not have);
+   * interrupt-unsure: an interrupt left something queued that could still run, so Orchestra ended it;
+   * protocol-error: the child said something Orchestra cannot read, so Orchestra stopped it;
+   * daemon-stop: orchestrad ended it on its own way out (nobody pressed end).
    */
-  endReason: ['you-ended', 'exited', 'start-failed', 'policy-mismatch', 'daemon-restart', 'safety-stop'],
+  endReason: ['you-ended', 'exited', 'start-failed', 'policy-mismatch', 'daemon-restart', 'safety-stop', 'interrupt-unsure', 'protocol-error', 'daemon-stop'],
   approvalKind: ['command', 'file-change', 'permissions', 'question', 'elicitation', 'tool'],
   risk: ['shell', 'write', 'net', 'protected', 'other'],
   feedKind: ['you', 'text', 'tool', 'tool-result', 'ask', 'answer', 'auto-denied', 'lifecycle', 'result', 'note'],
@@ -66,6 +69,9 @@ export const OWNED_TOWER_TEXT = frozen({
   'end.policy-mismatch': '已结束：审批或沙箱设置和要求不符，Orchestra 停了它',
   'end.daemon-restart': 'orchestrad 重启过：之前开的这个会话现在怎样不知道',
   'end.safety-stop': '已结束：安全检查停了它（模型、工具或插件不在允许范围内）',
+  'end.interrupt-unsure': '已结束：你按了中断，但它还有没处理的消息，为免停不住，Orchestra 结束了它',
+  'end.protocol-error': '已结束：它发来了 Orchestra 读不懂的内容，Orchestra 停了它',
+  'end.daemon-stop': '已结束：orchestrad 停机时结束了它',
   'end.unknown': '已结束',
   // The newest thing the session said or did, for its activity line (src/sources/tower.ts ownedNode).
   'act.command': '命令：',

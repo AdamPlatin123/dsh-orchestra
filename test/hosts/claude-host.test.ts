@@ -631,8 +631,10 @@ test('init: pinned skills and plugins pass and the init frame goes out once per 
   await closed(h);
 });
 
-test('init: a wrong model or permission mode, a browser or disallowed tool, an MCP server, an extra skill or plugin each stop the session', async () => {
+test('init: another CLI version, a wrong model or permission mode, a browser or disallowed tool, an MCP server, an extra skill or plugin each stop the session', async () => {
   const cases: [Msg, string][] = [
+    [{ claude_code_version: '2.1.310' }, 'cli-version'],
+    [{ claude_code_version: undefined }, 'cli-version'],
     [{ model: 'claude-sonnet-4-5' }, 'model'],
     [{ model: 'opencode-go/claude-haiku-5-5-preview' }, 'model'],
     [{ permissionMode: 'auto' }, 'permission-mode'],

@@ -8,7 +8,8 @@ import { FORMAT_RULES } from './redact.ts';
 import type { CauseRule } from '../model/inbox.ts';
 import { ITEM_EDGES, MACHINE_STATES, itemBodyError } from '../model/inbox.ts';
 import { OWNED_MODEL_RE } from '../owned/models.ts';
-import { MAX_CANDIDATES, ROUTE_HARNESSES, ROUTE_MODES, ROUTE_REASONS, ROUTER_STATES, RULE_IDS, TASK_CLASSES } from '../route/rules.ts';
+import { MAX_CANDIDATES, ROUTE_HARNESSES, ROUTE_MODES, ROUTE_REASONS, ROUTE_RECORD_ROUTER, RULE_IDS, TASK_CLASSES } from '../route/rules.ts';
+import { ROUTER_WHY } from '../route/router-model.ts';
 
 // The journal's record kinds and the schema of each body (plan step 3), frozen with 0001 at the end
 // of the step. A body holds only ids, enums, integers, digests and snippetRefs, plus four short
@@ -180,12 +181,15 @@ export const BODY_SCHEMAS = frozen({
   // in the batch of its owned-new `human` records. decisionId is sha256 over the canonical body without
   // it; the sentence, the title and the router model's words stay out (no source free text in a body).
   // pick: the candidate the person took, null when the harness and model were set by hand; reason: the
-  // reason chip (that candidate's rule, router-model, or manual); router: what the router model did.
+  // reason chip (that candidate's rule, router-model, or manual); router: what the router model did, or
+  // not-asked for a dispatch with no suggestion for its sentence (then routeId is null and there are no
+  // candidates; r4 §9.5: every dispatch is a decision); routerModel: the model asked (null when it was not);
+  // routerWhy: why its answer was not used (ROUTER_WHY: no answer, a refused answer, or not asked), else null.
   route: obj({
-    decisionId: digest, actionId: uuid, routeId: id, ownedId: id, taskClass: en(TASK_CLASSES), rules: arr(en(RULE_IDS), 1, RULE_IDS.length),
+    decisionId: digest, actionId: uuid, routeId: nul(id), ownedId: id, taskClass: en(TASK_CLASSES), rules: arr(en(RULE_IDS), 1, RULE_IDS.length),
     candidates: arr(obj({ harness: en(ROUTE_HARNESSES), model: { t: 'model' }, source: en(['rule', 'model']), rule: nul(en(RULE_IDS)) }), 0, MAX_CANDIDATES),
     chosen: obj({ harness: en(ROUTE_HARNESSES), model: { t: 'model' } }), pick: nul(int(0, MAX_CANDIDATES - 1)), reason: en(ROUTE_REASONS),
-    router: en(ROUTER_STATES), mode: en(ROUTE_MODES),
+    router: en(ROUTE_RECORD_ROUTER), routerModel: nul({ t: 'model' }), routerWhy: nul(en(ROUTER_WHY)), mode: en(ROUTE_MODES),
   }),
 } satisfies Record<string, Schema>);
 
@@ -371,6 +375,14 @@ function consistency(kind: Kind, b: Record<string, unknown>): BodyError | null {
       // The pick names a candidate that is there, and that candidate is what was chosen; the reason follows from it.
       const cands = b.candidates as { harness: string; model: string; rule: string | null }[];
       const chosen = b.chosen as { harness: string; model: string };
+      // No suggestion (routeId null) exactly when the router was not asked; then nothing was on offer.
+      if ((b.routeId === null) !== (b.router === 'not-asked')) return bad('$.router');
+      if (b.routeId === null && cands.length > 0) return bad('$.candidates');
+      // A why exactly when the router model's answer was not used (no-answer).
+      if ((b.router === 'no-answer') !== (b.routerWhy !== null)) return bad('$.routerWhy');
+      // The model is named when it was asked: always when it answered, never when it was off, skipped or not asked.
+      if (b.router === 'answered' && b.routerModel === null) return bad('$.routerModel');
+      if (b.router !== 'answered' && b.router !== 'no-answer' && b.routerModel !== null) return bad('$.routerModel');
       if (b.pick === null) return b.reason === 'manual' ? null : bad('$.reason');
       const c = cands[b.pick as number];
       if (c === undefined) return bad('$.pick');

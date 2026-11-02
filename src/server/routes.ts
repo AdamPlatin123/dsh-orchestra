@@ -295,11 +295,13 @@ const routeModel = re(OWNED_MODEL_RE, 'model');
 /**
  * POST /api/route/suggest's reply: the "Route to?" card (r4 §9.2 step 10). Every candidate names its
  * harness, model and where it came from (a rule, by id, or the router model, with its redacted words);
- * the title is the router model's (redacted) or the sentence's first line. It starts nothing.
+ * the title is the router model's (redacted) or the sentence's first line, and titleSource says which;
+ * full: the running owned sessions are at their limit (why every harness is off). It starts nothing.
  */
 const SUGGEST_REPLY = obj({
   routeId: re(ROUTE_ID_RE, 'routeId'),
   title: text(60, 'route-title'),
+  titleSource: en(['rule', 'model']),
   taskClass: en(TASK_CLASSES),
   rules: arr(en(RULE_IDS), RULE_IDS.length, 1),
   // pick: the candidate the router model chose, its own or a rule's it agreed with; null when it chose none.
@@ -308,6 +310,7 @@ const SUGGEST_REPLY = obj({
     harness: en(ROUTE_HARNESSES), model: routeModel, source: en(['rule', 'model']), rule: nul(en(RULE_IDS)), reason: nul(text(200, 'route-reason')),
   }), MAX_CANDIDATES),
   off: arr(en(ROUTE_HARNESSES), ROUTE_HARNESSES.length),
+  full: bool,
 });
 
 /** Step 4's routes (plan step 4), with their shapes. GET /api/items/:id/detail replaces GET /api/items. */

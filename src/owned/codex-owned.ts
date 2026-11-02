@@ -22,8 +22,16 @@ import { frozen, frozenClass } from '../../shared/frozen.js';
 // sessions an earlier orchestrad left are listed again at start: those that had not ended as unknown
 // (daemon-restart), never resumed. They hold no child and no seat here; their feed says only that.
 
+/**
+ * The running owned sessions of both harnesses together (slice design §2.4: "同时最多 3 个活动的自有会话",
+ * a total, and §4's text "同时最多 3 个，先结束一个"). The composition root hands both managers one pool.
+ */
+export const OWNED_POOL_MAX = 3;
+/** What both managers count against: the total that may run, and how many run now (every harness). */
+export type OwnedPool = { readonly max: number; active(): number };
+
 export const CODEX_OWNED_LIMITS = frozen({
-  /** Sessions running at once (slice design §2.4's suggested 3). */
+  /** Codex sessions running at once when no shared pool is given (tests); with one, the pool's total counts too. */
   active: 3,
   /** Ended sessions kept for their feed; the oldest go first. */
   ended: 50,
@@ -52,6 +60,8 @@ export type CodexOwnedOptions = {
   judge?: PathJudge;
   /** Where each session's state is kept across a restart; without one nothing outlives this orchestrad. */
   registry?: OwnedRegistry;
+  /** The limit both harnesses share (OWNED_POOL_MAX); without one only this manager's own count limits it. */
+  pool?: OwnedPool;
 };
 
 export type NewOwned =
@@ -113,9 +123,15 @@ export class CodexOwned {
     return this.#opts.approvals;
   }
 
-  /** How many sessions may run at once. */
+  /** How many sessions may run at once (the shared pool's total when there is one). */
   get maxActive(): number {
-    return this.#max;
+    return this.#opts.pool?.max ?? this.#max;
+  }
+
+  /** Whether a new session would be refused as owned-limit now. */
+  full(): boolean {
+    const pool = this.#opts.pool;
+    return this.active() >= this.#max || (pool !== undefined && pool.active() >= pool.max);
   }
 
   /** Sessions whose child still runs. */
@@ -127,7 +143,7 @@ export class CodexOwned {
   create(req: { model?: string; text?: string; uuid?: string; title?: string } = {}): NewOwned {
     const model = req.model ?? DEFAULT_CODEX_MODEL;
     if (!isOwnedModel(model)) return { ok: false, reason: 'model-refused', detail: String(model) };
-    if (this.active() >= this.#max) return { ok: false, reason: 'owned-limit', detail: `${this.#max} running` };
+    if (this.full()) return { ok: false, reason: 'owned-limit', detail: `${this.maxActive} running` };
     const ownedId = crypto.randomBytes(10).toString('hex');
     let cwd: string;
     try {
@@ -196,12 +212,16 @@ export class CodexOwned {
     });
   }
 
-  /** Ends every running session (orchestrad stops): their open approvals are declined first. */
+  /**
+   * Ends every running session as orchestrad stops (endReason daemon-stop, not you-ended: nobody pressed
+   * end): their open approvals are declined first, then each child is stopped (stdin closed, then killed
+   * at once, child-pipe.ts). What its commands started may remain (children-may-remain, D4's residual).
+   */
   endAll(): number {
     let n = 0;
     for (const s of this.#sessions.values()) {
       if (isOver(s.state)) continue;
-      s.end();
+      s.end('daemon-stop');
       n++;
     }
     return n;
@@ -236,7 +256,7 @@ const RESTORED = 'listed again after a restart';
  * A session an earlier orchestrad left, as the routes and the tower see it: no child, no seat, nothing
  * sent to it; its feed says only that orchestrad restarted (the conversation stayed with the old one).
  */
-function restoredSession(r: OwnedRecord, now: () => number): CodexSession {
+export function restoredSession(r: OwnedRecord, now: () => number): CodexSession {
   const feed = new Feed(now);
   feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'daemon-restart' });
   const state = r.state as CodexSessionState;

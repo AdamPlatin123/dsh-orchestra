@@ -83,7 +83,7 @@ function rig(opts: { judge?: PathJudge; redact?: (t: string) => { text: string; 
 /** Answers initialize and thread/start as codex does. */
 async function ready(r: Rig): Promise<void> {
   await settle();
-  r.m.send({ id: 1, result: { userAgent: 'fake' } });
+  r.m.send({ id: 1, result: { userAgent: 'orchestra/0.165.0 (Windows 10.0.26200; x86_64) unknown (orchestra; 0.2.0)' } });
   await settle();
   r.m.send({ id: 2, result: { thread: { id: 'thr' }, approvalPolicy: 'on-request', sandbox: { type: 'workspaceWrite' } } });
   assert.equal(await r.s.ready, true);
