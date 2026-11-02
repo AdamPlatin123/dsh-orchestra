@@ -5,19 +5,20 @@
 - When: 2026-11-01 19:00 -05:00
 - Machine: 550W备份1号机
 - Branch: claude/alpha-0.1（从 `claude/m0-thin-slice-e9066d` 的 3b34a53 切出）
-- Commit: b27411b
+- Commit: 178b1c7
 - Pushed: no（push 要等用户点头）
 - Uncommitted on that machine: none（本分支 worktree 在 `.claude/worktrees/alpha-0-1`）
 
 ## Goal
-做一个 0.1 alpha 原型：把 r4 §11.3 的 Stage（乐团舞台，原排在 M2）提前做成只读预览，再加一个「分谱」规划视图，让人一眼看清「主奏 → 派活 → 执行的分身 → 回报」的结构，以及每次派活压缩了多少上下文。数据只读，演示用合成数据。
+做一个 0.1 alpha 原型：把 r4 §11.3 的 Stage 提前做成只读预览。2026-11-01 用户纠正方向：不要复刻参考图的内容，要体现各组协作的特点。所以主视图现在是「合奏总谱」：每个协作组一个声部系统（标出协作形态和计数），成员谱线按层级缩进，派活按记录顺序成列，派活连线和回报回线显示上下文压缩，等你的地方在「你」这一行标出；右侧「分谱」列出每次派活的细节。数据只读，演示用合成数据。
 
 ## Done（已完成且已验证）
 - 后端：`src/sources/stage.ts` 从 peek 读取器算出舞台快照；`src/server/http.ts` 新增 `/stage`、`/api/peek/stage`、`/api/peek/session`，都在原有配对之后，CSP 带 Trusted Types；页面资源由 `scripts/embed-ui.ts` 生成到 `src/server/ui-assets.ts`。— 验证：`test/sources/stage*.test.ts`、`test/server/stage-http.test.ts`、`test/server/ui-assets-drift.test.ts`。
 - 前端：`ui/` 下原生 ES module，不构建、不用库。舞台（三个声部、主奏与分身、乐器 = 风险类别、谱架 = 待办、派活和回报连线）、分谱（派活 / 执行 / 回报 + 压缩条 / 验收）、详情抽屉，亮暗两套主题，手机宽度。— 验证：`test/ui/*`；2026-11-01 在应用内置浏览器里用合成数据看过 1100×720 亮色、暗色和 375×812 手机，手机无横向滚动，抽屉可用，控制台无 CSP 报错。
 - 诚实规则 T1–T8（设计稿 §2）：不出现「完成」；勾选写「自报已勾」；验收标准写「未声明」；验收栏写「无复核者（M0）」；规则在真实数据上 0 个样本时写「未测（N=0）」；计数等于它链接的列表长度；不出现绝对路径和密钥。— 验证：`test/ui/view-golden.test.ts`、`test/sources/stage.test.ts` 的脱敏金丝雀测试。
 - 对抗复核：4 个方向（安全、诚实与数据正确性、仓库规则、前端）共 25 条发现，24 条经独立复核确认并已修，1 条被驳回。— 验证：全量 `.tools/node24/node.exe --test "test/**/*.test.ts"`（用主检出目录的 node），1072 条，1069 过，0 失败，1 跳过，2 todo（起点 958 / 955）。
-- frontend-design 设计复核：本机没有 /frontend-design 技能，也没有对应插件；按 Anthropic 官方仓库里 frontend-design 的 SKILL.md 走了一轮「出方案、对照需求复核、动手、截图自查」：舞台外换成靛蓝底色，分谱改成乐谱式的左侧色条（去掉统一圆角卡片和阴影），中点串改成短句，去掉全大写小标签和红色幕布；选中行加了 3:1 以上的金色标记和 aria-current。— 验证：独立代理复查；全量 1073 条，1070 过，0 失败；2026-11-01 在应用内置浏览器里用合成数据目测。
+- frontend-design 第一轮（b27411b）：当时本机没有这个技能，按 Anthropic 官方仓库里 frontend-design 的 SKILL.md 走了一轮「出方案、对照需求复核、动手、截图自查」：舞台外换成靛蓝底色，分谱改成乐谱式的左侧色条（去掉统一圆角卡片和阴影），中点串改成短句，去掉全大写小标签和红色幕布；选中行加了 3:1 以上的金色标记和 aria-current。— 验证：独立代理复查；全量 1073 条，1070 过，0 失败；2026-11-01 在应用内置浏览器里用合成数据目测。
+- 合奏总谱（178b1c7）：用户同意安装后，把官方 frontend-design 技能装进本机 Claude 配置目录的 skills/frontend-design/（含 LICENSE.txt），正式调用；按它的流程出方案、复核、实现。画出来的音乐厅和 Q 版人物去掉，换成总谱；数据契约和后端没改。独立检查找到 4 条低严重度问题（部门计数两处不一致、措辞、谱线对比度、等待标签过长），已修。— 验证：全量 1077 条，1074 过，0 失败；2026-11-01 在应用内置浏览器里用合成数据看过 1280×800。
 - 演示：`node scripts/stage-demo.ts` 生成合成数据，再用 `node src/boot.ts --test-profile --test-dir %TEMP%\orchestra-test-stage --peek-port <端口>` 启动，打开 `http://orchestra.localhost:<端口>/`，配对后点「Stage 预览」。— 验证：同上浏览器实测。
 
 ## Unverified（做了但没验证，或验证没过）
@@ -26,7 +27,7 @@
 
 ## Next（按优先级，每条可独立执行）
 1. 用户在普通权限控制台用真实 profile 启动（`node src/boot.ts --peek-port 7471`，端口被占用就换一个），打开 Stage 目测：主奏、分身、待办是否大致对；记下哪里显示「未关联」「字段对不上」。
-2. 页面体积：`test/ui/stage-html.test.ts` 的上限是 `/stage` 加载总量 143360 字节、`ui/` 102400 字节；frontend-design 那轮之后是 140849 和 99585，还有约 2.5 KB 余量。再大的前端改动前，要用户决定放宽上限还是继续压缩。
+2. 页面体积：`test/ui/stage-html.test.ts` 的上限是 `/stage` 加载总量 143360 字节、`ui/` 102400 字节；现在是 137776 和 95852（合奏总谱之后），还有约 5.5 KB 余量。再大的前端改动前，要用户决定放宽上限还是继续压缩。
 3. 想在真实数据上核实 Task / TodoWrite 字段，需要比舞台自身限制（只读尾部 256 KiB）更宽的采样。这违背「采样用同样限制」的约定，要用户决定。
 4. 计划第 4 步（HTTP、UI 鉴权、SSE）落地时，把 `/api/peek/*`、`/stage` 和资源生成合并进正式路由，或删掉。
 
@@ -37,6 +38,7 @@
 - 扫描规则的放宽：`test/helpers/scan-rules.ts` 把 `scripts/stage-demo.ts`、`scripts/embed-ui.ts` 加进了豁免名单（它们写临时目录或生成文件，不碰 harness 根）；同时新加了 7 条更严的规则（`code-no-test-import` 和 6 条 ui 规则）。豁免要用户确认。
 - 数据源原文进 JSON：舞台快照里带了谱架标题和派活原文（脱敏、截到 120 字），超出了 `shared/protocol.js` 里「帧不带源文本」的约定（那条约定针对第 4 步的帧）。要用户确认。
 - Stage 在 r4 里是 M2；本分支是带标签的预览，第 4、5 步要决定留还是删。
+- setAttribute 白名单为总谱加了 width、height、viewBox（只是几何属性，`test/ui/dom-stage.test.ts` 钉住了名单），要用户知悉。
 
 ## Divergence（接手者填写：交接与现实的差异）
 - 2026-11-01 AdamPlatin123：`orchestra.cmd` 在 worktree 里找不到 node（它找 worktree 下的 `.tools\node24`）。处理：直接用主检出目录的 `.tools\node24\node.exe`，或设 `ORCHESTRA_NODE`。
