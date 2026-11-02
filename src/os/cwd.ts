@@ -18,6 +18,12 @@ const win = path.win32;
 //     "0.2 only <test dir>\work\" versus a wider real-profile scope), so the policy only takes the list;
 //     an empty list allows nothing.
 // The cwd must exist and be its own realpath: no junction or link anywhere on it.
+//
+// One exemption (orchestra app plan §2): the owned sessions' work root, ORCHESTRA_HOME\work, which
+// orchestrad makes itself. A cwd inside it is not refused for lying inside AppData (the test profile's
+// data dir sits in %TEMP%, below %LOCALAPPDATA%; a real ORCHESTRA_HOME may sit there too), nor for lying
+// inside the protected dir that is the work root's own parent (the data dir). Every other row still
+// applies to it, and nowhere else is either row relaxed.
 
 export const PROFILE_SUBDIRS: readonly string[] = Object.freeze(['AppData', '.ssh', '.aws', '.claude', '.dsh']);
 const PROGRAM_FILES_VARS: readonly string[] = Object.freeze(['ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432']);
@@ -49,6 +55,8 @@ export type CwdPolicySpec = {
   userHome: string;
   /** Other checkouts of Orchestra's code (a main checkout or worktree MAIN_CHECKOUT cannot find); refused like REPO_ROOT. */
   repoRoots?: readonly string[];
+  /** The owned sessions' work root (ORCHESTRA_HOME\work); one of allowedRoots. See the exemption above. */
+  ownedWorkRoot?: string;
 };
 
 /**
@@ -84,11 +92,14 @@ export class CwdPolicy {
   readonly #table: readonly Entry[];
   readonly #allowed: readonly string[];
   readonly #realpath: RealpathFn;
+  /** The work root in both forms, and its parent (the data dir) keyed in both forms; empty without one. */
+  readonly #work: readonly string[];
+  readonly #workParents: readonly string[];
 
   constructor(input: CwdPolicyInput) {
     const { spec, env, systemRoot, realpath } = ownFields(input, ['spec', 'env', 'systemRoot', 'realpath'] as const);
     if (typeof realpath !== 'function') throw new Error('cwd policy: realpath is required, there is no default');
-    const s = ownFields(spec, ['allowedRoots', 'protectedDirs', 'userHome', 'repoRoots'] as const);
+    const s = ownFields(spec, ['allowedRoots', 'protectedDirs', 'userHome', 'repoRoots', 'ownedWorkRoot'] as const);
     if (s.repoRoots !== undefined && !Array.isArray(s.repoRoots)) throw new Error('cwd policy: repoRoots must be a list');
     if (!Array.isArray(s.allowedRoots)) throw new Error('cwd policy: allowedRoots is required (an empty list allows nothing)');
     if (!Array.isArray(s.protectedDirs)) throw new Error('cwd policy: protectedDirs is required (r4 §5.3: data dir, DSH_HOME, CLAUDE_CONFIG_DIR)');
@@ -137,6 +148,17 @@ export class CwdPolicy {
       return trimSep(canonicalize(lexical, realpath));
     }));
     this.#realpath = realpath;
+    if (s.ownedWorkRoot !== undefined) {
+      const lexical = trimSep(mustPath(s.ownedWorkRoot, 'owned work root'));
+      if (lexical.length === 3) throw new Error(`cwd policy: the owned work root is a drive root: ${lexical}`);
+      const real = trimSep(canonicalize(lexical, realpath));
+      if (!this.#allowed.some((r) => pathKey(r) === pathKey(real))) throw new Error(`cwd policy: the owned work root must be one of allowedRoots: ${lexical}`);
+      this.#work = Object.freeze([...new Set([lexical, real])]);
+      this.#workParents = Object.freeze([...new Set([win.dirname(lexical), win.dirname(real)].map(pathKey))]);
+    } else {
+      this.#work = Object.freeze([]);
+      this.#workParents = Object.freeze([]);
+    }
     Object.freeze(this);
   }
 
@@ -166,11 +188,21 @@ export class CwdPolicy {
   #hit(p: string): string | null {
     const top = p.slice(3).split('\\')[0]!;
     if (PROGRAM_FILES_TOP.test(top)) return 'program-files';
+    const inWork = this.#work.some((w) => isWithin(p, w));
     for (const e of this.#table) {
       if (isWithin(e.path, p)) return e.label;
-      if (e.kind === 'tree' && isWithin(p, e.path)) return e.label;
+      if (e.kind === 'tree' && isWithin(p, e.path)) {
+        if (inWork && this.#exempt(e)) continue;
+        return e.label;
+      }
     }
     return null;
+  }
+
+  /** The rows a cwd inside the owned work root passes: AppData, and the protected dir the work root sits in directly. */
+  #exempt(e: Entry): boolean {
+    if (e.label === 'user-profile\\AppData') return true;
+    return e.label === 'protected' && this.#workParents.includes(pathKey(trimSep(e.path)));
   }
 }
 frozenClass(CwdPolicy);

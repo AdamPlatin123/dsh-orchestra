@@ -643,6 +643,11 @@ const hostNoBypass = ban('hosts:no-permission-bypass', hosts,
 
 const hostNoDynamicCode = ban('hosts:no-dynamic-code', hosts, /\beval\s*\(/, /\bnew\s+Function\b/, /\bcreateRequire\b/, /\bMath\s*(?:\?\.|\.)\s*random\b/);
 
+// The owned Codex step (orchestra app plan §2): the fake app-server's spawn rule and its node.exe option
+// start a child of the test suite's choosing. In daemon code only src/os/spawn.ts names them (it opens them
+// only under the test runner); a composition root that named them would hand the daemon a node.exe child.
+const fakeCodexOnlyInTests = ban('fake-codex-only-in-tests', except(code, 'src/os/spawn.ts'), /codex-app-server-fake/, /\bfakeCodexNode\b/, /\bFAKE_CODEX_SCRIPT\b/);
+
 export const RULES: readonly Rule[] = [
   builtinPolicy,
   builtinOnlyNames,
@@ -702,6 +707,7 @@ export const RULES: readonly Rule[] = [
   writeExistingFlag,
   inProcessStart,
   handleKill,
+  fakeCodexOnlyInTests,
   mintedImport,
   workingImport,
   launcherRootFsUse,

@@ -5,7 +5,9 @@ import type { ReadGateSpec, WriteFenceSpec } from '../fs/node-io.ts';
 import type { RealpathFn } from '../fs/paths.ts';
 import type { ReadGate } from '../fs/read-gate.ts';
 import type { WriteFence } from '../fs/write-fence.ts';
-import type { PidLog } from '../os/spawn.ts';
+import type { SpawnGateSpec } from '../os/node-proc.ts';
+import type { PidLog, SpawnGate } from '../os/spawn.ts';
+import type { CodexOwned } from '../owned/codex-owned.ts';
 import type { DbOpener, DbOpenerSpec } from '../store/db.ts';
 import type { ChainBreak } from '../store/journal.ts';
 import type { Store } from '../store/store.ts';
@@ -60,6 +62,8 @@ export type WorkingContext = {
   makeReadGate(spec: ReadGateSpec): ReadGate;
   makeWriteFence(spec: WriteFenceSpec): Promise<WriteFence>;
   makeDbOpener(spec: DbOpenerSpec): Promise<DbOpener>;
+  /** The spawn gate factory (BootPorts, via main.ts): only the owned Codex sessions use it here. */
+  makeSpawnGate?(spec: SpawnGateSpec): SpawnGate;
   /** This orchestrad's own environment (main.ts's StartDeps.env): the redactor replaces its values in every source string (r4 §6.1 #1). */
   env: Readonly<Record<string, string | undefined>>;
   roots: readonly HarnessRoot[];
@@ -74,7 +78,21 @@ export type WorkingContext = {
   stopping: StopPort;
   /** --peek-port: serve the thin slice's peek page (src/server/http.ts) on this port. Absent: no HTTP at all. */
   peekPort?: number;
+  /** --owned: owned Codex sessions over codex app-server (orchestra app plan §2). Absent: off. */
+  owned?: true;
 };
+
+/** The local magpie gateway every owned session's model calls go to (orchestra app plan, measured 2026-11-02). */
+export const MAGPIE_BASE_URL = 'http://127.0.0.1:3425/v1';
+
+/**
+ * Whether owned Codex sessions run, and if not why (T1: a reason, never a bare "no"): not asked for
+ * (no --owned), codex.exe not found or not resolvable (CodexExe's reasons), no spawn gate factory, or
+ * the private CODEX_HOME, the work root or the gate could not be set up.
+ */
+export type OwnedCodexStatus =
+  | { on: true; exe: string; codexHome: string; workRoot: string; model: string; gateway: string }
+  | { on: false; why: 'not-asked' | 'codex-appdata-unset' | 'codex-appdata-bad-path' | 'codex-missing' | 'codex-reparsed' | 'no-spawn-gate' | 'setup-failed'; detail: string | null };
 
 export type WorkingOutcome =
   | { mode: 'lock-held'; code: typeof EXIT.lockHeld; pipe: string; holder: DaemonInfo | null }
@@ -95,6 +113,8 @@ export type WorkingOutcome =
     testRoots: TestRoots | null;
     /** The store this orchestrad opened and reconciled; stop() closes it. */
     store: Store;
+    /** Owned Codex sessions: on, or why not (also in the log and on the console). */
+    ownedCodex: OwnedCodexStatus;
     /** Ends this orchestrad through ctx.stopping.end (in main.ts: the process exits). */
     stop(): Promise<void>;
     /** Settles once stop() has given up the lock, whoever called it (in main.ts: never, the process is gone). */
@@ -244,6 +264,23 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
     log.info('pairing-code-printed', { to: pairing.print });
   }
 
+  // Owned Codex sessions, only when asked for (--owned): loaded here so that a start without it
+  // resolves none of src/owned/.
+  let codexOwned: CodexOwned | null = null;
+  let ownedCodex: OwnedCodexStatus = { on: false, why: 'not-asked', detail: null };
+  if (ctx.owned === true) {
+    const set = await setUpOwnedCodex(ctx, fence, home);
+    ownedCodex = set.status;
+    codexOwned = set.owned;
+    if (ownedCodex.on) {
+      log.info('owned-codex', { on: true, exe: ownedCodex.exe, model: ownedCodex.model });
+      ctx.console.out(`orchestrad: owned Codex sessions on (model ${ownedCodex.model} through ${ownedCodex.gateway}; work dirs in ${ownedCodex.workRoot})`);
+    } else {
+      log.warn('owned-codex', { on: false, why: ownedCodex.why, detail: ownedCodex.detail });
+      ctx.console.out(`orchestrad: owned Codex sessions are off: ${ownedCodex.why}${ownedCodex.detail === null ? '' : ` (${ownedCodex.detail})`}`);
+    }
+  }
+
   // The thin slice's peek page, only when asked for: loaded here so that a start without --peek-port
   // resolves no HTTP module at all.
   let peek: { close(): Promise<void> } | null = null;
@@ -281,6 +318,8 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   let ending: Promise<void> | null = null;
   const stop = (): Promise<void> => (ending ??= (async () => {
     uninstall();
+    // The owned sessions first: their open approvals are declined while the children can still read it.
+    if (codexOwned !== null) log.info('owned-codex-ended', { sessions: codexOwned.endAll() });
     if (peek !== null) await peek.close();
     log.info('stopped', { pidSinkFailures: ctx.pidLog.failures() });
     // Nothing reaches ORCHESTRA_HOME from here on, then the process ends with the lock.
@@ -297,5 +336,62 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   log.info('working', { profile: ctx.profile.kind, pipe, bootId });
   // Last line of the startup: everything above is on disk and on the console before it.
   ctx.console.out(`orchestrad: working (${ctx.profile.kind} profile, pid ${ctx.pid}, data ${home})`);
-  return { mode: 'working', profile: ctx.profile.kind, home, pipe, pairing, testRoots, store, stop, stopped };
+  return { mode: 'working', profile: ctx.profile.kind, home, pipe, pairing, testRoots, store, ownedCodex, stop, stopped };
+}
+
+/**
+ * The owned Codex sessions' wiring (orchestra app plan §2), in both profiles: codex.exe at its pinned
+ * path below %APPDATA% (not found: off, with the reason), the private CODEX_HOME's config.toml written
+ * through the fence, the work root ORCHESTRA_HOME\work made, and a spawn gate that allows only
+ * codex-app-server, with CODEX_HOME as its one extra and a cwd policy whose only allowed root is the
+ * work root (r4 §5.3's protected dirs: the data dir and every harness root).
+ */
+async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: string): Promise<{ status: OwnedCodexStatus; owned: CodexOwned | null }> {
+  const off = (why: Extract<OwnedCodexStatus, { on: false }>['why'], detail: string | null = null) => ({ status: { on: false as const, why, detail }, owned: null });
+  const { CODEX_APP_SERVER_ARGV, resolveCodexExe, resolveSystemRoot } = await import('../os/spawn.ts');
+  const exe = resolveCodexExe(ctx.env, ctx.realpath);
+  if (!exe.ok) return off(`codex-${exe.reason}`, exe.detail ?? null);
+  if (ctx.makeSpawnGate === undefined) return off('no-spawn-gate');
+  try {
+    const { childPipe } = await import('../os/child-pipe.ts');
+    const { OWNED_DIRS, writeCodexHome } = await import('../owned/codex-home.ts');
+    const { DEFAULT_CODEX_MODEL } = await import('../owned/models.ts');
+    const { Approvals } = await import('../owned/approvals.ts');
+    const { CodexOwned: Owned } = await import('../owned/codex-owned.ts');
+    const sys = resolveSystemRoot(ctx.env, ctx.realpath);
+    if (!sys.ok) return off('setup-failed', `SystemRoot ${sys.reason}`);
+    const codexHome = writeCodexHome(fence, home, { model: DEFAULT_CODEX_MODEL, gatewayBaseUrl: MAGPIE_BASE_URL });
+    const workRoot = win.join(home, OWNED_DIRS.work);
+    fence.mkdirp(workRoot);
+    const gate = ctx.makeSpawnGate({
+      systemRoot: sys,
+      rules: ['codex-app-server'],
+      record: (e) => ctx.pidLog.record(e),
+      realpath: ctx.realpath,
+      clock: ctx.clock,
+      env: ctx.env,
+      envExtra: { 'codex-app-server': { CODEX_HOME: codexHome } },
+      cwd: { allowedRoots: [workRoot], protectedDirs: [home, ...ctx.roots.map((r) => r.path)], userHome: ctx.userHome, ownedWorkRoot: workRoot },
+    });
+    const redactor = makeRedactor({ env: ctx.env });
+    const wall = ctx.clock.port(null);
+    const owned = new Owned({
+      approvals: new Approvals({ hub: ctx.clock }),
+      makeWorkDir: (ownedId) => {
+        const dir = win.join(workRoot, ownedId);
+        fence.mkdirp(dir);
+        return dir;
+      },
+      launch: (cwd) => childPipe(gate.start({ exe: exe.path, argv: CODEX_APP_SERVER_ARGV, cwd })),
+      now: () => wall.nowWall(),
+      redact: (text) => {
+        const r = redactor.redact({ text });
+        const v = r.verdict;
+        return { text: r.text, count: v.known + v.entropy + Object.values(v.format).reduce((a, b) => a + b, 0) + (v.dropped === null ? 0 : 1) };
+      },
+    });
+    return { status: { on: true, exe: exe.path, codexHome, workRoot, model: DEFAULT_CODEX_MODEL, gateway: MAGPIE_BASE_URL }, owned };
+  } catch (e) {
+    return off('setup-failed', describe(e));
+  }
 }

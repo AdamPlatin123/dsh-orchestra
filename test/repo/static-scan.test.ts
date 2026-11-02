@@ -346,6 +346,12 @@ const CASES: readonly Case[] = [
   neg('kill-only-in-os', 'src/os/procguard-client.ts', 'helper.kill();'),
   neg('kill-only-in-os', 'src/brakes/kill-tree.ts', 'await procguard.killTree(plan);'),
   neg('kill-only-in-os', 'scripts/test-stage.ts', 'agent.kill();'),
+  pos('fake-codex-only-in-tests', 'src/runtime/working.ts', "rules: ['codex-app-server-fake'],"),
+  pos('fake-codex-only-in-tests', 'src/owned/codex-owned.ts', 'gate({ fakeCodexNode: node });'),
+  pos('fake-codex-only-in-tests', 'src/main.ts', 'argv: [FAKE_CODEX_SCRIPT]'),
+  neg('fake-codex-only-in-tests', 'src/os/spawn.ts', "case 'codex-app-server-fake':"),
+  neg('fake-codex-only-in-tests', 'src/runtime/working.ts', "rules: ['codex-app-server'],"),
+  neg('fake-codex-only-in-tests', 'test/owned/codex-session.test.ts', 'fakeCodexNode: process.execPath,'),
 
 
   pos('working-wiring-only-from-main', 'src/model/x.ts', "import { runWorking } from '../runtime/working.ts';\nawait runWorking(ctx);"),

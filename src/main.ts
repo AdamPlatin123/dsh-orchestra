@@ -217,6 +217,7 @@ export async function start(f: Features, fence: FenceStatus, given: BootPorts, o
     makeReadGate: d.makeReadGate,
     makeWriteFence: d.makeWriteFence,
     makeDbOpener: d.makeDbOpener,
+    makeSpawnGate: d.makeSpawnGate,
     env: d.env,
     roots: located.roots,
     notes: plan.notes,
@@ -228,5 +229,6 @@ export async function start(f: Features, fence: FenceStatus, given: BootPorts, o
     tty: d.tty,
     stopping: d.stopping,
     ...(parsed.peekPort !== undefined ? { peekPort: parsed.peekPort } : {}),
+    ...(parsed.owned === true ? { owned: true as const } : {}),
   });
 }

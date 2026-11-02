@@ -59,8 +59,11 @@ export type ProfileRefusal =
   | { reason: 'roots-dir-outside-frozen'; path: string; frozen: string }
   | { reason: 'bad-peek-port'; value: string };
 
-/** `peekPort` is there only when --peek-port was given (the thin slice's peek page, src/server/http.ts). */
-export type ProfileParse = { ok: true; profile: Profile; peekPort?: number } | { ok: false; refusal: ProfileRefusal };
+/**
+ * `peekPort` is there only when --peek-port was given (the thin slice's peek page, src/server/http.ts);
+ * `owned` only when --owned was (owned Codex sessions, orchestra app plan §2).
+ */
+export type ProfileParse = { ok: true; profile: Profile; peekPort?: number; owned?: true } | { ok: false; refusal: ProfileRefusal };
 
 export type ProfileDeps = {
   env: Readonly<Record<string, string | undefined>>;
@@ -94,12 +97,15 @@ const PID = /^[1-9]\d{0,9}$/;
 /** --peek-port: either profile, 1024-65535, at most once. Step 4 takes the port from config instead. */
 const PEEK_PORT_FLAG = '--peek-port';
 const PORT = /^[1-9]\d{3,4}$/;
+/** --owned: either profile, at most once, no value. */
+const OWNED_FLAG = '--owned';
 
 /**
  * Parses orchestrad's own arguments. Anything unrecognized, repeated or out of place refuses the
  * start: the real profile accepts none; the test profile exactly
  * `--test-profile --test-dir <dir> [--test-root-pid <pid>]... [--roots-dir <dir>]`, in any order.
- * Either profile may add `--peek-port <port>` (the thin slice's peek page).
+ * Either profile may add `--peek-port <port>` (the thin slice's peek page) and `--owned` (owned Codex
+ * sessions over codex app-server, orchestra app plan §2: off unless asked for, in either profile).
  * The real profile also refuses when either environment (the injected one or the process's own)
  * carries TEST_RUNNER_MARKER, whatever its value: a test that starts orchestrad without arguments, or
  * calls start() with an environment that lacks the marker, would otherwise run it against the real
@@ -116,6 +122,7 @@ export function parseProfileArgs(argv: readonly string[], givenDeps: ProfileDeps
   const pids: number[] = [];
   const seenTestFlags: string[] = [];
   let peekPort: number | null = null;
+  let owned = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === PEEK_PORT_FLAG) {
@@ -125,6 +132,11 @@ export function parseProfileArgs(argv: readonly string[], givenDeps: ProfileDeps
       i++;
       if (!PORT.test(value) || Number(value) > 65535) return refuse({ reason: 'bad-peek-port', value });
       peekPort = Number(value);
+      continue;
+    }
+    if (arg === OWNED_FLAG) {
+      if (owned) return refuse({ reason: 'duplicate-flag', flag: arg });
+      owned = true;
       continue;
     }
     if (arg === '--test-profile') {
@@ -150,7 +162,7 @@ export function parseProfileArgs(argv: readonly string[], givenDeps: ProfileDeps
       pids.push(pid);
     }
   }
-  const peek = peekPort !== null ? { peekPort } : {};
+  const peek = { ...(peekPort !== null ? { peekPort } : {}), ...(owned ? { owned: true as const } : {}) };
   if (!testProfile) {
     if (seenTestFlags.length > 0) return refuse({ reason: 'test-flag-without-test-profile', flag: seenTestFlags[0]! });
     if (envGet(deps.env, TEST_RUNNER_MARKER) !== undefined || envGet(deps.processEnv, TEST_RUNNER_MARKER) !== undefined) {

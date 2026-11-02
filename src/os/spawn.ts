@@ -18,8 +18,8 @@ const win = path.win32;
 // reaches a gate only through node-proc.ts's gate factory: a gate built anywhere else spawns through whatever its
 // builder wrote, which cannot start a process.
 
-export type SpawnRule = 'whoami' | 'csc' | 'powershell-toast' | 'procguard';
-const RULES: readonly SpawnRule[] = Object.freeze(['whoami', 'csc', 'powershell-toast', 'procguard']);
+export type SpawnRule = 'whoami' | 'csc' | 'powershell-toast' | 'procguard' | 'codex-app-server' | 'codex-app-server-fake';
+const RULES: readonly SpawnRule[] = Object.freeze(['whoami', 'csc', 'powershell-toast', 'procguard', 'codex-app-server', 'codex-app-server-fake']);
 
 // The argv tables the gate decides from on every call are frozen where they are defined: a module that
 // imports one could otherwise push an argument into what the gate allows (P8).
@@ -39,6 +39,12 @@ const SOURCE_HASH = /^[0-9a-f]{64}$/;
 // Each rule names the variables it gets; their values are copied from the gate's env source once, at
 // construction, and the composition root may add fixed extras per rule. Everything else (NODE_OPTIONS,
 // COR_PROFILER, COMPlus_*, LIB, PATH and its DLL search order, proxies, tokens) stays behind.
+// One exception the gate cannot close (measured on Node 24.22, owned Codex step): on Windows libuv itself
+// copies a fixed list into every child whose env lacks them, from orchestrad's own environment:
+// LIBUV_ADDED_ENV below, PATH among them. None of them is a token; a rule that must not see one would
+// have to pin its value as an extra. spawn-codex.test measures the list on a real child.
+/** What libuv adds to a child's env on Windows when the env given lacks it (libuv make_program_env). */
+export const LIBUV_ADDED_ENV: readonly string[] = Object.freeze(['HOMEDRIVE', 'HOMEPATH', 'LOGONSERVER', 'PATH', 'SYSTEMDRIVE', 'SYSTEMROOT', 'TEMP', 'USERDOMAIN', 'USERNAME', 'USERPROFILE', 'WINDIR']);
 /** Never handed to any child, by whitelist or extra: they load code into a node child before its own. */
 export const ENV_NEVER: readonly string[] = Object.freeze(['NODE_OPTIONS', 'NODE_PATH']);
 const SYSTEM_ENV = ['SystemRoot', 'SystemDrive', 'windir'] as const;
@@ -49,6 +55,12 @@ export const ENV_WHITELIST: Readonly<Record<SpawnRule, readonly string[]>> = Obj
   procguard: Object.freeze([...SYSTEM_ENV]),
   // Not runnable before step 17 (TOAST_ENCODED); the list is checked against a real toast then.
   'powershell-toast': Object.freeze([...SYSTEM_ENV, 'TEMP', 'TMP', 'USERPROFILE', 'LOCALAPPDATA', 'APPDATA']),
+  // The owned Codex sessions (orchestra app plan §2): the profile and AppData variables codex.exe reads
+  // to find its own state, plus CODEX_HOME as a fixed extra the composition root must give (the private
+  // ORCHESTRA_HOME\codex-home); the gate hands over no PATH, no proxy, no key (libuv still adds its own
+  // list, PATH among it: LIBUV_ADDED_ENV above). The fake app-server of the tests gets the same.
+  'codex-app-server': Object.freeze([...SYSTEM_ENV, 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA']),
+  'codex-app-server-fake': Object.freeze([...SYSTEM_ENV, 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA']),
 });
 const isNever = (name: string) => ENV_NEVER.some((x) => x.toLowerCase() === name.toLowerCase());
 for (const names of Object.values(ENV_WHITELIST)) if (names.some(isNever)) throw new Error('spawn gate: a whitelist names NODE_OPTIONS or NODE_PATH');
@@ -100,11 +112,59 @@ export const WHOAMI_REL = 'System32\\whoami.exe';
 export const CSC_REL = 'Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe';
 export const POWERSHELL_REL = 'System32\\WindowsPowerShell\\v1.0\\powershell.exe';
 
+/**
+ * codex.exe below %APPDATA% as npm installs @openai/codex (orchestra app plan, measured on codex-cli
+ * 0.165.0): the npm `codex` command is a node shim, and the gate pins the real binary behind it.
+ */
+export const CODEX_EXE_REL = 'npm\\node_modules\\@openai\\codex\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe';
+/** The one argv codex.exe runs with: the stdio JSON-RPC app-server. */
+export const CODEX_APP_SERVER_ARGV: readonly string[] = Object.freeze(['app-server']);
+/** The variable every codex rule must get as a fixed extra: without it codex.exe would use the user's own ~/.codex. */
+export const CODEX_HOME_VAR = 'CODEX_HOME';
+
 const REPO = win.join(import.meta.dirname, '..', '..');
 /** The one file csc may compile. */
 export const PROCGUARD_SOURCE = win.join(REPO, 'native', 'procguard', 'ProcGuard.cs');
 /** The development build of procguard. */
 export const PROCGUARD_BUILD_EXE = win.join(REPO, 'build', 'procguard.exe');
+/**
+ * The test suite's stand-in for codex.exe (test/fixtures/fake-codex-app-server.ts), run by node.exe:
+ * the rule codex-app-server-fake allows exactly [this script]. It opens only under the test runner
+ * (TEST_RUNNER_MARKER in the gate's env source) and only with a node.exe the caller names; the static
+ * scan keeps the rule's name and that option out of every daemon module but this one.
+ */
+export const FAKE_CODEX_SCRIPT = win.join(REPO, 'test', 'fixtures', 'fake-codex-app-server.ts');
+/** runtime/test-profile.ts's TEST_RUNNER_MARKER, restated: spawn.ts is in boot's pre-fence graph (spawn-codex.test holds the two equal). */
+export const TEST_RUNNER_MARKER = 'NODE_TEST_CONTEXT';
+
+export type CodexExe = { ok: true; path: string } | { ok: false; reason: 'appdata-unset' | 'appdata-bad-path' | 'missing' | 'reparsed'; detail?: string };
+
+/** codex.exe below %APPDATA% of `env`, lexically: the path the gate pins, or why there is none. */
+function codexExeOf(env: Readonly<Record<string, string | undefined>>): CodexExe {
+  const appData = envGet(env, 'APPDATA');
+  if (appData === undefined || appData.trim() === '') return { ok: false, reason: 'appdata-unset' };
+  const c = checkPath(appData);
+  if (!c.ok) return { ok: false, reason: 'appdata-bad-path', detail: c.reason };
+  return { ok: true, path: win.join(c.path, CODEX_EXE_REL) };
+}
+
+/**
+ * Where codex.exe is, for the composition root to decide at startup whether owned Codex sessions can
+ * run at all: the pinned path below %APPDATA%, which must exist and be its own realpath (no junction).
+ * Not found means the feature stays off, with this reason in the log and the console.
+ */
+export function resolveCodexExe(env: Readonly<Record<string, string | undefined>>, realpath: RealpathFn): CodexExe {
+  const lexical = codexExeOf(env);
+  if (!lexical.ok) return lexical;
+  let real: string;
+  try {
+    real = realpath(lexical.path);
+  } catch (e) {
+    return { ok: false, reason: 'missing', detail: errCode(e) };
+  }
+  if (pathKey(real) !== pathKey(lexical.path)) return { ok: false, reason: 'reparsed', detail: real };
+  return lexical;
+}
 
 export type SystemRootReason = 'unset' | 'bad-path' | 'not-top-level-dir' | 'windir-mismatch' | 'unresolved' | 'reparsed';
 export type SystemRoot = { ok: true; path: string } | { ok: false; reason: SystemRootReason; detail?: string };
@@ -335,9 +395,9 @@ export type SpawnDenyReason =
   | 'cwd-denied';
 
 /** The rules that run as a long-lived child, the only ones start() may launch; run-only rules stay run(). */
-const STARTABLE: readonly SpawnRule[] = ['procguard', 'powershell-toast'];
-/** The rules that run in a cwd their caller names, checked by the gate's CwdPolicy (none until step 3); the rest run in their exe's directory. */
-const CALLER_CWD: readonly SpawnRule[] = Object.freeze([]);
+const STARTABLE: readonly SpawnRule[] = ['procguard', 'powershell-toast', 'codex-app-server', 'codex-app-server-fake'];
+/** The rules that run in a cwd their caller names, checked by the gate's CwdPolicy; the rest run in their exe's directory. */
+const CALLER_CWD: readonly SpawnRule[] = Object.freeze(['codex-app-server', 'codex-app-server-fake']);
 
 export type SpawnDecision =
   | { allow: true; rule: SpawnRule; exe: string; argv: readonly string[]; cwd: string }
@@ -380,9 +440,14 @@ export type SpawnGateConfig = {
   envExtra?: EnvExtra;
   /** Where a caller-chosen cwd may lie (CwdPolicy). Without it no rule may run in a caller's cwd. */
   cwd?: CwdPolicySpec;
+  /**
+   * Tests only: the node.exe that runs FAKE_CODEX_SCRIPT under the rule codex-app-server-fake. Refused
+   * unless the env source carries TEST_RUNNER_MARKER; the static scan bans the name in daemon code.
+   */
+  fakeCodexNode?: string;
 };
 
-const CONFIG_KEYS = ['systemRoot', 'rules', 'csc', 'procguard', 'record', 'backend', 'realpath', 'clock', 'env', 'envExtra', 'cwd'] as const;
+const CONFIG_KEYS = ['systemRoot', 'rules', 'csc', 'procguard', 'record', 'backend', 'realpath', 'clock', 'env', 'envExtra', 'cwd', 'fakeCodexNode'] as const;
 
 /** timeoutMs is a positive integer (a Clock due time is whole milliseconds), at most 2^31 - 1. */
 export type RunLimits = { timeoutMs: number; maxBytes: number };
@@ -499,9 +564,24 @@ export class SpawnGate {
       add('procguard', exe);
       pgDirs.add(pathKey(win.dirname(exe)));
     }
-    this.#exes = exes;
     for (const r of cfg.rules!) if (!RULES.includes(r)) throw new Error(`spawn gate: unknown rule ${String(r)}`);
     this.#rules = new Set(cfg.rules);
+    // A missing env source is refused below, after the checks that come before it.
+    const envSource = typeof cfg.env === 'object' && cfg.env !== null ? cfg.env : {};
+    // codex.exe below the source's %APPDATA%; known whenever APPDATA is there, so a request for it while
+    // the rule is off reads rule-not-enabled, and enabling the rule without it refuses the gate.
+    const codex = codexExeOf(envSource);
+    if (codex.ok) add('codex-app-server', codex.path);
+    else if (this.#rules.has('codex-app-server')) throw new Error(`spawn gate: codex-app-server enabled without codex.exe below %APPDATA% (${codex.reason})`);
+    if (cfg.fakeCodexNode !== undefined) {
+      if (envGet(envSource, TEST_RUNNER_MARKER) === undefined) throw new Error('spawn gate: the fake codex app-server runs only under the test runner');
+      const node = mustPath(cfg.fakeCodexNode, 'fake codex node.exe');
+      if (win.basename(node).toLowerCase() !== 'node.exe') throw new Error(`spawn gate: the fake codex app-server runs under node.exe, not ${node}`);
+      add('codex-app-server-fake', node);
+    } else if (this.#rules.has('codex-app-server-fake')) {
+      throw new Error('spawn gate: codex-app-server-fake enabled without fakeCodexNode');
+    }
+    this.#exes = exes;
     if (this.#rules.has('powershell-toast') && TOAST_ENCODED === null) {
       throw new Error('spawn gate: powershell-toast needs the constant script of os/toast-script.ts, which arrives in step 17');
     }
@@ -515,6 +595,11 @@ export class SpawnGate {
     if (extra !== undefined && (typeof extra !== 'object' || extra === null)) throw new Error('spawn gate: envExtra must be a record per rule');
     for (const k of extra === undefined ? [] : Object.keys(extra)) if (!RULES.includes(k as SpawnRule)) throw new Error(`spawn gate: envExtra names an unknown rule ${k}`);
     const extras = ownFields(extra, RULES);
+    for (const rule of ['codex-app-server', 'codex-app-server-fake'] as const) {
+      if (!this.#rules.has(rule)) continue;
+      const home = ownFields(extras[rule] as Record<string, unknown> | undefined, [CODEX_HOME_VAR] as const)[CODEX_HOME_VAR];
+      if (typeof home !== 'string' || !checkPath(home).ok) throw new Error(`spawn gate: ${rule} needs envExtra.${rule}.${CODEX_HOME_VAR}, an absolute path (else codex.exe uses the user's own ~/.codex)`);
+    }
     this.#env = new Map(RULES.map((rule) => [rule, ruleEnv(rule, source, extras[rule])]));
     this.#cwd = cfg.cwd === undefined ? null : new CwdPolicy({ spec: cfg.cwd, env: source, systemRoot: sys.path, realpath: cfg.realpath! });
     this.#backend = cfg.backend!;
@@ -578,6 +663,10 @@ export class SpawnGate {
         return TOAST_ENCODED !== null && argv.length === TOAST_FLAGS.length + 1 && sameArgv(argv.slice(0, -1), TOAST_FLAGS) && argv.at(-1) === TOAST_ENCODED
           ? null
           : 'argv-mismatch';
+      case 'codex-app-server':
+        return sameArgv(argv, CODEX_APP_SERVER_ARGV) ? null : 'argv-mismatch';
+      case 'codex-app-server-fake':
+        return argv.length === 1 && argv[0] === FAKE_CODEX_SCRIPT ? null : 'argv-mismatch';
       case 'procguard':
         return argv.length === 0 || (argv.length === 2 && argv[0] === '--protect' && PROTECT_LIST.test(argv[1]!)) ? null : 'argv-mismatch';
       case 'csc': {
