@@ -7,7 +7,11 @@
 //   node probe.mjs --phase init --out <dir>   # one turn per workflow setting, keeps system/init only
 // Common: --proxy http://host:port (HTTPS_PROXY for the child), --config-dir <CLAUDE_CONFIG_DIR>,
 //         --claude <claude.exe>, --budget <usd per query()>, --env inherit (default: allowlist).
+// Mock backend: --gateway http://127.0.0.1:3425 --model opencode-go/claude-haiku-5-5 points the CLI at a
+//         local Anthropic-compatible gateway (magpie here) instead of the user's Claude login.
+//         Use a throwaway --config-dir with it: the run then proves CLI behaviour, not Q8 auth.
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -19,6 +23,8 @@ const OUT = args.out ?? fs.mkdtempSync(path.join(os.tmpdir(), 'sdk-probe-out-'))
 const CLAUDE = args.claude ?? path.join(os.homedir(), '.local', 'bin', 'claude.exe');
 const CONFIG_DIR = args['config-dir'] || process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 const PROXY = args.proxy ?? '';
+const GATEWAY = args.gateway ?? '';
+const MODEL = args.model || 'haiku';
 const BUDGET_USD =Number(args.budget ?? (PHASE === 'live' ? 0.15 : 0.01));
 const T0 = Date.now();
 const t = () => Date.now() - T0;
@@ -39,6 +45,8 @@ function childEnv(extra) {
   // The CLI does not read the Windows system proxy (the Desktop app does); without it the API
   // answered 403 "Request not allowed" on this machine. Pass it explicitly: --proxy http://host:port
   if (PROXY) env.HTTPS_PROXY = PROXY;
+  // The local gateway takes no key; the CLI still wants one set, so this is a placeholder, not a credential.
+  if (GATEWAY) Object.assign(env, { ANTHROPIC_BASE_URL: GATEWAY, ANTHROPIC_API_KEY: 'mock-gateway-no-key', NO_PROXY: '127.0.0.1,localhost' });
   return { ...env, ...extra };
 }
 
@@ -77,12 +85,18 @@ function inbox() {
     },
   };
 }
-const userMsg = (text, priority) => ({ type: 'user', message: { role: 'user', content: text }, parent_tool_use_id: null, ...(priority ? { priority } : {}) });
+// A uuid on each message lets the CLI report its lifecycle (msg_lifecycle_v1, r4 §7.2 delivery check).
+const SENT = new Set();
+function userMsg(text, priority) {
+  const uuid = randomUUID();
+  SENT.add(uuid);
+  return { type: 'user', uuid, message: { role: 'user', content: text }, parent_tool_use_id: null, ...(priority ? { priority } : {}) };
+}
 
 function baseOptions(cwd, extraEnv, overrides = {}) {
   return {
     cwd,
-    model: 'haiku',
+    model: MODEL,
     pathToClaudeCodeExecutable: CLAUDE,
     settingSources: [],
     strictMcpConfig: true,
@@ -234,7 +248,7 @@ function maxInt(s) {
 
 async function live() {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'orchestra-sdk-probe-'));
-  const ev = { claude: CLAUDE, claudeVersion: claudeVersion(), sdkVersion: JSON.parse(fs.readFileSync(new URL('./node_modules/@anthropic-ai/claude-agent-sdk/package.json', import.meta.url))).version, configDir: CONFIG_DIR, cwd, budgetUsd: BUDGET_USD };
+  const ev = { claude: CLAUDE, claudeVersion: claudeVersion(), sdkVersion: JSON.parse(fs.readFileSync(new URL('./node_modules/@anthropic-ai/claude-agent-sdk/package.json', import.meta.url))).version, configDir: CONFIG_DIR, cwd, budgetUsd: BUDGET_USD, model: MODEL, gateway: GATEWAY ? new URL(GATEWAY).host : null };
   const stream = [];
   const perm = [];
   const turns = [];
@@ -272,6 +286,13 @@ async function live() {
           deltaWaiters.splice(0).forEach((w) => w());
         }
       }
+      if (m.type === 'command_lifecycle' || (m.type === 'system' && m.subtype !== 'init')) {
+        row.state = m.state ?? null;
+      }
+      // which fields of this frame carry the uuid of a message we sent (names only)
+      const refs = Object.keys(m).filter((k) => typeof m[k] === 'string' && SENT.has(m[k]));
+      if (refs.length) row.sentRefs = refs.join(',');
+      if (m.type === 'user') row.isReplay = m.isReplay ?? null;
       if (m.type === 'system' && m.subtype === 'init') {
         sessionId = m.session_id;
         row.init = { model: m.model, permissionMode: m.permissionMode, capabilities: m.capabilities ?? null, effort: m.effort ?? null, tools: m.tools, mcpServers: (m.mcp_servers ?? []).map((s) => s.name), slashCommands: m.slash_commands, apiKeySource: m.apiKeySource ?? null, claudeCodeVersion: m.claude_code_version ?? null, outputStyle: m.output_style ?? null, agents: m.agents ?? null, skills: m.skills ?? null, plugins: (m.plugins ?? []).map((p) => p.name) };
@@ -427,6 +448,9 @@ async function live() {
       streamUuids: streamU.size,
       diskUuids: diskU.size,
       both: [...streamU].filter((u) => diskU.has(u)).length,
+      sent: SENT.size,
+      sentOnDisk: [...SENT].filter((u) => diskU.has(u)).length,
+      sentInStream: [...SENT].filter((u) => streamU.has(u)).length,
       streamOnly: by(stream, diskU),
       diskOnly: by(ev.transcript.lines, streamU),
       streamTypes: [...new Set(stream.map((r) => `${r.type}/${r.subtype ?? r.event ?? ''}`))].sort(),

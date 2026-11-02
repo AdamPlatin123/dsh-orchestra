@@ -81,13 +81,17 @@ try {
   const rows = [...page.body.matchAll(/<tr><td class="n">([^<]*)<\/td><td class="n">([^<]*)<\/td><td class="t">([^<]*)<\/td><\/tr>/g)];
   const types = {};
   let emptyText = 0;
+  const emptyByType = {};
   let noTime = 0;
   for (const r of rows) {
     types[r[2]] = (types[r[2]] ?? 0) + 1;
-    if (r[3].trim() === '') emptyText += 1;
+    if (r[3].trim() === '') {
+      emptyText += 1;
+      emptyByType[r[2]] = (emptyByType[r[2]] ?? 0) + 1;
+    }
     if (r[1].trim() === '') noTime += 1;
   }
-  out.session = { status: page.status, eventRows: rows.length, types, emptyText, noTime, transcriptLines: fs.readFileSync(dst, 'utf8').split('\n').filter(Boolean).length };
+  out.session = { status: page.status, eventRows: rows.length, types, emptyText, emptyByType, noTime, transcriptLines: fs.readFileSync(dst, 'utf8').split('\n').filter(Boolean).length };
 } finally {
   await cleanup();
 }

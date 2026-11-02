@@ -8,6 +8,8 @@
 
 花费 $0。本版已按独立复核者的意见改过，处理见文末「复核」。
 
+**2026-11-02 补测（模拟后端，§9）：** 用户让 CLI 改走本机 magpie 网关上 opencode-go 转售的 `claude-haiku-5-5`，配置目录用一次性的临时目录，不碰用户的登录。这样测的是 CLI 和 SDK 一侧的行为，不是 Q8 的登录路径，也不代表 Anthropic API 本身。跑了两次，结果一致：插话和排队都**不会**插进正在跑的纯文本回合，要等它结束才开始；`interrupt()` 能停下在跑的回合；`canUseTool` 被调用、拒绝后会话照常继续；注册表出现 `waiting`；消息带上 uuid 以后，流里有 `command_lifecycle` 帧，状态依次是 `queued → started → completed / cancelled`。peek 页读这次会话，user 和 assistant 行都有内容。
+
 ## 0. 这是什么
 
 r4（现行规格 `docs/specs/2026-10-27-dsh-orchestra-design-r4.md`）§7.1 的设计是：Orchestra 自己拉起的 Claude 会话（「自有乐章」）用 Agent SDK 的流式 `query()`。这条路排在 M1（自有驱动：Orchestra 自己拉起会话、收发消息）。M0（只读观察）阶段 M0 计划第 74 行不许有通用启动器，所以探针放在 `spikes/claude-sdk/`，不进 `src/`。目的是在写 `drivers/` 之前，先在真实环境里把 SDK 这条路摸一遍。
@@ -35,13 +37,13 @@ SDK：npm 上有 r4 §7.2 钉的 **0.3.287**（2026-10-01 发布；当前 latest
 | 1d | 网络 | CLI **不读 Windows 系统代理**，要显式传 `HTTPS_PROXY` | 不经代理时，连一个不带任何凭据的 `curl` 都得到 403 `forbidden / Request not allowed`；正常情况下不带凭据应该是 401。改走系统代理（HKCU 里的 `ProxyServer` = 127.0.0.1:10809）后，同一个 `curl` 得到正常的 401 `x-api-key header is required`。会话环境里的 `https_proxy=127.0.0.1:12477` 是沙箱的中间人代理，证书不受信，不能给子进程用。这组 curl 对照只在本会话里手跑过，没有存进证据文件 |
 | 1e | `system/init.capabilities` 里有没有 `msg_lifecycle_v1` | **有**（2.1.310） | 13 项：`interrupt_receipt_v1, interrupt_cancel_queued_v1, interrupt_send_now_v1, interrupt_requeue_taken_v1, msg_lifecycle_v1, request_marker_lists_v1, lifecycle_wakeup_source_v1, sdk_mcp_tools_list_changed, sdk_mcp_manifests, mcp_read_resource_v1, mcp_tool_ui_meta_v1, ui_surface_v1, mcp_call_result_not_for_model_v1`。init 帧在调模型之前发出，不受鉴权失败影响。注意：`initializationResult()` 返回的 `capabilities` 是另一张表，只有 `ui_surface_v1, mcp_call_result_not_for_model_v1` 两项；能力检查要看 `system/init`，不要看 initialize 的返回 |
 | 2a | `streamInput` 发后续消息 | **通**，每条消息开一个回合 | 运行 2：首条消息走 `prompt`，后面 6 条走 `q.streamInput()`；7 条消息各得到一组 `system/init` → `system/status` →（`system/api_retry` ×2）→ `assistant` → `result` |
-| 2b | `next`（插话）/ `later`（排队） | **未测** | 探针等长回复流出第一个文字增量后再发插话或排队消息。但每个回合都在 20 ms–2.7 s 内以合成错误结束，等增量等到 60 s 超时，消息是在会话空闲时才发的，不说明任何语义。磁盘上的行都没有 `priority` 字段，同样因为没测成，不能当证据 |
-| 2c | `interrupt()` 能否停下当前回合 | **未测** | 只测到会话空闲时调用 `interrupt()` 会返回 `{still_queued: []}`，不抛错 |
+| 2b | `next`（插话）/ `later`（排队） | 真实登录下**未测**。模拟后端：**纯文本回合里两者都不插进当前回合**，见 §9 | 真实登录那次：每个回合都在 20 ms–2.7 s 内以合成错误结束，消息是在会话空闲时才发的，不说明任何语义 |
+| 2c | `interrupt()` 能否停下当前回合 | 真实登录下**未测**。模拟后端：**能**，见 §9 | 真实登录那次只测到：会话空闲时调用 `interrupt()` 返回 `{still_queued: []}`，不抛错 |
 | 3a | 工作流有没有关掉 | **`Workflow` 工具去掉了；工作流命令还在，能不能启动未测** | 零模型阶段是干净对照（只差这一个环境变量）：设了以后命令表只少 `deep-research`、`workflow-authoring` 两项。`--phase init` 各跑一个回合：不设时 `system/init.tools` 有 28 项，含 `Workflow`；设了是 27 项，没有 `Workflow`。但这组对照不干净：两次的命令表还差 4 项（设了的一边多出 `schedule`、`ultrareview`、`usage-credits`、`extra-usage`），推断和 §4 第 1 条的登录状态有关。关掉以后，命令表里仍有 `__remote-workflow`、`workflow-launch-exec` |
-| 3b | `canUseTool` 有没有被调用；拒绝后会话怎么表现 | **未测** | 0 次调用：模型没跑起来，就不会有工具调用 |
+| 3b | `canUseTool` 有没有被调用；拒绝后会话怎么表现 | 真实登录下**未测**。模拟后端：**被调用，拒绝后会话照常继续**，见 §9 | 真实登录那次 0 次调用：模型没跑起来，就不会有工具调用 |
 | 4a | 注册表 `sessions/<pid>.json` 的 `entrypoint` | **`sdk-ts`**，`kind` = `interactive`，`version` = 2.1.310 | 1 s 轮询，只读文件名是 `<数字>.json` 的那些，按 `sessionId` 或 `cwd` 匹配。r4 §7.1 表后和 S5 记的 `sdk-cli` 是 `claude -p` 加 stdio 审批的入口；SDK 的 `query()` 是另一个值。M1 判断「这是不是 Orchestra 自己的会话」，两个值都要认，并且不能只靠它，要用自己记下的 pid 和 `sessionId` 对上 |
 | 4b | 注册表出现得多快 | `query()` 后 ≤1 s 出现文件，`status` 键在 1–2 s 之间出现 | 调 `query()` 那一刻的轮询是 absent，下一次（约 1.0 s）已有文件、没有 `status`，再下一次（约 2.0 s）有 `status`。运行 1 和运行 2 一样。S5 测到的是 28–46 s，但那是 `claude -p`、高负载、另一个版本，差别不能只归到负载 |
-| 4c | busy / idle / waiting 能否用 1 s 轮询看到 | busy 与 idle：**能**，限于长过轮询间隔的回合。waiting：**未测** | 运行 2：两次各 2.3–2.7 s 的回合连在一起，合成一段 busy，两段都是 5.0 s，之后回到 idle。20 ms 级的回合分不出来：它们落在第一段 busy（约 2.0→3.0 s）里。会话关闭后的下一次轮询（≤1 s）里，注册表文件已经消失。没有工具调用，所以没有出现 `waiting` |
+| 4c | busy / idle / waiting 能否用 1 s 轮询看到 | busy 与 idle：**能**，限于长过轮询间隔的回合。waiting：真实登录下未测；模拟后端**能**（`waiting` / `permission prompt`，见 §9） | 运行 2：两次各 2.3–2.7 s 的回合连在一起，合成一段 busy，两段都是 5.0 s，之后回到 idle。20 ms 级的回合分不出来：它们落在第一段 busy（约 2.0→3.0 s）里。会话关闭后的下一次轮询（≤1 s）里，注册表文件已经消失。没有工具调用，所以没有出现 `waiting` |
 | 4d | 注册表的键 | `cwd, entrypoint, kind, messagingSocketPath, name, nameSince, nameSource, peerFeatures, peerProtocol, pid, pidDomain, procStart, sessionId, startedAt, version`，有状态后再加 `status, statusUpdatedAt, updatedAt` | SDK 拉起的会话**也开了消息管道**（`messagingSocketPath`、`peerProtocol`）。r4 §7.1「非自有会话的控制」一行说磁盘上的 `peerToken` 可能让同用户进程往会话里注入消息（未核实）。推断这对自有会话同样成立；轮询器只读 `<数字>.json`，没有查有没有对应的 `.key` 文件 |
 | 5 | SDK 事件流和磁盘 transcript 的对照 | 有重叠，也各有对方没有的东西。见 §2 | 运行 2：流里 36 个带 uuid 的消息，磁盘上 48 个带 uuid 的行，两边共有的只有 7 个，全是 assistant |
 | 6 | peek 页能否读出这次会话 | **这次能，读取器不用改；真实会话很快会超出它的尾读窗口** | `peek-check.mjs` 起一个测试 profile 的 orchestrad（`--test-profile --peek-port`），根目录里只放这一个 transcript 的副本。配对 303；列表 200、1 行；会话页 200、91 行，transcript 也是 91 行，每种类型的行数相等（只比了计数，没有逐行对）。91 行里有 77 行「内容」列是空的：8 种非消息行（`queue-operation, attachment, atis-latch, last-prompt, api-request-shape, api-request-blob, api-request, cost-state`，这些行型 `docs/research/cc-codex-protocols.md` 第 10 行早就列过，不是 2.1.310 新出现的）只显示类型；8 行 `system/api_error` 没有 `content` 字段，读取器取不到文字（`peek.ts` 第 198 行）。文件 204,617 B，已接近 `peek.ts` 第 48 行的 256 KiB 尾读窗口：每个空回合约 29 KB，真实会话的最后 200 行很可能大半是 `api-request-blob` 和 `attachment`。列表里的项目名不是原样的目录名（推断：经过了脱敏器，`peek.ts` 第 92 行）|
@@ -61,7 +63,7 @@ SDK：npm 上有 r4 §7.2 钉的 **0.3.287**（2026-10-01 发布；当前 latest
 对 M1 的含义：r4 §5.2 要求自有会话的事件也经只读解析器，好让自有和只读两边共用一套事件模型。按这次看到的结构，这一条做得到，但不够：
 
 - **按回合的美元花费只在流里有。** 磁盘上没有 `result`，美元数只在最后一行 `cost-state`。回合边界磁盘上也能拼出来（user 行有 `turnPosition`），真实回合的 `assistant.message.usage` 也有 token 数（`docs/research/cc-codex-protocols.md` 第 12 行，本次没见到，因为没有真实回合）。
-- **用户消息和排队操作：本次只在磁盘上见到，但没测公平。** r4 第 952 行的设计用的正是流里的消息生命周期帧（`command_lifecycle`）和回显（`isReplay`）；它们要求消息带 uuid，探针没带。M1 的驱动要给每条消息带 uuid，再看流里有没有。
+- **用户消息和排队操作：本次只在磁盘上见到，但没测公平。** r4 第 952 行的设计用的正是流里的消息生命周期帧（`command_lifecycle`）和回显（`isReplay`）；它们要求消息带 uuid，探针没带。M1 的驱动要给每条消息带 uuid，再看流里有没有。模拟后端补测里带了 uuid：生命周期帧有了，`isReplay` 回显仍然没有（§9）。
 - **磁盘比流晚。** S5 测过 tool_use 写进 transcript 比 stdout 晚 0.8–2.5 s。
 
 所以 M1 的形状更像：消息内容走解析器（和只读一侧同一套）；回合生命周期、花费和审批走流。两边用 assistant 的 uuid 对齐。这是推断，要在真实回合上再对一次。
@@ -92,7 +94,7 @@ S3 是 r4 §13.3 里 M1 的 Claude 后端 spike。
 
 ## 5. 没验到的，和怎么补
 
-真实回合全卡在鉴权上。要补，得先让子进程能登录。
+真实回合全卡在鉴权上。要补，得先让子进程能登录。（2026-11-02 的模拟后端补测绕开了登录，答了 CLI 一侧的问题，见 §9；登录这一条仍然没解决。）
 
 先说冲突：r4 的 Q8 已定 A（自有 Claude 会话沿用你的 `CLAUDE_CONFIG_DIR`、复用你的登录，好处是乐章结束后能在原生 CLI 里 `--resume`）。本机这个配置根是桌面应用托管的：桌面里的 CLI 由宿主续期登录，Orchestra 单独拉起的 CLI 没有宿主，用的是目录里存的那份，而那份已经过期、刷新失败。所以照 Q8 的做法，在本机现在跑不通。选项（要用户定）：
 
@@ -121,6 +123,8 @@ node spikes/claude-sdk/peek-check.mjs --transcript <目录>/projects/<…>/<sess
 
 所有 `result.total_cost_usd` 都是 0，`modelUsage` 都是空的。上限：运行 2 一个 `query()` 设 `maxBudgetUsd: 0.15`，比任务简报建议的 0.05 高（这个 0.05 是简报给的，r4 里没有），因为一个 `query()` 里有 7 条消息，SDK 的预算按整个 `query()` 累计；`--phase init` 每个 `query()` 0.02；零模型阶段 0.01（不调模型）。
 
+模拟后端补测（§9）：两次 `query()`，CLI 按 haiku 价目自己算的累计花费是 $0.0048 和 $0.0027。这笔钱实际计在 magpie 里的 opencode-go 账号上，不计在 Anthropic 账号上；opencode-go 实际扣多少，我没查。
+
 ## 7. 留在本机的痕迹
 
 **claude 自己写进 `accounts/54102/config` 的**（没有删，由用户决定）：
@@ -137,7 +141,9 @@ node spikes/claude-sdk/peek-check.mjs --transcript <目录>/projects/<…>/<sess
 
 注册表：这几次会话的 `sessions/<pid>.json` 都已自行删除。查不了的：每个新会话可能往 `.claude.json`、`history.jsonl` 写了东西（没有读这些文件）。
 
-**进程**：结束前按命令行查过，没有残留的 claude.exe 或 node.exe。
+**模拟后端补测**：配置目录是草稿区里一次性的 `mockcfg/`，transcript 和注册表都写在那里，用户的配置根里**没有**新增。两个 cwd（系统临时目录下 `orchestra-sdk-probe-sGqDBu`、`-TH86PW`）是空的，已删除。magpie 会在它自己的调用记录里记下这些请求（它的存储，不归探针管）。
+
+**进程**：结束前按命令行查过，没有残留的 claude.exe 或 node.exe。补测时看到的两个 `src/boot.ts` 进程（真实 profile 端口 7470、测试 profile `orchestra-test-stage`）早在补测之前就已经在跑，不是探针起的，没有动它们。
 
 **临时目录**：探针的 6 个 cwd（系统临时目录下 `orchestra-sdk-*`）始终是空的，已删除。`peek-check.mjs` 的测试 profile 目录用完即删。
 
@@ -158,6 +164,8 @@ node probe.mjs --phase init --env inherit --proxy http://127.0.0.1:10809 --out <
 node probe.mjs --phase live --proxy http://127.0.0.1:10809 --out <dir>   # 约 4 分钟；登录有效时会花钱（haiku，上限 $0.15）
 node summarize.mjs <dir>/live.json
 node peek-check.mjs --transcript <CLAUDE_CONFIG_DIR>/projects/<目录>/<sessionId>.jsonl --out <dir>/peek-check.json
+# 模拟后端（§9）：本机 magpie 网关，不需要钥匙、不经代理；配置目录用一次性的空目录
+node probe.mjs --phase live --gateway http://127.0.0.1:3425 --model opencode-go/claude-haiku-5-5 --config-dir <一次性目录> --out <dir>
 ```
 
 脚本：
@@ -169,6 +177,41 @@ node peek-check.mjs --transcript <CLAUDE_CONFIG_DIR>/projects/<目录>/<sessionI
 | `peek-check.mjs` | 用测试 profile 的 orchestrad 和 peek 页读回一个 transcript，只输出计数和类型 |
 
 全量测试：`.tools/node24/node.exe --test "test/**/*.test.ts"`，958 条，955 过、0 失败、1 跳过、2 todo，和起点（最薄通路分支 3b34a53）相同。
+
+## 9. 模拟后端补测（2026-11-02，UTC 约 07:10–07:20）
+
+**为什么能这样测。** 本机装着 magpie（0.1.2629，一个第三方的多服务模型网关），它在 `127.0.0.1:3425` 上提供兼容 Anthropic 的本地网关，不要钥匙。它接的服务里，opencode-go 转售 `claude-haiku-5-5`。`probe.mjs` 新加了 `--gateway` 和 `--model`：给子进程设 `ANTHROPIC_BASE_URL`，并把 `ANTHROPIC_API_KEY` 设成占位串（网关不验，不是凭据）。`--config-dir` 指向草稿区里一次性的空目录。其余设置和 §0 一样：默认权限模式、`canUseTool` 全拒、工作流关、`settingSources: []`。每条消息现在都带 uuid。`claude-haiku-only` 守卫照常生效：init 报的模型是 `opencode-go/claude-haiku-5-5`，每个 assistant 消息的 `model` 也是它。
+
+**能说明什么、不能说明什么。** 能说明 CLI 和 SDK 一侧的行为：消息怎么排队、怎么中断、审批怎么走、注册表、生命周期帧、transcript 结构、peek。不能说明：Q8 的登录路径；Anthropic API 本身的行为（effort 是否被采用、花费、thinking）。opencode-go 背后是不是 Anthropic 的模型，我没有核实。
+
+跑了两次，结果一致。第一次没记下生命周期帧的 `state`（探针只在 `type: 'system'` 的帧上记，而这种帧的 `type` 是 `command_lifecycle`），改了一行再跑。下表的时间都取第二次，单位是从调 `query()` 起的 ms。
+
+| 回合 | 做了什么 | 看到什么 |
+|---|---|---|
+| T1 | 发一条要求只回 PONG 的消息 | 生命周期帧 `queued` 1277 → `started` 1279；`result/success` 5431；`completed` 5432 |
+| T2 | 要求用 Write 工具建文件 | `canUseTool` 在 7761 被调用（工具 `Write`，入参键 `content, file_path`），探针拖 6 s 后在 13773 拒绝。注册表 8135 变 `waiting`（`waitingFor` = `permission prompt`），14179 回到 `busy`。拒绝后模型回了一句话，`result/success`，`permission_denials` = `["Write"]`，会话继续接下一条消息。磁盘上工具结果那一行多了 `permissionDecision`、`toolDenialKind` 两个键。`canUseTool` 第三个参数的键：`agentID, blockedPath, decisionReason, defaultToNo, description, displayName, requestId, signal, suggestions, suppressAlwaysAllowRule, title, toolUseID` |
+| T3 | 让模型数到 400；流出文字后 1.7 s 发 `priority: 'next'` 的插话 | 插话 18226 进入 `queued`，但**当前回合没被打断**：模型数完了 400，20022 才出 `result`；插话 20024 才 `started`，21899 得到 STEER-ACK |
+| T4 | 让模型数到 300；流出文字后发 `priority: 'later'` 的排队消息 | 和 T3 一样：24594 `queued`，当前回合数完 300，26232 结束，26233 `started`，35706 得到 QUEUED-ACK |
+| T5 | 让模型数到 800；流出文字后 0.5 s 调 `interrupt()` | 37497 返回 `{still_queued: []}`；37500 `result/error_during_execution`，模型只数到 97；37501 这条消息的生命周期帧是 `cancelled`。磁盘上那条 assistant 行带 `isAbortedMidStream`，后面多一条不是我们发的 user 行（推断是中断标记） |
+| 结束 | 空闲 45 s 后关闭 | 注册表 38358 变 `idle`；关闭后 82742 消失 |
+
+**消息的 uuid。** 我们发的 7 个 uuid 就是磁盘上那 7 条 user 行的 uuid。流里不回显 user 消息（没有 `isReplay`），但生命周期帧的 `command_uuid`，以及 `stream_event`、`assistant`、`result` 的 `user_message_uuid` / `user_message_uuids`，都指向我们发的 uuid。所以 M1 能用自己生成的 uuid，把「发出的消息」「流里的回合」「磁盘上的行」三者对上。
+
+**对 r4 §8.2（按 harness 投递）的影响。** r4 第 952 行把 Claude 的 Steer 写成 `streamInput{priority:'next'}`，把 "read" 回执写成 `command_lifecycle{state:'started'}`。这次看到的是：
+
+- 在一个不调工具的长回复里，`next` 不会插进当前回合，和 `later` 一样要等回合结束才开始。它会不会在两次工具调用之间插进去，没测（T3 没有工具调用）。所以在纯文本回合里，Claude 的 Steer 实际上等于 Queue，UI 不能许诺「立即插话」。
+- `started` 只在消息真正开始执行时才来，所以长回合里插话的 "read" 回执要等到回合结束。`queued` 帧倒是立刻就来（≤1 ms），可以当「已收到」。
+- `next` 和 `later` 在这次的测法下看不出区别：队列里只有一条消息。多条排队时谁先谁后，没测。
+- 中断的回执是被中断那条消息的 `cancelled`；`interrupt()` 的返回值本身只有 `still_queued`。
+
+**其它。**
+
+- 7 个回合的 `system/init.tools` 都是同样 26 项，没有 `RemoteTrigger`。这和 §4 第 1 条的推断一致：那一项跟着 claude.ai 的登录状态走，用 API key 时不出现。
+- `capabilities` 和 §1 第 1e 行的 13 项相同。`getSettings().applied.effort` = `low`。
+- 流和磁盘（第二次；第一次是 107 / 44 / 12，构成相同）：流里 99 个带 uuid 的帧，磁盘上 43 个带 uuid 的行，共有 11 个。流独有：`command_lifecycle` 21、`stream_event` 45（连续的增量合并成一行计）、`system/init` 7、`system/status` 8、`result` 7。磁盘独有：user 7、attachment 25。tool_use 和 tool_result 在两边都有，正文块在流里分成增量，在磁盘上是整块。
+- peek 页（`peek-check.mjs`，transcript 181,846 B）：会话页 88 行，transcript 也是 88 行。70 行没有内容，全是非消息行（`attachment` 25、`queue-operation` 14、`api-request` 10、`api-request-blob` 8、`atis-latch` 4、`last-prompt` 4、`ai-title` 3、`api-request-shape` 1、`cost-state` 1）。9 行 user 和 9 行 assistant 都有内容，包括 tool_use、tool_result 和 thinking 行。`peek-check.mjs` 为此加了按类型统计空行。
+- 证据：草稿区 `evidence-mock/live.json`（第一次）、`evidence-mock2/live.json` 和 `evidence-mock2/peek-check.json`（第二次），只有结构、计数、键名、时间。
+- 这一节**没有**交给独立复核。
 
 ## 复核
 
@@ -209,3 +252,5 @@ node peek-check.mjs --transcript <CLAUDE_CONFIG_DIR>/projects/<目录>/<sessionI
 | `sdk-cli` / `sdk-ts` | 注册表的 `entrypoint`：前者是 `claude -p` 加 stdio 审批，后者是 SDK 的 `query()`（本次实测） | r4 §7.1 表后；本报告 §1 |
 | 配置隔离 | 自有会话不读用户的 settings、MCP、hooks | r4 §7.4 |
 | `--env-allowlist` | procguard 的 `run-in-job` 只把白名单里的环境变量传给子进程 | r4 §5.2、§10.16 |
+| magpie / opencode-go | 本机装的第三方模型网关，以及它接的一家转售服务；§9 的模拟后端 | 本报告 §9 |
+| Steer / Queue | 插话（加进正在跑的回合）/ 排队（当前回合结束后再开始） | r4 §8.2（第 952 行） |
