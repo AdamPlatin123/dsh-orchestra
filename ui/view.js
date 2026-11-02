@@ -1,8 +1,6 @@
 // @ts-check
-// Pure descriptors of the stage preview's collaboration graph and task list (0.1 alpha design §6–§7): snapshot in, `{key, tpl, cls, data,
-// attr, text, slots, kids}` out, for ui/dom.js to patch. Nothing here touches the DOM, the clock or
-// the network, so node:test drives every function with the sample JSON.
-// The truthfulness rules of §2 hold here: T1, T2 (D19), T3 (counts from view()), T4, T6.
+// Pure descriptors of the graph, task list and drawer (0.1 alpha design §6–§7) for ui/dom.js to patch;
+// no DOM, clock or network. Truthfulness rules T1–T4 and T6 of §2 hold here.
 import { STAGE_TEXT } from '../shared/strings.js';
 import { SCORE, groupItems, groupPlayers, handedOn, kb, layoutScore } from './layout.js';
 
@@ -91,8 +89,14 @@ function playing(lane) {
 const basisText = (p) => STAGE_TEXT[p.live.basis === 'registry' ? 'basis.registry' : p.live.basis === 'none' ? 'basis.none' : 'basis.inferred'];
 /** @param {Player} p */
 const liveText = (p) => `${STAGE_TEXT[`live.${p.live.state}`]}（${basisText(p)}）`;
-/** The state, with what it waits for said once: 在等你：x（登记表）. @param {Player} p */
-const liveWait = (p) => (p.live.waitingFor !== null ? `${fill('player.waiting', { w: p.live.waitingFor })}（${basisText(p)}）` : liveText(p));
+/** What a member waits for, in plain words when the source's wording is known. @param {string | null} w */
+const waitWord = (w) => (w === null ? STAGE_TEXT['live.unknown'] : Object.hasOwn(STAGE_TEXT, `waitFor.${w}`) ? STAGE_TEXT[`waitFor.${w}`] : w);
+/** The state, with what it waits for said once. @param {Player} p */
+const liveWait = (p) => (p.live.waitingFor !== null ? `${fill('player.waiting', { w: waitWord(p.live.waitingFor) })}（${basisText(p)}）` : liveText(p));
+/** A rule's plain name; the raw id only when none is written. @param {string} id */
+const ruleName = (id) => (Object.hasOwn(STAGE_TEXT, `rn.${id}`) ? STAGE_TEXT[`rn.${id}`] : id);
+/** Whether a reported item's size is known: a DSH team task logs the status change, not the report. @param {WorkItem} w */
+const sized = (w) => w.report !== null && w.source !== 'team-task';
 /** No player behind a mark: no lineage, no instrument. */
 const NOFIG = Object.freeze({ lineage: 'none', role: 'clone', look: 'ghost', instr: 'unknown', basis: 'none' });
 
@@ -107,7 +111,7 @@ export function plateText(p) {
   if (st.keys === 'mismatch') return STAGE_TEXT['stand.mismatch'];
   if (st.source === 'todo') {
     const cur = st.items.find((i) => i.status === 'in_progress') ?? st.items.find((i) => i.status === 'pending');
-    return cur !== undefined ? cur.text : fill('desk.todo', { x: st.selfReported.checked, y: st.selfReported.total });
+    return cur !== undefined ? cur.text : fill('stand.todo', { x: st.selfReported.checked, y: st.selfReported.total });
   }
   if (st.title !== null) return st.title;
   return STAGE_TEXT[`stand.${st.source === 'tail-miss' ? 'tail-miss' : 'none'}`];
@@ -151,8 +155,7 @@ export function describeHeader(snap, laneId, fresh) {
 // ---- score
 
 /**
- * Nameplate: the tag (harness and role, or role and agent type) and the label without the project,
- * which the header names; a label that is only the project gives way to the session key.
+ * Nameplate: the tag and the label without the project; a bare project label gives way to the session.
  * @param {Player} p @param {Lane} lane
  */
 export function nameplate(p, lane) {
@@ -169,9 +172,7 @@ export function nameplate(p, lane) {
 export const GROUPS = /** @type {const} */ (['claude', 'dsh']);
 
 /**
- * How one group works together, every number the length of a list returned beside it (T3). The form
- * word comes from the players' roles: teammates make a team (组长带队友), clones a chain of delegation
- * (主会话派活给分身), a lone principal works alone (一个人干).
+ * How one group works together, every number the length of a list returned beside it (T3).
  * @param {Lane} lane @param {string} harness @param {readonly string[]} fermatas
  */
 export function groupSummary(lane, harness, fermatas) {
@@ -196,7 +197,8 @@ export function groupSummary(lane, harness, fermatas) {
   const work = sent.length === 0 ? STAGE_TEXT['grp.noSent'] : `${fill('grp.sent', { n: sent.length })}${how.length > 0 ? `：${how.join('，')}` : ''}`;
   const child = lists.flows.reduce((s, w) => s + /** @type {{ childBytes: number }} */ (w.flow).childBytes, 0);
   const back = lists.flows.reduce((s, w) => s + /** @type {{ reportBytes: number }} */ (w.flow).reportBytes, 0);
-  const flow = lists.flows.length > 0 ? [fill('grp.flow', { r: ratio(child / Math.max(back, 1)), n: lists.flows.length })] : [];
+  const r = child / Math.max(back, 1);
+  const flow = lists.flows.length > 0 ? [fill(r >= 10 ? 'grp.flow' : 'grp.flowPct', { r: Math.round(r), p: Math.round(100 / r), n: lists.flows.length })] : [];
   const text = [crew.length > 0 ? crew.join('，') : STAGE_TEXT['grp.alone'], work, ...flow, ...part('grp.wait', lists.waiting)].join('；');
   return { form, lists, text };
 }
@@ -204,11 +206,11 @@ export function groupSummary(lane, harness, fermatas) {
 /** A work item's state in a word, with no sizes. @param {WorkItem} w */
 const stateWord = (w) => STAGE_TEXT[w.state === 'reported' ? 'ph.reported' : w.state === 'working' ? 'rep.working' : w.state === 'orphan' ? 'rep.orphan' : w.state === 'self' ? 'rep.self' : 'rep.unknown'];
 
-/** What a bar says under itself: what was read and what came back, else the report's size, else that the size is unknown. @param {WorkItem} w */
+/** What a bar says under itself. @param {WorkItem} w */
 function caption(w) {
   if (w.flow !== null) return fill('ph.flow', { a: kb(w.flow.childBytes), b: kb(w.flow.reportBytes) });
-  if (w.state === 'reported' && w.report !== null) return fill('ph.report', { b: kb(w.report.bytes) });
-  return w.state === 'working' ? '' : STAGE_TEXT['ph.size'];
+  if (w.state === 'reported' && w.report !== null) return sized(w) ? fill('ph.report', { b: kb(w.report.bytes) }) : STAGE_TEXT['ph.reportUnknown'];
+  return STAGE_TEXT[w.state === 'working' ? 'ph.running' : 'ph.size'];
 }
 
 /** @param {number} x @param {number} y @param {number} [sx] @param {number} [sy] */
@@ -216,13 +218,12 @@ const tf = (x, y, sx, sy) => `translate(${x} ${y})${sx === undefined ? '' : ` sc
 const HIDE = Object.freeze({ data: Object.freeze({ hide: '1' }) });
 
 /**
- * The row label of one player: icon, name and tag; a member that hands work on adds its bracket and
- * says 往下派了 n 个活（第 d 层） in place of the tag.
+ * The row label of one player: icon, name and tag (or what it handed on, with its bracket).
  * @param {import('./layout.js').Staff} st @param {Lane} lane @param {string | null} sel
  * @param {{ x: number, y0: number, y1: number } | undefined} dept @param {number} n @returns {Desc}
  */
 function headDesc(st, lane, sel, dept, n) {
-  if (st.player === null) return { key: st.id, tpl: 'tpl-uhead', text: STAGE_TEXT['join.none'], attr: { x: String(st.x + 22), y: String(st.y - 6) } };
+  if (st.player === null) return { key: st.id, tpl: 'tpl-uhead', text: STAGE_TEXT['row.unknown'], attr: { x: String(st.x + 22), y: String(st.y - 6) } };
   const p = st.player;
   const np = nameplate(p, lane);
   const room = SCORE.head - st.x - 26;
@@ -248,8 +249,7 @@ function headDesc(st, lane, sel, dept, n) {
 }
 
 /**
- * One work item on the graph: its bar on the executor's row with its state above and its sizes below,
- * the arrow that brought it there and the arrow that carried its report back, each with its head.
+ * One work item: its bar with state above and sizes below, its dispatch and report arrows.
  * @param {import('./layout.js').Phrase} ph @param {Map<string, Player>} byId @param {string} group @param {string | null} sel @returns {Desc}
  */
 function phraseDesc(ph, byId, group, sel) {
@@ -275,21 +275,19 @@ function phraseDesc(ph, byId, group, sel) {
       st: { text: stateWord(w), attr: { x: String(ph.x1), y: String(ph.y - 9) } },
       tail: ph.kind === 'open' ? { data: { hide: '0' }, attr: { x1: String(ph.x2), y1: y, x2: String(ph.tail), y2: y } } : HIDE,
       body: { attr: { x1: String(ph.x1), y1: y, x2: String(ph.x2), y2: y } },
-      inner: { attr: { x1: String(ph.x1), y1: y, x2: String(ph.x2), y2: y } },
       cap: { text: cap, data: { hide: cap === '' ? '1' : '0' }, attr: { x: String(ph.x1 - 3), y: String(ph.y + 19) } },
       slur: sl !== null ? { data: { hide: '0' }, attr: { transform: tf(sl.x, sl.y, sl.dx, sl.dy) } } : HIDE,
       sah: sl !== null ? { data: { hide: '0' }, attr: { transform: tf(ph.x1 - 7, ph.y) } } : HIDE,
       slab: sl !== null ? { data: { hide: '0' }, attr: { x: String(sl.x + 4), y: String(sl.y + (sl.dy > 0 ? 15 : -6)) } } : HIDE,
       dot: sl !== null ? { data: { hide: '0' }, attr: { transform: tf(sl.x, sl.y) } } : HIDE,
       tie: tie !== null ? { data: { hide: '0', w: String(tie.w) }, attr: { transform: tf(tie.x, tie.y, tie.dx, tie.dy) } } : HIDE,
-      tah: tie !== null ? { data: { hide: '0', w: String(tie.w) }, attr: { transform: `${tf(tie.x + tie.dx, tie.y)} rotate(${up}) scale(${1 + (tie.w - 1) / 6})` } } : HIDE,
+      tah: tie !== null ? { data: { hide: '0', w: String(tie.w) }, attr: { transform: `${tf(tie.x + tie.dx, tie.y - Math.sign(tie.dy) * 6)} rotate(${up}) scale(${1 + (tie.w - 1) / 6})` } } : HIDE,
     },
   };
 }
 
 /**
- * The graph of one lane: the waits on the 你 row, then one block per group with players, each with
- * its collaboration sentence, row labels, rows, column numbers, work bars and 等你 badges.
+ * The graph of one lane: the waits on the 你 row, then one block per group.
  * @param {StageSnapshot} snap @param {string | null} laneId @param {string | null} sel
  * @returns {Record<string, Paint>}
  */
@@ -298,7 +296,7 @@ export function describeScore(snap, laneId, sel) {
   const everyone = snap.lanes.flatMap((l) => l.players);
   const waits = f.map((id) => {
     const p = everyone.find((x) => x.id === id);
-    const text = p !== undefined ? fill('wait.one', { who: clipW(p.label, 40), w: clipW(p.live.waitingFor ?? STAGE_TEXT['live.unknown'], 40) }) : STAGE_TEXT['wait.lost'];
+    const text = p !== undefined ? fill('wait.one', { who: clipW(p.label, 40), w: clipW(waitWord(p.live.waitingFor), 40) }) : STAGE_TEXT['wait.lost'];
     return { key: id, tpl: 'tpl-wait', data: { wait: p !== undefined ? id : '' }, slots: { t: { text } } };
   });
   const podium = { text: fill('podium', { n: f.length }), data: { n: String(f.length) } };
@@ -342,7 +340,7 @@ export function describeScore(snap, laneId, sel) {
         ferms: {
           kids: L.ferms.map((m) => {
             const p = /** @type {Player} */ (byId.get(m.id));
-            const t = fill('wait.badge', { w: clipW(p.live.waitingFor ?? STAGE_TEXT['live.unknown'], 20) });
+            const t = fill('wait.badge', { w: clipW(waitWord(p.live.waitingFor), 20) });
             return {
               key: m.id, tpl: 'tpl-ferm', data: { node: m.id }, attr: { transform: tf(m.x, m.y) },
               slots: { title: { text: liveWait(p) }, bg: { attr: { width: String(Math.round(cols(t) * 6.6 + 16)) } }, t: { text: t } },
@@ -364,20 +362,20 @@ export function flowBucket(f) {
   return String(Math.min(8, Math.max(0, Math.round(Math.log2(Math.max(r, 1))))));
 }
 
-/** @param {number} r */
-const ratio = (r) => (r >= 10 ? String(Math.round(r)) : r.toFixed(1));
-
 /** @param {WorkItem} w */
 function flowText(w) {
-  if (w.flow !== null) return fill('flow.line', { a: bytes(w.flow.childBytes), b: bytes(w.flow.reportBytes), r: ratio(w.flow.childBytes / Math.max(w.flow.reportBytes, 1)) });
+  if (w.flow !== null) {
+    const r = w.flow.childBytes / Math.max(w.flow.reportBytes, 1);
+    return fill(r >= 10 ? 'flow.line' : 'flow.linePct', { a: bytes(w.flow.childBytes), b: bytes(w.flow.reportBytes), r: Math.round(r), p: Math.round(100 / r) });
+  }
   if (w.state === 'working') return STAGE_TEXT['flow.pending'];
   const u = STAGE_TEXT['flow.unknownSide'];
-  return fill('flow.half', { a: u, b: w.report !== null ? bytes(w.report.bytes) : u });
+  return fill('flow.half', { a: u, b: sized(w) ? bytes(/** @type {{ bytes: number }} */ (w.report).bytes) : u });
 }
 
 /** @param {WorkItem} w @param {Fmt} fmt */
 function reportText(w, fmt) {
-  if (w.state === 'reported' && w.report !== null) return fill('rep.reported', { t: w.report.at !== null ? fmt.time(w.report.at) : STAGE_TEXT['rep.noTime'], b: bytes(w.report.bytes) });
+  if (w.state === 'reported' && w.report !== null) return fill('rep.reported', { t: w.report.at !== null ? fmt.time(w.report.at) : STAGE_TEXT['rep.noTime'], b: sized(w) ? bytes(w.report.bytes) : STAGE_TEXT['ph.reportUnknown'] });
   return STAGE_TEXT[w.state === 'working' ? 'rep.working' : w.state === 'orphan' ? 'rep.orphan' : w.state === 'self' ? 'rep.self' : 'rep.unknown'];
 }
 
@@ -422,7 +420,7 @@ function deskDesc(p, sel) {
   let head = STAGE_TEXT['desk.noTodo'];
   if (st.source === 'todo') head = fill('desk.todo', { x: checked, y: total }) + (total > 0 && checked === total ? `，${STAGE_TEXT['desk.allChecked']}` : '');
   let note = '';
-  if (st.keys === 'mismatch') note = fill('health.keys', { ids: `${p.harness}.stand` });
+  if (st.keys === 'mismatch') note = fill('health.keys', { ids: `${STAGE_TEXT[`harness.${p.harness}`]} ${STAGE_TEXT['dr.stand']}` });
   else if (st.source === 'tail-miss') note = STAGE_TEXT['stand.tail-miss'];
   if (p.note !== null) note = note === '' ? STAGE_TEXT[`note.${p.note}`] : `${note}；${STAGE_TEXT[`note.${p.note}`]}`;
   return {
@@ -446,7 +444,7 @@ function todoDesc(it, i) {
 }
 
 /**
- * The rule list (T4): 未测（N=n） with class `untested` whatever the hits, or 字段对不上 when keys are missing.
+ * The rule list (T4): 没测过（n 个样本） with class `untested` whatever the hits, or a format mismatch.
  * @param {readonly Rule[]} rules @returns {Desc[]}
  */
 export function describeRules(rules) {
@@ -457,15 +455,13 @@ export function describeRules(rules) {
       tpl: 'tpl-rule',
       cls: bad ? 'mismatch' : 'untested',
       data: { status: bad ? 'mismatch' : 'untested' },
-      slots: { id: { text: r.id }, n: { text: bad ? STAGE_TEXT['rule.mismatch'] : fill('rule.untested', { n: r.n }) }, hits: { text: fill('rule.hits', { h: r.hits }) } },
+      slots: { id: { text: ruleName(r.id) }, n: { text: bad ? STAGE_TEXT['rule.mismatch'] : fill('rule.untested', { n: r.n }) }, hits: { text: fill('rule.hits', { h: r.hits }) } },
     };
   });
 }
 
 /**
- * The task list (任务清单) of one lane: the leads' desks, the chips, the work item tree with departments
- * and the 未关联 bucket, the lane's context total, health and the rules. With a chip on, the list is
- * exactly that chip's rows, flat, so the chip's number and the rows shown are one array (T3).
+ * The task list (任务清单) of one lane. With a chip on, the list is exactly that chip's rows (T3).
  * @param {StageSnapshot} snap @param {string | null} laneId @param {Chip | null} chip
  * @param {string | null} sel @param {Fmt} fmt
  * @returns {{ rows: number, slots: Record<string, Paint> }}
@@ -474,7 +470,7 @@ export function describePlan(snap, laneId, chip, sel, fmt) {
   const lane = pickLane(snap, laneId);
   const mismatch = snap.rules.filter((r) => r.status === 'keys-mismatch').map((r) => r.id);
   const srcErr = /** @type {const} */ (['claude', 'dsh']).filter((h) => snap.sources[h].state === 'error').map((h) => fill('health.src', { h, code: snap.sources[h].error ?? '' }));
-  const health = [...(mismatch.length > 0 ? [fill('health.keys', { ids: mismatch.join(', ') })] : []), ...srcErr].join('；');
+  const health = [...(mismatch.length > 0 ? [fill('health.keys', { ids: mismatch.map(ruleName).join('、') })] : []), ...srcErr].join('；');
   const clippedN = snap.clipped.lanes + snap.clipped.players + snap.clipped.items + snap.clipped.standItems;
   /** @type {Record<string, Paint>} */
   const common = {
@@ -563,9 +559,7 @@ function age(ms) {
 const kv = (k, v, tone = '') => ({ key: k, tpl: 'tpl-kv', data: { tone }, slots: { k: { text: STAGE_TEXT[k] }, v: { text: v } } });
 
 /**
- * The drawer of one player or work item: identity, the basis of its state, the instrument's evidence,
- * the rules with 未测（N=0）, the stand, the brief with its label, and the last events. `detail` is
- * null while the session is read, or `{ error }` when that failed. Null when the node is gone.
+ * The drawer of one player or work item; `detail` is null while loading. Null when the node is gone.
  * @param {StageSnapshot} snap @param {string | null} laneId @param {string} node
  * @param {SessionDetail | { error: string } | null} detail @param {Fmt} fmt @param {number} sinceMs ms since the snapshot arrived (T7)
  * @returns {{ session: string | null, slots: Record<string, Paint> } | null}
@@ -579,8 +573,8 @@ export function describeDrawer(snap, laneId, node, detail, fmt, sinceMs) {
   if (p === null && w === null) return null;
   const rule = (/** @type {string} */ id) => {
     const r = snap.rules.find((x) => x.id === id);
-    if (r === undefined) return `${id}：${fill('rule.untested', { n: 0 })}`;
-    return `${id}：${r.status === 'keys-mismatch' ? STAGE_TEXT['rule.mismatch'] : fill('rule.untested', { n: r.n })}，${fill('rule.hits', { h: r.hits })}`;
+    if (r === undefined) return `${ruleName(id)}：${fill('rule.untested', { n: 0 })}`;
+    return `${ruleName(id)}：${r.status === 'keys-mismatch' ? STAGE_TEXT['rule.mismatch'] : fill('rule.untested', { n: r.n })}，${fill('rule.hits', { h: r.hits })}`;
   };
   /** @type {Desc[]} */
   const facts = [];
@@ -590,7 +584,7 @@ export function describeDrawer(snap, laneId, node, detail, fmt, sinceMs) {
     facts.push(kv('dr.session', p.session === null ? STAGE_TEXT['dr.noSession'] : `${p.session.slice(0, 8)}（${bytes(p.bytes)}）${p.note !== null ? `，${STAGE_TEXT[`note.${p.note}`]}` : ''}`, p.note !== null ? 'warn' : ''));
     const ageText = p.live.ageMs !== null ? `，${age(p.live.ageMs + sinceMs)}` : '';
     facts.push(kv('dr.live', `${liveWait(p)}${ageText}`, p.live.state === 'waiting' ? 'warn' : ''));
-    facts.push(kv('dr.look', `${STAGE_TEXT[`look.${p.look}`]}（${p.lookRule}）`));
+    facts.push(kv('dr.look', STAGE_TEXT[`look.${p.look}`]));
     const ins = p.instrument;
     facts.push(kv('dr.instr', `${STAGE_TEXT[`instr.${ins.class}`]}${ins.role !== null ? `（${ins.role}）` : ''}；${fill('dr.instrLine', { n: ins.window, r: ins.read, w: ins.write, s: ins.shell })}`));
     facts.push(kv('dr.rule', rule('instrument.tool-map')));
@@ -624,7 +618,7 @@ export function describeDrawer(snap, laneId, node, detail, fmt, sinceMs) {
       briefBox: { data: { hide: brief === null ? '1' : '0' } },
       brief: { text: brief ?? '' },
       standBox: { data: { hide: stand.length === 0 ? '1' : '0' } },
-      standHead: { text: p !== null && p.stand.source === 'todo' ? fill('desk.todo', { x: p.stand.selfReported.checked, y: p.stand.selfReported.total }) : STAGE_TEXT['dr.stand'] },
+      standHead: { text: p !== null && p.stand.source === 'todo' ? fill('stand.todo', { x: p.stand.selfReported.checked, y: p.stand.selfReported.total }) : STAGE_TEXT['dr.stand'] },
       stand: { kids: stand.map((it, i) => todoDesc(it, i)) },
       events: { kids: events },
       evNote: { text: evNote, data: { hide: evNote === '' ? '1' : '0' } },

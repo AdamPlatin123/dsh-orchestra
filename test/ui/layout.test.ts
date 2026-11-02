@@ -69,10 +69,20 @@ test('phrase length follows flow.childBytes; no flow is a stub, working is open;
   const orphan = by('w:agent-a3');
   assert.equal(orphan.kind, 'stub');
   const cued = (id: string, kind: string) => lane.cues.some((c: Json) => c.item === id && c.kind === kind);
+  // The backend cues a dispatch for every item with an executor, orphans too; no record names the
+  // orphan's dispatcher, so the graph draws no 派活 arrow for it.
+  assert.ok(cued('w:agent-a3', 'dispatch'));
+  assert.equal(orphan.slur, null);
+  const ownerY = (p: any) => L.staves.find((st) => st.id === p.item.owner)!.y;
   for (const p of L.phrases) {
-    assert.equal(p.slur !== null, cued(p.item.id, 'dispatch'), `${p.item.id}: slur iff a dispatch cue`);
+    assert.equal(p.slur !== null, cued(p.item.id, 'dispatch') && p.item.state !== 'orphan', `${p.item.id}: slur iff a dispatch cue, never for an orphan`);
     assert.equal(p.tie !== null, cued(p.item.id, 'report'), `${p.item.id}: tie iff a report cue`);
     if (p.slur !== null) assert.equal(p.slur.y + p.slur.dy, p.y, 'the slur lands on the phrase’s staff');
+    if (p.tie !== null) {
+      assert.ok(p.tie.x + p.tie.dx >= p.x1 + 40, 'the report arrow rises clear of the state word');
+      assert.equal(p.tie.y + p.tie.dy, p.y, 'the report arrow leaves from the bar’s row');
+      assert.equal(p.tie.y - Math.sign(p.tie.dy) * 6, ownerY(p), 'it stops 6 short of the owner’s row, where its head sits');
+    }
   }
   // The department's own dispatch leaves from its staff, not the principal's.
   const t5 = by('w:toolu_t5');
@@ -91,6 +101,12 @@ test('fermatas sit on the waiting players’ staves only; unlinked items get a g
   const lane = s.lanes[0];
   const L = layoutScore(lane, 'claude', s.podium.fermatas);
   assert.deepEqual(L.ferms.map((f) => f.id), s.podium.fermatas);
+  // A badge is wide and opaque: it sits after the last column, right of every mark.
+  for (const f of L.ferms) assert.ok(L.phrases.every((p) => f.x > p.tail && f.x > p.x0 + SCORE.col - 10));
+  // So does a waiting member with a bar of its own in the first column.
+  const Lc = layoutScore(lane, 'claude', ['p:f55ff16f66f43360266b']);
+  assert.equal(Lc.ferms.length, 1);
+  assert.ok(Lc.phrases.every((p) => Lc.ferms[0]!.x > p.x0 + SCORE.col - 10));
   assert.deepEqual(layoutScore(lane, 'dsh', s.podium.fermatas).ferms, []);
   assert.ok(!L.staves.some((st) => st.player === null));
   const lost = sample().lanes[0];

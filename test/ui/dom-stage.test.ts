@@ -118,7 +118,7 @@ test('static text and template text come from STAGE_TEXT, and the score carries 
   assert.deepEqual(doc.querySelectorAll('.ferm').map((e) => e.getAttribute('data-node')), ['p:fbeae7c18667b6987518']);
   const badge = doc.querySelector('.ferm')!;
   assert.equal(badge.getAttribute('tabindex'), '0', 'the 等你 badge is focusable');
-  assert.equal(badge.querySelector('.badge-t')!.textContent, '等你：permission prompt');
+  assert.equal(badge.querySelector('.badge-t')!.textContent, '等你：批准一个操作');
   assert.match(badge.querySelector('.badge-bg')!.getAttribute('width')!, /^\d+$/);
   assert.deepEqual(doc.querySelector('.ord')!.textContent, '第 1 次派活');
   const music = doc.querySelector('.system')!.querySelector('.music')!;

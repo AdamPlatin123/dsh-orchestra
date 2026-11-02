@@ -1,12 +1,7 @@
 // @ts-check
-// The collaboration graph (协作图) of one group in one lane (0.1 alpha design §6, plain-language pass):
-// pure geometry, same lane in, same marks out. Identifiers keep the score's names (staff = a member's
-// row, phrase = a work bar, slur = the dispatch arrow, tie = the report arrow, fermata = the 等你 badge).
-// One row per player of the group, principals first and members below in parent order, indented by
-// depth. One column per work item handed out, in the order the lane records them. A bar sits on its
-// executor's row and grows with log2 of the context the executor read (flow.childBytes); a dispatch
-// cue draws an arrow down from the owner's row, a report cue an arrow back up whose weight grows with
-// log2 of the report's bytes. No flow, no length: the bar is a short stub that says 未知.
+// The collaboration graph (协作图) of one group as pure geometry (0.1 alpha design §6). Names kept from
+// the score: staff = a member's row, phrase = a work bar (log2 of flow.childBytes long, else a stub),
+// slur = the dispatch arrow, tie = the report arrow (log2 of its bytes thick), fermata = the 等你 badge.
 import { frozen } from '../shared/frozen.js';
 
 /** @typedef {import('../shared/stage-contract.js').Lane} Lane */
@@ -94,9 +89,8 @@ export function groupItems(lane, harness) {
 }
 
 /**
- * What a member handed on that the records link to an executor: the one list behind 部门：下派 n, on
- * the score and in 分谱 alike (T3). Items a member owns sit in its own group, so a lane's items and a
- * group's give the same list.
+ * What a member handed on to a linked executor: the one list behind 往下派了 n 个活 on the graph and
+ * in 任务清单 alike (T3).
  * @param {readonly WorkItem[]} items @param {string | null} id
  */
 export function handedOn(items, id) {
@@ -129,18 +123,18 @@ export function layoutScore(lane, harness, fermatas) {
     const kind = w.flow !== null ? 'flow' : w.state === 'working' ? 'open' : 'stub';
     const x2 = x1 + (w.flow !== null ? phraseLen(w.flow.childBytes) : S.stub);
     const linked = owner !== undefined && owner !== st;
-    const slur = linked && cue(w.id, 'dispatch') ? { x: x0, y: owner.y, dx: S.gap - 9, dy: st.y - owner.y } : null;
+    // An orphan is a 分身 no dispatch record names: no arrow claims one.
+    const slur = linked && w.state !== 'orphan' && cue(w.id, 'dispatch') ? { x: x0, y: owner.y, dx: S.gap - 9, dy: st.y - owner.y } : null;
     const back = w.report !== null ? w.report.bytes : w.flow !== null ? w.flow.reportBytes : 1;
-    const tie = linked && cue(w.id, 'report') ? { x: x2, y: owner.y, dx: 12, dy: st.y - owner.y, w: tieWeight(back) } : null;
+    // The report arrow rises clear of the state word above the bar and stops short of the owner's row,
+    // where its head sits, so the thick stroke ends inside the head.
+    const sg = owner !== undefined ? Math.sign(st.y - owner.y) : 0;
+    const tie = linked && cue(w.id, 'report') ? { x: x2, y: owner.y + sg * 6, dx: Math.max(12, x1 + 40 - x2), dy: st.y - owner.y - sg * 6, w: tieWeight(back) } : null;
     return { item: w, col, staff: st.id, y: st.y, x0, x1, x2, kind, tail: kind === 'open' ? x0 + S.col - 22 : x2, slur, tie };
   });
   const edge = S.lead + S.col * items.length + 10;
-  const ferms = staves
-    .filter((s) => s.player !== null && fermatas.includes(s.id))
-    .map((s) => {
-      const mine = phrases.filter((p) => p.staff === s.id);
-      return { id: s.id, x: mine.length > 0 ? Math.max(...mine.map((p) => p.tail)) + 14 : edge, y: s.y };
-    });
+  // A 等你 badge is wide and opaque: it sits after the last column, where no arrow runs.
+  const ferms = staves.filter((s) => s.player !== null && fermatas.includes(s.id)).map((s) => ({ id: s.id, x: edge, y: s.y }));
   // A member that hands work on gets a bracket from its row to its last descendant's.
   const depts = staves
     .filter((s) => s.player !== null && s.player.role !== 'principal' && handedOn(items, s.id).length > 0)

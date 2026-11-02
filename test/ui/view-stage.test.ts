@@ -75,7 +75,7 @@ test('STAGE_TEXT never holds the word for done, and every key the page names exi
 test('plain words: no music notation, no music jargon and no milestone code in any text the page can show', () => {
   // User feedback 2026-11-02: ordinary readers cannot decode the score's jargon. One row per member
   // stays; every other mark and word is plain.
-  const JARGON = ['谱', '奏', '乐器', '木管', '弦乐', '打击', '铜管', '休止', '声部', '演奏', '日场', '夜场', '孤儿', '回流', '交回', '延长号', '连线', '回弧', '短语', '部门', '委派', 'M0', 'M2', '×'];
+  const JARGON = ['谱', '奏', '乐器', '木管', '弦乐', '打击', '铜管', '休止', '声部', '演奏', '日场', '夜场', '孤儿', '回流', '交回', '延长号', '连线', '回弧', '短语', '部门', '委派', 'M0', 'M2', '×', 'fermata', 'orphan'];
   const html = fs.readFileSync(fileURLToPath(new URL('../../ui/stage.html', import.meta.url)), 'utf8');
   const s = sample();
   const shown = [...Object.values(STAGE_TEXT), ...everything(s), ...[...html.matchAll(/>([^<>]+)</g)].map((m) => m[1]!), ...[...html.matchAll(/aria-label="([^"]*)"/g)].map((m) => m[1]!)];
@@ -101,7 +101,7 @@ test('header counts are the lengths of the rows they label (T3)', () => {
   const h = describeHeader(s as any, SHOP, { stale: false, at: '10:00:30' });
   const playing = lane.players.filter((p: Json) => ['busy', 'running', 'waiting'].includes(p.live.state));
   assert.deepEqual(h.counts, { a: playing.length, b: lane.players.length, c: view(lane, 'reported').rows.length, d: view(lane, 'sent').rows.length });
-  assert.equal(h.slots.players.text, `成员 ${playing.length}/${lane.players.length} 在干活`);
+  assert.equal(h.slots.players.text, `成员 ${playing.length}/${lane.players.length} 在忙、在跑或等你`);
   assert.equal(h.slots.items.text, '任务 1/6 已回报');
   assert.equal(h.slots.fresh.text, '观测于 10:00:30');
   const stale = describeHeader(s as any, SHOP, { stale: true, at: '10:00:30' });
@@ -180,7 +180,7 @@ test('T3: 往下派了 n 个活 is one list on the graph and in 任务清单, un
   const claude = describeScore(s as any, SHOP, null).systems.kids!.find((d) => d.key === 'claude')!;
   const head = claude.slots!.heads!.kids!.find((d) => d.key === DEPT)!;
   const row = describePlan(s as any, SHOP, null, null, fmt).slots.list.kids!.find((d) => d.key === 'w:toolu_t2')!;
-  assert.equal(head.slots!.tag!.text, '往下派了 2 个活（第 1 层）');
+  assert.equal(head.slots!.tag!.text, '它在第 1 层，又往下派了 2 个活');
   assert.equal(row.slots!.dept!.text, head.slots!.tag!.text);
 });
 
@@ -192,8 +192,8 @@ test('departments group by executor with depth badges; unjoined items and stray 
     ['h:unlinked', '-'], ['w:agent-a3', '0'],
   ]);
   const t2 = list[1]!;
-  assert.deepEqual(t2.slots!.dept, { text: '往下派了 1 个活（第 1 层）', data: { hide: '0' } });
-  assert.equal(list[5]!.slots!.t!.text, '未关联（1）');
+  assert.deepEqual(t2.slots!.dept, { text: '它在第 1 层，又往下派了 1 个活', data: { hide: '0' } });
+  assert.equal(list[5]!.slots!.t!.text, '没对上的（1）');
   // A clone no item points at is listed too, and a department deeper than 2 is flagged.
   const s2 = sample();
   s2.lanes[0].items = s2.lanes[0].items.filter((w: Json) => w.id !== 'w:agent-a3');
@@ -208,7 +208,7 @@ test('departments group by executor with depth badges; unjoined items and stray 
 
 test('the lane total says how much the lead did not read, only over items with both sides known', () => {
   const s = sample();
-  assert.equal(describePlan(s as any, SHOP, null, null, fmt).slots.total.text, '分身读了 48k 字节，回报 1.2k 字节：主会话少读约 47k 字节（1 项有数据）');
+  assert.equal(describePlan(s as any, SHOP, null, null, fmt).slots.total.text, '分身读了 48k 字节，回报 1.2k 字节：派活的一方少读约 47k 字节（1 项有数据）');
   assert.equal(describePlan(s as any, NOTES, null, null, fmt).slots.total.data!.hide, '1');
   assert.deepEqual([1, 2, 40, 300, 1e9].map((r) => flowBucket({ childBytes: r * 100, reportBytes: 100 })), ['0', '1', '5', '8', '8']);
 });
@@ -225,12 +225,12 @@ test('describeRules reads 没测过（0 个样本） with class untested, never 
   const m = sample();
   m.rules[0].hits = 5;
   const [r0] = describeRules(m.rules);
-  assert.deepEqual([r0!.cls, r0!.slots!.n!.text, r0!.slots!.hits!.text], ['untested', '没测过（0 个样本）', '本次命中 5']);
+  assert.deepEqual([r0!.cls, r0!.slots!.n!.text, r0!.slots!.hits!.text], ['untested', '没测过（0 个样本）', '这次用上了 5 次，对不对没验证']);
   m.rules[1].status = 'keys-mismatch';
   const r1 = describeRules(m.rules)[1]!;
-  assert.deepEqual([r1.cls, r1.slots!.n!.text], ['mismatch', '字段对不上']);
+  assert.deepEqual([r1.cls, r1.slots!.n!.text], ['mismatch', '记录格式和预期不一样']);
   const plan = describePlan(m as any, SHOP, null, null, fmt);
-  assert.deepEqual(plan.slots.health, { text: '字段对不上（解析器是推测）：claude.join.agentId', data: { hide: '0' } });
+  assert.deepEqual(plan.slots.health, { text: '有些记录的格式和预期不一样，这部分可能读错：按分身编号找派活记录', data: { hide: '0' } });
   assert.equal(describePlan(s as any, SHOP, null, null, fmt).slots.health.data!.hide, '1', 'health takes no space when nothing is wrong (T6)');
 });
 
@@ -251,10 +251,10 @@ test('each group’s collaboration sentence counts the lists it summarizes (T3),
   const f = s.podium.fermatas;
   const claude = groupSummary(lane, 'claude', f);
   assert.equal(claude.form, 'tree', 'clones and no teammates: a chain of delegation');
-  assert.equal(claude.text, '分身 4 个，其中 1 个又往下派活；派活 4 次：在跑 2，已回报 1，可能断了 1；回报约为所读的 1/40（1 项有数据）；等你 1');
+  assert.equal(claude.text, '分身 4 个，有 1 个又往下派活；派活 4 次：在跑 2，已回报 1，可能断了 1；回报约为所读的 1/40（1 项有数据）；等你 1');
   const dsh = groupSummary(lane, 'dsh', f);
   assert.equal(dsh.form, 'team', 'a teammate makes a team');
-  assert.equal(dsh.text, '队友 1 个，分身 1 个；派活 2 次：在跑 1，未知 1');
+  assert.equal(dsh.text, '队友 1 个，分身 1 个；派活 2 次：在跑 1，状态不明 1');
   for (const h of ['claude', 'dsh']) {
     const g = groupSummary(lane, h, f);
     const L = g.lists;
@@ -265,8 +265,8 @@ test('each group’s collaboration sentence counts the lists it summarizes (T3),
     assert.deepEqual(L.sent.map((w) => w.id), groupItems(lane, h).map((w: Json) => w.id));
     assert.deepEqual(L.waiting.map((p) => p.id), mine.filter((p: Json) => f.includes(p.id)).map((p: Json) => p.id));
     const said: [string, readonly unknown[]][] = [
-      ['队友', L.teammates], ['分身', L.clones], ['其中', L.depts], ['派活', L.sent], ['在跑', L.working],
-      ['已回报', L.reported], ['可能断了', L.orphan], ['未知', L.unknown], ['等你', L.waiting],
+      ['队友', L.teammates], ['分身', L.clones], ['有', L.depts], ['派活', L.sent], ['在跑', L.working],
+      ['已回报', L.reported], ['可能断了', L.orphan], ['状态不明', L.unknown], ['等你', L.waiting],
     ];
     for (const [word, list] of said) {
       const m = new RegExp(`(?:^|[，；：])${word} (\\d+)`).exec(g.text);
@@ -298,9 +298,9 @@ test('the score: one system per group with players, heads and phrases from their
   assert.deepEqual(lead.data, { node: 'p:fbeae7c18667b6987518', lineage: 'claude', role: 'principal', look: 'solid', instr: 'percussion', basis: 'registry', sel: '0' });
   assert.equal(lead.slots!.tag!.text, 'Claude 主会话，在等你');
   assert.ok(!lead.slots!.name!.text!.startsWith('shop'), 'no head repeats the project the header names');
-  assert.ok(lead.slots!.title!.text!.includes('在等你：permission prompt'));
+  assert.ok(lead.slots!.title!.text!.includes('在等你：批准一个操作'));
   const dept = heads.find((d) => d.key === 'p:2c3a4249d77070058649')!;
-  assert.equal(dept.slots!.tag!.text, '往下派了 1 个活（第 1 层）');
+  assert.equal(dept.slots!.tag!.text, '它在第 1 层，又往下派了 1 个活');
   assert.equal(dept.slots!.dept!.data!.hide, '0');
   assert.equal(heads.find((d) => d.key === 'p:f46dd28a5499d8efef0b')!.data!.look, 'ghost');
   for (const d of [...heads, ...systems[1]!.slots!.heads!.kids!]) {
@@ -311,7 +311,7 @@ test('the score: one system per group with players, heads and phrases from their
   const by = (id: string) => phrases.find((d) => d.key === id)!;
   assert.equal(by('w:toolu_t1').slots!.cap!.text, '读 48k → 回报 1.2k');
   assert.equal(by('w:toolu_t1').slots!.tie!.data!.hide, '0');
-  assert.deepEqual([by('w:toolu_t2').slots!.st!.text, by('w:toolu_t2').slots!.cap!.data!.hide], ['在跑', '1'], 'still working: the state above the bar, no sizes below');
+  assert.deepEqual([by('w:toolu_t2').slots!.st!.text, by('w:toolu_t2').slots!.cap!.text], ['在跑', '还不知道读了多少'], 'still working: the state above the bar, no size claimed below');
   assert.deepEqual([by('w:toolu_t2').data!.sel, by('w:toolu_t2').attr!['aria-current']], ['1', 'true']);
   assert.equal(by('w:toolu_t2').slots!.tie!.data!.hide, '1', 'still working: nothing came back');
   assert.deepEqual([by('w:agent-a3').slots!.st!.text, by('w:agent-a3').slots!.cap!.text], ['可能断了', '读了多少未知']);
@@ -319,17 +319,17 @@ test('the score: one system per group with players, heads and phrases from their
   assert.ok(phrases.every((d) => d.slots!.title!.text!.startsWith(s.lanes[0].items.find((w: Json) => w.id === d.key).brief)));
   assert.ok(!texts(sc).some((t) => t.includes('无复核者')), 'the verdict lives in the detail, never on the score');
   const dshUnknown = systems[1]!.slots!.phrases!.kids!.find((d) => d.key === 'w:dsh:c41f96c594ee71fce362')!;
-  assert.deepEqual([dshUnknown.slots!.st!.text, dshUnknown.slots!.cap!.text, dshUnknown.data!.kind], ['未知', '读了多少未知', 'stub'], 'no flow: a stub that says 未知');
+  assert.deepEqual([dshUnknown.slots!.st!.text, dshUnknown.slots!.cap!.text, dshUnknown.data!.kind], ['状态不明', '读了多少未知', 'stub'], 'no flow: a stub that says its size is unknown');
   assert.deepEqual(claude.slots!.ferms!.kids!.map((d) => d.data!.node), s.podium.fermatas);
   assert.equal(sc.waits!.kids!.length, s.podium.fermatas.length);
-  assert.equal(sc.waits!.kids![0]!.slots!.t!.text, 'shop · 重构结账流程 (checkout refactor) 在等你：permission prompt');
-  assert.equal(sc.podium!.text, '需要你 1，收件箱未接入');
+  assert.equal(sc.waits!.kids![0]!.slots!.t!.text, 'shop · 重构结账流程 (checkout refactor) 在等你：批准一个操作');
+  assert.equal(sc.podium!.text, '有 1 件事等你；汇总它们的收件箱这一版还没做');
   assert.ok(!systems.some((d) => d.key === 'codex'), 'Codex has no players: its system is static and says 未接入');
   assert.equal(STAGE_TEXT['grp.codex'], '未接入（这一版不读）');
   const notes = describeScore(s as any, NOTES, null).systems!.kids!;
   assert.deepEqual(notes.map((d) => d.key), ['claude'], 'a group with no players in the lane draws no system');
   assert.equal(notes[0]!.slots!.heads!.kids![0]!.data!.instr, 'strings');
-  assert.ok(notes[0]!.slots!.heads!.kids![0]!.slots!.title!.text!.endsWith('不在读到的尾部'), 'the full stand text is in the head title');
+  assert.ok(notes[0]!.slots!.heads!.kids![0]!.slots!.title!.text!.endsWith('这次只读了记录末尾，没读到待办'), 'the full stand text is in the head title');
 });
 
 test('selecting a player marks its head and staff; a wait in another lane still counts and names it', () => {
@@ -344,18 +344,18 @@ test('selecting a player marks its head and staff; a wait in another lane still 
   const other = describeScore(s as any, SHOP, null);
   assert.deepEqual(other.waits!.kids!.map((d) => d.data!.wait), ['p:b79f477f6d435116155b', '']);
   assert.equal(other.waits!.kids![1]!.slots!.t!.text, '有成员在等你，但不在读到的项目里');
-  assert.equal(other.podium!.text, '需要你 2，收件箱未接入');
+  assert.equal(other.podium!.text, '有 2 件事等你；汇总它们的收件箱这一版还没做');
 });
 
 test('the drawer: basis, instrument evidence, rules at N=0, the canary only as its redaction marker', () => {
   const s = sample();
   const d = describeDrawer(s as any, SHOP, 'w:toolu_t2', null, fmt, 2000)!;
   const facts = Object.fromEntries(d.slots.facts!.kids!.map((k) => [k.key, k.slots!.v!.text]));
-  assert.equal(facts['dr.live'], '在跑（推断），10 秒前');
+  assert.equal(facts['dr.live'], '在跑（根据记录推测），10 秒前');
   assert.equal(facts['dr.instr'], '做复核（code-reviewer）；近 15 次工具调用：读 10、写 0、命令 3');
-  assert.equal(facts['dr.rule'], 'instrument.tool-map：没测过（0 个样本），本次命中 10');
+  assert.equal(facts['dr.rule'], '按用过的工具分类：没测过（0 个样本），这次用上了 10 次，对不对没验证');
   assert.equal(facts['dr.verdict'], '无复核者（这一版没有）');
-  assert.equal(facts['dr.join'], '按描述关联（推测）；claude.clone.running：没测过（0 个样本），本次命中 2');
+  assert.equal(facts['dr.join'], '按描述关联（推测）；派出去还没回报，算在跑：没测过（0 个样本），这次用上了 2 次，对不对没验证');
   assert.match(d.slots.brief!.text!, /\[redacted:sk-ant\]$/);
   assert.equal(d.slots.evNote!.text, '读取中…');
   assert.equal(d.session, 'ff7ce04c37f67805bb72');
@@ -364,7 +364,7 @@ test('the drawer: basis, instrument evidence, rules at N=0, the canary only as i
     events: Array.from({ length: 60 }, (_, i) => ({ at: '2026-11-01T10:00:00.000Z', type: 'assistant', text: `e${i}` })), unparsed: 2, note: 'tail-only', brief: null,
   }, fmt, 0)!;
   const lead = Object.fromEntries(ok.slots.facts!.kids!.map((k) => [k.key, k.slots!.v!.text!]));
-  assert.match(lead['dr.live'], /^在等你：permission prompt（登记表），\d+ (秒|分钟|小时)前$/, 'the wait is said once, with its reason');
+  assert.match(lead['dr.live'], /^在等你：批准一个操作（会话自己登记的），\d+ (秒|分钟|小时)前$/, 'the wait is said once, with its reason');
   assert.equal(ok.slots.sub!.text!.split('在等你').length, 2, 'the drawer header says it once too');
   assert.equal(ok.slots.events!.kids!.length, 50);
   assert.equal(ok.slots.events!.kids![49]!.slots!.tx!.text, 'e59');
@@ -382,7 +382,7 @@ test('clipW counts wide characters twice and marks a cut with …; plateText fal
   assert.equal(fill('no.such.key'), 'no.such.key');
   const p = sample().lanes[0].players[0];
   p.stand.keys = 'mismatch';
-  assert.equal(plateText(p), '字段对不上');
+  assert.equal(plateText(p), '记录格式和预期不一样');
 });
 
 test('no lane: the stage and plan say so instead of drawing an empty orchestra', () => {
@@ -392,4 +392,40 @@ test('no lane: the stage and plan say so instead of drawing an empty orchestra',
   assert.deepEqual(describeScore(s as any, null, null).systems!.kids, []);
   assert.equal(describePlan(s as any, null, null, null, fmt).slots.empty.text, '还没有读到任何会话');
   assert.equal(describeHeader(s as any, null, { stale: false, at: '' }).laneIndex, -1);
+});
+
+test('review fixes: sizes never invented, rules and waits in plain words, a clone’s todos are its own', () => {
+  // A DSH team task logs the status change, not the report: its size reads unknown, never 0.
+  const s = sample();
+  const lane = s.lanes[0];
+  const team = lane.items.find((w: Json) => w.id === 'w:team:t1');
+  Object.assign(team, { state: 'reported', report: { at: 1793560020000, bytes: 0 } });
+  lane.cues.push({ from: team.executor, to: team.owner, item: team.id, kind: 'report' });
+  const dsh = describeScore(s as any, SHOP, null).systems!.kids!.find((d) => d.key === 'dsh')!;
+  assert.equal(dsh.slots!.phrases!.kids!.find((d) => d.key === 'w:team:t1')!.slots!.cap!.text, '回报大小未知');
+  const row = descs(describePlan(s as any, SHOP, null, null, fmt).slots.list).find((d) => d.key === 'w:team:t1')!;
+  assert.equal(row.slots.report.text, '已回报 19:07:00，回报大小未知');
+  assert.equal(row.slots.flowText.text, '读 未知 → 回报 未知');
+  assert.ok(!texts(row).some((t) => t.includes('0 字节')));
+  // Below 10 the share reads as a percent, not 1/1.5.
+  const p = sample();
+  Object.assign(p.lanes[0].items.find((w: Json) => w.id === 'w:toolu_t1').flow, { childBytes: 300, reportBytes: 200 });
+  assert.match(groupSummary(p.lanes[0], 'claude', p.podium.fermatas).text, /回报约为所读的 67%（1 项有数据）/);
+  const t1 = descs(describePlan(p as any, SHOP, null, null, fmt).slots.list).find((d) => d.key === 'w:toolu_t1')!;
+  assert.equal(t1.slots.flowText.text, '读 300 字节 → 回报 200 字节（约为所读的 67%）');
+  // The orphan's bar carries no 派活 label: no record names who sent it.
+  const claude = describeScore(sample() as any, SHOP, null).systems!.kids!.find((d) => d.key === 'claude')!;
+  const a3 = claude.slots!.phrases!.kids!.find((d) => d.key === 'w:agent-a3')!;
+  assert.deepEqual([a3.slots!.slur!.data!.hide, a3.slots!.slab!.data!.hide, a3.slots!.sah!.data!.hide], ['1', '1', '1']);
+  // Rules show their plain names; the drawer's 活跃程度 is a word, no derivation id.
+  for (const r of describeRules(s.rules)) assert.equal(r.slots!.id!.text, STAGE_TEXT[`rn.${r.key}`]);
+  const d = describeDrawer(sample() as any, SHOP, 'p:f46dd28a5499d8efef0b', null, fmt, 0)!;
+  const facts = Object.fromEntries(d.slots.facts!.kids!.map((k) => [k.key, k.slots!.v!.text!]));
+  assert.equal(facts['dr.look'], '可能断了');
+  // A clone whose todos are all checked reads its own list, not the main session's.
+  const c = sample();
+  const clone = c.lanes[0].players.find((x: Json) => x.id === 'p:f55ff16f66f43360266b');
+  clone.stand = { source: 'todo', keys: 'none', title: null, items: [{ text: 'x', status: 'completed' }], selfReported: { checked: 1, total: 1 } };
+  assert.equal(plateText(clone), '自己的待办，自报 1/1');
+  assert.equal(describeDrawer(c as any, SHOP, clone.id, null, fmt, 0)!.slots.standHead!.text, '自己的待办，自报 1/1');
 });

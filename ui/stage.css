@@ -101,13 +101,11 @@ svg.heads, svg.music { display: block; overflow: visible; font-family: var(--san
 .st-note, .uhead { font-size: 11px; fill: var(--stale); }
 .uhead { font-size: 13px; }
 
-/* A bar is one work item on its executor's row: Claude's hollow, DSH's filled. */
-.ph, .ph-in, .ph-tail { stroke-linecap: round; }
+/* A bar is one work item on its executor's row: Claude's in ink, DSH's in blue. */
+.ph, .ph-tail { stroke-linecap: round; }
 .ph { stroke: var(--hue); stroke-width: 10; }
 .phrase[data-lineage=dsh] .ph, .phrase[data-lineage=dsh] .ph-tail { stroke: var(--dsh-fill); }
-.ph-in { stroke: var(--bg); stroke-width: 5; }
-.phrase[data-lineage=dsh] .ph-in, .phrase[data-kind=stub] .ph-in, .phrase[data-state=orphan] .ph-in { display: none; }
-.phrase[data-kind=stub] .ph { stroke: var(--stale); stroke-width: 6; stroke-dasharray: 0 7; }
+.phrase[data-kind=stub] .ph, .phrase[data-kind=open] .ph { stroke: var(--stale); stroke-width: 6; stroke-dasharray: 0 7; }
 .phrase[data-state=orphan] .ph { stroke-width: 6; stroke-linecap: butt; stroke-dasharray: 5 4; }
 .ph-tail { stroke: var(--hue); stroke-width: 2; stroke-dasharray: 1 5; }
 .ph-cap { font-size: 11.5px; fill: var(--ink-soft); }
@@ -155,6 +153,7 @@ svg.heads, svg.music { display: block; overflow: visible; font-family: var(--san
 .lg-ah { color: var(--ink-soft); }
 .lg-ar.lg-up { stroke: var(--ink); stroke-width: 2.6; }
 .lg-ah.lg-up { color: var(--ink); }
+.lg-faded { opacity: .55; }
 .lg-badge { fill: var(--warn-bg); stroke: var(--warn); }
 
 /* == the task list (任务清单): quiet */
