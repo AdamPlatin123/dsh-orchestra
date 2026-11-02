@@ -13,8 +13,8 @@ import { groupItems } from '../../ui/layout.js';
 // which passes shared/stage-contract.js like the daemon's golden file. The truthfulness rules of the
 // 0.1 alpha design §2 are checked on what the page would show: every count is the length of its rows
 // (T3), the word for "done" never appears (T2), a checked todo reads 自报已勾, the verdict reads
-// 无复核者（M0） (D19: only a non-author reviewer or you can call work done), and a rule checked against
-// no real sample reads 未测（N=0） however many hits it had (T4).
+// 无复核者（这一版没有） (D19: only a non-author reviewer or you can call work done), and a rule checked against
+// no real sample reads 没测过（0 个样本） however many hits it had (T4).
 
 const SAMPLE = fileURLToPath(new URL('../fixtures/stage-ui-sample.json', import.meta.url));
 type Json = Record<string, any>;
@@ -72,6 +72,18 @@ test('STAGE_TEXT never holds the word for done, and every key the page names exi
   for (const m of js.matchAll(/(?:STAGE_TEXT\[|fill\()'([a-zA-Z.-]+)'/g)) assert.ok(Object.hasOwn(STAGE_TEXT, m[1]!), `view.js names ${m[1]}`);
 });
 
+test('plain words: no music notation, no music jargon and no milestone code in any text the page can show', () => {
+  // User feedback 2026-11-02: ordinary readers cannot decode the score's jargon. One row per member
+  // stays; every other mark and word is plain.
+  const JARGON = ['谱', '奏', '乐器', '木管', '弦乐', '打击', '铜管', '休止', '声部', '演奏', '日场', '夜场', '孤儿', '回流', '交回', '延长号', '连线', '回弧', '短语', '部门', '委派', 'M0', 'M2', '×'];
+  const html = fs.readFileSync(fileURLToPath(new URL('../../ui/stage.html', import.meta.url)), 'utf8');
+  const s = sample();
+  const shown = [...Object.values(STAGE_TEXT), ...everything(s), ...[...html.matchAll(/>([^<>]+)</g)].map((m) => m[1]!), ...[...html.matchAll(/aria-label="([^"]*)"/g)].map((m) => m[1]!)];
+  for (const t of shown) for (const j of JARGON) assert.ok(!t.includes(j), `${j} in ${t}`);
+  // The dispatch and report arrows carry their heads as drawn geometry, not markers.
+  assert.doesNotMatch(html, /marker/);
+});
+
 test('no text the page can show says done, and no STAGE_TEXT key leaks raw', () => {
   const s = sample();
   const all = [...everything(s), ...CHIPS.flatMap((c) => everything(s, c, 'w:toolu_t1'))];
@@ -89,7 +101,7 @@ test('header counts are the lengths of the rows they label (T3)', () => {
   const h = describeHeader(s as any, SHOP, { stale: false, at: '10:00:30' });
   const playing = lane.players.filter((p: Json) => ['busy', 'running', 'waiting'].includes(p.live.state));
   assert.deepEqual(h.counts, { a: playing.length, b: lane.players.length, c: view(lane, 'reported').rows.length, d: view(lane, 'sent').rows.length });
-  assert.equal(h.slots.players.text, `成员 ${playing.length}/${lane.players.length} 在演奏`);
+  assert.equal(h.slots.players.text, `成员 ${playing.length}/${lane.players.length} 在干活`);
   assert.equal(h.slots.items.text, '任务 1/6 已回报');
   assert.equal(h.slots.fresh.text, '观测于 10:00:30');
   const stale = describeHeader(s as any, SHOP, { stale: true, at: '10:00:30' });
@@ -114,14 +126,14 @@ test('each chip filters the list to exactly its number of rows (T3)', () => {
   const shop = describePlan(s as any, SHOP, null, null, fmt);
   assert.deepEqual(descs(shop.slots.chips).map((d) => d.text), ['已派 6', '在跑 3', '已回报 1', '已复核 0']);
   const reviewed = describePlan(s as any, SHOP, 'reviewed', null, fmt);
-  assert.equal(reviewed.slots.empty.text, '已复核 0：M0 没有复核者');
+  assert.equal(reviewed.slots.empty.text, '已复核 0：这一版没有复核者');
 });
 
 test('a checked todo reads 自报已勾 with a hatched dot; the lead desk reports 自报 1/3, never a finished plan', () => {
   const s = sample();
   const plan = describePlan(s as any, SHOP, null, null, fmt);
   const desk = descs(plan.slots.desk).find((d) => d.tpl === 'tpl-desk' && d.slots.name.text.startsWith('shop · 重构'))!;
-  assert.equal(desk.slots.todoHead.text, '主奏自己的待办，自报 1/3');
+  assert.equal(desk.slots.todoHead.text, '主会话自己的待办，自报 1/3');
   assert.equal(desk.slots.goal.text, '未设目标');
   const todos = desk.slots.todo.kids;
   assert.deepEqual(todos.map((t: Json) => [t.slots.g.text, t.slots.st.text]), [['☑', '自报已勾'], ['◐', '在做'], ['○', '待做']]);
@@ -136,21 +148,21 @@ test('a checked todo reads 自报已勾 with a hatched dot; the lead desk report
   all.lanes[0].players[0].stand.items.forEach((i: Json) => { i.status = 'completed'; });
   all.lanes[0].players[0].stand.selfReported.checked = 3;
   const d2 = descs(describePlan(all as any, SHOP, null, null, fmt).slots.desk)[0]!;
-  assert.equal(d2.slots.todoHead.text, '主奏自己的待办，自报 3/3，全部自报已勾');
+  assert.equal(d2.slots.todoHead.text, '主会话自己的待办，自报 3/3，全部自报已勾');
 });
 
-test('every work item row carries the verdict 无复核者（M0）, undeclared criteria, and a report no further than 已回报', () => {
+test('every work item row carries the verdict 无复核者（这一版没有）, undeclared criteria, and a report no further than 已回报', () => {
   const s = sample();
   const rows = descs(describePlan(s as any, SHOP, null, null, fmt).slots.list).filter((d) => d.tpl === 'tpl-row');
   assert.ok(rows.length >= 6);
-  for (const r of rows) assert.equal(r.slots.verdict.text, '无复核者（M0）');
+  for (const r of rows) assert.equal(r.slots.verdict.text, '无复核者（这一版没有）');
   const t1 = rows.find((r) => r.key === 'w:toolu_t1')!;
   assert.equal(t1.slots.report.text, '已回报 19:07:00，1.2k 字节');
-  assert.equal(t1.slots.flowText.text, '局部上下文 48k 字节 → 回流 1.2k 字节（压缩 40×）');
+  assert.equal(t1.slots.flowText.text, '读 48k 字节 → 回报 1.2k 字节（约为所读的 1/40）');
   assert.equal(t1.data.flow, '5');
-  assert.equal(rows.find((r) => r.key === 'w:agent-a3')!.slots.report.text, '疑似孤儿');
+  assert.equal(rows.find((r) => r.key === 'w:agent-a3')!.slots.report.text, '可能断了');
   assert.equal(rows.find((r) => r.key === 'w:toolu_t2')!.slots.report.text, '在跑');
-  assert.equal(rows.find((r) => r.key === 'w:dsh:c41f96c594ee71fce362')!.slots.flowText.text, '局部上下文 未知 → 回流 未知');
+  assert.equal(rows.find((r) => r.key === 'w:dsh:c41f96c594ee71fce362')!.slots.flowText.text, '读 未知 → 回报 未知');
   const html = fs.readFileSync(fileURLToPath(new URL('../../ui/stage.html', import.meta.url)), 'utf8');
   const row = /<template id="tpl-row">[\s\S]*?<\/template>/.exec(html)![0];
   assert.ok(row.includes('data-t="plan.crit"') && row.includes('data-t="plan.critNote"'), 'each row template shows 验收标准：未声明 and its label');
@@ -158,7 +170,7 @@ test('every work item row carries the verdict 无复核者（M0）, undeclared c
   assert.equal(STAGE_TEXT['plan.critNote'], '派活原文，不是验收标准');
 });
 
-test('T3: 部门：下派 n is one list on the score and in 分谱, unlinked items left out of both', () => {
+test('T3: 往下派了 n 个活 is one list on the graph and in 任务清单, unlinked items left out of both', () => {
   const s = sample();
   const items = s.lanes[0].items as Json[];
   const t5 = items.find((w) => w.id === 'w:toolu_t5')!;
@@ -168,7 +180,7 @@ test('T3: 部门：下派 n is one list on the score and in 分谱, unlinked ite
   const claude = describeScore(s as any, SHOP, null).systems.kids!.find((d) => d.key === 'claude')!;
   const head = claude.slots!.heads!.kids!.find((d) => d.key === DEPT)!;
   const row = describePlan(s as any, SHOP, null, null, fmt).slots.list.kids!.find((d) => d.key === 'w:toolu_t2')!;
-  assert.equal(head.slots!.tag!.text, '部门：下派 2，深度 1');
+  assert.equal(head.slots!.tag!.text, '往下派了 2 个活（第 1 层）');
   assert.equal(row.slots!.dept!.text, head.slots!.tag!.text);
 });
 
@@ -180,7 +192,7 @@ test('departments group by executor with depth badges; unjoined items and stray 
     ['h:unlinked', '-'], ['w:agent-a3', '0'],
   ]);
   const t2 = list[1]!;
-  assert.deepEqual(t2.slots!.dept, { text: '部门：下派 1，深度 1', data: { hide: '0' } });
+  assert.deepEqual(t2.slots!.dept, { text: '往下派了 1 个活（第 1 层）', data: { hide: '0' } });
   assert.equal(list[5]!.slots!.t!.text, '未关联（1）');
   // A clone no item points at is listed too, and a department deeper than 2 is flagged.
   const s2 = sample();
@@ -196,24 +208,24 @@ test('departments group by executor with depth badges; unjoined items and stray 
 
 test('the lane total says how much the lead did not read, only over items with both sides known', () => {
   const s = sample();
-  assert.equal(describePlan(s as any, SHOP, null, null, fmt).slots.total.text, '分身读了 48k 字节，回流 1.2k 字节：主奏少读约 47k 字节（1 项有数据）');
+  assert.equal(describePlan(s as any, SHOP, null, null, fmt).slots.total.text, '分身读了 48k 字节，回报 1.2k 字节：主会话少读约 47k 字节（1 项有数据）');
   assert.equal(describePlan(s as any, NOTES, null, null, fmt).slots.total.data!.hide, '1');
   assert.deepEqual([1, 2, 40, 300, 1e9].map((r) => flowBucket({ childBytes: r * 100, reportBytes: 100 })), ['0', '1', '5', '8', '8']);
 });
 
-test('describeRules reads 未测（N=0） with class untested, never a pass, even with hits:5 and n:0 (T4)', () => {
+test('describeRules reads 没测过（0 个样本） with class untested, never a pass, even with hits:5 and n:0 (T4)', () => {
   const s = sample();
   const rules = describeRules(s.rules);
   assert.equal(rules.length, 13);
   for (const r of rules) {
     assert.equal(r.cls, 'untested');
-    assert.equal(r.slots!.n!.text, '未测（N=0）');
+    assert.equal(r.slots!.n!.text, '没测过（0 个样本）');
     assert.ok(!texts(r).some((t) => t.includes('通过')));
   }
   const m = sample();
   m.rules[0].hits = 5;
   const [r0] = describeRules(m.rules);
-  assert.deepEqual([r0!.cls, r0!.slots!.n!.text, r0!.slots!.hits!.text], ['untested', '未测（N=0）', '本次命中 5']);
+  assert.deepEqual([r0!.cls, r0!.slots!.n!.text, r0!.slots!.hits!.text], ['untested', '没测过（0 个样本）', '本次命中 5']);
   m.rules[1].status = 'keys-mismatch';
   const r1 = describeRules(m.rules)[1]!;
   assert.deepEqual([r1.cls, r1.slots!.n!.text], ['mismatch', '字段对不上']);
@@ -239,10 +251,10 @@ test('each group’s collaboration sentence counts the lists it summarizes (T3),
   const f = s.podium.fermatas;
   const claude = groupSummary(lane, 'claude', f);
   assert.equal(claude.form, 'tree', 'clones and no teammates: a chain of delegation');
-  assert.equal(claude.text, '分身 4，部门 1；派活 4，在跑 2，已回报 1，疑似孤儿 1；回流压缩约 40×（1 项有数据）；等你 1');
+  assert.equal(claude.text, '分身 4 个，其中 1 个又往下派活；派活 4 次：在跑 2，已回报 1，可能断了 1；回报约为所读的 1/40（1 项有数据）；等你 1');
   const dsh = groupSummary(lane, 'dsh', f);
   assert.equal(dsh.form, 'team', 'a teammate makes a team');
-  assert.equal(dsh.text, '队友 1，分身 1；派活 2，在跑 1，未知 1');
+  assert.equal(dsh.text, '队友 1 个，分身 1 个；派活 2 次：在跑 1，未知 1');
   for (const h of ['claude', 'dsh']) {
     const g = groupSummary(lane, h, f);
     const L = g.lists;
@@ -253,18 +265,18 @@ test('each group’s collaboration sentence counts the lists it summarizes (T3),
     assert.deepEqual(L.sent.map((w) => w.id), groupItems(lane, h).map((w: Json) => w.id));
     assert.deepEqual(L.waiting.map((p) => p.id), mine.filter((p: Json) => f.includes(p.id)).map((p: Json) => p.id));
     const said: [string, readonly unknown[]][] = [
-      ['队友', L.teammates], ['分身', L.clones], ['部门', L.depts], ['派活', L.sent], ['在跑', L.working],
-      ['已回报', L.reported], ['疑似孤儿', L.orphan], ['未知', L.unknown], ['等你', L.waiting],
+      ['队友', L.teammates], ['分身', L.clones], ['其中', L.depts], ['派活', L.sent], ['在跑', L.working],
+      ['已回报', L.reported], ['可能断了', L.orphan], ['未知', L.unknown], ['等你', L.waiting],
     ];
     for (const [word, list] of said) {
-      const m = new RegExp(`(?:^|[，；])${word} (\\d+)`).exec(g.text);
+      const m = new RegExp(`(?:^|[，；：])${word} (\\d+)`).exec(g.text);
       if (list.length === 0 && word !== '派活') assert.equal(m, null, `${h}: ${word} 0 is not said`);
       else assert.equal(Number(m![1]), list.length, `${h}: ${word}`);
     }
     if (L.flows.length > 0) assert.match(g.text, new RegExp(`（${L.flows.length} 项有数据）`));
   }
   const notes = groupSummary(s.lanes[1], 'claude', f);
-  assert.deepEqual([notes.form, notes.text], ['solo', '只有主奏；没有派活记录']);
+  assert.deepEqual([notes.form, notes.text], ['solo', '只有主会话；没有派活记录']);
 });
 
 test('the score: one system per group with players, heads and phrases from their fields, Codex untouched, waits from the list', () => {
@@ -274,8 +286,8 @@ test('the score: one system per group with players, heads and phrases from their
   assert.deepEqual(systems.map((d) => d.key), ['claude', 'dsh']);
   const claude = systems[0]!;
   assert.deepEqual(claude.data, { lineage: 'claude', form: 'tree' });
-  assert.equal(claude.slots!.sysForm!.text, '上下级委派');
-  assert.equal(systems[1]!.slots!.sysForm!.text, '团队');
+  assert.equal(claude.slots!.sysForm!.text, '主会话派活给分身');
+  assert.equal(systems[1]!.slots!.sysForm!.text, '组长带队友');
   assert.equal(claude.slots!.sysLine!.text, groupSummary(s.lanes[0], 'claude', s.podium.fermatas).text);
   // The two SVGs share one height, and the music is as wide as its columns.
   const h = claude.slots!.hsvg!.attr!.height;
@@ -284,11 +296,11 @@ test('the score: one system per group with players, heads and phrases from their
   const heads = claude.slots!.heads!.kids!;
   const lead = heads.find((d) => d.key === 'p:fbeae7c18667b6987518')!;
   assert.deepEqual(lead.data, { node: 'p:fbeae7c18667b6987518', lineage: 'claude', role: 'principal', look: 'solid', instr: 'percussion', basis: 'registry', sel: '0' });
-  assert.equal(lead.slots!.tag!.text, 'Claude 主奏，在等你');
+  assert.equal(lead.slots!.tag!.text, 'Claude 主会话，在等你');
   assert.ok(!lead.slots!.name!.text!.startsWith('shop'), 'no head repeats the project the header names');
   assert.ok(lead.slots!.title!.text!.includes('在等你：permission prompt'));
   const dept = heads.find((d) => d.key === 'p:2c3a4249d77070058649')!;
-  assert.equal(dept.slots!.tag!.text, '部门：下派 1，深度 1');
+  assert.equal(dept.slots!.tag!.text, '往下派了 1 个活（第 1 层）');
   assert.equal(dept.slots!.dept!.data!.hide, '0');
   assert.equal(heads.find((d) => d.key === 'p:f46dd28a5499d8efef0b')!.data!.look, 'ghost');
   for (const d of [...heads, ...systems[1]!.slots!.heads!.kids!]) {
@@ -297,23 +309,23 @@ test('the score: one system per group with players, heads and phrases from their
   }
   const phrases = claude.slots!.phrases!.kids!;
   const by = (id: string) => phrases.find((d) => d.key === id)!;
-  assert.equal(by('w:toolu_t1').slots!.cap!.text, '48k→1.2k');
+  assert.equal(by('w:toolu_t1').slots!.cap!.text, '读 48k → 回报 1.2k');
   assert.equal(by('w:toolu_t1').slots!.tie!.data!.hide, '0');
-  assert.equal(by('w:toolu_t2').slots!.cap!.text, '在跑');
+  assert.deepEqual([by('w:toolu_t2').slots!.st!.text, by('w:toolu_t2').slots!.cap!.data!.hide], ['在跑', '1'], 'still working: the state above the bar, no sizes below');
   assert.deepEqual([by('w:toolu_t2').data!.sel, by('w:toolu_t2').attr!['aria-current']], ['1', 'true']);
   assert.equal(by('w:toolu_t2').slots!.tie!.data!.hide, '1', 'still working: nothing came back');
-  assert.equal(by('w:agent-a3').slots!.cap!.text, '疑似孤儿');
+  assert.deepEqual([by('w:agent-a3').slots!.st!.text, by('w:agent-a3').slots!.cap!.text], ['可能断了', '读了多少未知']);
   assert.equal(by('w:agent-a3').data!.kind, 'stub');
   assert.ok(phrases.every((d) => d.slots!.title!.text!.startsWith(s.lanes[0].items.find((w: Json) => w.id === d.key).brief)));
   assert.ok(!texts(sc).some((t) => t.includes('无复核者')), 'the verdict lives in the detail, never on the score');
   const dshUnknown = systems[1]!.slots!.phrases!.kids!.find((d) => d.key === 'w:dsh:c41f96c594ee71fce362')!;
-  assert.deepEqual([dshUnknown.slots!.cap!.text, dshUnknown.data!.kind], ['未知', 'stub'], 'no flow: a stub that says 未知');
+  assert.deepEqual([dshUnknown.slots!.st!.text, dshUnknown.slots!.cap!.text, dshUnknown.data!.kind], ['未知', '读了多少未知', 'stub'], 'no flow: a stub that says 未知');
   assert.deepEqual(claude.slots!.ferms!.kids!.map((d) => d.data!.node), s.podium.fermatas);
   assert.equal(sc.waits!.kids!.length, s.podium.fermatas.length);
   assert.equal(sc.waits!.kids![0]!.slots!.t!.text, 'shop · 重构结账流程 (checkout refactor) 在等你：permission prompt');
   assert.equal(sc.podium!.text, '需要你 1，收件箱未接入');
   assert.ok(!systems.some((d) => d.key === 'codex'), 'Codex has no players: its system is static and says 未接入');
-  assert.equal(STAGE_TEXT['grp.codex'], '未接入（M0 不读）');
+  assert.equal(STAGE_TEXT['grp.codex'], '未接入（这一版不读）');
   const notes = describeScore(s as any, NOTES, null).systems!.kids!;
   assert.deepEqual(notes.map((d) => d.key), ['claude'], 'a group with no players in the lane draws no system');
   assert.equal(notes[0]!.slots!.heads!.kids![0]!.data!.instr, 'strings');
@@ -340,10 +352,10 @@ test('the drawer: basis, instrument evidence, rules at N=0, the canary only as i
   const d = describeDrawer(s as any, SHOP, 'w:toolu_t2', null, fmt, 2000)!;
   const facts = Object.fromEntries(d.slots.facts!.kids!.map((k) => [k.key, k.slots!.v!.text]));
   assert.equal(facts['dr.live'], '在跑（推断），10 秒前');
-  assert.equal(facts['dr.instr'], '铜管：复核（code-reviewer）；近 15 次工具调用：读 10、写 0、命令 3');
-  assert.equal(facts['dr.rule'], 'instrument.tool-map：未测（N=0），本次命中 10');
-  assert.equal(facts['dr.verdict'], '无复核者（M0）');
-  assert.equal(facts['dr.join'], '按描述关联（推测）；claude.clone.running：未测（N=0），本次命中 2');
+  assert.equal(facts['dr.instr'], '做复核（code-reviewer）；近 15 次工具调用：读 10、写 0、命令 3');
+  assert.equal(facts['dr.rule'], 'instrument.tool-map：没测过（0 个样本），本次命中 10');
+  assert.equal(facts['dr.verdict'], '无复核者（这一版没有）');
+  assert.equal(facts['dr.join'], '按描述关联（推测）；claude.clone.running：没测过（0 个样本），本次命中 2');
   assert.match(d.slots.brief!.text!, /\[redacted:sk-ant\]$/);
   assert.equal(d.slots.evNote!.text, '读取中…');
   assert.equal(d.session, 'ff7ce04c37f67805bb72');

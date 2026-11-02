@@ -106,7 +106,7 @@ test('static text and template text come from STAGE_TEXT, and the score carries 
   const lead = doc.querySelectorAll('.shead').find((e) => e.getAttribute('data-node') === 'p:fbeae7c18667b6987518')!;
   assert.match(lead.querySelector('.hit')!.getAttribute('transform')!, /^translate\(0 \d+\) scale\(\d+ \d+\)$/);
   assert.match(lead.querySelector('.h-name')!.getAttribute('x')!, /^\d+$/);
-  assert.equal(lead.querySelector('.h-tag')!.textContent, 'Claude 主奏，在等你');
+  assert.equal(lead.querySelector('.h-tag')!.textContent, 'Claude 主会话，在等你');
   assert.ok(!lead.querySelector('.h-name')!.textContent.startsWith('shop'), 'the head names the player, not the project');
   // Every instrument slot holds the same five glyphs; CSS shows the one its data-instr names.
   const glyphs = (e: FakeElement) => e.querySelector('.ins')!.children.map((c) => c.getAttribute('class'));
@@ -116,11 +116,16 @@ test('static text and template text come from STAGE_TEXT, and the score carries 
   assert.equal(lead.getAttribute('tabindex'), '0', 'every staff head is focusable');
   assert.match(lead.querySelector('title')!.textContent, /^shop · 重构结账流程/);
   assert.deepEqual(doc.querySelectorAll('.ferm').map((e) => e.getAttribute('data-node')), ['p:fbeae7c18667b6987518']);
+  const badge = doc.querySelector('.ferm')!;
+  assert.equal(badge.getAttribute('tabindex'), '0', 'the 等你 badge is focusable');
+  assert.equal(badge.querySelector('.badge-t')!.textContent, '等你：permission prompt');
+  assert.match(badge.querySelector('.badge-bg')!.getAttribute('width')!, /^\d+$/);
+  assert.deepEqual(doc.querySelector('.ord')!.textContent, '第 1 次派活');
   const music = doc.querySelector('.system')!.querySelector('.music')!;
   assert.match(music.getAttribute('viewBox')!, /^0 0 \d+ \d+$/);
   const t1 = doc.querySelectorAll('.phrase').find((e) => e.getAttribute('data-node') === 'w:toolu_t1')!;
   assert.equal(t1.getAttribute('tabindex'), '0', 'every phrase is focusable');
-  assert.equal(t1.querySelector('.ph-cap')!.textContent, '48k→1.2k');
+  assert.equal(t1.querySelector('.ph-cap')!.textContent, '读 48k → 回报 1.2k');
   assert.match(t1.querySelector('.slur')!.getAttribute('transform')!, /^translate\(\d+ \d+\) scale\(\d+ -?\d+\)$/);
   const pressed = doc.querySelectorAll('.chip').map((c) => c.getAttribute('aria-pressed'));
   assert.deepEqual(pressed, ['false', 'false', 'false', 'false']);

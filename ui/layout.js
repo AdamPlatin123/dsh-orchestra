@@ -1,11 +1,12 @@
 // @ts-check
-// The full score (总谱) of one group in one lane (0.1 alpha design §6, frontend-design pass 2): pure
-// geometry, same lane in, same marks out. One staff per player of the group, principals first and
-// members below in parent order, indented by depth. One column per work item handed out, in the
-// order the lane records them. A phrase sits on its executor's staff and grows with log2 of the
-// context the executor read (flow.childBytes); a dispatch cue draws a slur down from the owner's
-// staff, a report cue a tie back up whose weight grows with log2 of the report's bytes. No flow, no
-// length: the phrase is a short stub that says 未知.
+// The collaboration graph (协作图) of one group in one lane (0.1 alpha design §6, plain-language pass):
+// pure geometry, same lane in, same marks out. Identifiers keep the score's names (staff = a member's
+// row, phrase = a work bar, slur = the dispatch arrow, tie = the report arrow, fermata = the 等你 badge).
+// One row per player of the group, principals first and members below in parent order, indented by
+// depth. One column per work item handed out, in the order the lane records them. A bar sits on its
+// executor's row and grows with log2 of the context the executor read (flow.childBytes); a dispatch
+// cue draws an arrow down from the owner's row, a report cue an arrow back up whose weight grows with
+// log2 of the report's bytes. No flow, no length: the bar is a short stub that says 未知.
 import { frozen } from '../shared/frozen.js';
 
 /** @typedef {import('../shared/stage-contract.js').Lane} Lane */
@@ -20,16 +21,18 @@ import { frozen } from '../shared/frozen.js';
 
 export const SCORE = frozen({
   /** Width of the staff-head column, its own SVG beside the scrolling music. */
-  head: 208,
+  head: 224,
   row: 46,
   /** Height of the ordinal row above the first staff. */
   top: 28,
-  col: 124,
+  col: 140,
   /** Music before the first column and after the last. */
   lead: 14,
   tail: 44,
-  /** From a column's start (where the slur leaves the owner) to its phrase. */
-  gap: 12,
+  /** From a column's start (where the dispatch arrow leaves the owner) to its bar. */
+  gap: 22,
+  /** Width kept for a 等你 badge at a row's end. */
+  badge: 200,
   stub: 18,
   min: 14,
   max: 96,
@@ -126,9 +129,9 @@ export function layoutScore(lane, harness, fermatas) {
     const kind = w.flow !== null ? 'flow' : w.state === 'working' ? 'open' : 'stub';
     const x2 = x1 + (w.flow !== null ? phraseLen(w.flow.childBytes) : S.stub);
     const linked = owner !== undefined && owner !== st;
-    const slur = linked && cue(w.id, 'dispatch') ? { x: x0, y: owner.y, dx: S.gap, dy: st.y - owner.y } : null;
+    const slur = linked && cue(w.id, 'dispatch') ? { x: x0, y: owner.y, dx: S.gap - 9, dy: st.y - owner.y } : null;
     const back = w.report !== null ? w.report.bytes : w.flow !== null ? w.flow.reportBytes : 1;
-    const tie = linked && cue(w.id, 'report') ? { x: x2, y: owner.y, dx: 22, dy: st.y - owner.y, w: tieWeight(back) } : null;
+    const tie = linked && cue(w.id, 'report') ? { x: x2, y: owner.y, dx: 12, dy: st.y - owner.y, w: tieWeight(back) } : null;
     return { item: w, col, staff: st.id, y: st.y, x0, x1, x2, kind, tail: kind === 'open' ? x0 + S.col - 22 : x2, slur, tie };
   });
   const edge = S.lead + S.col * items.length + 10;
@@ -136,9 +139,9 @@ export function layoutScore(lane, harness, fermatas) {
     .filter((s) => s.player !== null && fermatas.includes(s.id))
     .map((s) => {
       const mine = phrases.filter((p) => p.staff === s.id);
-      return { id: s.id, x: mine.length > 0 ? Math.max(...mine.map((p) => p.tail)) + 14 : edge, y: s.y - 15 };
+      return { id: s.id, x: mine.length > 0 ? Math.max(...mine.map((p) => p.tail)) + 14 : edge, y: s.y };
     });
-  // A member that hands work on is a department: a bracket from its staff to its last descendant's.
+  // A member that hands work on gets a bracket from its row to its last descendant's.
   const depts = staves
     .filter((s) => s.player !== null && s.player.role !== 'principal' && handedOn(items, s.id).length > 0)
     .map((s) => {
@@ -148,7 +151,7 @@ export function layoutScore(lane, harness, fermatas) {
     });
   const last = staves.length > 0 ? staves[staves.length - 1].y : S.top;
   return {
-    w: S.lead + S.col * Math.max(items.length, 1) + S.tail,
+    w: Math.max(S.lead + S.col * Math.max(items.length, 1) + S.tail, ...ferms.map((m) => m.x + S.badge)),
     h: S.top + S.row * staves.length + 6,
     staves,
     phrases,

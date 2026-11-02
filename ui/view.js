@@ -1,5 +1,5 @@
 // @ts-check
-// Pure descriptors of the stage preview's score and parts (0.1 alpha design §6–§7): snapshot in, `{key, tpl, cls, data,
+// Pure descriptors of the stage preview's collaboration graph and task list (0.1 alpha design §6–§7): snapshot in, `{key, tpl, cls, data,
 // attr, text, slots, kids}` out, for ui/dom.js to patch. Nothing here touches the DOM, the clock or
 // the network, so node:test drives every function with the sample JSON.
 // The truthfulness rules of §2 hold here: T1, T2 (D19), T3 (counts from view()), T4, T6.
@@ -59,6 +59,9 @@ export function clipW(s, units) {
   }
   return out;
 }
+
+/** Display columns of a string, as clipW counts them: a wide character is two. @param {string} s */
+export const cols = (s) => [...s].reduce((n, ch) => n + (clipW(ch, 1) === ch ? 1 : 2), 0);
 
 /** Bytes for people: 940 字节, 1.2k 字节. @param {number} n */
 export const bytes = (n) => fill('bytes', { n: kb(n) });
@@ -167,8 +170,8 @@ export const GROUPS = /** @type {const} */ (['claude', 'dsh']);
 
 /**
  * How one group works together, every number the length of a list returned beside it (T3). The form
- * word comes from the players' roles: teammates make a team (团队), clones a chain of delegation
- * (上下级委派), a lone principal plays solo (独奏).
+ * word comes from the players' roles: teammates make a team (组长带队友), clones a chain of delegation
+ * (主会话派活给分身), a lone principal works alone (一个人干).
  * @param {Lane} lane @param {string} harness @param {readonly string[]} fermatas
  */
 export function groupSummary(lane, harness, fermatas) {
@@ -189,8 +192,8 @@ export function groupSummary(lane, harness, fermatas) {
   /** @param {string} k @param {readonly unknown[]} l */
   const part = (k, l) => (l.length > 0 ? [fill(k, { n: l.length })] : []);
   const crew = [...part('grp.teammates', teammates), ...part('grp.clones', clones), ...part('grp.depts', depts)];
-  const work = sent.length === 0 ? STAGE_TEXT['grp.noSent']
-    : [fill('grp.sent', { n: sent.length }), ...part('grp.working', lists.working), ...part('grp.reported', lists.reported), ...part('grp.orphan', lists.orphan), ...part('grp.unknown', lists.unknown)].join('，');
+  const how = [...part('grp.working', lists.working), ...part('grp.reported', lists.reported), ...part('grp.orphan', lists.orphan), ...part('grp.unknown', lists.unknown)];
+  const work = sent.length === 0 ? STAGE_TEXT['grp.noSent'] : `${fill('grp.sent', { n: sent.length })}${how.length > 0 ? `：${how.join('，')}` : ''}`;
   const child = lists.flows.reduce((s, w) => s + /** @type {{ childBytes: number }} */ (w.flow).childBytes, 0);
   const back = lists.flows.reduce((s, w) => s + /** @type {{ reportBytes: number }} */ (w.flow).reportBytes, 0);
   const flow = lists.flows.length > 0 ? [fill('grp.flow', { r: ratio(child / Math.max(back, 1)), n: lists.flows.length })] : [];
@@ -201,11 +204,11 @@ export function groupSummary(lane, harness, fermatas) {
 /** A work item's state in a word, with no sizes. @param {WorkItem} w */
 const stateWord = (w) => STAGE_TEXT[w.state === 'reported' ? 'ph.reported' : w.state === 'working' ? 'rep.working' : w.state === 'orphan' ? 'rep.orphan' : w.state === 'self' ? 'rep.self' : 'rep.unknown'];
 
-/** What a phrase says under itself: the flow, else the report's size, else its state. @param {WorkItem} w */
+/** What a bar says under itself: what was read and what came back, else the report's size, else that the size is unknown. @param {WorkItem} w */
 function caption(w) {
-  if (w.flow !== null) return `${kb(w.flow.childBytes)}→${kb(w.flow.reportBytes)}`;
+  if (w.flow !== null) return fill('ph.flow', { a: kb(w.flow.childBytes), b: kb(w.flow.reportBytes) });
   if (w.state === 'reported' && w.report !== null) return fill('ph.report', { b: kb(w.report.bytes) });
-  return stateWord(w);
+  return w.state === 'working' ? '' : STAGE_TEXT['ph.size'];
 }
 
 /** @param {number} x @param {number} y @param {number} [sx] @param {number} [sy] */
@@ -213,8 +216,8 @@ const tf = (x, y, sx, sy) => `translate(${x} ${y})${sx === undefined ? '' : ` sc
 const HIDE = Object.freeze({ data: Object.freeze({ hide: '1' }) });
 
 /**
- * The staff head of one player: glyph, name and tag; a department adds its bracket and says
- * 部门：下派 n，深度 d in place of the tag.
+ * The row label of one player: icon, name and tag; a member that hands work on adds its bracket and
+ * says 往下派了 n 个活（第 d 层） in place of the tag.
  * @param {import('./layout.js').Staff} st @param {Lane} lane @param {string | null} sel
  * @param {{ x: number, y0: number, y1: number } | undefined} dept @param {number} n @returns {Desc}
  */
@@ -245,8 +248,8 @@ function headDesc(st, lane, sel, dept, n) {
 }
 
 /**
- * One work item on the score: its phrase on the executor's staff, the slur that brought it there and
- * the tie that carried its report back.
+ * One work item on the graph: its bar on the executor's row with its state above and its sizes below,
+ * the arrow that brought it there and the arrow that carried its report back, each with its head.
  * @param {import('./layout.js').Phrase} ph @param {Map<string, Player>} byId @param {string} group @param {string | null} sel @returns {Desc}
  */
 function phraseDesc(ph, byId, group, sel) {
@@ -255,6 +258,9 @@ function phraseDesc(ph, byId, group, sel) {
   const on = sel === w.id;
   const y = String(ph.y);
   const cap = caption(w);
+  const sl = ph.slur;
+  const tie = ph.tie;
+  const up = tie !== null && tie.dy > 0 ? -90 : 90;
   return {
     key: w.id,
     tpl: 'tpl-phrase',
@@ -265,21 +271,25 @@ function phraseDesc(ph, byId, group, sel) {
     attr: { 'aria-current': on ? 'true' : 'false' },
     slots: {
       title: { text: fill('ph.title', { brief: w.brief, state: stateWord(w), flow: flowText(w) }) },
-      hit: { attr: { transform: tf(ph.x1 - 7, ph.y - 13, Math.max(ph.tail - ph.x1, cap.length * 7) + 14, 36) } },
+      hit: { attr: { transform: tf(ph.x1 - 7, ph.y - 24, Math.max(ph.tail - ph.x1, cols(cap) * 6) + 14, 48) } },
+      st: { text: stateWord(w), attr: { x: String(ph.x1), y: String(ph.y - 9) } },
       tail: ph.kind === 'open' ? { data: { hide: '0' }, attr: { x1: String(ph.x2), y1: y, x2: String(ph.tail), y2: y } } : HIDE,
       body: { attr: { x1: String(ph.x1), y1: y, x2: String(ph.x2), y2: y } },
       inner: { attr: { x1: String(ph.x1), y1: y, x2: String(ph.x2), y2: y } },
-      cap: { text: cap, attr: { x: String(ph.x1 - 3), y: String(ph.y + 19) } },
-      slur: ph.slur !== null ? { data: { hide: '0' }, attr: { transform: tf(ph.slur.x, ph.slur.y, ph.slur.dx, ph.slur.dy) } } : HIDE,
-      dot: ph.slur !== null ? { data: { hide: '0' }, attr: { transform: tf(ph.slur.x, ph.slur.y) } } : HIDE,
-      tie: ph.tie !== null ? { data: { hide: '0', w: String(ph.tie.w) }, attr: { transform: tf(ph.tie.x, ph.tie.y, ph.tie.dx, ph.tie.dy) } } : HIDE,
+      cap: { text: cap, data: { hide: cap === '' ? '1' : '0' }, attr: { x: String(ph.x1 - 3), y: String(ph.y + 19) } },
+      slur: sl !== null ? { data: { hide: '0' }, attr: { transform: tf(sl.x, sl.y, sl.dx, sl.dy) } } : HIDE,
+      sah: sl !== null ? { data: { hide: '0' }, attr: { transform: tf(ph.x1 - 7, ph.y) } } : HIDE,
+      slab: sl !== null ? { data: { hide: '0' }, attr: { x: String(sl.x + 4), y: String(sl.y + (sl.dy > 0 ? 15 : -6)) } } : HIDE,
+      dot: sl !== null ? { data: { hide: '0' }, attr: { transform: tf(sl.x, sl.y) } } : HIDE,
+      tie: tie !== null ? { data: { hide: '0', w: String(tie.w) }, attr: { transform: tf(tie.x, tie.y, tie.dx, tie.dy) } } : HIDE,
+      tah: tie !== null ? { data: { hide: '0', w: String(tie.w) }, attr: { transform: `${tf(tie.x + tie.dx, tie.y)} rotate(${up}) scale(${1 + (tie.w - 1) / 6})` } } : HIDE,
     },
   };
 }
 
 /**
- * The score of one lane: the waits on the 你 line, then one system per group with players, each with
- * its collaboration sentence, staff heads, staves, ordinals, phrases and fermatas.
+ * The graph of one lane: the waits on the 你 row, then one block per group with players, each with
+ * its collaboration sentence, row labels, rows, column numbers, work bars and 等你 badges.
  * @param {StageSnapshot} snap @param {string | null} laneId @param {string | null} sel
  * @returns {Record<string, Paint>}
  */
@@ -327,13 +337,17 @@ export function describeScore(snap, laneId, sel) {
             };
           }),
         },
-        ords: { kids: L.cols.map((c) => ({ key: String(c.n), tpl: 'tpl-ord', text: String(c.n), attr: { x: String(c.x), y: '17' } })) },
+        ords: { kids: L.cols.map((c) => ({ key: String(c.n), tpl: 'tpl-ord', text: fill('score.col', { n: c.n }), attr: { x: String(c.x), y: '17' } })) },
         phrases: { kids: L.phrases.map((ph) => phraseDesc(ph, byId, h, sel)) },
         ferms: {
-          kids: L.ferms.map((m) => ({
-            key: m.id, tpl: 'tpl-ferm', data: { node: m.id }, attr: { transform: tf(m.x, m.y) },
-            slots: { title: { text: liveWait(/** @type {Player} */ (byId.get(m.id))) } },
-          })),
+          kids: L.ferms.map((m) => {
+            const p = /** @type {Player} */ (byId.get(m.id));
+            const t = fill('wait.badge', { w: clipW(p.live.waitingFor ?? STAGE_TEXT['live.unknown'], 20) });
+            return {
+              key: m.id, tpl: 'tpl-ferm', data: { node: m.id }, attr: { transform: tf(m.x, m.y) },
+              slots: { title: { text: liveWait(p) }, bg: { attr: { width: String(Math.round(cols(t) * 6.6 + 16)) } }, t: { text: t } },
+            };
+          }),
         },
       },
     };
@@ -449,7 +463,7 @@ export function describeRules(rules) {
 }
 
 /**
- * The plan view (分谱) of one lane: the leads' desks, the chips, the work item tree with departments
+ * The task list (任务清单) of one lane: the leads' desks, the chips, the work item tree with departments
  * and the 未关联 bucket, the lane's context total, health and the rules. With a chip on, the list is
  * exactly that chip's rows, flat, so the chip's number and the rows shown are one array (T3).
  * @param {StageSnapshot} snap @param {string | null} laneId @param {Chip | null} chip

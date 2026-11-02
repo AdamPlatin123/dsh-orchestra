@@ -9,7 +9,7 @@ import { describePlan, nameplate } from '../../ui/view.js';
 
 // The page's review fixes that live in pure modules: a hash that does not decode, one poll at a time,
 // the drawer's backdrop test, Space on a role=button, the nameplate's project cut, the stray rows'
-// button names, and the contrast of the --stale text that carries 无复核者（M0） and 未测（N=0）.
+// button names, and the contrast of the --stale text that carries 无复核者（这一版没有） and 没测过（0 个样本）.
 
 const LANE = 'a'.repeat(20);
 

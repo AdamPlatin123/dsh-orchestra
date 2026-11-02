@@ -9,7 +9,7 @@ import { CHIPS, describeDrawer, describeHeader, describePlan, describeRules, des
 // src/sources/stage.ts builds from the stage fixture), beside view-stage.test.ts's hand-written sample:
 // the page and the builder must agree on real builder output, not only on the shared contract. Checked
 // here: every count is the length of its rows (T3), every staff head's look and instrument come from its
-// player's fields (T1), the word for "done" never appears (T2), every verdict reads 无复核者（M0）
+// player's fields (T1), the word for "done" never appears (T2), every verdict reads 无复核者（这一版没有）
 // (D19: only a non-author reviewer or you can call work done), every rule at N=0 reads 未测 (T4), and
 // the canary shows only as its redaction marker (T5).
 
@@ -104,11 +104,11 @@ test('golden: header, chip, plan, desk and score counts are the lengths of their
   }
 });
 
-test('golden: every verdict reads 无复核者（M0）, every rule 未测（N=0）, and no text says done', () => {
+test('golden: every verdict reads 无复核者（这一版没有）, every rule 没测过（0 个样本）, and no text says done', () => {
   const s = golden();
   const rules = describeRules(s.rules);
   assert.equal(rules.length, s.rules.length);
-  for (const r of rules) assert.deepEqual([r.cls, r.slots!.n!.text], ['untested', '未测（N=0）']);
+  for (const r of rules) assert.deepEqual([r.cls, r.slots!.n!.text], ['untested', '没测过（0 个样本）']);
   const all: string[] = [];
   for (const lane of s.lanes) {
     all.push(...texts(describeHeader(s as any, lane.id, { stale: false, at: '' })));
@@ -116,7 +116,7 @@ test('golden: every verdict reads 无复核者（M0）, every rule 未测（N=0�
     for (const chip of [null, ...CHIPS]) {
       const p = describePlan(s as any, lane.id, chip, null, fmt);
       all.push(...texts(p));
-      for (const r of descs(p.slots.list).filter((d) => d.tpl === 'tpl-row')) assert.equal(r.slots.verdict.text, '无复核者（M0）');
+      for (const r of descs(p.slots.list).filter((d) => d.tpl === 'tpl-row')) assert.equal(r.slots.verdict.text, '无复核者（这一版没有）');
     }
     for (const node of [...lane.players.map((p: Json) => p.id), ...lane.items.map((w: Json) => w.id)]) {
       const d = describeDrawer(s as any, lane.id, node, null, fmt, 0);
