@@ -1,9 +1,8 @@
 // @ts-check
-// Chinese text the page and the toast share (plan §3), as far as step 3 needs it: what a title arg
-// shows when the source's string may not be shown, and the text of each error code, end class and
-// action outcome. One symbol, one meaning (P1): two codes that ask you for different things never
-// share a text (test/shared/protocol.test.ts). Step 4 freezes the keys. STAGE_TEXT, at the end, holds
-// the stage preview's texts (0.1 alpha design §5), which ui/view.js fills.
+// Chinese text the page and the toast share (plan §3): what a title arg shows when the source's string
+// may not be shown, and the text of each error code, end class and action outcome. One symbol, one
+// meaning (P1): codes that ask you for different things never share a text (test/shared/protocol.test.ts).
+// Step 4 freezes the keys. STAGE_TEXT, at the end, holds the stage preview's texts (0.1 alpha design §5).
 import { END_CLASSES, ERROR_CODES, ACTION_OUTCOMES, TITLE_ARG_NAMES } from './protocol.js';
 import { frozen } from './frozen.js';
 
@@ -162,6 +161,7 @@ export const STAGE_TEXT = frozen({
   'waitFor.permission prompt': '批准一个操作',
   'row.unknown': '不知道是谁做的',
   'legend.phrase': '条越长，分身读得越多（数字单位是字节，k 是千，M 是百万）',
+  'legend.notes': '飘起的小音符：确认还在跑',
   'legend.slur': '向下的箭头：派活',
   'legend.tie': '向上的箭头：回报，越粗回报越多',
   'legend.ferm': '黄色标签：等你处理',

@@ -126,8 +126,7 @@ export function layoutScore(lane, harness, fermatas) {
     // An orphan is a 分身 no dispatch record names: no arrow claims one.
     const slur = linked && w.state !== 'orphan' && cue(w.id, 'dispatch') ? { x: x0, y: owner.y, dx: S.gap - 9, dy: st.y - owner.y } : null;
     const back = w.report !== null ? w.report.bytes : w.flow !== null ? w.flow.reportBytes : 1;
-    // The report arrow rises clear of the state word above the bar and stops short of the owner's row,
-    // where its head sits, so the thick stroke ends inside the head.
+    // The report arrow clears the state word and stops short of the owner's row, inside its head.
     const sg = owner !== undefined ? Math.sign(st.y - owner.y) : 0;
     const tie = linked && cue(w.id, 'report') ? { x: x2, y: owner.y + sg * 6, dx: Math.max(12, x1 + 40 - x2), dy: st.y - owner.y - sg * 6, w: tieWeight(back) } : null;
     return { item: w, col, staff: st.id, y: st.y, x0, x1, x2, kind, tail: kind === 'open' ? x0 + S.col - 22 : x2, slur, tie };

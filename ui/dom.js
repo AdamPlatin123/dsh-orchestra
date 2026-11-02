@@ -1,20 +1,15 @@
 // @ts-check
-// The page's one DOM writer (0.1 alpha design §5): a keyed patcher for HTML and SVG alike. Nodes come
-// from <template> clones only; a write is textContent, dataset, classList, or setAttribute for the
-// frozen geometry set below, and each one is skipped when the value is already there, so a second
-// identical render writes nothing. No markup string is ever parsed (Trusted Types: trusted-types 'none').
-// Lists are keyed: a node keeps its identity across renders and moves only when its place changed.
+// The page's one DOM writer (0.1 alpha design §5): a keyed patcher for HTML and SVG. Nodes are <template>
+// clones; a write (textContent, dataset, classList, setAttribute from ATTRS) is skipped when the value is
+// there, so an identical render writes nothing. No markup is parsed (trusted-types 'none'). A keyed node
+// keeps its identity across renders (so a CSS animation runs on) and moves only when its place changed.
 import { frozen } from '../shared/frozen.js';
 import { STAGE_TEXT } from '../shared/strings.js';
 
 /** @typedef {import('./view.js').Paint} Paint */
 /** @typedef {import('./view.js').Desc} Desc */
 
-/**
- * The attributes setAttribute may write: SVG geometry (a score's size and viewBox included), plus
- * aria-pressed and aria-current, which no dataset or class can carry to assistive tech. Never href,
- * style or an on* handler.
- */
+/** What setAttribute may write: SVG geometry, aria-pressed and aria-current. Never href, style or on*. */
 export const ATTRS = frozen(['transform', 'x', 'y', 'x1', 'y1', 'x2', 'y2', 'width', 'height', 'viewBox', 'aria-pressed', 'aria-current']);
 
 /** @param {DOMRect} b @param {number} x @param {number} y */
@@ -97,8 +92,7 @@ export function makePatcher(doc) {
   }
 
   /**
-   * Keyed children of `parent`, in the order of `descs`. Nodes not in `descs` go; a node already in its
-   * place costs nothing.
+   * Keyed children of `parent` in `descs` order; the rest go, and a node in its place costs nothing.
    * @param {Element} parent @param {readonly Desc[]} descs
    */
   function list(parent, descs) {
@@ -122,10 +116,7 @@ export function makePatcher(doc) {
     lists.set(parent, next);
   }
 
-  /**
-   * Every [data-t] in the page and its templates takes its STAGE_TEXT, once at boot; every empty
-   * instrument slot (.ins) takes a copy of the five glyphs, of which CSS shows the player's one.
-   */
+  /** At boot: each [data-t] takes its STAGE_TEXT, each empty .ins the five glyphs (CSS shows one). */
   function fillStatic() {
     const roots = [doc, ...Array.from(doc.querySelectorAll('template')).map((t) => /** @type {HTMLTemplateElement} */ (t).content)];
     const glyphs = clone('tpl-glyph');

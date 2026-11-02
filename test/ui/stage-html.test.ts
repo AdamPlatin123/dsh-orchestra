@@ -58,6 +58,24 @@ test('stage.html holds every template ui/view.js names, with SVG templates in th
   for (const u of uses) assert.ok(symbols.has(u), `#${u} is not a symbol`);
 });
 
+test('motion: animations only under prefers-reduced-motion: no-preference, keyframes only fade and move, notes are drawn not typed', () => {
+  const css = read('ui/stage.css');
+  const open = css.indexOf('@media (prefers-reduced-motion: no-preference) {');
+  assert.ok(open > 0);
+  const close = css.indexOf('\n}', open);
+  const outside = css.slice(0, open) + css.slice(close);
+  assert.doesNotMatch(outside.replace(/@keyframes[^{]*\{(?:[^{}]*\{[^}]*\})*[^}]*\}/g, ''), /animation/);
+  for (const m of css.matchAll(/@keyframes [\w-]+ \{((?:[^{}]*\{[^}]*\})*)[^}]*\}/g)) {
+    for (const d of m[1]!.matchAll(/([\w-]+):/g)) assert.ok(['opacity', 'transform'].includes(d[1]!), d[1]);
+  }
+  // With reduced motion the second note stays hidden and the first stands still: one static note.
+  assert.match(outside, /\.notes \.n2 \{ display: none; \}/);
+  const doc = parseHtml(HTML);
+  for (const id of ['nt1', 'nt2']) assert.equal(doc.getElementById(id)!.textContent, '', id);
+  assert.match(HTML, /<g class="notes" data-slot="notes" aria-hidden="true">/);
+  assert.match(HTML, /data-t="legend\.notes"/);
+});
+
 test('what the browser loads for /stage stays within budget: ui/ itself and the shared modules it imports', () => {
   const ui = fs.readdirSync(path.join(REPO, 'ui')).map((f) => `ui/${f}`);
   // The import closure from the page's one entry script.

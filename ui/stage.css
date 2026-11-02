@@ -1,7 +1,5 @@
-/* Stage preview (0.1 alpha design §6, plain-language pass: the collaboration graph). Classes and data-*
-   only; the page writes no style. Each token holds both themes (light-dark()); data-theme pins the
-   scheme. Cool paper and ink; the graph is the one bold thing. Gold marks only the selection and your
-   own row; amber only what waits on you. Selectors keep the score's names (staff, phrase, slur, tie). */
+/* Stage preview (0.1 alpha design §6). Classes and data-* only; the page writes no style. Tokens hold
+   both themes; data-theme pins one. Gold: selection and your row; amber: what waits on you. */
 
 :root {
   color-scheme: light dark;
@@ -83,7 +81,7 @@ button { cursor: pointer; }
 .sys-scroll { overflow-x: auto; overscroll-behavior-x: contain; }
 svg.heads, svg.music { display: block; overflow: visible; font-family: var(--sans); }
 .brace { fill: none; stroke: var(--hue); stroke-width: 3; vector-effect: non-scaling-stroke; }
-.ord-l, .ord { font-size: 11px; fill: var(--ink-soft); }
+.ord-l, .ord, .h-tag, .ph-st { font-size: 11px; fill: var(--ink-soft); }
 
 .shead, .phrase, .ferm { cursor: pointer; outline: none; }
 .hit { fill: transparent; }
@@ -92,7 +90,6 @@ svg.heads, svg.music { display: block; overflow: visible; font-family: var(--san
 .shead .ins { color: var(--ink-soft); }
 .h-name { font-size: 13.5px; font-weight: 600; fill: var(--ink); }
 .shead[data-role=principal] .h-name { font-weight: 700; }
-.h-tag { font-size: 11px; fill: var(--ink-soft); }
 .h-dept { fill: none; stroke: var(--hue); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .shead[data-look=translucent] .ins, .staff[data-look=translucent] .st-line { opacity: .55; }
 .shead[data-look=ghost] .h-name { fill: var(--stale); }
@@ -101,7 +98,7 @@ svg.heads, svg.music { display: block; overflow: visible; font-family: var(--san
 .st-note, .uhead { font-size: 11px; fill: var(--stale); }
 .uhead { font-size: 13px; }
 
-/* A bar is one work item on its executor's row: Claude's in ink, DSH's in blue. */
+/* A bar: one work item on its executor's row. */
 .ph, .ph-tail { stroke-linecap: round; }
 .ph { stroke: var(--hue); stroke-width: 10; }
 .phrase[data-lineage=dsh] .ph, .phrase[data-lineage=dsh] .ph-tail { stroke: var(--dsh-fill); }
@@ -110,7 +107,6 @@ svg.heads, svg.music { display: block; overflow: visible; font-family: var(--san
 .ph-tail { stroke: var(--hue); stroke-width: 2; stroke-dasharray: 1 5; }
 .ph-cap { font-size: 11.5px; fill: var(--ink-soft); }
 .phrase[data-state=reported] .ph-cap { font-weight: 700; fill: var(--ink); }
-.ph-st { font-size: 11px; fill: var(--ink-soft); }
 .phrase[data-state=reported] .ph-st { fill: var(--ink); font-weight: 600; }
 .phrase[data-state=working] .ph-st { fill: var(--focus); font-weight: 600; }
 .phrase[data-state=orphan] .ph-st { fill: var(--warn); }
@@ -129,7 +125,7 @@ svg.heads, svg.music { display: block; overflow: visible; font-family: var(--san
 .ferm:hover .badge-t { text-decoration: underline; }
 .ferm:focus-visible .badge-bg { stroke: var(--focus); stroke-width: 2.5; }
 
-/* Selected: the baton's gold (5:1 on light paper, 9:1 on dark) on the phrase and its path, or on the staff. */
+/* Selected: gold (5:1 light, 9:1 dark). */
 .phrase[data-sel="1"] .hit, .shead[data-sel="1"] .hit { fill: var(--wash); stroke: var(--gold); stroke-width: 2; vector-effect: non-scaling-stroke; }
 .phrase[data-sel="1"] .slur, .phrase[data-sel="1"] .tie { stroke: var(--gold); stroke-width: 2.5; }
 .phrase[data-sel="1"] .dot { fill: var(--gold); }
@@ -205,7 +201,7 @@ svg.heads, svg.music { display: block; overflow: visible; font-family: var(--san
 .c-exec .mini { grid-column: 2; margin-top: 2px; }
 .c-exec .ex { grid-column: 3; display: flex; flex-direction: column; min-width: 0; }
 .ex-name { font-weight: 600; overflow-wrap: anywhere; }
-.ex-instr, .ex-live { font-size: 12px; color: var(--ink-soft); }
+.ex-instr, .ex-live, .flow, .sub, .kv dt { font-size: 12px; color: var(--ink-soft); }
 .row[data-state=reported] .rep { color: var(--accent); font-weight: 600; }
 .row[data-state=working] .rep { color: var(--focus); font-weight: 600; }
 .row[data-state=orphan] .rep, .row[data-state=unknown] .rep { color: var(--stale); }
@@ -216,7 +212,6 @@ svg.heads, svg.music { display: block; overflow: visible; font-family: var(--san
 .row[data-flow="0"] { --fw: 12%; } .row[data-flow="1"] { --fw: 20%; } .row[data-flow="2"] { --fw: 30%; }
 .row[data-flow="3"] { --fw: 40%; } .row[data-flow="4"] { --fw: 50%; } .row[data-flow="5"] { --fw: 60%; }
 .row[data-flow="6"] { --fw: 70%; } .row[data-flow="7"] { --fw: 80%; } .row[data-flow="8"] { --fw: 90%; }
-.flow { font-size: 12px; color: var(--ink-soft); }
 .verdict { font-size: 12px; color: var(--stale); }
 .head { display: flex; flex-direction: column; margin: 26px 0 12px; padding-top: 12px; border-top: 1px solid var(--line-soft); }
 .head-t { font-weight: 700; }
@@ -247,10 +242,8 @@ svg.heads, svg.music { display: block; overflow: visible; font-family: var(--san
 .dr-head .mini { width: 26px; height: 26px; }
 .dr-id { flex: 1; min-width: 0; }
 .dr-id h2 { font-size: 16px; line-height: 1.35; overflow-wrap: anywhere; }
-.sub { font-size: 12px; color: var(--ink-soft); }
 .facts { display: grid; gap: 6px; margin: 16px 0; }
 .kv { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 8px; padding-bottom: 6px; border-bottom: 1px solid var(--line-soft); }
-.kv dt { font-size: 12px; color: var(--ink-soft); }
 .kv dd { margin: 0; overflow-wrap: anywhere; }
 .kv[data-tone=warn] dd { color: var(--warn); }
 .dr-sec { margin: 16px 0; }
@@ -273,15 +266,22 @@ svg.heads, svg.music { display: block; overflow: visible; font-family: var(--san
   [data-view=stage] .plan-pane, [data-view=plan] .score-pane { display: none; }
   .score-pane { padding: 14px 16px 24px; }
   .pane-h { font-size: 20px; }
-  /* The row labels keep their geometry and give up width: names fade at the edge; the full name is in the title and 任务清单. */
+  /* Row labels give up width: names fade; the full name is in the title. */
   svg.heads { width: 136px; overflow: hidden; mask-image: linear-gradient(90deg, #000 78%, transparent); }
   .row { margin-left: calc(var(--indent) / 2.5); }
   .plan-pane { min-height: 0; padding: 12px 16px 32px; border-left: 0; }
   .drawer { width: 100vw; padding: 16px; border-left: 0; box-shadow: none; }
 }
 
-/* == motion: one thing moves, and only when the registry says it is alive */
+/* == motion: only bars the registry says are alive; notes on the first NOTES of them (ui/view.js) */
+.notes { color: var(--hue); fill: currentColor; stroke: currentColor; stroke-width: 1.3; --dx: 6px; --r: 12deg; }
+.phrase[data-notes="0"] .notes, .notes .n2 { display: none; }
+[data-notes="2"] .notes { --dx: -5px; --r: -10deg; } [data-notes="3"] .notes { --dx: 3px; } [data-notes="4"] .notes { --dx: -8px; }
 @media (prefers-reduced-motion: no-preference) {
   .phrase[data-breathe="1"] .ph-tail { animation: breathe 2.4s ease-in-out infinite; }
+  .notes .n2 { display: inline; animation-delay: 1.6s; }
+  .notes use { opacity: 0; animation: rise 3.2s ease-out infinite; }
+  [data-notes="3"] use, [data-notes="4"] use { animation-duration: 4s; }
 }
 @keyframes breathe { 50% { opacity: .35; } }
+@keyframes rise { 25% { opacity: .85; } to { opacity: 0; transform: translate(var(--dx), -26px) rotate(var(--r)); } }

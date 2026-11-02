@@ -26,7 +26,7 @@ const CHIP_TEST = Object.freeze({
   sent: (w) => w.source !== 'todo',
   running: (w) => w.source !== 'todo' && w.state === 'working',
   reported: (w) => w.state === 'reported',
-  // Reviewed needs a reviewer who did not write the work (D19); M0 has none, so no row ever qualifies.
+  // Needs a reviewer who did not write the work (D19); M0 has none.
   reviewed: (w) => w.verdict !== 'no-reviewer',
 });
 
@@ -216,6 +216,9 @@ function caption(w) {
 /** @param {number} x @param {number} y @param {number} [sx] @param {number} [sy] */
 const tf = (x, y, sx, sy) => `translate(${x} ${y})${sx === undefined ? '' : ` scale(${sx} ${sy})`}`;
 const HIDE = Object.freeze({ data: Object.freeze({ hide: '1' }) });
+export const NOTES = 6; // bars with notes, at most, a page
+/** One of four note drifts, fixed by the id. @param {string} id */
+export const noteOf = (id) => { let h = 0; for (const c of id) h = (h * 31 + c.charCodeAt(0)) >>> 0; return String(h % 4 + 1); };
 
 /**
  * The row label of one player: icon, name and tag (or what it handed on, with its bracket).
@@ -250,9 +253,10 @@ function headDesc(st, lane, sel, dept, n) {
 
 /**
  * One work item: its bar with state above and sizes below, its dispatch and report arrows.
- * @param {import('./layout.js').Phrase} ph @param {Map<string, Player>} byId @param {string} group @param {string | null} sel @returns {Desc}
+ * @param {import('./layout.js').Phrase} ph @param {Map<string, Player>} byId @param {string} group @param {string | null} sel
+ * @param {() => boolean} more @returns {Desc}
  */
-function phraseDesc(ph, byId, group, sel) {
+function phraseDesc(ph, byId, group, sel, more) {
   const w = ph.item;
   const ex = w.executor !== null ? byId.get(w.executor) ?? null : null;
   const on = sel === w.id;
@@ -261,18 +265,21 @@ function phraseDesc(ph, byId, group, sel) {
   const sl = ph.slur;
   const tie = ph.tie;
   const up = tie !== null && tie.dy > 0 ? -90 : 90;
+  const live = ph.kind === 'open' && ex !== null && ex.live.basis === 'registry' && ex.look === 'solid';
+  const notes = live && more() ? noteOf(w.id) : '0';
   return {
     key: w.id,
     tpl: 'tpl-phrase',
     data: {
       node: w.id, lineage: ex !== null ? ex.harness : group, state: w.state, kind: ph.kind, sel: on ? '1' : '0',
-      breathe: ph.kind === 'open' && ex !== null && ex.live.basis === 'registry' && ex.look === 'solid' ? '1' : '0',
+      breathe: live ? '1' : '0', notes,
     },
     attr: { 'aria-current': on ? 'true' : 'false' },
     slots: {
       title: { text: fill('ph.title', { brief: w.brief, state: stateWord(w), flow: flowText(w) }) },
       hit: { attr: { transform: tf(ph.x1 - 7, ph.y - 24, Math.max(ph.tail - ph.x1, cols(cap) * 6) + 14, 48) } },
       st: { text: stateWord(w), attr: { x: String(ph.x1), y: String(ph.y - 9) } },
+      notes: notes !== '0' ? { attr: { transform: tf(ph.tail + 3, ph.y - 5) } } : {},
       tail: ph.kind === 'open' ? { data: { hide: '0' }, attr: { x1: String(ph.x2), y1: y, x2: String(ph.tail), y2: y } } : HIDE,
       body: { attr: { x1: String(ph.x1), y1: y, x2: String(ph.x2), y2: y } },
       cap: { text: cap, data: { hide: cap === '' ? '1' : '0' }, attr: { x: String(ph.x1 - 3), y: String(ph.y + 19) } },
@@ -303,6 +310,7 @@ export function describeScore(snap, laneId, sel) {
   const lane = pickLane(snap, laneId);
   if (lane === null) return { waits: { kids: waits }, podium, systems: { kids: [] }, nolanes: { text: STAGE_TEXT['plan.noLanes'], data: { hide: '0' } } };
   const byId = new Map(lane.players.map((p) => [p.id, p]));
+  let noted = 0;
   const systems = GROUPS.filter((h) => lane.players.some((p) => p.harness === h)).map((h) => {
     const L = layoutScore(lane, h, f);
     const sum = groupSummary(lane, h, f);
@@ -336,7 +344,7 @@ export function describeScore(snap, laneId, sel) {
           }),
         },
         ords: { kids: L.cols.map((c) => ({ key: String(c.n), tpl: 'tpl-ord', text: fill('score.col', { n: c.n }), attr: { x: String(c.x), y: '17' } })) },
-        phrases: { kids: L.phrases.map((ph) => phraseDesc(ph, byId, h, sel)) },
+        phrases: { kids: L.phrases.map((ph) => phraseDesc(ph, byId, h, sel, () => noted++ < NOTES)) },
         ferms: {
           kids: L.ferms.map((m) => {
             const p = /** @type {Player} */ (byId.get(m.id));
@@ -499,7 +507,7 @@ export function describePlan(snap, laneId, chip, sel, fmt) {
     const sent = lane.items.filter((w) => w.source !== 'todo');
     const linked = sent.filter((w) => w.join !== null);
     const seen = new Set();
-    // A row nests what its executor handed on, the same list the score counts (first row of that executor).
+    // A row nests what its executor handed on: the list the score counts.
     /** @param {WorkItem} w */
     const children = (w) => handedOn(linked, w.executor).filter((x) => !seen.has(x.id) && x.id !== w.id);
     /** @param {WorkItem} w @param {number} depth */

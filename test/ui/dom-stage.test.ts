@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { parseHtml, type FakeDocument, type FakeElement } from '../helpers/fake-dom.ts';
 import { ATTRS, makePatcher } from '../../ui/dom.js';
-import { describeDrawer, describeHeader, describePlan, describeScore } from '../../ui/view.js';
+import { NOTES, describeDrawer, describeHeader, describePlan, describeScore, noteOf } from '../../ui/view.js';
 import { STAGE_TEXT } from '../../shared/strings.js';
 
 // ui/dom.js patches the real ui/stage.html (its templates, parsed by test/helpers/fake-dom.ts) with the
@@ -95,6 +95,62 @@ test('keyed lists keep each node: a reorder moves, a removal removes, nothing is
   render(s);
   assert.equal(doc.querySelectorAll('.shead').length, 7);
   assert.deepEqual(doc.ops.filter((o) => o.kind === 'insertBefore'), []);
+});
+
+// The two running Claude clones of the sample, as if the registry confirmed them.
+const VERIFIED = ['p:2c3a4249d77070058649', 'p:394e68839349a156b805'];
+const verified = (s: Json) => {
+  for (const p of s.lanes[0].players) if (VERIFIED.includes(p.id)) p.live.basis = 'registry';
+  return s;
+};
+
+test('notes float only off registry-verified running bars, fixed per item, and a poll keeps their node', () => {
+  const { doc, render } = page();
+  const s = verified(sample());
+  render(s);
+  const ph = (id: string) => doc.querySelectorAll('.phrase').find((e) => e.getAttribute('data-node') === id)!;
+  for (const id of ['w:toolu_t2', 'w:toolu_t5']) {
+    const e = ph(id);
+    assert.equal(e.getAttribute('data-breathe'), '1');
+    assert.equal(e.getAttribute('data-notes'), noteOf(id));
+    assert.match(e.getAttribute('data-notes')!, /^[1-4]$/);
+    const n = e.querySelector('.notes')!;
+    assert.match(n.getAttribute('transform')!, /^translate\(\d+ -?\d+\)$/);
+    // Decorative: hidden from assistive tech, no text of its own; the state word stays.
+    assert.equal(n.getAttribute('aria-hidden'), 'true');
+    assert.equal(n.textContent, '');
+    assert.equal(e.querySelector('.ph-st')!.textContent, '在跑');
+  }
+  // Inferred running (team task on an mtime basis), reported and stub bars get none.
+  for (const id of ['w:team:t1', 'w:toolu_t1', 'w:agent-a3']) assert.equal(ph(id).getAttribute('data-notes'), '0', id);
+  // No chance in it: a fresh page draws the same drifts.
+  const again = page();
+  again.render(verified(sample()));
+  const drift = (d: FakeDocument) => d.querySelectorAll('.phrase').map((e) => `${e.getAttribute('data-node')}=${e.getAttribute('data-notes')}`);
+  assert.deepEqual(drift(again.doc), drift(doc));
+  // A poll that changes another bar reuses the running bars' nodes, so their animation runs on.
+  const keep = ['w:toolu_t2', 'w:toolu_t5'].map((id) => [ph(id), ph(id).querySelector('.notes')!]);
+  const next = verified(sample());
+  next.lanes[0].items.find((w: Json) => w.id === 'w:toolu_t1').report.bytes = 2048;
+  doc.resetOps();
+  render(next);
+  assert.ok(doc.ops.length > 0, 'the poll changed something');
+  assert.ok(!doc.ops.some((o) => o.kind === 'insertBefore' || o.kind === 'remove'), 'no node is created, moved or removed');
+  for (const [i, id] of ['w:toolu_t2', 'w:toolu_t5'].entries()) {
+    assert.equal(ph(id), keep[i]![0]);
+    assert.equal(ph(id).querySelector('.notes'), keep[i]![1]);
+  }
+});
+
+test(`notes float on at most NOTES (${NOTES}) bars a page, the first ones drawn`, () => {
+  const s = verified(sample());
+  const t2 = s.lanes[0].items.find((w: Json) => w.id === 'w:toolu_t2');
+  for (let i = 0; i < 8; i++) s.lanes[0].items.push({ ...structuredClone(t2), id: `w:toolu_x${i}` });
+  const kids = describeScore(s as any, SHOP, null).systems!.kids!.flatMap((sys) => sys.slots!.phrases!.kids!);
+  const live = kids.filter((d) => d.data!.breathe === '1');
+  assert.equal(live.length, 10);
+  assert.deepEqual(live.map((d) => d.data!.notes !== '0'), live.map((_, i) => i < NOTES));
+  for (const d of live.slice(NOTES)) assert.deepEqual(d.slots!.notes, {});
 });
 
 test('static text and template text come from STAGE_TEXT, and the score carries its geometry as attributes', () => {

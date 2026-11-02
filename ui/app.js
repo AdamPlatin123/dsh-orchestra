@@ -1,7 +1,6 @@
 // @ts-check
-// The stage preview's boot (0.1 alpha design §5), the one module with top-level effects: it wires the
-// poll, the hash route, the clicks and keys, and renders once per frame while the page is visible.
-// Read only: nothing here writes to orchestrad. A labelled M2 preview (r4:2051).
+// The stage preview's boot (0.1 alpha design §5), the one module with top-level effects: poll, hash
+// route, clicks and keys; one render per frame while visible. Read only (r4:2051).
 import { getSession, getStage, oneAtATime } from './api.js';
 import { every, fmtClock, fmtIso, nowMono, onFrame } from './clock.js';
 import { activates, makePatcher, outsideBox } from './dom.js';
