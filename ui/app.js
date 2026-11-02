@@ -8,7 +8,8 @@ import { after, every, fmtIso, nowMono, onFrame } from './clock.js';
 import { makePatcher } from './dom.js';
 import { getCsrf, getTheme, setCsrf, setTheme } from './prefs.js';
 import {
-  HOLD_MS, SETTLE_MS, modelsOf, atBottom, chatNews, describeNew, describeOwned, describeOwnedDock, errText, isFeed, isOwnedList, mergeFeed, msgError, notifyText, ownedIdOf, pinExtra, pinWhole,
+  HOLD_MS, SETTLE_MS, modelsOf, atBottom, chatNews, describeDesk, describeNew, describeOwned, describeOwnedDock, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError, notifyText, ownedIdOf,
+  pinExtra, pinWhole,
 } from './owned.js';
 import { go, openFull, parse } from './route.js';
 import { FILTERS, buildRows, freeze, groupKey, indexOf, navigate, projectKey, towerFrame } from './tree.js';
@@ -91,6 +92,9 @@ const state = {
   to: null,
   endArm: null,
   told: new Set(),
+  // The dispatch desk: the last suggestion and the sentence it was for (null: none); a suggestion out.
+  /** @type {{ text: string, reply: any } | null} */ desk: null,
+  asking: false,
 };
 
 const frozen = () => state.hover || state.focusIn || state.quiet !== null;
@@ -130,7 +134,8 @@ function render() {
   Object.assign(/** @type {any} */ (bar.slots), { new: { text: t(open ? 'bar.new' : 'bar.newLocked') }, unlock: { text: t(open ? 'bar.unlocked' : 'bar.unlock') } });
   dom.paintId('bar', bar);
   dom.paintId('note', { text: state.note ?? '', data: { hide: state.note === null ? '1' : '0' } });
-  dom.paintId('new-dlg', { slots: describeNew(state.owned, val('nw-harness') || 'codex', state.busy) });
+  const nowDesk = { text: val('nw-text'), harness: val('nw-harness') || 'codex', model: val('nw-model'), asking: state.asking };
+  dom.paintId('new-dlg', { slots: { ...describeNew(state.owned, nowDesk.harness, state.busy), ...describeDesk(state.desk, nowDesk) } });
   if (snap === null) return;
   const waiting = snap.tally.waiting;
   dom.title(waiting > 0 ? t('page.titleWait', { n: waiting }) : t('page.title'));
@@ -164,7 +169,9 @@ function render() {
   }
   const g = guard();
   dom.paintId('pins', describePins(snap, { sel: state.sel, nowWall: wall, bar: pinBar, extra: (e) => pinExtra(e, state.owned, g) }));
-  dom.paintId('tower', describeTower(rows, { filter: state.filter, pending, sel: state.sel, peek: state.peek, flash, detectsError: detectsError(snap), clipped: clippedSessions(snap) }));
+  dom.paintId('tower', describeTower(rows, {
+    filter: state.filter, pending, sel: state.sel, peek: state.peek, flash, detectsError: detectsError(snap), clipped: clippedSessions(snap), dispatch: snap.router.dispatch, nowWall: nowWall(),
+  }));
   const detail = describeDetail(snap, state.sel, rows, detailFor(snap), { nowWall: wall, fmtIso });
   const mine = selTo();
   if ((mine?.id ?? null) !== state.feedFor) {
@@ -400,12 +407,46 @@ async function op(path, body) {
 /** @param {any} a @param {string} ok */
 const said = (a, ok) => a !== null && say(a.ok ? ok : errText(a.code));
 
-/** Nothing leaves until 派出 (orchestra app plan §3). */
+/** The dispatch desk: a "Route to?" card for the sentence; it starts nothing (orchestra app plan §3). */
+async function suggest() {
+  const text = val('nw-text');
+  const why = msgError(text);
+  if (why !== null) return dlgSay('new-dlg', why);
+  if (state.asking || state.csrf === null) return;
+  state.asking = true;
+  dlgSay('new-dlg', '');
+  schedule();
+  const a = await post(state.csrf, 'route/suggest', { text });
+  state.asking = false;
+  if (!a.ok || !isSuggestion(a.body)) {
+    if (!a.ok && a.code === 'not-unlocked') lock();
+    schedule();
+    return dlgSay('new-dlg', a.ok ? t('op.unknown') : errText(a.code));
+  }
+  state.desk = { text, reply: a.body };
+  const first = a.body.candidates[0];
+  if (first !== undefined) pick(first);
+  dlgSay('new-dlg', t('route.nothing'));
+  schedule();
+}
+
+/** A candidate into the two selects: the model list follows the harness at once, then the model. @param {{ harness: string, model: string }} c */
+function pick(c) {
+  setVal('nw-harness', c.harness);
+  render();
+  setVal('nw-model', c.model);
+}
+
+/** Nothing leaves until 派出 (orchestra app plan §3); a card for this very sentence goes with it (routeId). */
 async function dispatch() {
   const text = val('nw-text');
   const why = msgError(text);
-  const a = why === null ? await op('owned/new', { text, harness: val('nw-harness') || 'codex', model: val('nw-model') || modelsOf(val('nw-harness'))[0] }) : null;
+  const harness = val('nw-harness') || 'codex';
+  const routeId = state.desk !== null && state.desk.text === text ? state.desk.reply.routeId : null;
+  const body = { text, harness, model: val('nw-model') || modelsOf(harness)[0], ...(routeId === null ? {} : { routeId }) };
+  const a = why === null ? await op('owned/new', body) : null;
   if (a?.ok !== true) return a === null && why === null ? undefined : dlgSay('new-dlg', why ?? errText(a.code));
+  state.desk = null;
   setVal('nw-text', '');
   closeDlg('new-dlg');
   say(t('new.sent'));
@@ -606,6 +647,13 @@ function act(el) {
     return openDlg('new-dlg', 'nw-text');
   }
   if (a === 'dispatch') return void dispatch();
+  if (a === 'suggest') return void suggest();
+  if (a === 'pick') {
+    const k = Number(/** @type {HTMLElement | null} */ (t0.closest('.cand'))?.dataset.pick);
+    const c = state.desk?.reply.candidates[k];
+    if (c !== undefined) pick(c);
+    return schedule();
+  }
   if (a === 'send') return void sendMsg();
   if (a === 'interrupt' || a === 'end') return void stop(a);
   if (a === 'deny') {
@@ -732,9 +780,11 @@ document.addEventListener('keydown', (e) => {
 // Typing holds the recipient (research §1.5).
 // The dispatch dialog's model list follows its harness at once.
 document.addEventListener('change', (e) => {
-  if (e.target instanceof Element && e.target.id === 'nw-harness') schedule();
+  if (e.target instanceof Element && (e.target.id === 'nw-harness' || e.target.id === 'nw-model')) schedule();
 });
 document.addEventListener('input', (e) => {
+  // An edited sentence makes the card stale at once.
+  if (e.target instanceof Element && e.target.id === 'nw-text') return schedule();
   if (!(e.target instanceof Element) || e.target.id !== 'dock-in') return;
   state.to = val('dock-in') === '' ? null : (state.to ?? selTo());
   schedule();

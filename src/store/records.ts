@@ -7,6 +7,8 @@ import { frozen } from '../../shared/frozen.js';
 import { FORMAT_RULES } from './redact.ts';
 import type { CauseRule } from '../model/inbox.ts';
 import { ITEM_EDGES, MACHINE_STATES, itemBodyError } from '../model/inbox.ts';
+import { OWNED_MODEL_RE } from '../owned/models.ts';
+import { MAX_CANDIDATES, ROUTE_HARNESSES, ROUTE_MODES, ROUTE_REASONS, ROUTER_STATES, RULE_IDS, TASK_CLASSES } from '../route/rules.ts';
 
 // The journal's record kinds and the schema of each body (plan step 3), frozen with 0001 at the end
 // of the step. A body holds only ids, enums, integers, digests and snippetRefs, plus four short
@@ -92,6 +94,8 @@ export type SourceKind = 'cwd' | 'version' | 'tool' | 'errorCode';
 
 type Leaf =
   | { t: 'id' } | { t: 'uuid' } | { t: 'digest' } | { t: 'createTime' } | { t: 'target' } | { t: 'timerId' } | { t: 'outcome' }
+  /** A model name of the owned list (src/owned/models.ts OWNED_MODEL_RE): a grammar, not source text. */
+  | { t: 'model' }
   | { t: 'int'; min: number; max: number }
   | { t: 'const'; value: number }
   | { t: 'enum'; of: readonly string[] }
@@ -172,6 +176,17 @@ export const BODY_SCHEMAS = frozen({
     createdMono: int(), createdWall: int(), ttlMs: { t: 'const', value: PLAN_TTL_MS }, expiresAt: int(),
   }),
   protect: obj({ op: en(['add', 'remove']), pid: int(1, MAX_PID), createTime: { t: 'createTime' }, reason: en(PROTECT_REASONS) }),
+  // The orchestra app's dispatch desk (r4 §6.2 RouteDecision, §9.4): one per dispatch from a suggestion,
+  // in the batch of its owned-new `human` records. decisionId is sha256 over the canonical body without
+  // it; the sentence, the title and the router model's words stay out (no source free text in a body).
+  // pick: the candidate the person took, null when the harness and model were set by hand; reason: the
+  // reason chip (that candidate's rule, router-model, or manual); router: what the router model did.
+  route: obj({
+    decisionId: digest, actionId: uuid, routeId: id, ownedId: id, taskClass: en(TASK_CLASSES), rules: arr(en(RULE_IDS), 1, RULE_IDS.length),
+    candidates: arr(obj({ harness: en(ROUTE_HARNESSES), model: { t: 'model' }, source: en(['rule', 'model']), rule: nul(en(RULE_IDS)) }), 0, MAX_CANDIDATES),
+    chosen: obj({ harness: en(ROUTE_HARNESSES), model: { t: 'model' } }), pick: nul(int(0, MAX_CANDIDATES - 1)), reason: en(ROUTE_REASONS),
+    router: en(ROUTER_STATES), mode: en(ROUTE_MODES),
+  }),
 } satisfies Record<string, Schema>);
 
 export type Kind = keyof typeof BODY_SCHEMAS;
@@ -277,6 +292,8 @@ function check(s: Schema, v: unknown, at: string, redactor: Redactor | null): Bo
     }
     case 'outcome':
       return typeof v !== 'string' ? { reason: 'type', at } : ACTION_OUTCOMES.includes(v) ? null : { reason: 'enum', at };
+    case 'model':
+      return str(OWNED_MODEL_RE);
     case 'int':
       if (typeof v !== 'number' || !Number.isSafeInteger(v)) return { reason: 'type', at };
       return v < s.min || v > s.max ? { reason: 'range', at } : null;
@@ -349,6 +366,16 @@ function consistency(kind: Kind, b: Record<string, unknown>): BodyError | null {
       const e = subtreesError(b.subtrees, '$.subtrees');
       if (e !== null) return e;
       return b.status === brakeStatus(b.subtrees as { status: string; residual: number }[]) ? null : bad('$.status');
+    }
+    case 'route': {
+      // The pick names a candidate that is there, and that candidate is what was chosen; the reason follows from it.
+      const cands = b.candidates as { harness: string; model: string; rule: string | null }[];
+      const chosen = b.chosen as { harness: string; model: string };
+      if (b.pick === null) return b.reason === 'manual' ? null : bad('$.reason');
+      const c = cands[b.pick as number];
+      if (c === undefined) return bad('$.pick');
+      if (c.harness !== chosen.harness || c.model !== chosen.model) return bad('$.chosen');
+      return b.reason === (c.rule ?? 'router-model') ? null : bad('$.reason');
     }
     case 'brake.plan': {
       if (b.expiresAt !== (b.createdWall as number) + PLAN_TTL_MS) return bad('$.expiresAt');

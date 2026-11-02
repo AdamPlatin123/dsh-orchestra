@@ -96,6 +96,8 @@ function sample(r: Route): { path: string; body: Record<string, unknown> | null 
     'owned-new': { text: 'hello', harness: 'codex' }, 'owned-message': { text: 'hello' }, 'approval-allow': { digest: 'a'.repeat(64), rev: 1 },
     'import-claude': { stageId: STAGE, mode: 'fork', cwdShown: 'G:\\work\\x' }, 'import-dsh': { stageId: STAGE },
   };
+  // A POST that writes no human record carries no actionId (POST /api/route/suggest).
+  if (r.human === null) return { path, body: { text: 'hello' } };
   return { path, body: { actionId: uuid(), ...(extra[r.human ?? ''] ?? {}) } };
 }
 const UNLOCKED = ROUTES.filter((r) => r.auth === 'unlocked');

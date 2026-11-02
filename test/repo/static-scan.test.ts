@@ -638,6 +638,15 @@ const CASES: readonly Case[] = [
   pos('hosts:no-dynamic-code', 'hosts/claude/host.mjs', 'const req = createRequire(import.meta.url);'),
   pos('hosts:no-dynamic-code', 'hosts/claude/host-core.mjs', 'const reqId = Math.random();'),
   neg('hosts:no-dynamic-code', 'hosts/claude/host-core.mjs', 'const reqId = hexOf(randomBytes(16));'),
+
+  // The dispatch desk's one outbound call: in src/net/magpie.ts every request opens with host LOOPBACK (127.0.0.1) and POST.
+  neg('net:magpie-post-loopback-only', 'src/net/magpie.ts', "const LOOPBACK = '127.0.0.1';\nconst req = request({ host: LOOPBACK, port, method: 'POST', path, agent: false });"),
+  pos('net:magpie-post-loopback-only', 'src/net/magpie.ts', "const LOOPBACK = '127.0.0.1';\nconst req = request({ host: '10.0.0.7', port, method: 'POST', path });"),
+  pos('net:magpie-post-loopback-only', 'src/net/magpie.ts', "const LOOPBACK = '127.0.0.1';\nconst req = request({ host: LOOPBACK, port, method: 'GET', path });"),
+  pos('net:magpie-post-loopback-only', 'src/net/magpie.ts', "const LOOPBACK = '127.0.0.1';\nconst req = request(url, { method: 'POST' });"),
+  pos('net:magpie-post-loopback-only', 'src/net/magpie.ts', "const LOOPBACK = '0.0.0.0';\nconst req = request({ host: LOOPBACK, port, method: 'POST', path });"),
+  pos('net:magpie-post-loopback-only', 'src/net/magpie.ts', "const LOOPBACK = '127.0.0.1';\nlet LOOPBACK = 'example.com';"),
+  neg('net:magpie-post-loopback-only', 'src/server/http.ts', 'const req = request(url);'),
 ];
 
 for (const c of CASES) {
@@ -747,6 +756,8 @@ test('rules dropped or narrowed in step 2c: each bad sample is still flagged in 
   assert.equal(by('ban:net.connect', 'net.connect(pipe);', 'src/runtime/lock.ts'), 'builtin-only-names');
   assert.equal(by('ban:net.connect', 'connect(pipe);', 'src/server/http.ts'), 'builtin-only-names');
   assert.equal(by('ban:http.request', 'request(url);', 'src/server/http.ts'), 'builtin-only-names');
+  // The one module that may import node:http's request: any call it makes to another place than 127.0.0.1 by POST is flagged.
+  assert.equal(by('ban:http.request', 'request(url);', 'src/net/magpie.ts'), 'net:magpie-post-loopback-only');
   assert.equal(by('ban:http.request', 'https.request(url);', 'src/server/http.ts'), 'builtin-policy');
   assert.equal(by('ban:net.connect', 'net.connect(pipe);', 'src/model/x.ts'), 'builtin-policy');
   assert.equal(by('ban:node:https', "const h = require('https');", 'scripts/check-real-claude.ts'), 'builtin-policy');

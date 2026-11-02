@@ -39,7 +39,8 @@ import { CONTROL_HEADER, CSRF_RE, OWNED_BODY_MAX_BYTES, OWNED_TEXT_MAX_BYTES, PA
 //   7. the body at most OWNED_BODY_MAX_BYTES (413 body-too-big); a message at most OWNED_TEXT_MAX_BYTES
 //      of UTF-8 (422 text-too-long), and not starting with `/` (422 slash-command: the CLI would run it
 //      as a slash command, and `/model` or `/config` change the session);
-//   8. the shape (routes.ts shapeError): a missing or malformed actionId is 400 actionId-missing, any
+//   8. the shape (routes.ts shapeError): on a route that writes a human record (POST /api/route/suggest
+//      writes none and carries no actionId) a missing or malformed actionId is 400 actionId-missing, any
 //      other misfit 400 without a code; a path id outside its grammar is 404 item-unknown;
 //   9. the actionId: in flight is 409 in-flight, the same actionId over another request is 422
 //      actionId-reused, the same request again is answered as before with replayed:true;
@@ -142,8 +143,8 @@ export type HumanFound = { readonly requestDigest: string; readonly resultJseq: 
 /** What the owned API reads from and writes to the store: two fixed SELECTs and one commit path. */
 export type HumanJournal = {
   find(actionId: string): HumanFound | null;
-  /** Commits `human` and `human.result` (outcome applied) in one batch; returns the human.result line's jseq. */
-  record(r: { actionId: string; verb: HumanVerb; targetId: string | null; requestDigest: string }): number;
+  /** Commits `human` and `human.result` (outcome applied), and the handler's own records after them, in one batch; returns the human.result line's jseq. */
+  record(r: { actionId: string; verb: HumanVerb; targetId: string | null; requestDigest: string }, extra?: readonly Rec[]): number;
 };
 
 /** The HumanJournal over the store working.ts opened. */
@@ -155,10 +156,11 @@ export function humanJournal(store: Pick<Store, 'db' | 'commit'>): HumanJournal 
       const r = store.db.get("SELECT jseq FROM event WHERE kind = 'human.result' AND action_id = ?", actionId);
       return { requestDigest: String((JSON.parse(String(h.body)) as { requestDigest: unknown }).requestDigest), resultJseq: r === undefined ? null : Number(r.jseq) };
     },
-    record(r: { actionId: string; verb: HumanVerb; targetId: string | null; requestDigest: string }): number {
+    record(r: { actionId: string; verb: HumanVerb; targetId: string | null; requestDigest: string }, extra: readonly Rec[] = []): number {
       const recs: Rec[] = [
         { kind: 'human', body: { actionId: r.actionId, verb: r.verb, targetId: r.targetId, requestDigest: r.requestDigest } },
         { kind: 'human.result', body: { actionId: r.actionId, verb: r.verb, targetId: r.targetId, outcome: 'applied', commandId: null, subtrees: null } },
+        ...extra,
       ];
       const lines: readonly Line[] = store.commit(recs);
       return lines.find((l) => l.kind === 'human.result')!.jseq;
@@ -175,8 +177,9 @@ export type OwnedCall = {
   readonly id: string | null;
   /** A GET's query, shape-checked; empty for a POST. */
   readonly query: Readonly<Record<string, string>>;
-  /** A POST's body, shape-checked against route.body (actionId included); null for a GET. */
+  /** A POST's body, shape-checked against route.body (actionId included for a human route); null for a GET. */
   readonly body: Readonly<Record<string, unknown>> | null;
+  /** A human route's actionId; null for a GET and for a POST that writes no record (POST /api/route/suggest). */
   readonly actionId: string | null;
   /** The pairing session the request came with (it holds the token). */
   readonly sid: string;
@@ -189,7 +192,13 @@ export type OwnedCall = {
  * stageId). Refused: an error code of the route (item-unknown, route.own, route.failures); nothing is written.
  */
 export type OwnedOutcome =
-  | { readonly ok: true; readonly reply: Readonly<Record<string, unknown>>; readonly targetId?: string | null }
+  | {
+    readonly ok: true; readonly reply: Readonly<Record<string, unknown>>; readonly targetId?: string | null;
+    /** A human route's own records, committed after its `human` and `human.result` in the same batch (owned-new's RouteDecision). */
+    readonly records?: readonly Rec[];
+    /** Runs once that batch is committed (never when the record failed). */
+    readonly after?: () => void;
+  }
   | { readonly ok: false; readonly error: ErrorCode };
 
 export type OwnedHandler = (call: OwnedCall) => OwnedOutcome | Promise<OwnedOutcome>;
@@ -375,8 +384,9 @@ export function makeOwnedApi(opts: OwnedApiOptions & {
       if (message !== null && Buffer.byteLength(message, 'utf8') > OWNED_TEXT_MAX_BYTES) return refuse('text-too-long');
       if (message !== null && message.trimStart().startsWith('/')) return refuse('slash-command');
       const v = p.value as Record<string, unknown>;
+      // Only a route that writes a human record carries an actionId (POST /api/route/suggest does not).
       const a = typeof v === 'object' && v !== null && !Array.isArray(v) ? Object.getOwnPropertyDescriptor(v, 'actionId') : undefined;
-      if (a === undefined || typeof a.value !== 'string' || !UUID_RE.test(a.value)) return refuse('actionId-missing');
+      if (route.human !== null && (a === undefined || typeof a.value !== 'string' || !UUID_RE.test(a.value))) return refuse('actionId-missing');
       if (shapeError(route.body!, v) !== null) return text(400, 'bad request');
       parsed = v;
     } else {
@@ -386,11 +396,11 @@ export function makeOwnedApi(opts: OwnedApiOptions & {
       if (shapeError(route.query ?? NO_QUERY, query) !== null) return text(400, 'bad request');
     }
     if (m.id !== null && !(route.target === 'stage' ? STAGE_ID_RE : ID_RE).test(m.id)) return refuse('item-unknown');
-    const actionId = parsed === null ? null : (parsed.actionId as string);
+    const actionId = parsed === null || route.human === null ? null : (parsed.actionId as string);
     const call: OwnedCall = Object.freeze({ route, id: m.id, query: Object.freeze(query), body: parsed === null ? null : Object.freeze(parsed), actionId, sid });
 
     if (route.human === null || actionId === null) {
-      // A GET: no actionId, no record.
+      // A GET, or a POST that writes no record (the dispatch desk's suggestion): no actionId, no record.
       const handler = handlers.get(route);
       if (handler === undefined) return text(501, 'not implemented yet');
       const out = await run(route, call, handler);
@@ -442,12 +452,19 @@ export function makeOwnedApi(opts: OwnedApiOptions & {
       }
       let jseq: number;
       try {
-        jseq = journal.record({ actionId, verb: route.human, targetId, requestDigest });
+        jseq = journal.record({ actionId, verb: route.human, targetId, requestDigest }, out.records ?? []);
       } catch (e) {
         // The backstop: the journal holds this actionId already (the dedup above makes it unreachable).
         if (e instanceof StoreError && e.reason === 'duplicate-action') return refuse('actionId-reused');
         log.warn('owned-record-failed', { route: `${route.method} ${route.path}`, error: e });
         return text(500, 'failed');
+      }
+      if (out.after !== undefined) {
+        try {
+          out.after();
+        } catch (e) {
+          log.warn('owned-after-failed', { route: `${route.method} ${route.path}`, error: e });
+        }
       }
       if (replies.size >= LIMITS.replies) replies.delete(replies.keys().next().value!);
       replies.set(actionId, Object.freeze(extra));

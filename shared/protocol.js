@@ -328,7 +328,7 @@ export const DSH_ORIGIN_RE = frozen(/^http:\/\/(?:127\.0\.0\.1|\[::1\]|localhost
 // value through one of the grammars above (a title is {key, args}, titleError); the one text a frame
 // may carry is your own reminder's (ItemView.reminder, with its textState).
 
-/** @typedef {'reminder' | 'peek' | 'cmdline' | 'window-title' | 'path' | 'dsh-url' | 'root-path' | 'message' | 'cwd'} TextWhy */
+/** @typedef {'reminder' | 'peek' | 'cmdline' | 'window-title' | 'path' | 'dsh-url' | 'root-path' | 'message' | 'cwd' | 'route-title' | 'route-reason'} TextWhy */
 /**
  * @typedef {{ readonly t: 'enum', readonly of: readonly string[] }
  *   | { readonly t: 're', readonly re: RegExp, readonly name: string }

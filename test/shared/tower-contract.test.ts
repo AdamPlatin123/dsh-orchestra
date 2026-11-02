@@ -159,7 +159,13 @@ test('tree: references stay in the project, depth and harness follow the parent,
     const b = ns.findIndex((n: Json) => n.id === nid('gp1'));
     [ns[a], ns[b]] = [ns[b], ns[a]];
   }, 'after');
-  broken(golden, (s) => { s.router.dispatch = { open: true }; }, 'null until the dispatch desk exists');
+  broken(golden, (s) => { s.router.dispatch = { open: true }; }, '$.router.dispatch: unknown key open');
+  const dispatch = { title: 'x', at: 1, harness: 'codex', model: 'codex/gpt-6.1-sol', node: null };
+  broken(golden, (s) => { s.router.dispatch = { ...dispatch, model: 'gpt-4' }; }, '$.router.dispatch.model');
+  broken(golden, (s) => { s.router.dispatch = { ...dispatch, harness: 'dsh' }; }, '$.router.dispatch.harness');
+  broken(golden, (s) => { s.router.dispatch = { ...dispatch, node: 'n:00000000000000000000' }; }, 'is not a node of this snapshot');
+  broken(golden, (s) => { s.router.dispatch = { ...dispatch, node: s.projects[0].nodes[0].id }; }, 'not an owned node');
+  assert.equal(validateTower({ ...golden(), router: { kind: 'human', dispatch } }).ok, true, 'a dispatch with no node is fine');
   broken(golden, (s) => { s.router.kind = 'maestro'; }, '$.router.kind');
 });
 

@@ -48,6 +48,10 @@ export const BUILTIN_ROWS: readonly BuiltinRow[] = frozen([
   { modules: ['src/runtime/import-fence.ts', 'src/runtime/features.ts'], allow: ['node:module'] },
   { modules: ['src/main.ts'], allow: ['node:os'], only: { 'node:os': ['homedir', 'totalmem'] } },
   { modules: ['src/runtime/clock.ts'], allow: ['node:timers', 'node:timers/promises'] },
+  // The orchestra app's dispatch desk (plan §3): the daemon's one outbound call, a POST to the local
+  // magpie gateway. Only request, and the static scan (net:magpie-post-loopback-only) holds each call
+  // to host 127.0.0.1 and method POST.
+  { modules: ['src/net/magpie.ts'], allow: ['node:http'], only: { 'node:http': ['request'] } },
 ]);
 
 export type BuiltinDecision =

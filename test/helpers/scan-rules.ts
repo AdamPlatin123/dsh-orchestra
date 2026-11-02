@@ -35,6 +35,9 @@ export const EXEMPT_SCRIPTS: readonly string[] = [
   // test run and touches no harness root.
   'scripts/pin-claude-host.ts',
   'scripts/live-smoke.ts',
+  // The dispatch desk's live run (orchestra app plan §3), the same kind as live-smoke: it starts orchestrad
+  // in the test profile, speaks HTTP to it on 127.0.0.1 and waits on timers; it touches no harness root.
+  'scripts/live-route.ts',
 ];
 
 // test/ is scanned for in-process-start-only-in-helper alone: every other rule's scope excludes it.
@@ -661,6 +664,28 @@ const fakeCodexOnlyInTests = ban('fake-codex-only-in-tests', except(code, 'src/o
 // and the policy itself checks it is ORCHESTRA_HOME's own work dir. Nowhere else may hand one in.
 const ownedWorkRootOnlyInWorking = ban('owned-work-root-only-in-working', except(code, 'src/runtime/working.ts', 'src/os/cwd.ts'), /\bownedWorkRoot\b/);
 
+// The dispatch desk's one outbound call (orchestra app plan §3): builtin-policy.ts lets only
+// src/net/magpie.ts import node:http's request (no other module can import a client at all), and here every
+// request call in it opens with host LOOPBACK, its port and method POST, and LOOPBACK is the literal
+// 127.0.0.1. A call to any other host, or a GET, is flagged.
+const MAGPIE_FILE = 'src/net/magpie.ts';
+const magpiePost: Rule = {
+  id: 'net:magpie-post-loopback-only',
+  applies: (f) => f === MAGPIE_FILE,
+  find(text) {
+    const out: Finding[] = [];
+    const decl = "const LOOPBACK = '127.0.0.1';";
+    if (!/^const LOOPBACK = '127\.0\.0\.1';$/m.test(text)) out.push({ index: 0, text: `no ${decl}` });
+    for (const m of text.matchAll(/\brequest\s*\(/g)) {
+      const rest = text.slice(m.index + m[0].length);
+      if (!/^\s*\{\s*host:\s*LOOPBACK,\s*port,\s*method:\s*'POST',/.test(rest)) out.push({ index: m.index, text: text.slice(m.index, m.index + 48).split('\n')[0]! });
+    }
+    // LOOPBACK is bound once, by that declaration.
+    for (const m of text.matchAll(/\bLOOPBACK\s*=(?!=)/g)) if (m.index !== text.indexOf(decl) + 'const '.length) out.push({ index: m.index, text: 'LOOPBACK bound again' });
+    return out;
+  },
+};
+
 export const RULES: readonly Rule[] = [
   builtinPolicy,
   builtinOnlyNames,
@@ -750,6 +775,7 @@ export const RULES: readonly Rule[] = [
   hostPure,
   hostNoBypass,
   hostNoDynamicCode,
+  magpiePost,
 ];
 
 function lineOf(text: string, index: number): number {

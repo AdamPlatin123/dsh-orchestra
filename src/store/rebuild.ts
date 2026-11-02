@@ -232,6 +232,10 @@ function applyRecord(c: Ctx): void {
     case 'brake.plan':
       eventRow(c, {}, false);
       return;
+    case 'route':
+      // A dispatch desk decision: kept as an event row (the tower's router row reads the last one).
+      eventRow(c, { actionId: str(b.actionId) }, false);
+      return;
     case 'command': {
       const h = b.harness as Record<string, unknown>;
       if (db.get('SELECT id FROM command WHERE id = ?', str(b.commandId)) !== undefined) throw new ApplyError('duplicate', jseq, `command ${str(b.commandId)} exists`);

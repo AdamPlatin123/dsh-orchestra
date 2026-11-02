@@ -86,7 +86,18 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
       { seq: 7, at: 7, kind: 'note', ref: null, uuid: null, text: null, state: 'tokens', redactions: 0, live: true, exitCode: null, tokens: { input: 1, cachedInput: 0, output: 1, total: 2 } },
     ],
   };
-  const tower = () => towerFromStage(busyStage(), { seats, nowWall: OBSERVED });
+  let dispatched: { ownedId: string; harness: 'codex' | 'claude'; model: string; at: number; title: string } | null = null;
+  const tower = () => towerFromStage(busyStage(), { seats, nowWall: OBSERVED, dispatch: dispatched });
+  const SUGGESTION = {
+    routeId: 'e'.repeat(20), title: '写发布说明', taskClass: 'general', rules: ['fallback'],
+    router: { model: 'zcode/GLM-5.3', state: 'answered', why: null, pick: 0 },
+    candidates: [
+      { harness: 'codex', model: 'zcode/GLM-5.3', source: 'model', rule: null, reason: '纯文字活' },
+      { harness: 'codex', model: 'codex/gpt-6.1-sol', source: 'rule', rule: 'fallback', reason: null },
+    ],
+    off: ['claude'],
+  };
+  let suggestion: Record<string, any> = SUGGESTION;
   const loc = { hash: '', href: '', pathname: '/', search: '', replace(u: string) { this.hash = u.slice(u.indexOf('#')); } };
   const win = {};
   Object.assign(doc, { hidden: false, addEventListener: (t: string, fn: Listener) => on(doc, t, fn) });
@@ -126,6 +137,7 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     if (url === '/api/owned') return reply(200, list);
     if (url.startsWith(`/api/owned/${ID.a}/feed`)) return reply(200, url.endsWith('after=0') ? feed : { ...feed, from: 7, events: [] });
     if (url === '/api/owned/new') return reply(200, { ownedId: ID.n, actionId: body.actionId, accepted: true, jseq: 9 });
+    if (url === '/api/route/suggest') return reply(200, suggestion);
     return reply(200, { actionId: body?.actionId, accepted: true, jseq: 10 });
   });
   const flush = async () => {
@@ -318,6 +330,65 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     assert.deepEqual([made[0]!.body.text, made[0]!.body.harness, made[0]!.body.model], ['write the release notes', 'codex', 'zcode/GLM-5.3']);
     assert.equal(nd.open, false);
     assert.equal(loc.hash, `#/n/n:${ID.n}`, 'the new session opens');
+
+    // The dispatch desk: 给建议 sends the sentence alone (no actionId: it starts nothing), the card lists
+    // first and alternatives with harness, model, reason and source; the first is picked into the selects;
+    // another pick moves them; 派出 carries the card's routeId. An edited sentence makes the card stale.
+    const routerNote = () => doc.getElementById('tower')!.querySelector('[data-slot=rNote]')!.textContent;
+    assert.equal(routerNote(), TOWER_TEXT['router.note']);
+    await click(bar.querySelector('[data-act=new]'));
+    const card = nd.querySelector('[data-slot=card]')!;
+    assert.equal(card.getAttribute('data-hide'), '1', 'no card before 给建议');
+    assert.equal(nd.querySelector('[data-act=suggest]')!.textContent, TOWER_TEXT['new.ask']);
+    (doc.getElementById('nw-text') as any).value = '写一下这次的发布说明';
+    await click(nd.querySelector('[data-act=suggest]'));
+    const suggested = posts('/api/route/suggest');
+    assert.equal(suggested.length, 1);
+    assert.deepEqual(suggested[0]!.body, { text: '写一下这次的发布说明' });
+    assert.equal(suggested[0]!.headers['x-orchestra-csrf'], CSRF);
+    assert.equal(posts('/api/owned/new').length, 1, 'a suggestion dispatches nothing');
+    assert.equal(card.getAttribute('data-hide'), '0');
+    assert.equal(nd.querySelector('[data-slot=rtTitle]')!.textContent, '标题：写发布说明');
+    const cands = () => nd.querySelector('[data-slot=cands]')!.querySelectorAll('.cand');
+    assert.deepEqual(cands().map((c) => [c.querySelector('[data-slot=rank]')!.textContent, c.querySelector('[data-slot=hm]')!.textContent, c.querySelector('[data-slot=src]')!.textContent, c.querySelector('[data-slot=why]')!.textContent]), [
+      [TOWER_TEXT['route.first'], 'Codex · zcode/GLM-5.3', TOWER_TEXT['route.src.model'], '纯文字活'],
+      [TOWER_TEXT['route.alt'], 'Codex · codex/gpt-6.1-sol', TOWER_TEXT['route.src.rule'], TOWER_TEXT['route.why.fallback']],
+    ]);
+    const pressed = () => cands().map((c) => c.querySelector('button')!.getAttribute('aria-pressed'));
+    assert.deepEqual(pressed(), ['true', 'false'], 'the first is picked');
+    assert.equal((doc.getElementById('nw-model') as any).value, 'zcode/GLM-5.3');
+    await click(cands()[1]!.querySelector('button'));
+    assert.deepEqual(pressed(), ['false', 'true']);
+    assert.equal((doc.getElementById('nw-model') as any).value, 'codex/gpt-6.1-sol');
+    assert.ok(nd.querySelector('[data-slot=rtNote]')!.textContent.includes('zcode/GLM-5.3'));
+    await click(nd.querySelector('[data-act=dispatch]'));
+    const routed = posts('/api/owned/new').at(-1)!;
+    assert.deepEqual(Object.keys(routed.body).sort(), ['actionId', 'harness', 'model', 'routeId', 'text']);
+    assert.deepEqual([routed.body.harness, routed.body.model, routed.body.routeId], ['codex', 'codex/gpt-6.1-sol', 'e'.repeat(20)]);
+    assert.equal(nd.open, false);
+
+    // No answer from the router model: the card says the rules alone; set by hand; an edited sentence: stale, no routeId.
+    suggestion = { ...SUGGESTION, routeId: 'f'.repeat(20), router: { model: 'zcode/GLM-5.3', state: 'no-answer', why: 'timeout', pick: null }, candidates: [SUGGESTION.candidates[1]] };
+    await click(bar.querySelector('[data-act=new]'));
+    (doc.getElementById('nw-text') as any).value = '再写一份';
+    await click(nd.querySelector('[data-act=suggest]'));
+    assert.ok(nd.querySelector('[data-slot=rtNote]')!.textContent.startsWith('路由模型这次没回答，下面只是规则给的建议'));
+    (doc.getElementById('nw-model') as any).value = 'codex/gpt-6-astra';
+    fire(doc, 'change', { target: doc.getElementById('nw-model') });
+    await flush();
+    assert.equal(nd.querySelector('[data-slot=rtPick]')!.textContent, TOWER_TEXT['route.manual']);
+    (doc.getElementById('nw-text') as any).value = '再写一份，短一点';
+    fire(doc, 'input', { target: doc.getElementById('nw-text') });
+    await flush();
+    assert.equal(card.getAttribute('data-stale'), '1');
+    await click(nd.querySelector('[data-act=dispatch]'));
+    assert.equal(Object.hasOwn(posts('/api/owned/new').at(-1)!.body, 'routeId'), false, 'a stale card goes without its routeId');
+
+    // The router row ("你") shows the last dispatch once the tower says it.
+    dispatched = { ownedId: ID.n, harness: 'codex', model: 'codex/gpt-6.1-sol', at: OBSERVED - 2 * MIN, title: '写发布说明' };
+    intervals.find((i) => i.ms === 2000)!.fn();
+    await flush();
+    assert.ok(routerNote().startsWith('最近派活：写发布说明（Codex · codex/gpt-6.1-sol，'), routerNote());
 
     // The waiting bar holds its order while the pointer is in it; the move shows once it leaves.
     loc.hash = '#/';

@@ -301,8 +301,15 @@ export function describeTower(rows, ctx) {
       tree: { kids: describeRows(rows, ctx) },
       empty: { data: { hide: rows.length === 0 ? '0' : '1' }, text: f === null ? t('tree.empty') : t('tree.emptyFilter', { f: t(`state.${f}`) }) },
       clipNote: { data: { hide: clipped > 0 ? '0' : '1' }, text: clipped > 0 ? t('tree.clipped', { n: clipped }) : '' },
+      rNote: { text: routerNote(ctx.dispatch ?? null, ctx.nowWall ?? 0) },
     },
   };
+}
+
+/** The router row ("你"): the dispatch desk's last dispatch, or that there was none yet. @param {any} d @param {number} nowWall */
+export function routerNote(d, nowWall) {
+  if (d === null) return t('router.note');
+  return t('router.last', { t: d.title, h: t(`harness.${d.harness}`), m: d.model, ago: fmtAge(nowWall - d.at, 'ago') });
 }
 
 /** Sessions the limits left out, over every source (each source's total - shown). @param {TowerSnapshot} snap */

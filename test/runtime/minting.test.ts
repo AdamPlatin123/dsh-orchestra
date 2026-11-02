@@ -825,6 +825,8 @@ test('the builtin policy table is pinned: every row\'s modules, builtins, named-
     { modules: ['src/runtime/import-fence.ts', 'src/runtime/features.ts'], allow: ['node:module'] },
     { modules: ['src/main.ts'], allow: ['node:os'], only: { 'node:os': ['homedir', 'totalmem'] } },
     { modules: ['src/runtime/clock.ts'], allow: ['node:timers', 'node:timers/promises'] },
+    // The dispatch desk's one outbound POST to magpie (orchestra app plan §3).
+    { modules: ['src/net/magpie.ts'], allow: ['node:http'], only: { 'node:http': ['request'] } },
   ]);
   assert.deepEqual([...DEFAULT_BUILTINS], ['node:path', 'node:url', 'node:events', 'node:util', 'node:crypto', 'node:zlib']);
   assert.deepEqual([...FORBIDDEN_BUILTINS], ['node:vm', 'node:wasi', 'node:inspector', 'node:repl', 'node:cluster']);

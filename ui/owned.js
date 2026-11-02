@@ -211,3 +211,46 @@ export function describeNew(list, harness, busy) {
     go: { text: t(busy ? 'op.busy' : 'new.go'), attr: { disabled: busy || !list?.enabled || !h[harness] ? '' : null } },
   };
 }
+
+// --- the dispatch desk (orchestra app plan §3): the "Route to?" card ------------------------------------
+
+/** POST /api/route/suggest's reply (src/server/routes.ts SUGGEST_REPLY), enough to draw it. */
+export const isSuggestion = (b) => typeof b?.routeId === 'string' && /^[0-9a-f]{20}$/.test(b.routeId) && Array.isArray(b?.candidates) && typeof b?.router?.state === 'string' && Array.isArray(b?.off);
+
+/** The candidate the dialog's two selects name, or -1 (set by hand). */
+export const pickedIndex = (reply, harness, model) => (reply === null ? -1 : reply.candidates.findIndex((c) => c.harness === harness && c.model === model));
+
+/**
+ * The card: first and alternatives, each with its harness, model, reason and where it came from; what
+ * the router model did; the pick the selects hold. A sentence edited after the suggestion makes it stale
+ * (its dispatch carries no routeId). `desk`: { text, reply } or null; `now`: { text, harness, model, asking }.
+ */
+export function describeDesk(desk, now) {
+  const reply = desk?.reply ?? null;
+  const stale = desk !== null && desk.text !== now.text;
+  const ask = { text: t(now.asking ? 'new.asking' : 'new.ask'), attr: { 'aria-disabled': now.asking ? 'true' : null } };
+  if (reply === null) return { ask, card: { data: { hide: '1', stale: '0' } }, rtTitle: { text: '' }, rtNote: { text: '' }, cands: { kids: [] }, rtPick: { text: '' } };
+  const i = pickedIndex(reply, now.harness, now.model);
+  const r = reply.router;
+  const noWhy = r.why === null ? '' : tk('route.no', r.why, 'route.no.other');
+  const state = tk('route.state', r.state, 'route.state.off', { m: r.model, why: noWhy });
+  const cands = reply.candidates.map((c, k) => ({
+    key: `${reply.routeId}:${k}`, tpl: 'tpl-cand', data: { pick: String(k), harness: c.harness },
+    slots: {
+      b: { attr: { 'aria-pressed': k === i ? 'true' : 'false' } },
+      rank: { text: t(k === 0 ? 'route.first' : 'route.alt') },
+      hm: { text: `${t(`harness.${c.harness}`)} · ${c.model}` },
+      src: { text: t(c.source === 'model' ? 'route.src.model' : r.pick === k ? 'route.src.both' : 'route.src.rule') },
+      why: { text: c.source === 'model' ? c.reason ?? t('route.why.model') : tk('route.why', c.rule, 'route.why.fallback') },
+    },
+  }));
+  const offH = reply.off.length === 0 ? '' : t('route.offH', { h: reply.off.map((h) => t(`harness.${h}`)).join(t('sep.parts')) });
+  return {
+    ask,
+    card: { data: { hide: '0', stale: stale ? '1' : '0' } },
+    rtTitle: { text: t('route.taskTitle', { t: reply.title }) },
+    rtNote: { text: join([state, offH, reply.candidates.length === 0 && t('route.none')], 'sep.notes') },
+    cands: { kids: cands },
+    rtPick: { text: stale ? t('route.stale') : i < 0 ? t('route.manual') : t('route.picked', { h: t(`harness.${now.harness}`), m: now.model }) },
+  };
+}

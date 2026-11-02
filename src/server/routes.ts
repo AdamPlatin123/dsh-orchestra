@@ -10,6 +10,8 @@ import { ownFields } from '../runtime/own.ts';
 import { COUNT_NAMES } from '../model/source-report.ts';
 import { DIGEST_RE, ERROR_CODE_RE, EVENT_KINDS } from '../store/records.ts';
 import { OWNED_MODEL_RE } from '../owned/models.ts';
+import { MAX_CANDIDATES, ROUTE_HARNESSES, ROUTER_STATES, RULE_IDS, TASK_CLASSES } from '../route/rules.ts';
+import { ROUTER_WHY } from '../route/router-model.ts';
 
 // The route table and every JSON shape the HTTP server and the SSE stream speak (plan step 3; UI
 // design 一). No server here: step 4 builds it on these, checks each request against its route's
@@ -251,8 +253,8 @@ const message = text(OWNED_BODY_MAX_BYTES, 'message');
 const accepted = (extra: Record<string, Shape> = {}): Shape => obj({ actionId: uuid, accepted: konst(true), jseq, replayed: konst(true), ...extra }, ['replayed']);
 const OWNED_CHECKS: readonly CheckStep[] = ['auth', 'ui-only', 'actionId', 'dedup', 'own', 'execute'];
 const OWNED_TARGET_CHECKS: readonly CheckStep[] = ['auth', 'ui-only', 'actionId', 'dedup', 'item', 'own', 'execute'];
-/** The body fields a route may leave out: a retry's confirmGone, a new session's model. */
-const OPTIONAL_BODY = ['confirmGone', 'model'];
+/** The body fields a route may leave out: a retry's confirmGone, a new session's model and the suggestion it came from. */
+const OPTIONAL_BODY = ['confirmGone', 'model', 'routeId'];
 /** An owned-session human route: the cookie and the controller token, a uuid actionId, the human record; never an inbox item. */
 const owned = (verb: HumanVerb, target: Route['target'], body: Record<string, Shape>, reply: Shape, own: ErrorCode[] = [], failures: ErrorCode[] = []): Route => ({
   method: 'POST', path: HUMAN_VERB_ROUTES[verb], auth: 'unlocked', human: verb, item: null, target,
@@ -284,6 +286,29 @@ const SPAWN_FAILS: ErrorCode[] = ['host-tampered'];
 /** A new session's child could not start: the gate refused it or its work dir could not be made. */
 const NEW_FAILS: ErrorCode[] = [...SPAWN_FAILS, 'spawn-failed'];
 const COPY_FAILS: ErrorCode[] = ['reparse-point', 'source-changed', 'rename-busy'];
+
+// --- the dispatch desk (orchestra app plan §3) -------------------------------------------------------
+
+/** A suggestion's id (src/route/desk.ts): 20 lowercase hex, like an owned session's. */
+export const ROUTE_ID_RE = frozen(/^[0-9a-f]{20}$/);
+const routeModel = re(OWNED_MODEL_RE, 'model');
+/**
+ * POST /api/route/suggest's reply: the "Route to?" card (r4 §9.2 step 10). Every candidate names its
+ * harness, model and where it came from (a rule, by id, or the router model, with its redacted words);
+ * the title is the router model's (redacted) or the sentence's first line. It starts nothing.
+ */
+const SUGGEST_REPLY = obj({
+  routeId: re(ROUTE_ID_RE, 'routeId'),
+  title: text(60, 'route-title'),
+  taskClass: en(TASK_CLASSES),
+  rules: arr(en(RULE_IDS), RULE_IDS.length, 1),
+  // pick: the candidate the router model chose, its own or a rule's it agreed with; null when it chose none.
+  router: obj({ model: routeModel, state: en(ROUTER_STATES), why: nul(en(ROUTER_WHY)), pick: nul(int(0, MAX_CANDIDATES - 1)) }),
+  candidates: arr(obj({
+    harness: en(ROUTE_HARNESSES), model: routeModel, source: en(['rule', 'model']), rule: nul(en(RULE_IDS)), reason: nul(text(200, 'route-reason')),
+  }), MAX_CANDIDATES),
+  off: arr(en(ROUTE_HARNESSES), ROUTE_HARNESSES.length),
+});
 
 /** Step 4's routes (plan step 4), with their shapes. GET /api/items/:id/detail replaces GET /api/items. */
 export const ROUTES: readonly Route[] = Object.freeze([
@@ -324,8 +349,13 @@ export const ROUTES: readonly Route[] = Object.freeze([
   plain('GET', '/api/owned/:id/feed', 'unlocked', { query: obj({ after: re(SEQ_RE, 'seq') }, ['after']), reply: null, contract: 'OwnedFeed', target: 'owned', checks: ['auth', 'shape', 'item', 'execute'] }),
   plain('GET', '/api/import/:id/check', 'unlocked', { reply: IMPORT_CHECK_REPLY, target: 'stage', checks: ['auth', 'shape', 'item', 'execute'] }),
   // orchestra app: a new session names its harness and may name a model of the owned list (src/owned/models.ts).
+  // The dispatch desk: a suggestion for one sentence (the rules, then the router model); it starts nothing and writes nothing.
+  plain('POST', '/api/route/suggest', 'unlocked', {
+    body: obj({ text: message }), reply: SUGGEST_REPLY, checks: ['auth', 'ui-only', 'shape', 'own', 'execute'], own: ['text-too-long', 'slash-command'],
+  }),
+  // routeId: the suggestion the person dispatched from (its RouteDecision goes into the same batch).
   owned(
-    'owned-new', null, { text: message, harness: en(OWNED_HARNESSES), model: re(OWNED_MODEL_RE, 'model') }, accepted({ ownedId: id }),
+    'owned-new', null, { text: message, harness: en(OWNED_HARNESSES), model: re(OWNED_MODEL_RE, 'model'), routeId: re(ROUTE_ID_RE, 'routeId') }, accepted({ ownedId: id }),
     ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command'], NEW_FAILS,
   ),
   // via: what became of it at once: handed to codex (turn/start, turn/steer) or waiting here (queued).

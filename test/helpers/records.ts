@@ -67,6 +67,19 @@ export const R = {
 };
 
 /** One valid record of every kind a caller may append, in an order a fresh store applies. */
+/** A RouteDecision (the dispatch desk's `route` record) for a dispatch of `ownedId` by the action `actionId`: the person took the router model's pick. */
+export function routeRec(actionId: string, ownedId: string, over: Record<string, unknown> = {}): Rec {
+  const body = {
+    actionId, routeId: 'fedcba9876543210fedc', ownedId, taskClass: 'code', rules: ['code-or-command', 'fallback'],
+    candidates: [
+      { harness: 'claude', model: 'zcode/GLM-5.3', source: 'model', rule: null },
+      { harness: 'codex', model: 'codex/gpt-6.1-sol', source: 'rule', rule: 'code-or-command' },
+    ],
+    chosen: { harness: 'claude', model: 'zcode/GLM-5.3' }, pick: 0, reason: 'router-model', router: 'answered', mode: 'manual', ...over,
+  };
+  return { kind: 'route', body: { decisionId: canonicalDigest(body), ...body } };
+}
+
 export function oneOfEach(): Rec[][] {
   const a = uuidOf('each-action');
   const b = uuidOf('each-brake');
@@ -87,6 +100,8 @@ export function oneOfEach(): Rec[][] {
     [R.human(b, 'brake', '101:133000000000000001')],
     [R.command('cmd1', b, [sub], 'ok'), R.result(b, 'brake', '101:133000000000000001', 'applied', 'cmd1', [sub])],
     [R.protect('add', 4242, '133000000000000042')],
+    // A dispatch from the dispatch desk: owned-new's human records and its RouteDecision, one batch.
+    [R.human(uuidOf('each-route'), 'owned-new', '0123456789abcdef0123'), R.result(uuidOf('each-route'), 'owned-new', '0123456789abcdef0123'), routeRec(uuidOf('each-route'), '0123456789abcdef0123')],
   ];
 }
 

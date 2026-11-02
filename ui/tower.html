@@ -41,7 +41,7 @@
     <button type="button" class="changes" data-act="apply" data-slot="changes" data-hide="1" aria-describedby="changes-hint"></button><span id="changes-hint" class="sr" data-t="tree.changesHint"></span>
   </div>
   <p class="cols" aria-hidden="true"><span class="c-name" data-t="col.name"></span><span class="c-act" data-t="col.act"></span><span class="c-kids" data-t="col.kids"></span><span class="c-age" data-t="col.age"></span><span class="c-own" data-t="col.own"></span></p>
-  <p class="router"><span class="r-ico" aria-hidden="true" data-t="router.icon"></span><span class="r-name" data-t="router.you"></span><span class="r-note" data-t="router.note"></span></p>
+  <p class="router"><span class="r-ico" aria-hidden="true" data-t="router.icon"></span><span class="r-name" data-t="router.you"></span><span class="r-note" data-slot="rNote"></span></p>
   <p id="tree-keys" class="sr" data-t="tree.keys"></p>
   <span id="tree-name" class="sr" data-t="tree.label"></span>
   <ul id="tree" class="tree" role="tree" aria-labelledby="tower-h tree-name" aria-describedby="tree-keys" data-slot="tree"></ul>
@@ -111,6 +111,14 @@
   <h2 id="nw-h" data-t="new.title"></h2>
   <label class="dlg-l" for="nw-text" data-t="new.task"></label>
   <textarea id="nw-text" class="dlg-in" rows="3"></textarea>
+  <p class="acts"><button type="button" class="btn" data-act="suggest" data-slot="ask"></button></p>
+  <section class="route-card" data-slot="card" data-hide="1" aria-labelledby="rt-h">
+    <h3 id="rt-h" data-t="route.title"></h3>
+    <p class="rt-title" data-slot="rtTitle"></p>
+    <p class="dlg-p" data-slot="rtNote" role="status"></p>
+    <ol class="cands" data-slot="cands"></ol>
+    <p class="dlg-p" data-slot="rtPick"></p>
+  </section>
   <label class="dlg-l" for="nw-harness" data-t="new.harness"></label>
   <select id="nw-harness" class="dlg-in"><option value="codex" data-slot="hCodex" data-t="harness.codex"></option><option value="claude" data-slot="hClaude" data-t="harness.claude"></option></select>
   <p class="dlg-p" data-slot="why"></p>
@@ -124,6 +132,7 @@
 
 <template id="tpl-btn"><button type="button" class="btn"></button></template>
 <template id="tpl-opt"><option></option></template>
+<template id="tpl-cand"><li class="cand"><button type="button" class="cand-b" data-act="pick" aria-pressed="false" data-slot="b"><span class="cand-rank" data-slot="rank"></span><span class="cand-hm" data-slot="hm"></span><span class="cand-src" data-slot="src"></span><span class="cand-why" data-slot="why"></span></button></li></template>
 <template id="tpl-card"><li class="card" data-waiting="1"><p class="card-h"><span data-slot="kind"></span><span data-slot="left"></span></p><p class="card-t" data-slot="title"></p><pre class="pv" data-slot="pv"></pre><p class="card-note" data-slot="note"></p><p class="acts" data-slot="acts"></p></li></template>
 <template id="tpl-msg"><li class="msg"><span class="msg-who" data-slot="who"></span><span class="msg-tx" data-slot="tx"></span></li></template>
 <template id="tpl-tool"><li class="msg"><details><summary data-slot="sum"></summary><pre class="pv" data-slot="body"></pre></details></li></template>

@@ -7,7 +7,9 @@ import { deadline } from './clock.js';
 const HEX20 = /^[0-9a-f]{20}$/;
 export const TIMEOUT_MS = 4000;
 const POST_MS = 15000;
-const POST_RE = /^(?:owned\/(?:new|unlock|unlock-code|[0-9a-f]{20}\/(?:message|interrupt|end))|approvals\/[0-9a-f]{32}\/(?:allow|deny))$/;
+/** The dispatch desk waits on the router model (20 s on the daemon's side) before it answers with the rules alone. */
+const SUGGEST_MS = 30000;
+const POST_RE = /^(?:owned\/(?:new|unlock|unlock-code|[0-9a-f]{20}\/(?:message|interrupt|end))|approvals\/[0-9a-f]{32}\/(?:allow|deny)|route\/suggest)$/;
 /** @param {string | null} [csrf] */
 const heads = (csrf) => (csrf ? { accept: 'application/json', 'x-orchestra-csrf': csrf } : { accept: 'application/json' });
 /** @param {string | null} [csrf] @returns {RequestInit} */
@@ -72,6 +74,6 @@ export async function getFeed(csrf, id, after) {
 export async function post(csrf, path, body) {
   if (!POST_RE.test(path)) return { ok: false, code: 'bad-id' };
   const json = body === null ? {} : { 'content-type': 'application/json' };
-  const init = { method: 'POST', credentials: /** @type {const} */ ('same-origin'), cache: /** @type {const} */ ('no-store'), headers: { ...heads(csrf), ...json }, signal: deadline(POST_MS) };
+  const init = { method: 'POST', credentials: /** @type {const} */ ('same-origin'), cache: /** @type {const} */ ('no-store'), headers: { ...heads(csrf), ...json }, signal: deadline(path === 'route/suggest' ? SUGGEST_MS : POST_MS) };
   return read(() => fetch('/api/' + path, body === null ? init : { ...init, body: JSON.stringify(body) }));
 }

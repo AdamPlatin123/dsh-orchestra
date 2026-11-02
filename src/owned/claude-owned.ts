@@ -120,8 +120,8 @@ export class ClaudeOwned {
     return [...this.#sessions.values()].filter((s) => !isClaudeOver(s.state)).length;
   }
 
-  /** A new session; `text` (with the uuid of its human record) is its first message. The model is checked before anything is made. */
-  create(req: { model?: string; text?: string; uuid?: string } = {}): NewClaude {
+  /** A new session; `text` (with the uuid of its human record) is its first message, `title` (the dispatch desk's) names it in place of that message's first line. The model is checked before anything is made. */
+  create(req: { model?: string; text?: string; uuid?: string; title?: string } = {}): NewClaude {
     const model = req.model ?? DEFAULT_CLAUDE_MODEL;
     if (!isClaudeModel(model)) return { ok: false, reason: 'model-refused', detail: String(model) };
     if (this.active() >= this.#max) return { ok: false, reason: 'owned-limit', detail: `${this.#max} running` };
@@ -135,7 +135,7 @@ export class ClaudeOwned {
     } catch (e) {
       return { ok: false, reason: 'cwd-failed', detail: e instanceof Error ? e.message : String(e) };
     }
-    const first = (req.text ?? '').trim().split('\n', 1)[0] ?? '';
+    const first = (req.title ?? req.text ?? '').trim().split('\n', 1)[0] ?? '';
     const title = first === '' ? '' : shown(o.redact, first, CLAUDE_OWNED_LIMITS.titleBytes, 'head').text;
     const createdAt = o.now();
     let mine: ClaudeSession | null = null;

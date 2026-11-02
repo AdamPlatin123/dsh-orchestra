@@ -51,7 +51,7 @@ test('tower.html: an ARIA tree, a polite live region, an alert, and every templa
   assert.equal(doc.getElementById('alert')!.getAttribute('role'), 'alert');
   const view = read('ui/view.js') + read('ui/owned.js');
   const named = [...new Set([...view.matchAll(/tpl: '(tpl-[a-z]+)'/g)].map((m) => m[1]!))].sort();
-  assert.deepEqual(named, ['tpl-arow', 'tpl-btn', 'tpl-card', 'tpl-ev', 'tpl-group', 'tpl-kv', 'tpl-msg', 'tpl-node', 'tpl-opt', 'tpl-pin', 'tpl-proj', 'tpl-rule', 'tpl-src', 'tpl-tool']);
+  assert.deepEqual(named, ['tpl-arow', 'tpl-btn', 'tpl-cand', 'tpl-card', 'tpl-ev', 'tpl-group', 'tpl-kv', 'tpl-msg', 'tpl-node', 'tpl-opt', 'tpl-pin', 'tpl-proj', 'tpl-rule', 'tpl-src', 'tpl-tool']);
   for (const id of named) assert.ok(doc.getElementById(id)?.content?.firstElementChild, `no <template id=${id}>`);
   for (const id of ['tpl-node', 'tpl-proj', 'tpl-group']) {
     const li = doc.getElementById(id)!.content!.firstElementChild!;

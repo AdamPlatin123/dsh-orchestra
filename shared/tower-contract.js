@@ -32,6 +32,8 @@ export const TOWER_V = 1;
 export const TOWER_HEX20_RE = frozen(/^[0-9a-f]{20}$/);
 /** A node: 'n:' + Hex20 (the same tail as the stage player it comes from). */
 export const NODE_ID_RE = frozen(/^n:[0-9a-f]{20}$/);
+/** A model of the owned list (src/owned/models.ts OWNED_MODEL_RE), as the router row names it. */
+export const TOWER_MODEL_RE = frozen(/^(?:zcode|opencode-go|codex)\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
 /** The snapshot's revision: 16 hex of a sha256 over the body without its time fields. */
 export const TOWER_REV_RE = frozen(/^[0-9a-f]{16}$/);
 /** A source's error code: ASCII, never source text. */
@@ -112,8 +114,11 @@ export const TOWER_BOUNDS = frozen({
  * @typedef {{ state: 'ok' | 'empty' | 'error', total: number, shown: number, registry: number | null, error: string | null }} Src
  *   total: every session file the source holds, before any cut; shown: how many of them are in this
  *   snapshot. empty only when total is 0 (T1: a source the limits pushed out is clipped, not empty).
- * @typedef {{ kind: 'human', dispatch: null }} Router
- *   Layer 0. In M0 it is you and nothing more; dispatch is reserved for the dispatch desk.
+ * @typedef {{ kind: 'human', dispatch: Dispatch | null }} Router
+ *   Layer 0: you. dispatch is the dispatch desk's last dispatch (orchestra app plan §3), null before any.
+ * @typedef {{ title: string, at: number, harness: 'codex' | 'claude', model: string, node: NodeId | null }} Dispatch
+ *   title: its session's title; at: epoch ms of the dispatch; node: that session's node when this
+ *   snapshot holds it, else null (a link never points at a node that is not there).
  * @typedef {{ id: Hex20, name: string, basis: 'cwd' | 'slug', nodes: Node[], groups: Group[] }} Project
  *   nodes: every node of the project, in tree order (a parent before its subtree, siblings by
  *   STATE_RANK); groups: the folded rows among its root nodes.
@@ -491,10 +496,21 @@ export function validateTower(x) {
   }
 
   const router = c.obj(s.router, '$.router', ['kind', 'dispatch']);
+  /** @type {Record<string, unknown> | null} */
+  let dispatch = null;
   if (router !== null) {
     c.en(router.kind, '$.router.kind', TOWER_ENUMS.routerKind);
-    // No routing brain is drawn before there is one: the dispatch desk fills this later.
-    if (router.dispatch !== null) c.bad('$.router.dispatch', 'null until the dispatch desk exists');
+    // The dispatch desk's last dispatch, or null before any.
+    if (router.dispatch !== null) {
+      dispatch = c.obj(router.dispatch, '$.router.dispatch', ['title', 'at', 'harness', 'model', 'node']);
+      if (dispatch !== null) {
+        c.text(dispatch.title, '$.router.dispatch.title', TOWER_BOUNDS.titleCp);
+        c.int(dispatch.at, '$.router.dispatch.at');
+        c.en(dispatch.harness, '$.router.dispatch.harness', ['codex', 'claude']);
+        c.re(dispatch.model, '$.router.dispatch.model', TOWER_MODEL_RE, 'model');
+        if (dispatch.node !== null) c.re(dispatch.node, '$.router.dispatch.node', NODE_ID_RE, 'NodeId');
+      }
+    }
   }
 
   /** @type {Map<unknown, Record<string, unknown>>} */
@@ -528,6 +544,12 @@ export function validateTower(x) {
   const listed = new Set();
   /** @type {number | null | undefined} */
   let prev;
+  // The router row links only to a node this snapshot holds, an owned one.
+  if (dispatch !== null && typeof dispatch.node === 'string') {
+    const n = all.get(dispatch.node);
+    if (n === undefined) c.bad('$.router.dispatch.node', `${dispatch.node} is not a node of this snapshot`);
+    else if (n.ownership !== 'owned') c.bad('$.router.dispatch.node', 'not an owned node');
+  }
   c.arr(s.waitingBar, '$.waitingBar').forEach((e, i) => {
     const at = `$.waitingBar[${i}]`;
     const o = c.obj(e, at, ['node', 'kind', 'source', 'deadline']);

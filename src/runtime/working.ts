@@ -13,6 +13,7 @@ import type { CodexOwned } from '../owned/codex-owned.ts';
 import type { OwnedRegistry } from '../owned/registry.ts';
 import type { Redact } from '../owned/text.ts';
 import type { PathJudge } from '../owned/codex-session.ts';
+import type { Desk } from '../route/desk.ts';
 import type { CwdPolicySpec } from '../os/cwd.ts';
 import type { ProvenSystemRoot } from '../os/spawn.ts';
 import type { DbOpener, DbOpenerSpec } from '../store/db.ts';
@@ -99,6 +100,16 @@ export const CLAUDE_GATEWAY_URL = 'http://127.0.0.1:3425';
 
 /** The local magpie gateway every owned session's model calls go to (orchestra app plan, measured 2026-11-02). */
 export const MAGPIE_BASE_URL = 'http://127.0.0.1:3425/v1';
+
+/**
+ * The dispatch desk's router model (orchestra app plan §3): magpie's chat completions, the one address
+ * the daemon ever POSTs to (src/net/magpie.ts takes nothing but http://127.0.0.1). No key; only the
+ * person's sentence and a fixed system prompt go out. Past ROUTER_TIMEOUT_MS the card shows the rules alone.
+ */
+export const MAGPIE_CHAT_URL = 'http://127.0.0.1:3425/v1/chat/completions';
+export const ROUTER_TIMEOUT_MS = 20_000;
+/** The most of a reply read from the router model (JSON with its reasoning text). */
+export const ROUTER_REPLY_MAX_BYTES = 256 * 1024;
 
 /**
  * Whether owned Codex sessions run, and if not why (T1: a reason, never a bare "no"): not asked for
@@ -331,9 +342,31 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
       const { startPeekServer } = await import('../server/http.ts');
       const { humanJournal } = await import('../server/owned.ts');
       const { ownedEnabled, registerOwnedHandlers } = await import('../server/owned-handlers.ts');
-      const deps = { codex: codexOwned, codexOff: ownedCodex.on ? 'on' : ownedCodex.why, claude: claudeOwned, log };
       const wall = ctx.clock.port(null);
+      // The dispatch desk (orchestra app plan §3), with --owned only: the rules, then the router model on magpie.
+      let desk: Desk | null = null;
+      if (ctx.owned === true) {
+        const { makeLoopbackPost } = await import('../net/magpie.ts');
+        const { lastDispatchIn, makeAfter, makeDesk } = await import('../route/desk.ts');
+        const { DEFAULT_ROUTER_MODEL } = await import('../route/router-model.ts');
+        desk = makeDesk({
+          post: makeLoopbackPost({ url: MAGPIE_CHAT_URL, after: makeAfter(ctx.clock), timeoutMs: ROUTER_TIMEOUT_MS, maxBytes: ROUTER_REPLY_MAX_BYTES }),
+          routerModel: DEFAULT_ROUTER_MODEL,
+          on: () => ({ codex: codexOwned !== null, claude: claudeOwned !== null }),
+          redact: (text) => redactor.redact({ text }).text,
+          nowMono: () => wall.nowMono(),
+          nowWall: () => wall.nowWall(),
+          restored: lastDispatchIn(store.db),
+        });
+      }
+      const deps = { codex: codexOwned, codexOff: ownedCodex.on ? 'on' : ownedCodex.why, claude: claudeOwned, desk, log };
       const owners = [codexOwned, claudeOwned].filter((x): x is CodexOwned | ClaudeOwned => x !== null);
+      const lastDispatch = () => {
+        const d = desk?.last() ?? null;
+        if (d === null) return null;
+        const meta = (d.harness === 'codex' ? codexOwned : claudeOwned)?.meta(d.ownedId) ?? null;
+        return { ...d, title: meta?.title ?? '' };
+      };
       const server = await startPeekServer({
         port: ctx.peekPort, gate, roots: ctx.roots, redact: (text) => redactor.redact({ text }).text, clock: ctx.clock.port(null), log, pairingCode: code, profile: ctx.profile.kind,
         // alpha 0.2's owned-session base (slice design §2.7): unlock codes go where the pairing code
@@ -348,7 +381,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
           enabled: ownedEnabled(deps),
           handlers: registerOwnedHandlers(deps),
         },
-        ...(owners.length === 0 ? {} : { ownedSeats: { seats: () => owners.flatMap((o) => o.towerSeats()), nowWall: () => wall.nowWall() } }),
+        ...(owners.length === 0 ? {} : { ownedSeats: { seats: () => owners.flatMap((o) => o.towerSeats()), nowWall: () => wall.nowWall(), dispatch: lastDispatch } }),
       });
       peek = server;
       ctx.console.out(`orchestrad: peek page at ${server.url} (read-only; pair with the code above)`);

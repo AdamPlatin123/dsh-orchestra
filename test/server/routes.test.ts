@@ -285,10 +285,10 @@ const owned = (method: 'GET' | 'POST', path: string) => {
 };
 
 test('owned sessions: every route needs the pairing cookie; all but the unlock pair need the controller token too, a GET as well', () => {
-  const ownedPaths = ROUTES.filter((r) => /^\/api\/(?:owned|approvals|import)\//.test(r.path) || r.path === '/api/owned');
+  const ownedPaths = ROUTES.filter((r) => /^\/api\/(?:owned|approvals|import|route)\//.test(r.path) || r.path === '/api/owned');
   assert.deepEqual(ownedPaths.map((r) => `${r.method} ${r.path}`), [
     'POST /api/owned/unlock-code', 'POST /api/owned/unlock', 'GET /api/owned', 'GET /api/owned/:id/feed', 'GET /api/import/:id/check',
-    'POST /api/owned/new', 'POST /api/owned/:id/message', 'POST /api/owned/:id/interrupt', 'POST /api/owned/:id/end', 'POST /api/owned/:id/retry',
+    'POST /api/route/suggest', 'POST /api/owned/new', 'POST /api/owned/:id/message', 'POST /api/owned/:id/interrupt', 'POST /api/owned/:id/end', 'POST /api/owned/:id/retry',
     'POST /api/approvals/:id/allow', 'POST /api/approvals/:id/deny', 'POST /api/import/claude', 'POST /api/import/dsh',
   ]);
   for (const r of ownedPaths) assert.equal(r.auth, r.path.startsWith('/api/owned/unlock') ? 'cookie' : 'unlocked', r.path);
@@ -296,7 +296,9 @@ test('owned sessions: every route needs the pairing cookie; all but the unlock p
   assert.equal(CONTROL_HEADER, 'x-orchestra-csrf');
   assert.equal(routeOf('GET', '/api/session')!.auth, 'session', 'the frozen GET /api/session is not reused');
   // the owned verbs are human verbs, each with its route; the unlock pair writes no human record and carries no actionId
-  for (const r of ownedPaths.filter((x) => x.method === 'POST' && !x.path.startsWith('/api/owned/unlock'))) assert.notEqual(r.human, null, r.path);
+  for (const r of ownedPaths.filter((x) => x.method === 'POST' && !x.path.startsWith('/api/owned/unlock') && x.path !== '/api/route/suggest')) assert.notEqual(r.human, null, r.path);
+  // the dispatch desk's suggestion starts nothing: no human verb, no actionId, no record
+  assert.equal(routeOf('POST', '/api/route/suggest')!.human, null);
   for (const p of ['/api/owned/unlock-code', '/api/owned/unlock']) assert.equal(owned('POST', p).human, null);
 });
 

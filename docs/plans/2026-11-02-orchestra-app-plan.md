@@ -74,6 +74,12 @@
   - 受保护根：host 原来把 `~/.orchestra` 整个拒掉，真实 profile 下工作目录就在里面。改成和 cwd 拒绝表一样的「工作根豁免」：会话自己的 `<受保护根>\work\<id>` 放开，根的其他部分（别的会话、登记、库）仍拒。
   - 对话流里没有工具结果：host 协议只报工具名，不报输出（0.2 设计如此）。
   - 结束顺序：close 帧 → 3 s 后关 stdin → 2 s 后才杀 host；杀了的话 feed 写「claude.exe 可能还在」（D4 残余，同 Codex）。
+- **派活台（阶段 5，2026-11-02 接上）**：和 r4 不同或简化的几处：
+  - r4 D9 和 §9.2 要分叉 adaptive-router 的 `router-core`（硬过滤、Wilson 证据门、滞回），这里没做：只有五条确定性规则（点名模型、点名 harness/「不要用 X」、改代码跑命令、短问答、默认），之后问一次 magpie 上的路由模型（`zcode/GLM-5.3`，chat completions，JSON 模式，20 秒）。只有规则把 harness 和模型都定了时才不问模型（D9「只有模糊时才用 LLM」的最小版）。证据门、影子模式留到 M4。
+  - 候选只列能用的 harness（关着的不列，卡片写明哪个不可用），没有 r4 §9.2 第 5 步的类型化拒绝码。
+  - RouteDecision（journal 的 `route` 记录）没有 `input`（那句话）、`confidence`、`overriddenBy`：journal 不收自由文本（records.ts 的规则），那句话已作为会话第一条消息进了会话自己的对话流；置信度这一版不知道（T1：不写成 0）。有 `pick`（人选了第几个候选，手动改了就是 null）和 `reason`（理由 chip：规则 id、router-model、manual）。只有 mode=manual。
+  - 派出时只认「同一句话」的建议：建议后改过句子，派出不带 routeId，不写 RouteDecision。建议只在内存里存 30 分钟、最多 64 条；重启后作废。
+  - 联网：守护进程唯一的出站调用在 `src/net/magpie.ts`，只许 POST 到 http://127.0.0.1（组合根常量 `MAGPIE_CHAT_URL`）；builtin 表只给它 `node:http` 的 `request`，扫描规则 `net:magpie-post-loopback-only` 钉住 host 和方法。
 - **自有会话跨重启**：每个会话一份 `ORCHESTRA_HOME\owned\<ownedId>.json`（0.2 设计 §2.4）。重启后没结束的会话显示「状态未知」、endReason daemon-restart，不续跑、不重发；对话内容只在旧进程内存里，重启后看不到。
 
 ### 5. 界面：塔表
