@@ -40,7 +40,7 @@
 - r4 §9.2 要的 router-core（硬过滤、Wilson 证据门、滞回）没做，只有五条确定性规则加一次路由模型；没有影子模式和类型化拒绝码。
 
 ## Next（按优先级，每条可独立执行）
-1. 真实浏览器走一遍 — 在本 worktree 根目录建一个 `%TEMP%\orchestra-test-ui-<随机>` 目录和它下面的 `roots\`，运行 `node src/boot.ts --test-profile --test-dir <该目录> --peek-port <空闲端口> --owned`，用浏览器开 `http://orchestra.localhost:<端口>`，用控制台打印的配对码配对、解锁码解锁；派一个 Codex、一个 Claude 会话，各处理一次审批（一次允许、一次拒绝），中断、结束。分别在亮色、暗色和 375px 宽度下看。验收：每一步页面状态和 `GET /api/owned` 一致，没有控制台报错；发现的问题记进本文件 Unverified 或修掉。
+1. 真实浏览器走一遍 — 在 `%TEMP%` 下建一个 `orchestra-test-ui-<随机>` 目录和它下面的 `roots\`（同 live-smoke.ts 的做法），在本 worktree 根目录运行 `node src/boot.ts --test-profile --test-dir <该目录> --peek-port <空闲端口> --owned`，用浏览器开 `http://orchestra.localhost:<端口>`，用控制台打印的配对码配对、解锁码解锁；派一个 Codex、一个 Claude 会话，各处理一次审批（一次允许、一次拒绝），中断、结束。分别在亮色、暗色和 375px 宽度下看。验收：每一步页面状态和 `GET /api/owned` 一致，没有控制台报错；发现的问题记进本文件 Unverified 或修掉。
 2. `scripts/live-route.ts --dispatch` — 跑一次。验收：`dispatch.status` 为 200，`dispatchEnded.settled` 为 ended，`routerRow` 不为 null 且 `linked` 为 true，`leftovers.leftover` 为 0。
 3. `scripts/live-smoke.ts --harness codex --outside` 和 `--harness claude --outside` — 各重跑一次。验收：`approvalsAllowed` 里有命令卡，`ranUnasked` 为 0。结果追加到计划「第 3 阶段复核后补记」那条，仍写「未知」直到有更多次。
 4. `src/boot.ts` / `src/main.ts` — 加「stdin 读到 EOF 就按正常停机走」（先结束所有自有会话、等 host 停止顺序，再关库退出），配一条用假子进程的测试。验收：全量测试 0 失败；live-smoke 里把 `child.kill()` 前改成先关 stdin 时，leftovers 仍为 0。
