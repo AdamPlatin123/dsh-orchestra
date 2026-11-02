@@ -60,11 +60,19 @@ export function describeChat(feed) {
   /** @type {Map<string, any>} */
   const tools = new Map();
   const fates = new Map(feed.events.filter((e) => e.kind === 'note' && MSG.test(e.state ?? '')).map((e) => [e.ref, e]));
+  /** @type {Map<string, number>} */
+  const parts = new Map();
   for (const e of feed.events) {
     if (e.kind === 'note' && MSG.test(e.state ?? '')) continue;
     const tx = e.text ?? '';
     const k = e.ref ?? `#${e.seq}`;
-    const msg = (who, text, kind) => kids.push({ key: `e${e.seq}`, tpl: 'tpl-msg', data: { kind, live: e.live ? '1' : '0' }, slots: { who: { text: who }, tx: { text } } });
+    // A message keeps one node from its first delta to its final words (the reader hears it once).
+    const n = parts.get(k) ?? 0;
+    if (e.kind === 'text' && e.ref !== null) parts.set(k, n + 1);
+    const key = e.kind === 'text' && e.ref !== null ? `m${k}:${n}` : `e${e.seq}`;
+    const msg = (who, text, kind) => kids.push({ key, tpl: 'tpl-msg', data: { kind, live: e.live ? '1' : '0' }, slots: { who: { text: who }, tx: { text } } });
+    // A command told again moves below the approval that decided it (src/owned/codex-session.ts).
+    if (e.kind === 'tool' && tools.has(k)) kids.splice(kids.indexOf(tools.get(k)), 1);
     if (e.kind === 'tool' || (e.kind === 'tool-result' && !tools.has(k))) {
       const sum = e.kind === 'tool' ? `${tk('tool', e.state, 'tool.tool')} · ${tx.replace(/^command: /, '').split('\n', 1)[0]}` : t('chat.out');
       tools.set(k, { key: `t${k}`, tpl: 'tpl-tool', data: { kind: 'tool', live: '0' }, slots: { sum: { text: sum }, body: { text: e.kind === 'tool' ? tx : '' } } });
@@ -88,6 +96,16 @@ export function describeChat(feed) {
   const shown = kids.slice(-200);
   return { kids: shown, note: join([shown.length === 0 ? t('chat.none') : kids.length > 200 && t('chat.cut', { n: 200 }), feed.clipped && t('chat.clipped')], 'sep.notes') };
 }
+
+/** What a screen reader hears of the events after `after`: not your own words, not a live one, at most the last three. */
+export function chatNews(feed, after) {
+  const fresh = feed.events.filter((e) => e.seq > after && !e.live && e.kind !== 'you' && e.kind !== 'answer' && !(e.kind === 'note' && (MSG.test(e.state ?? '') || e.state === 'tokens')));
+  const lines = describeChat({ clipped: false, events: fresh }).kids.map((d) => (d.tpl === 'tpl-tool' ? d.slots.sum.text : join([d.slots.who.text, d.slots.tx.text])));
+  return lines.slice(-3).map((l) => (l.length > 300 ? `${l.slice(0, 300)}…` : l)).join(t('sep.notes'));
+}
+
+/** The chat follows new messages only while the reader is at its bottom (scrolled up, it stays put). */
+export const atBottom = (el) => !((el.scrollHeight ?? 0) - (el.scrollTop ?? 0) - (el.clientHeight ?? 0) > 24);
 
 /** The waiting bar shows this request whole. */
 export const pinWhole = (a) => !a.tooLong && a.preview.length <= 280 && a.preview.split('\n').length <= 4;

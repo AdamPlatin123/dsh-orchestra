@@ -6,7 +6,7 @@ import { FakeElement, parseHtml, type FakeDocument } from '../helpers/fake-dom.t
 import { TOWER_TEXT } from '../../shared/strings.js';
 import { towerFromStage, type OwnedSeat } from '../../src/sources/tower.ts';
 import { busyStage } from '../helpers/tower-fixture.ts';
-import { apprActs, describeChat, describeNew, describeOwned, describeOwnedDock, errText, mergeFeed, msgError, notifyText, pinExtra, type Approval, type Guard } from '../../ui/owned.js';
+import { apprActs, atBottom, chatNews, describeChat, describeNew, describeOwned, describeOwnedDock, errText, mergeFeed, msgError, notifyText, pinExtra, type Approval, type Guard } from '../../ui/owned.js';
 
 // Orchestra's own sessions on the tower page (orchestra app plan §2-§5): ui/app.js booted against the
 // real ui/tower.html in the fake DOM, with the network, the clock, the timers, session storage and
@@ -277,6 +277,7 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     assert.match(tool.querySelector('summary')!.textContent, /rg color · 已返回 · 退出码 0$/);
     assert.match(tool.querySelector('[data-slot=body]')!.textContent, /a\.css:1 color: red/);
     assert.equal(doc.textContent.includes('完成'), false, 'T2');
+    assert.equal(detail.querySelector('[data-slot=chatSay]')!.textContent, '', 'opening a session reads none of its past aloud');
 
     // The composer: to this session; a running turn takes the message as a steer.
     const dock = doc.getElementById('dock')!;
@@ -429,4 +430,32 @@ test('owned descriptors (review fixes): words for notes and fates, unknown outco
   const ids = [...HTML.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
   assert.deepEqual(ids.filter((x, i) => ids.indexOf(x) !== i), [], 'no id twice');
   for (const m of HTML.matchAll(/<label[^>]*\bfor="([^"]+)"/g)) assert.match(HTML, new RegExp(`<(?:select|input|textarea)[^>]*\\bid="${m[1]}"`), `label for ${m[1]} names a control`);
+});
+
+test('the chat (live run fixes): a command told again moves below its approval; a message keeps one node; the reader hears only new words; it follows the bottom', () => {
+  const ev = (seq: number, kind: string, ref: string | null, state: string | null, text: string | null = 'x', live = false) => ({ seq, kind, ref, uuid: null, text, state, live, exitCode: null });
+  // A page that read the command before the daemon moved it below the approval (src/owned/codex-session.ts).
+  const chat = describeChat({ clipped: false, events: [
+    ev(1, 'tool', 'i1', 'command', 'Set-Content hello.txt'), ev(2, 'ask', AP.a, 'command', 'Set-Content hello.txt'),
+    ev(3, 'answer', AP.a, 'decline', null), ev(4, 'tool', 'i1', 'command', 'Set-Content hello.txt'), ev(5, 'tool-result', 'i1', 'declined', null),
+  ] });
+  assert.deepEqual(chat.kids.map((k: any) => k.tpl === 'tpl-tool' ? `tool:${k.slots.sum.text}` : `${k.data.kind}`), ['ask', 'answer', `tool:${TOWER_TEXT['tool.command']} · Set-Content hello.txt · ${TOWER_TEXT['res.declined']}`]);
+  assert.equal(new Set(chat.kids.map((k) => k.key)).size, chat.kids.length, 'one row per key');
+  // A streaming message and its final words share a node: the reader is not handed every delta as a new line.
+  const partial = describeChat({ clipped: false, events: [ev(7, 'text', 'm1', 'partial', 'Writ', true)] }).kids[0]!.key;
+  const final = describeChat({ clipped: false, events: [ev(9, 'text', 'm1', 'final', 'Wrote hello.txt'), ev(10, 'text', 'm1', 'final', 'part two')] }).kids.map((k) => k.key);
+  assert.equal(final[0], partial);
+  assert.notEqual(final[1], partial);
+  // Only what is new, not your own words, not a live one; at most the last three.
+  const feed = { clipped: false, events: [ev(1, 'text', 'm0', 'final', 'old words'), ev(2, 'you', null, null, 'mine'), ev(3, 'text', 'm1', 'final', 'Wrote hello.txt'), ev(4, 'text', 'm2', 'partial', 'stre', true)] };
+  const heard = chatNews(feed, 1);
+  assert.ok(heard.includes('Wrote hello.txt') && !heard.includes('old words') && !heard.includes('mine') && !heard.includes('stre'), heard);
+  assert.equal(chatNews(feed, 4), '');
+  // Follows the bottom; scrolled up by the reader, it stays.
+  assert.equal(atBottom({ scrollHeight: 1000, scrollTop: 600, clientHeight: 400 }), true);
+  assert.equal(atBottom({ scrollHeight: 1000, scrollTop: 590, clientHeight: 400 }), true, 'within 24 px');
+  assert.equal(atBottom({ scrollHeight: 1000, scrollTop: 100, clientHeight: 400 }), false);
+  // The page: a polite live region of its own next to the chat; the chat scrolls and takes the keyboard.
+  assert.match(HTML, /<ol class="chat" data-slot="chat" tabindex="0" aria-labelledby="chat-h"><\/ol><p class="sr" aria-live="polite" data-slot="chatSay"><\/p>/);
+  assert.match(HTML, /data-t="new.sandbox"/);
 });

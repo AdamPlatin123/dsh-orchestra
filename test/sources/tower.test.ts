@@ -16,6 +16,8 @@ import { realIo } from '../helpers/read-io.ts';
 import { STAGE_CANARY, normalizeSnapshot, writeStageFixture } from '../helpers/stage-fixture.ts';
 import { busyStage, lane, nid, player, stageOf } from '../helpers/tower-fixture.ts';
 import { withTmp } from '../helpers/tmp.ts';
+import { Feed } from '../../src/owned/feed.ts';
+import { recentOf } from '../../src/owned/codex-owned.ts';
 
 // The tower snapshot (orchestra app plan §1): built from the stage snapshot, checked by
 // shared/tower-contract.js. The golden file is the stage fixture's tower, normalized like the stage's.
@@ -220,6 +222,29 @@ test('owned sessions: one project of their own, first; the driver state with bas
   assert.equal(b.snapshot().projects[0]!.nodes[0]!.state, 'idle');
   live = [seat(6, { state: 'running' })];
   assert.equal(b.snapshot().projects[0]!.nodes[0]!.state, 'running');
+});
+
+test('owned sessions: the activity line is the newest thing the session said or did, never a bare "no activity"', () => {
+  const feed = new Feed(() => 1);
+  assert.equal(recentOf(feed), null, 'nothing yet: null, said as unknown by the page (T1)');
+  feed.push({ kind: 'you', ref: null, uuid: '11111111-1111-4111-8111-111111111111', text: 'write hello.txt', state: null });
+  assert.deepEqual(recentOf(feed), { kind: 'you', text: 'write hello.txt' });
+  feed.push({ kind: 'lifecycle', ref: 't', text: null, state: 'turn-started' });
+  feed.upsert('text:m', { kind: 'text', ref: 'm', text: 'Creating the', state: 'partial' });
+  assert.deepEqual(recentOf(feed), { kind: 'text', text: 'Creating the' }, 'a message still streaming counts');
+  feed.push({ kind: 'tool', ref: 'i', text: 'Set-Content hello.txt orchestra', state: 'command' });
+  feed.upsert('tokens', { kind: 'note', ref: null, text: null, state: 'tokens' });
+  assert.deepEqual(recentOf(feed), { kind: 'command', text: 'Set-Content hello.txt orchestra' }, 'token counts are not activity');
+  const now = 61_000;
+  const at = (recent: OwnedSeat['recent'], over: Partial<OwnedSeat> = {}) => towerFromStage(busyStage(), { seats: [seat(1, { recent, ...over })], nowWall: now }).projects[0]!.nodes[0]!.activity;
+  assert.equal(at({ kind: 'text', text: 'Done writing\nhello.txt' }), 'Done writing hello.txt', 'one line');
+  assert.equal(at({ kind: 'command', text: 'type hello.txt' }), '命令：type hello.txt');
+  assert.equal(at({ kind: 'you', text: 'go' }), '你说：go');
+  assert.equal(at(null), null);
+  assert.equal(at({ kind: 'text', text: 'x' }, { waiting: { kind: 'approval', deadline: 2_000_000, title: 'rm synthetic' } }), 'rm synthetic', 'an open approval comes first');
+  assert.equal(at({ kind: 'text', text: 'x' }, { state: 'ended', endReason: 'you-ended' }), '已结束：你结束的');
+  const v = validateTower(towerFromStage(busyStage(), { seats: [seat(1, { recent: { kind: 'text', text: 'y'.repeat(500) } })], nowWall: now }));
+  assert.ok(v.ok, v.errors.join('\n'));
 });
 
 test('owned sessions: the validator holds basis owned to owned nodes, owned nodes to owned or none, and the owned project to owned nodes and to one', () => {

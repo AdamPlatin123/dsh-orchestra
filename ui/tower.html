@@ -62,7 +62,7 @@
   <section class="dt-sec own" data-slot="ownBox" data-hide="1">
     <p class="own-st" data-slot="ownSt"></p><p class="acts" data-slot="ownActs"></p>
     <h3 data-slot="cardsH" data-hide="1"></h3><ol class="cards" data-slot="cards"></ol>
-    <section data-slot="chatBox" data-hide="1"><h3 data-t="own.title"></h3><p class="ev-note" data-slot="chatNote"></p><ol class="chat" data-slot="chat"></ol></section>
+    <section data-slot="chatBox" data-hide="1"><h3 id="chat-h" data-t="own.title"></h3><p class="ev-note" data-slot="chatNote"></p><ol class="chat" data-slot="chat" tabindex="0" aria-labelledby="chat-h"></ol><p class="sr" aria-live="polite" data-slot="chatSay"></p></section>
   </section>
   <section class="dt-sec" data-slot="evBox" data-hide="1"><h3 data-t="detail.events"></h3><p class="ev-note" data-slot="evNote"></p><ol class="events" data-slot="events"></ol><p class="dt-full"><button type="button" class="link" data-act="full" data-slot="full" data-t="detail.full"></button></p></section>
 </aside>
@@ -117,6 +117,7 @@
   <label class="dlg-l" for="nw-model" data-t="new.model"></label>
   <select id="nw-model" class="dlg-in" data-slot="model"></select>
   <p class="dlg-p" data-t="new.cwd"></p>
+  <p class="dlg-p" data-t="new.sandbox"></p>
   <p class="dlg-msg" data-slot="msg" role="status"></p>
   <p class="acts"><button type="button" class="btn" data-act="dispatch" data-slot="go"></button><button type="button" class="btn" data-act="close" data-t="dlg.cancel"></button></p>
 </dialog>

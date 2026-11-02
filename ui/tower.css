@@ -219,6 +219,7 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
 .pv { margin: 0 0 8px; padding: 6px 8px; max-height: 40vh; overflow: auto; border: 1px solid var(--rule); background: var(--panel); }
 .pv, .pin-pv { font: 12.5px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .card-note, .dock-st, .own-st { font-size: 12.5px; color: var(--ink2); }
+.chat { max-height: 60vh; overflow: auto; overscroll-behavior: contain; }
 .msg { display: grid; grid-template-columns: 28px minmax(0, 1fr); gap: 0 8px; padding: 6px 0; border-bottom: 1px solid var(--rule); font-size: 13px; }
 .msg-tx { white-space: pre-wrap; overflow-wrap: anywhere; }
 .msg-who, .msg[data-live="1"] .msg-tx, .msg[data-kind=life] .msg-tx, .msg[data-kind=note] .msg-tx, .msg[data-kind=auto] .msg-tx { color: var(--ink2); }

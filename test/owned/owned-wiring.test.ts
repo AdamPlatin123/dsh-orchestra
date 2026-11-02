@@ -69,6 +69,7 @@ test('--owned with codex.exe in place: the private CODEX_HOME, the work root, an
     const toml = fs.readFileSync(path.join(w.home, 'codex-home', 'config.toml'), 'utf8');
     assert.ok(toml.startsWith('model = "codex/gpt-6.1-sol"\nmodel_provider = "magpie"\napproval_policy = "on-request"\nsandbox_mode = "workspace-write"\n'), toml);
     assert.ok(toml.includes('[model_providers.magpie]\nname = "magpie"\nbase_url = "http://127.0.0.1:3425/v1"\nwire_api = "responses"\n'), toml);
+    assert.ok(toml.includes('[skills]\ninclude_instructions = false\n'), 'the user\'s ~/.agents/skills stay out of the prompt');
     assert.ok(fs.statSync(path.join(w.home, 'work')).isDirectory());
     assert.equal(w.specs.length, 1);
     const spec = w.specs[0]!;

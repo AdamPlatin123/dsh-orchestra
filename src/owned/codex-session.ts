@@ -3,7 +3,7 @@ import type { ChildPipe } from '../os/child-pipe.ts';
 import type { ClockHub } from '../runtime/clock.ts';
 import type { Answer, AnswerCause, ApprovalKind, ApprovalRisk, Approvals } from './approvals.ts';
 import type { RpcClient, RpcExit, RpcId, RpcStats } from './codex-rpc.ts';
-import type { FeedTokens } from './feed.ts';
+import type { FeedInput, FeedTokens } from './feed.ts';
 import type { Redact } from './text.ts';
 import { isWithin } from '../fs/paths.ts';
 import { RpcError, makeRpcClient } from './codex-rpc.ts';
@@ -39,6 +39,11 @@ const win = path.win32;
 // that hits a protected row (the data dir, a harness root, ~/.claude, ~/.dsh, the repository, AppData...)
 // is declined at once without a card (cause protected: an automatic refusal, which D8 allows); one only
 // outside the work dir is a card of risk protected, to be held (r4 §10.9).
+//
+// Order (measured on codex-cli 0.165.0): codex announces a command or file change (item/started) before
+// it asks about it, so its row would sit above the card that decides it. The announcement is taken out
+// of the feed while the card is open and told again after the answer (or after an automatic refusal, or
+// when codex settles the request itself): the feed reads ask, answer, then the command and its result.
 //
 // What codex sends becomes feed events: message deltas (one live event per message) and the final
 // message, a command's start, its output so far (live) and its end, file changes, turn start and end,
@@ -189,6 +194,10 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   const endedTurns: string[] = [];
   /** Server request -> the approval it waits on. */
   const asked = new Map<string, string>();
+  /** A command's or file change's announcement while its item runs: hidden while an approval about it is open. */
+  const toolEvents = new Map<string, { seq: number; input: FeedInput; hidden: boolean }>();
+  /** Approval -> the item it decides, while it is open. */
+  const askItem = new Map<string, string>();
 
   let settleReady!: (ok: boolean) => void;
   const ready = new Promise<boolean>((r) => {
@@ -244,6 +253,23 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     const s = text === null ? null : shownFeed(text, 'head');
     feed.push({ kind: 'note', ref: null, text: s?.text ?? null, state: stateName, redactions: s?.redactions ?? 0 });
   };
+  /** Takes a command's announcement out of the feed while a card about it is open. */
+  const hideTool = (iid: string | null) => {
+    const t = iid === null ? undefined : toolEvents.get(iid);
+    if (t === undefined || t.hidden) return;
+    feed.withdraw(t.seq);
+    t.hidden = true;
+  };
+  /** Tells a hidden announcement again, below what decided it. */
+  const showTool = (iid: string | null) => {
+    const t = iid === null ? undefined : toolEvents.get(iid);
+    if (t === undefined || !t.hidden) return;
+    t.seq = feed.push(t.input).seq;
+    t.hidden = false;
+  };
+  const showAllTools = () => {
+    for (const iid of toolEvents.keys()) showTool(iid);
+  };
   /** A message's fate, under its uuid: msg-queued is live (replaced), the rest are final. */
   const fate = (uuid: string, stateName: 'msg-queued' | 'msg-sent' | 'msg-not-sent' | 'msg-withdrawn' | 'msg-unsure', text: string | null = null) => {
     if (uuid === '') return;
@@ -292,6 +318,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     // Nobody can answer what the child asked any more.
     approvals.forgetOwned(ownedId);
     asked.clear();
+    askItem.clear();
+    showAllTools();
     const what = exit.error !== null ? `pipe ${exit.error}` : exit.code !== null ? `exit code ${exit.code}` : `signal ${String(exit.signal)}`;
     state = 'failed';
     endReason = 'exited';
@@ -414,12 +442,14 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       const it = itemOf(iid, type);
       it.command = str(item.command) ?? '';
       const s = shownFeed(it.command, 'head');
-      feed.push({ kind: 'tool', ref: iid, text: s.text, state: 'command', redactions: s.redactions });
+      const input: FeedInput = { kind: 'tool', ref: iid, text: s.text, state: 'command', redactions: s.redactions };
+      toolEvents.set(iid, { seq: feed.push(input).seq, input, hidden: false });
     } else if (type === 'fileChange') {
       const it = itemOf(iid, type);
       it.changes = changesOf(item.changes);
       const s = shownFeed(changeSummary(it.changes ?? [], feedPath), 'head');
-      feed.push({ kind: 'tool', ref: iid, text: s.text, state: 'file-change', redactions: s.redactions });
+      const input: FeedInput = { kind: 'tool', ref: iid, text: s.text, state: 'file-change', redactions: s.redactions };
+      toolEvents.set(iid, { seq: feed.push(input).seq, input, hidden: false });
     } else if (type === 'mcpToolCall' || type === 'dynamicToolCall' || type === 'webSearch') {
       itemOf(iid, type);
       const what = type === 'mcpToolCall' ? `${str(item.server) ?? '?'} / ${str(item.tool) ?? '?'}` : type === 'webSearch' ? str(item.query) ?? '' : str(item.tool) ?? '?';
@@ -436,6 +466,9 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     if (iid === null || type === null) return;
     const it = items.get(iid);
     items.delete(iid);
+    // A result never comes before its command: an announcement still hidden is told first.
+    showTool(iid);
+    toolEvents.delete(iid);
     if (type === 'agentMessage') {
       feed.settle(`text:${iid}`);
       const raw = (str(item.text) ?? it?.msg ?? '').slice(0, L.messageChars);
@@ -511,6 +544,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
           state = 'idle';
         }
         items.clear();
+        showAllTools();
+        toolEvents.clear();
         const err = str(obj(turn.error).message);
         const s = err === null ? null : shownFeed(err, 'head');
         feed.push({ kind: 'lifecycle', ref: t, text: s?.text ?? null, state: TURN_END[str(turn.status) ?? ''] ?? 'turn-unknown', redactions: s?.redactions ?? 0 });
@@ -563,6 +598,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
         asked.delete(rpcKey(rid));
         // Codex settled it itself (the turn ended under it): the card goes, nobody answered it.
         if (approvals.forget(approvalId)) feed.push({ kind: 'note', ref: approvalId, text: null, state: 'ask-withdrawn' });
+        showTool(askItem.get(approvalId) ?? null);
+        askItem.delete(approvalId);
         changed();
         return;
       }
@@ -582,8 +619,12 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     canText: boolean;
     /** The protected row a path of the request hits: then it is declined at once, without a card. */
     refuse: string | null;
+    /** The command or file change the request decides (its itemId), if codex named one. */
+    item: string | null;
     reply(a: Answer): unknown;
   };
+
+  type AskBase = Omit<Ask, 'item'>;
 
   const queueAsk = (rid: RpcId, ask: Ask) => {
     const t = shown(redact, ask.title, 400, 'head');
@@ -600,24 +641,34 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
           kind: cause === 'human' ? 'answer' : 'auto-denied', ref: approvalId, text: shownText?.text ?? null,
           state: cause === 'human' ? (a.decision === 'text' ? 'answered' : a.decision) : cause, redactions: shownText?.redactions ?? 0,
         });
+        askItem.delete(approvalId);
+        showTool(ask.item);
         changed();
       },
     });
     approvalId = view.approvalId;
     asked.set(rpcKey(rid), approvalId);
+    if (ask.item !== null) askItem.set(approvalId, ask.item);
+    hideTool(ask.item);
     feed.push({ kind: 'ask', ref: approvalId, text: shownFeed(ask.title, 'head').text, state: ask.kind });
     changed();
   };
 
   const decide = (a: Answer) => ({ decision: a.decision === 'accept' ? 'accept' : 'decline' });
 
-  const askCommand = (p: Obj): Ask => {
+  const askCommand = (p: Obj): AskBase => {
     const command = str(p.command) ?? '';
     const net = p.networkApprovalContext;
     const at = str(p.cwd) ?? cwd;
+    // What codex says the command reads, lists or searches (commandActions): a path outside the work dir is named.
+    const away = (Array.isArray(p.commandActions) ? p.commandActions.map(obj) : [])
+      .map((a) => ({ type: str(a.type) ?? '?', path: str(a.path) }))
+      .filter((a): a is { type: string; path: string } => a.path !== null && a.path !== '' && place(a.path).outside)
+      .map((a) => `outside the work dir: ${a.type} ${askPath(a.path)}`);
     const lines = [
       `command: ${command}`,
       `cwd: ${askPath(at)}`,
+      ...away,
       ...(str(p.reason) !== null ? [`reason: ${str(p.reason)}`] : []),
       ...(net !== undefined && net !== null ? [`network: ${JSON.stringify(net)}`] : []),
       ...(str(p.kind) !== null && p.kind !== 'command' ? [`kind: ${str(p.kind)}`] : []),
@@ -628,7 +679,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     };
   };
 
-  const askFileChange = (p: Obj): Ask => {
+  const askFileChange = (p: Obj): AskBase => {
     const it = items.get(id(p.itemId) ?? '');
     const changes = it?.changes ?? null;
     const grantRoot = str(p.grantRoot);
@@ -646,7 +697,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     };
   };
 
-  const askPermissions = (p: Obj): Ask => {
+  const askPermissions = (p: Obj): AskBase => {
     const requested = obj(p.permissions);
     const lines = [...(str(p.reason) !== null ? [`reason: ${str(p.reason)}`] : []), `permissions: ${JSON.stringify(requested)}`, 'granted for this turn only'];
     const net = obj(requested.network).enabled === true;
@@ -656,7 +707,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     };
   };
 
-  const askQuestion = (p: Obj): Ask => {
+  const askQuestion = (p: Obj): AskBase => {
     const questions = Array.isArray(p.questions) ? p.questions.map(obj) : [];
     const lines = questions.flatMap((q) => {
       const options = Array.isArray(q.options) ? q.options.map(obj).map((o) => `  - ${str(o.label) ?? ''}: ${str(o.description) ?? ''}`) : [];
@@ -671,7 +722,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     };
   };
 
-  const askElicitation = (p: Obj): Ask => {
+  const askElicitation = (p: Obj): AskBase => {
     const lines = [`server: ${str(p.serverName) ?? '?'}`, `message: ${str(p.message) ?? ''}`, ...(str(p.url) !== null ? [`url: ${str(p.url)}`] : []), 'only a refusal is offered'];
     return {
       kind: 'elicitation', title: str(p.message) ?? 'an MCP server asks', preview: lines.join('\n'), risk: str(p.url) !== null ? 'net' : 'other',
@@ -679,7 +730,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     };
   };
 
-  const ASKS: Readonly<Record<string, (p: Obj) => Ask>> = {
+  const ASKS: Readonly<Record<string, (p: Obj) => AskBase>> = {
     'item/commandExecution/requestApproval': askCommand,
     'item/fileChange/requestApproval': askFileChange,
     'item/permissions/requestApproval': askPermissions,
@@ -695,7 +746,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       changed();
       return;
     }
-    const ask = make(obj(params));
+    const ask = { ...make(obj(params)), item: id(obj(params).itemId) };
     // A session that is ending answers what still arrives with the refusal.
     if (terminal()) {
       rpc.respond(rid, ask.reply({ decision: 'decline' }));
@@ -704,8 +755,10 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     // A protected path: declined at once, no card (slice design §2.2: an automatic refusal; D8 forbids only automatic allows).
     if (ask.refuse !== null) {
       rpc.respond(rid, ask.reply({ decision: 'decline' }));
+      hideTool(ask.item);
       const s = shownFeed(`${ask.title} (${ask.refuse})`, 'head');
       feed.push({ kind: 'auto-denied', ref: null, text: s.text, state: 'protected', redactions: s.redactions });
+      showTool(ask.item);
       changed();
       return;
     }

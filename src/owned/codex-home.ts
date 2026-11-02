@@ -9,6 +9,15 @@ const win = path.win32;
 // in both profiles (the test profile's ORCHESTRA_HOME lies in its test dir), written through the write
 // fence at startup. Its config.toml sends every model call to the local magpie gateway and asks before
 // anything leaves the workspace; nothing of the user's own ~/.codex is read or copied.
+//
+// Skills (measured on codex-cli 0.165.0, 2026-11-02): a private CODEX_HOME does not keep codex away from
+// the user's own skills. It lists ~/.agents/skills (found through USERPROFILE, not CODEX_HOME) in the
+// model's instructions, and in a live run the model asked to Get-Content one of their SKILL.md files.
+// [skills] include_instructions = false takes the whole skills list (and its roots) out of the prompt,
+// and an explicit "$name" mention then injects nothing either; [skills.bundled] enabled = false keeps
+// codex from unpacking its own system skills into the private home. Neither a [[skills.config]] entry
+// for the root nor the skip_host_skill_discovery feature took the root out. Whether codex still scans
+// the directory itself (reading the files' front matter) is unknown: nothing of it reaches the model.
 
 export const OWNED_DIRS = frozen({ codexHome: 'codex-home', work: 'work' });
 
@@ -31,6 +40,12 @@ export function codexConfigToml(c: CodexConfig): string {
     'name = "magpie"',
     `base_url = "${c.gatewayBaseUrl}"`,
     'wire_api = "responses"',
+    '',
+    '[skills]',
+    'include_instructions = false',
+    '',
+    '[skills.bundled]',
+    'enabled = false',
     '',
   ].join('\n');
 }

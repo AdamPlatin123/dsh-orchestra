@@ -92,6 +92,27 @@ export class Feed {
     this.#events.splice(i, 1);
   }
 
+  /**
+   * Takes out the event of `seq` so the same thing can be told again later with a new seq (a command
+   * whose approval comes after its start moves below the approval). Not clipped: it was moved, not lost.
+   * A reader that already holds it gets the later copy under the same kind and ref.
+   */
+  withdraw(seq: number): boolean {
+    const i = this.#events.findIndex((e) => e.seq === seq);
+    if (i < 0) return false;
+    const e = this.#events[i]!;
+    for (const [k, s] of this.#live) if (s === seq) this.#live.delete(k);
+    this.#bytes -= sizeOf(e);
+    this.#events.splice(i, 1);
+    return true;
+  }
+
+  /** The newest event that `pred` takes, live ones included; null when none. */
+  last(pred: (e: FeedEvent) => boolean): FeedEvent | null {
+    for (let i = this.#events.length - 1; i >= 0; i--) if (pred(this.#events[i]!)) return this.#events[i]!;
+    return null;
+  }
+
   /** The events after `after`, oldest first. */
   since(after: number): FeedPage {
     const events = this.#events.filter((e) => e.seq > after);

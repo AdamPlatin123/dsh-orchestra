@@ -69,6 +69,8 @@ export type OwnedSeat = {
   waiting: { kind: 'approval' | 'question'; deadline: number; title: string } | null;
   /** Wall ms of the session's last feed event; null before any. */
   lastAt: number | null;
+  /** The newest thing it said or did that a person reads (shown text already); null or absent when none. */
+  recent?: { kind: 'text' | 'command' | 'file-change' | 'you' | 'auto-denied'; text: string } | null;
 };
 
 /** The owned sessions' project: a fixed id, so the page keeps its fold state across snapshots. */
@@ -254,6 +256,10 @@ export function ownedNode(seat: OwnedSeat, nowWall: number): TowerNode {
   if (seat.waiting !== null && seat.waiting.title !== '') activity = seat.waiting.title;
   else if (seat.state === 'starting') activity = text('starting', 'starting');
   else if (over || seat.state === 'unknown') activity = text(`end.${seat.endReason ?? 'unknown'}`, text('end.unknown', 'ended'));
+  else if (seat.recent !== undefined && seat.recent !== null && seat.recent.text.trim() !== '') {
+    const line = seat.recent.text.replace(/\s+/g, ' ').trim();
+    activity = seat.recent.kind === 'text' ? line : `${text(`act.${seat.recent.kind}`, '')}${line}`;
+  }
   const title = seat.title === '' ? text('untitled', 'owned session') : seat.title;
   return {
     id: `n:${seat.ownedId}`, session: null, harness: seat.harness, ownership: 'owned', layer: 'agent', parent: null, depth: 0,

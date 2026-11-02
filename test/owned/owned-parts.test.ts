@@ -112,11 +112,29 @@ test('feed: a live event is replaced (new seq, not clipped); past 500 events the
   assert.ok(g.since(0).events.length < 200 && g.since(0).clipped);
 });
 
-test('codex-home: config.toml names the magpie provider on loopback, on-request and workspace-write; a model off the list or another gateway is refused', () => {
+test('feed: withdraw takes one event out without clipping (it is told again later); last finds the newest that matches', () => {
+  const f = new Feed(() => 5);
+  const a = f.push({ kind: 'tool', ref: 'i1', text: 'echo hi', state: 'command' });
+  f.push({ kind: 'ask', ref: 'ap', text: 'echo hi', state: 'command' });
+  assert.equal(f.withdraw(a.seq), true);
+  assert.equal(f.withdraw(a.seq), false, 'once');
+  const again = f.push({ kind: 'tool', ref: 'i1', text: 'echo hi', state: 'command' });
+  const page = f.since(0);
+  assert.deepEqual(page.events.map((e) => `${e.seq}:${e.kind}`), ['2:ask', `${again.seq}:tool`]);
+  assert.equal(page.clipped, false, 'moved, not lost');
+  assert.equal(f.last((e) => e.kind === 'tool')?.seq, again.seq);
+  assert.equal(f.last((e) => e.kind === 'you'), null);
+  f.upsert('k', { kind: 'text', ref: 'm', text: 'he', state: 'partial' });
+  assert.equal(f.last(() => true)?.live, true, 'live events count');
+});
+
+test('codex-home: config.toml names the magpie provider on loopback, on-request and workspace-write, keeps the user skills out of the prompt; a model off the list or another gateway is refused', () => {
   const toml = codexConfigToml({ model: DEFAULT_CODEX_MODEL, gatewayBaseUrl: 'http://127.0.0.1:3425/v1' });
   assert.equal(toml, [
     'model = "codex/gpt-6.1-sol"', 'model_provider = "magpie"', 'approval_policy = "on-request"', 'sandbox_mode = "workspace-write"', '',
     '[model_providers.magpie]', 'name = "magpie"', 'base_url = "http://127.0.0.1:3425/v1"', 'wire_api = "responses"', '',
+    // Measured on codex-cli 0.165.0: without these the private home still lists ~/.agents/skills to the model.
+    '[skills]', 'include_instructions = false', '', '[skills.bundled]', 'enabled = false', '',
   ].join('\n'));
   assert.throws(() => codexConfigToml({ model: 'gpt-5', gatewayBaseUrl: 'http://127.0.0.1:3425/v1' }), /outside the owned list/);
   for (const url of ['http://example.com/v1', 'https://127.0.0.1:3425/v1', 'http://127.0.0.1:3425', 'http://localhost:3425/v1', 'http://127.0.0.1:3425/v1"\nx = "y']) {

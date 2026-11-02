@@ -247,6 +247,48 @@ test('approvals: a command enters the queue; allow answers {decision:accept} and
   });
 });
 
+test('order: codex announces a command before it asks about it; the feed reads ask, answer, then the command and its result', async (t) => {
+  await withRig(t, async (r) => {
+    const s = await newSession(r);
+    await s.ready;
+    const story = () => events(s).filter((e) => ['ask', 'answer', 'tool', 'tool-result'].includes(e.kind)).map((e) => `${e.kind}:${e.state}`);
+    s.send('run echo hi', U(1));
+    await until('the approval', () => r.approvals.list().length === 1);
+    assert.deepEqual(story(), ['ask:command'], 'while the card is open the command does not sit above it');
+    assert.equal(r.approvals.deny(r.approvals.list()[0]!.approvalId), 'ok');
+    await until('the decline', () => has(s, 'tool-result', 'declined'));
+    assert.deepEqual(story(), ['ask:command', 'answer:decline', 'tool:command', 'tool-result:declined']);
+    await until('turn 1 to end', () => has(s, 'lifecycle', 'turn-ended'));
+    const seqs = events(s).map((e) => e.seq);
+    assert.deepEqual(seqs, [...seqs].sort((a, b) => a - b), 'seqs still rise in feed order');
+    assert.equal(new Set(events(s).filter((e) => e.kind === 'tool').map((e) => e.ref)).size, events(s).filter((e) => e.kind === 'tool').length, 'told once in the feed');
+
+    s.send('run echo again', U(2));
+    await until('the second approval', () => r.approvals.list().length === 1);
+    const b = r.approvals.list()[0]!;
+    assert.equal(r.approvals.allow(b.approvalId, { digest: b.digest, rev: r.approvals.rev }), 'ok');
+    await until('the run', () => has(s, 'tool-result', 'ran'));
+    assert.deepEqual(story().slice(4), ['ask:command', 'answer:accept', 'tool:command', 'tool-result:ran']);
+  });
+});
+
+test('approvals: a file the command reads outside the work dir is named on the card (commandActions)', async (t) => {
+  await withRig(t, async (r) => {
+    const s = await newSession(r);
+    await s.ready;
+    s.send('read-outside', U(1));
+    await until('the approval', () => r.approvals.list().length === 1);
+    const a = r.approvals.list()[0]!;
+    const away = a.preview.split('\n').filter((l) => l.startsWith('outside the work dir: '));
+    assert.equal(away.length, 1, a.preview);
+    assert.match(away[0]!, /^outside the work dir: read \(outside the work dir\) .*elsewhere\\SKILL\.md$/);
+    assert.ok(!a.preview.includes('a.txt'), 'a read inside the work dir is not named');
+    assert.equal(a.high, true);
+    r.approvals.deny(a.approvalId);
+    await until('the decline', () => has(s, 'tool-result', 'declined'));
+  });
+});
+
 test('approvals: file changes, permissions, a question and an MCP elicitation; only accept/decline, a turn-scoped grant, one text or a refusal ever go back', async (t) => {
   await withRig(t, async (r) => {
     const s = await newSession(r);

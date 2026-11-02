@@ -8,6 +8,7 @@
 //   say <words>     a message streamed word by word, token usage, the turn ends
 //   secret          a message carrying a synthetic GitHub-token-shaped string, for the redactor
 //   run <cmd>       a command that asks for approval; accept runs it (output), decline declines it
+//   read-outside    as run, but codex says the command reads a file outside the work dir (commandActions)
 //   run-then-hold   as run, but the turn stays open until turn/interrupt
 //   run-crash       asks for a command approval, then exits with code 3 before any answer
 //   edit            a file change in the work dir that asks for approval
@@ -67,11 +68,11 @@ function endTurn(turnId: string, status: 'completed' | 'interrupted' | 'failed' 
   notify('turn/completed', { threadId: THREAD, turn: { id: turnId, status, items: [], error: null } });
 }
 
-async function runCommand(turnId: string, n: number, command: string, hold: boolean): Promise<void> {
+async function runCommand(turnId: string, n: number, command: string, hold: boolean, commandActions: Msg[] = []): Promise<void> {
   const itemId = `cmd_${n}`;
-  notify('item/started', { threadId: THREAD, turnId, startedAtMs: 0, item: { type: 'commandExecution', id: itemId, command, cwd, status: 'inProgress', commandActions: [] } });
+  notify('item/started', { threadId: THREAD, turnId, startedAtMs: 0, item: { type: 'commandExecution', id: itemId, command, cwd, status: 'inProgress', commandActions } });
   const r = await ask('item/commandExecution/requestApproval', {
-    threadId: THREAD, turnId, itemId, command, cwd, reason: 'the script asks', startedAtMs: 0,
+    threadId: THREAD, turnId, itemId, command, cwd, reason: 'the script asks', startedAtMs: 0, commandActions,
     availableDecisions: ['accept', 'acceptForSession', 'decline', 'cancel'], proposedExecpolicyAmendment: [command],
   });
   if (r?.decision === 'accept') {
@@ -107,6 +108,8 @@ async function runTurn(turnId: string, n: number, text: string): Promise<void> {
       return;
     case 'run':
       return runCommand(turnId, n, rest.join(' ') || 'echo hi', false);
+    case 'read-outside':
+      return runCommand(turnId, n, 'Get-Content ../elsewhere/SKILL.md', false, [{ type: 'read', command: 'Get-Content ../elsewhere/SKILL.md', name: 'SKILL.md', path: '../elsewhere/SKILL.md' }, { type: 'read', command: 'Get-Content a.txt', name: 'a.txt', path: 'a.txt' }]);
     case 'run-then-hold':
       return runCommand(turnId, n, 'echo held', true);
     case 'run-crash':

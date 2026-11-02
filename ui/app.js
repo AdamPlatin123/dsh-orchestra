@@ -8,7 +8,7 @@ import { after, every, fmtIso, nowMono, onFrame } from './clock.js';
 import { makePatcher } from './dom.js';
 import { getCsrf, getTheme, setCsrf, setTheme } from './prefs.js';
 import {
-  HOLD_MS, MODELS, SETTLE_MS, describeNew, describeOwned, describeOwnedDock, errText, isFeed, isOwnedList, mergeFeed, msgError, notifyText, ownedIdOf, pinExtra, pinWhole,
+  HOLD_MS, MODELS, SETTLE_MS, atBottom, chatNews, describeNew, describeOwned, describeOwnedDock, errText, isFeed, isOwnedList, mergeFeed, msgError, notifyText, ownedIdOf, pinExtra, pinWhole,
 } from './owned.js';
 import { go, openFull, parse } from './route.js';
 import { FILTERS, buildRows, freeze, groupKey, indexOf, navigate, projectKey, towerFrame } from './tree.js';
@@ -73,6 +73,8 @@ const state = {
   /** @type {Map<string, any>} */ feeds: new Map(),
   feedFor: null,
   feedOut: false,
+  // The chat's reader: what was said, up to which seq of which session (a session opened says nothing of its past).
+  heard: { id: '', seq: 0, text: '' },
   pinSig: '',
   changedMono: -Infinity,
   settleTok: 'a',
@@ -170,7 +172,16 @@ function render() {
     void pollFeed();
   }
   Object.assign(/** @type {any} */ (detail.slots), mine === null ? { ownBox: { data: { hide: '1' } } } : describeOwned(mine.id, state.owned, state.feeds.get(mine.id), g));
+  const feed = mine === null ? undefined : state.feeds.get(mine.id);
+  const opened = feed !== undefined && state.heard.id !== mine?.id;
+  if (feed !== undefined && mine !== null && (opened || feed.to > state.heard.seq)) {
+    state.heard = { id: mine.id, seq: feed.to, text: opened ? '' : chatNews(feed, state.heard.seq) || state.heard.text };
+  }
+  /** @type {any} */ (detail.slots).chatSay = { text: mine !== null && state.heard.id === mine.id ? state.heard.text : '' };
+  const chatEl = dom.slot(dom.byId('detail'), 'chat');
+  const follow = opened || atBottom(chatEl);
   dom.paintId('detail', detail);
+  if (follow && chatEl.scrollHeight !== undefined) chatEl.scrollTop = chatEl.scrollHeight;
   const dock = describeDock(snap, state.sel);
   const to = state.to ?? mine;
   Object.assign(/** @type {any} */ (dock.slots), describeOwnedDock(to, state.owned, g, state.to !== null, to !== null && state.endArm === to.id), state.to === null ? {} : { to: { text: t('dock.to', { who: state.to.title }) } });

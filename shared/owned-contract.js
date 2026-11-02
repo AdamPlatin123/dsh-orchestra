@@ -65,6 +65,11 @@ export const OWNED_TOWER_TEXT = frozen({
   'end.policy-mismatch': '已结束：审批或沙箱设置和要求不符，Orchestra 停了它',
   'end.daemon-restart': 'orchestrad 重启过：之前开的这个会话现在怎样不知道',
   'end.unknown': '已结束',
+  // The newest thing the session said or did, for its activity line (src/sources/tower.ts ownedNode).
+  'act.command': '命令：',
+  'act.file-change': '改文件：',
+  'act.you': '你说：',
+  'act.auto-denied': '自动拒绝了：',
 });
 
 export const OWNED_ID_RE = frozen(/^[0-9a-f]{20}$/);

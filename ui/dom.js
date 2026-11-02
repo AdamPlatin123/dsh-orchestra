@@ -136,6 +136,7 @@ export function makePatcher(doc) {
 
   return {
     clone,
+    slot,
     paint,
     list,
     keyed,

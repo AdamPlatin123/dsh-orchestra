@@ -364,6 +364,7 @@ export const TOWER_TEXT = frozen({
   'new.harness': 'Harness',
   'new.model': '模型',
   'new.cwd': '工作目录：将在 Orchestra 自建的工作目录里运行',
+  'new.sandbox': 'Codex 在 Windows 上的沙箱只能只读：它每次写文件、跑命令，都会先来问你',
   'new.go': '派出',
   'new.claudeOff': 'Claude：自有会话还没接上 orchestrad，暂时不能选',
   'new.off': '现在不能新开会话：{why}',
