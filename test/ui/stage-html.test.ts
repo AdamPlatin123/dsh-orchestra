@@ -110,6 +110,7 @@ test('what the browser loads for /stage stays within budget: ui/ itself and the 
   }
   const bytes = (fs: string[]) => fs.reduce((n, f) => n + Buffer.byteLength(read(f)), 0);
   const uiBytes = bytes(ui);
-  assert.ok(uiBytes <= 100 * 1024, `ui/ is ${uiBytes} bytes`);
-  assert.ok(uiBytes + bytes(shared) <= 140 * 1024, `the page loads ${uiBytes + bytes(shared)} bytes`);
+  // Caps raised for the 0.2 owned-session UI (user, 2026-11-02): page 168 KiB, ui/ 120 KiB.
+  assert.ok(uiBytes <= 120 * 1024, `ui/ is ${uiBytes} bytes`);
+  assert.ok(uiBytes + bytes(shared) <= 168 * 1024, `the page loads ${uiBytes + bytes(shared)} bytes`);
 });
