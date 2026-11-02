@@ -2,10 +2,10 @@
 
 ## Facts
 - Owner: AdamPlatin123
-- When: 2026-11-02 07:30 UTC（模拟后端补测；初版 2026-11-01 22:20 UTC）
+- When: 2026-11-02 08:45 UTC（第二轮 11 项补测；模拟后端补测 07:30；初版 2026-11-01 22:20 UTC）
 - Machine: 550W备份1号机
 - Branch: claude/sdk-probe-bead9f（从 claude/m0-thin-slice-e9066d 的 3b34a53 切出）
-- Commit: 286416d（复核后的版本；模拟后端补测在它之后、带本文件这一版的那个提交里）
+- Commit: d801df4（模拟后端补测；第二轮 11 项补测在它之后、带本文件这一版的那个提交里）
 - Pushed: no（push 前要问用户）
 - Uncommitted on that machine: none。主检出目录里 r4「第七批」的未提交改动不在这条分支上，见 `docs/handoff/main.md`
 
@@ -23,7 +23,10 @@
 - 模拟后端补测（用户 2026-11-02 要求「使用 opencode go mock 一下」）：`probe.mjs --gateway http://127.0.0.1:3425 --model opencode-go/claude-haiku-5-5`，经本机 magpie 网关，配置目录用草稿区里一次性的目录。两次运行结果一致：插话（`next`）和排队（`later`）都不插进正在跑的纯文本回合；`interrupt()` 停下回合，生命周期帧报 `cancelled`；`canUseTool` 被调用，拒绝后会话继续；注册表出现 `waiting`；带 uuid 的消息有 `command_lifecycle` 帧（`queued → started → completed`）；peek 页上 user / assistant 行都有内容。验证：草稿区 `evidence-mock*/live.json`、`peek-check.json`，见 REPORT §9。
 - 全量测试：958 条，955 过、0 失败、1 跳过、2 todo，和起点相同。验证：`.tools/node24/node.exe --test "test/**/*.test.ts"`。
 
+- 第二轮 11 项补测（上游会话 2026-11-02 为 alpha 0.2 交互薄切片要求）：`spikes/claude-sdk/probe2.mjs`，同样走 magpie 网关和一次性目录。结论见 REPORT §10，要点：复制 `.jsonl` 到另一个配置目录的任意项目目录都能 resume；项目目录名是 cwd 里非字母数字逐个换成 `-`，超过 200 字符截断加短串；fork 生成新文件、原文件不动；追加段在第一次请求时定下（`snapshot: false` 才能改）；`maxTurns` 按每条消息算；host 被杀后 claude.exe 约 0.5 s 退出但注册表文件留下；只读工具、`EnterPlanMode`、`Skill` 不经过 `canUseTool`；`skills: []` 去掉模型看到的技能清单，但 init 帧照报、插件关不掉。验证：草稿区 `evidence-r2*/probe2.json`。
+
 ## Unverified（做了但没验证，或验证没过）
+- REPORT §10 没有交给独立复核。第 5 项（`--no-chrome`）只证实传到了命令行，效果没看出来；第 1 项从另一个 cwd resume 后新回合记的 cwd、第 1′ 项超过 200 字符时的短串算法、第 2 项缺 `tool-results/` 时读预览以外内容、第 10 项里 Web 类等工具，都没测。
 - REPORT §9（模拟后端补测）没有交给独立复核。它只说明 CLI / SDK 一侧的行为，不说明 Anthropic API 本身，也不说明 Q8 的登录路径。`next` 会不会在两次工具调用之间插进回合、多条排队时的先后，都没测。
 - 全量测试在补测后没有重跑：补测只改了 `spikes/claude-sdk/` 和文档。
 - **没有一次走用户 Claude 登录的模型回合。** 子进程鉴权失败：继承的 `CLAUDE_CONFIG_DIR`（本会话的账号目录）里存的 OAuth 已过期且刷新失败；桌面应用里的 CLI 由宿主代为续期，单独拉起的子进程没有。另外 CLI 不读 Windows 系统代理，要显式传 `HTTPS_PROXY`，否则 API 回 403。走真实登录时，effort 是否被 API 采用、`/goal` 能否执行仍是「未测」；插话、排队、中断、审批、`waiting` 只在模拟后端上测过。

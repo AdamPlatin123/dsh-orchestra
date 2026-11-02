@@ -175,6 +175,7 @@ node probe.mjs --phase live --gateway http://127.0.0.1:3425 --model opencode-go/
 | `probe.mjs` | 拉起会话、轮询注册表、记录事件流和 transcript 的结构 |
 | `summarize.mjs` | 把 `live.json` 打成时间线、注册表、流与磁盘对照 |
 | `peek-check.mjs` | 用测试 profile 的 orchestrad 和 peek 页读回一个 transcript，只输出计数和类型 |
+| `probe2.mjs` | §10 的 11 项补测：`node probe2.mjs --gateway http://127.0.0.1:3425 --model opencode-go/claude-haiku-5-5 --out <dir> [--only …] [--desktop-transcript <文件>]`，约 4 分钟 |
 
 全量测试：`.tools/node24/node.exe --test "test/**/*.test.ts"`，958 条，955 过、0 失败、1 跳过、2 todo，和起点（最薄通路分支 3b34a53）相同。
 
@@ -212,6 +213,38 @@ node probe.mjs --phase live --gateway http://127.0.0.1:3425 --model opencode-go/
 - peek 页（`peek-check.mjs`，transcript 181,846 B）：会话页 88 行，transcript 也是 88 行。70 行没有内容，全是非消息行（`attachment` 25、`queue-operation` 14、`api-request` 10、`api-request-blob` 8、`atis-latch` 4、`last-prompt` 4、`ai-title` 3、`api-request-shape` 1、`cost-state` 1）。9 行 user 和 9 行 assistant 都有内容，包括 tool_use、tool_result 和 thinking 行。`peek-check.mjs` 为此加了按类型统计空行。
 - 证据：草稿区 `evidence-mock/live.json`（第一次）、`evidence-mock2/live.json` 和 `evidence-mock2/peek-check.json`（第二次），只有结构、计数、键名、时间。
 - 这一节**没有**交给独立复核。
+
+## 10. 第二轮补测：11 项 SDK 行为（2026-11-02，UTC 约 08:00–08:40）
+
+用途：给 alpha 0.2 交互薄切片（2026-11-02 用户决定做的下一条薄切片，导入也并进去）当前置结论。题目来自上游会话的 11 项清单，下文按清单编号写作「第 N 项」。
+
+做法：新脚本 `probe2.mjs`。后端、模型和设置都和 §9 相同：magpie 网关、opencode-go 的 `claude-haiku-5-5`、默认权限模式、`settingSources: []`、工作流关、`canUseTool` 默认拒绝。只用合成提示词，例如「记住暗号 BLUE-HERON-42」「数到 N」，以及临时目录里造的 `a.txt`、`big.txt`。全部 31 个配置目录和 cwd 都建在系统临时目录下同一个 `orchestra-sdk2-*` 根目录里，跑完整个删掉。没装新包，没碰真实登录，没读凭据文件。证据（只有结构、计数、键名、布尔值）在草稿区 `evidence-r2/`、`evidence-r2a/`、`evidence-r2b/` 的 `probe2.json`。仍是模拟后端，所以下表只说明 CLI 和 SDK 一侧的行为。
+
+| 项 | 问题 | 结论 | 证据 |
+|---|---|---|---|
+| 1 | 换了 `CLAUDE_CONFIG_DIR`、把 transcript 复制进新目录的 `projects/` 后，`resume` 能否接上；能否跨项目目录找到会话 | **能，两种都能** | 在配置目录 A 里开会话，记一个暗号；把 `.jsonl` 复制到全新的配置目录，再用 `resume: <id>` 问暗号。三种放法都答对了，会话 id 不变，新回合追加进**复制过去的那个文件本身**，不另建文件：① 放在按 cwd 算出的同名项目目录；② 放在一个随便起名的项目目录（`C--some-other-project`）；③ 放在原目录名下，但从另一个 cwd 去 resume。所以 resume 是按会话 id 在整个 `projects/` 下找，不要求目录名和 cwd 对得上。从另一个 cwd resume 时，新回合记的是哪个 cwd，没查 |
+| 1′ | CLI 按 cwd 算项目目录名的规则 | 所有不是 `A–Z a–z 0–9` 的字符都换成 `-`，**一个字符换一个**；超过 200 个字符时，保留前 200 个，再接 `-` 和一段 6 位短串 | 规则逐字符核对过：`C:\…\cwd-naming-dot.under_score space 中文` 得到的目录名和 `cwd.replace(/[^A-Za-z0-9]/g, '-')` 完全相同（点、下划线、空格、两个汉字各变一个 `-`）。237 字符的 cwd 得到 207 字符的目录名：前 200 个字符和规则结果一致，后面是 `-h7worv`。这段短串怎么算的（推断是某种哈希）没查，所以**目录名超过 200 字符时不能自己算出来**，只能列目录去找。另外，Windows 不允许 260 字符以上的路径当进程 cwd：那样的会话根本起不来（spawn 直接报 `ENOTCONN`），这是 Windows 的限制，不是 CLI 的 |
+| 2 | 除了 `*.jsonl` 和 `subagents/`，resume 还需要别的文件吗 | **接上会话只要 `.jsonl`**；但大块工具输出的全文只存在旁边的 `tool-results/` 里 | 让 PowerShell 读一个约 280 KB 的合成文件：全文存成 `projects/<目录>/<id>/tool-results/<随机名>.txt`（286,912 B），transcript 里只有预览和指向它的路径。只复制 `.jsonl` 去 resume：接得上，模型从预览里答对了首行；复制整个项目目录也一样。没测：模型在 resume 以后要读预览以外的内容时，如果 `tool-results/` 没复制过去会怎样。保险的做法是连同 `<id>/` 子目录一起复制。配置根下还出现了 `session-env/<id>/`（空目录）、`.claude.json`、`backups/`、`sessions/`；resume 不依赖它们（新配置目录里本来就没有）|
+| 3 | `resumeSessionAt` 加 `forkSession`，截在最后一条主链消息处 | **新会话、新文件，原文件不动；截断点之后的内容确实被丢掉** | 原会话两个回合，各记一个暗号。主链最后一条正好是第二个回合的 assistant 消息。截在这里 fork：新 session id，新文件和原文件在同一个项目目录，38 行，没有一行的 `sessionId` 是原 id；原会话主链的 17 个 uuid 原样复制进新文件；原文件行数不变；新会话两个暗号都答得出。截在第一个回合的 assistant 消息处 fork：只复制了 12 个 uuid，只答得出第一个暗号。之后再普通地 resume 原会话，两个都还在。新文件里多一种行型 `mode`。`resumeDropsTurn`（声明要丢弃的回合、由 CLI 校验）没测 |
+| 4 | `systemPrompt` 的追加段怎么写才生效 | 用 `{ type: 'preset', preset: 'claude_code', append: '…' }`，**在会话的第一个请求里定下来**；以后 resume 时换了 `append` 不生效，除非加 `snapshot: false` | 追加段要求每句回复以 `ZETA-7` 结尾：生效。直接传字符串（整段替换 Claude Code 的系统提示词）也生效，工具仍是 26 项。resume 时把追加段换成要求 `KAPPA-5`：回复里仍是 `ZETA-7`，新的不生效。同样的换法加 `snapshot: false`：变成 `KAPPA-5`。这和 `sdk.d.ts` 对 `snapshot` 的说明一致：默认在第一次请求时把系统提示词记进会话，以后照抄 |
+| 5 | `--no-chrome` 经 `extraArgs` 传进去是否生效 | **传到了 CLI，CLI 也接受；效果在这个设置下看不出来** | `extraArgs: { 'no-chrome': null }` 和 `{ chrome: null }`：子进程 claude.exe 的命令行里分别出现 `--no-chrome`、`--chrome`，没有报错，回合成功。但三种设置（不传、`--chrome`、`--no-chrome`）的工具表和 MCP 服务器表完全一样，都没有任何 chrome 相关项：`strictMcpConfig` 加空 `mcpServers`，加上临时配置目录里没有浏览器扩展配置，本来就不会加载 Claude in Chrome。要看出效果，得在装了扩展的配置里对照，没测 |
+| 6 | transcript 开头有没有 `entrypoint` 一类字段，能否据此认出 Desktop 托管的会话 | **有，但不在第一行；能认出** | 两种 transcript 的前两行都是 `queue-operation`，没有 `entrypoint`，也没有 uuid。从第三行起，每个带 uuid 的行都有 `entrypoint` 和 `userType`。SDK 会话是 `sdk-ts`；本会话（桌面应用托管）是 `claude-desktop`，全文 1381 行只有这一个值；`userType` 两边都是 `external`。所以要读到第一个带 uuid 的行，而不是只看第一行。只看了一份 Desktop transcript；交互式 `claude` 和 `claude -p`（S5 记的 `sdk-cli`）的值这次没取样 |
+| 7 | 流式输入下，`maxTurns` 按每条消息算，还是整个 `query()` 累计 | **按每条消息算** | `maxTurns: 1`，同一个 `query()` 里连发 5 条：3 条只要一句回复的都成功；第 4 条要调工具（Write，被拒）需要 2 个回合，得到 `error_max_turns`（`Reached maximum number of turns (1)`）；第 5 条又成功了 |
+| 8 | host（node 进程）被杀后，claude.exe 会不会在 stdin EOF 时自己退出 | **会，约 0.5 s 内；但注册表文件留下了** | 子 node 进程拉起会话，强杀它（`SIGKILL`，Windows 上就是 TerminateProcess）。空闲时和回合进行中（正在数到 3000）两种情况，claude.exe 都在 513 / 515 ms 内退出（每 500 ms 查一次，所以只能精确到这个粒度）。但它的 `sessions/<pid>.json` 两次都**没有被删掉**。M1 和导入都要处理这种死掉的注册表项：pid 已经不在了，文件还在 |
+| 9 | 全新的私有配置目录下，SDK 模式会不会卡在首次使用或信任目录的提示上 | **不会** | 31 个配置目录全是新建的空目录，没有一个卡住。单独记录的那一次：`system/init` 在 1.7 s 到达，回复正常。CLI 写出的 `.claude.json` 只有 `firstStartTime, firstStartVersion, machineID, userID, migrationVersion…` 等 10 个顶层键，没有 `projects`、信任标记，也没有 `hasCompletedOnboarding`；SDK 模式根本不走这些提示 |
+| 10 | `settingSources: []` 加默认权限模式时，哪些工具不经过 `canUseTool`；PreToolUse 返回 `ask` 会不会转到 `canUseTool` | **只读类工具不经过；`ask` 会转到 `canUseTool`** | 不经过 `canUseTool`、直接执行的：`Read`、`Glob`、`Grep`、只读的 `PowerShell`（`Get-ChildItem`；第 2 项里的 `Get-Content` 也是）、`CronList`、`EnterPlanMode`、`Skill`。经过 `canUseTool`（被拒，没有执行，文件确实没被改）的：会写文件的 `PowerShell`（`New-Item`）、`Write`、`Edit`、`AskUserQuestion`。要注意 `EnterPlanMode` 不问就执行了，它会改变会话的权限模式；执行后会话处在哪个模式，没查。PreToolUse 钩子对 `Read` 返回 `permissionDecision: 'ask'`：钩子被调用，接着 `canUseTool` 收到 `Read`，拒绝后 `Read` 没有执行。没测的工具：`WebFetch`、`WebSearch`、`Task`、`NotebookEdit`、`CronCreate`、`ScheduleWakeup`、`SendMessage` 等；PowerShell 哪些命令算只读，也没摸清 |
+| 11 | `skills: []` 这个选项是否存在，能否关掉内置技能和插件；关不掉的话，内置名单是什么 | **选项存在（`skills?: string[] \| 'all'`），能把技能从模型面前拿掉；插件关不掉** | 不传 `skills` 时，transcript 里有一行 `skill_listing` 附件（键 `content, digests, isInitial, names, skillCount, type`），`Skill` 工具能调 `dataviz`。传 `skills: []`：没有 `skill_listing` 这行，调 `Skill` 返回错误。传 `skills: ['dataviz']`：清单里只剩它，调用成功。但不管传什么，`system/init.skills` 都照报 16 个，`plugins` 照报 3 个，命令表都是 46 项；再加 `plugins: []` 也一样。所以 init 帧不能用来判断技能是否被关掉。类型注释说这是「上下文过滤，不是沙箱」：技能文件仍能用 Read 读到。`Skill` 工具本身也不经过 `canUseTool`（第 10 项）。内置名单（CLI 2.1.310）：技能 `design, design-sync, dataviz, update-config, verify, debug, code-review, simplify, batch, fewer-permission-prompts, doctor, loop, claude-api, run, run-skill-generator, plugin-authoring`；插件 `cc-plugin-agents-md, cc-plugin-telemetry, cc-plugin-plugin-authoring` |
+
+对 alpha 0.2 薄切片的几条直接含义（推断，供上游会话取舍）：
+
+- 导入别处的 Claude 会话，复制 `.jsonl`（最好连同 `<id>/` 子目录）到 Orchestra 用的配置目录的 `projects/` 下任意一个目录就能 resume，不必按 cwd 算目录名。但 resume 会往复制过去的那个文件里接着写。
+- 认 Desktop 托管的会话，读第一个带 uuid 的行的 `entrypoint`（`claude-desktop`）。
+- 判断会话是否还活着，不能只看注册表文件在不在，要验 pid（第 8 项）。
+- 「全拒」的 `canUseTool` 挡不住只读工具、`EnterPlanMode` 和 `Skill`。真要禁，得用 `disallowedTools` 或 PreToolUse 钩子（钩子返回 `ask` 会转给 `canUseTool`，返回 `deny` 这次没测）。
+
+花费：CLI 按 haiku 价目估算，每条消息 $0.0007–0.0018，约 50 条，估计合计不到 $0.1。计在 magpie 里的 opencode-go 账号上，不在 Anthropic 账号上。
+
+痕迹：临时根目录已删除；两次中途崩溃的试跑留下的两个空 `orchestra-sdk2-*` 目录也已删除。第 8 项强杀的子 node 进程和它的 claude.exe 都已确认退出。本节没有交给独立复核。
 
 ## 复核
 
