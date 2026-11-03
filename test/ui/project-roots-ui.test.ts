@@ -68,7 +68,7 @@ test('a request card says where its session runs: in its cwd inside a root, else
   assert.ok(codex.includes('untrusted') && codex.includes('Get-Content') && codex.includes('别的读法没测') && codex.includes('回复会交给发请求的 DSH 会话'), codex);
   assert.ok(!codex.includes('会不会先问你，未知'), 'measured now');
   // Review fix (T1): the measurement was outside Orchestra (a direct app-server, sandbox echoed read-only): the card says so.
-  assert.ok(codex.includes('在 Orchestra 外') && codex.includes('沙箱回的是只读') && codex.includes('经 Orchestra 在项目根里也没测'), codex);
+  assert.ok(codex.includes('在 Orchestra 外') && codex.includes('沙箱回的是只读') && codex.includes('经 Orchestra 在项目根里测过两次'), codex);
   assert.ok(TOWER_TEXT['req.untrustedCodex']!.includes('在 Orchestra 外') && TOWER_TEXT['req.untrustedCodex']!.includes('workspace-write'));
   // In Orchestra's own work dir the session is untrusted all the same (r4 §8.5 names no cwd), per harness.
   const workCodex = meta({ runIn: null, runInWhy: 'outside-roots' });

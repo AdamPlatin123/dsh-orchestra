@@ -611,7 +611,7 @@ export const TOWER_TEXT = frozen({
   'req.whoNone': '未知',
   'req.lockedWhat': '任务内容和请求方解锁后可见',
   'req.cwd': '它想在 {cwd} 干活；派出后仍在 Orchestra 自建的工作目录里跑（{why}）',
-  'req.cwdRoot': '它想在 {cwd} 干活：这在你放行的项目根里，派出后在 {run} 里跑，经你批准它能改那里的文件。请求来自 DSH 会话，派出的会话按来源不可信处理：Codex 用 untrusted 审批策略启动（回的不是它就停下）；在 Orchestra 外直接起同版本 app-server 实测一次（codex 0.165.0，untrusted，沙箱回的是只读）它用 Get-Content 读文件、列目录、写文件都先来问你，别的读法没测，经 Orchestra 在项目根里也没测；没来问就跑的，对话流里会标出来；它最后的回复会交给发请求的 DSH 会话',
+  'req.cwdRoot': '它想在 {cwd} 干活：这在你放行的项目根里，派出后在 {run} 里跑，经你批准它能改那里的文件。请求来自 DSH 会话，派出的会话按来源不可信处理：Codex 用 untrusted 审批策略启动（回的不是它就停下）；在 Orchestra 外直接起同版本 app-server 实测一次（codex 0.165.0，untrusted，沙箱回的是只读）它用 Get-Content 读文件、列目录、写文件都先来问你，别的读法没测；2026-11-03 经 Orchestra 在项目根里测过两次（读 notes.txt、写 hello.txt 各出一张卡），读用的是哪条命令没记下；没来问就跑的，对话流里会标出来；它最后的回复会交给发请求的 DSH 会话',
   // A request whose session runs in Orchestra's own work dir: tainted all the same (r4 §8.5: an unbound sender), per harness.
   'req.untrustedCodex': '请求来自 DSH 会话，派出的会话按来源不可信处理：Codex 用 untrusted 审批策略启动（回的不是它就停下）；在 Orchestra 外直接起同版本 app-server 实测一次（codex 0.165.0，untrusted，沙箱回的是只读）它用 Get-Content 读文件、列目录、写文件都先来问你，别的读法没测；这里沙箱回 workspace-write 也照样启动，那种情况没测；没来问就跑的，对话流里会标出来；它最后的回复会交给发请求的 DSH 会话',
   'req.untrustedClaude': '请求来自 DSH 会话，派出的会话按来源不可信处理：它读、查找、写文件、跑命令每次都先来问你；它最后的回复会交给发请求的 DSH 会话',

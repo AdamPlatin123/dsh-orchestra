@@ -219,7 +219,7 @@
 - 交接文件的 Unverified 第 37、41 行和 Next 第 4、5 条按 d212b86、18d5a03 改写，保留仍没验证的部分。
 
 **seat 经 orchestrad live 跑项目根和 Claude（2026-11-03，本机，e9dac45 上，测试 profile，每种一次）**：实验室 `seat-smoke.ts` 新加三种模式，每种单独起一次测试 profile orchestrad（`--owned --agent-port`，root-* 另加 `--project-root <测试目录>\proj`）和隔离 `DSH_HOME` 的 DSH headless，脚本充当配对页上的测试操作者（派出、允许都经页面的 HTTP 接口，D8：派出、批准、刹车只由人在配对页上做；这里是测试操作者代人点）。root-codex、root-claude：`proj` 里放 `notes.txt`（一个固定词），DSH 从 `proj` 起，任务要子代理读 `notes.txt`、把词写进 `hello.txt`，分别经 `subagent_codex_governed`、`subagent_claude_governed`；work-claude：同原来的 complete（写 `hello.txt` 内容 hi），经 `subagent_claude_governed`，会话在自建工作目录。结果：
-- 三种都是：卡片派出 200；请求 dispatched → running → done；会话 starting → running → idle；日志 `owned-started` 带 `tainted: true`，没有 policy-mismatch；审批卡全部 `tainted: true`；对话流 ran-unasked 0 条；DSH 退出码 0；结束后 orchestrad stdin-eof 退出码 0，令牌文件已删，残留 0。
+- 三种都是：卡片派出 200；请求 dispatched → running → done；会话 starting → running → idle；日志 `owned-started` 带 `tainted: true`，没有 policy-mismatch；审批卡全部 `tainted: true`；对话流 ran-unasked 0 条（只有 Codex 会话会发这个标记，Claude 两种模式的 0 不算证据；复核者改看对话流计数，Claude 问过的次数等于跑过的次数，2=2、1=1）；DSH 退出码 0；结束后 orchestrad stdin-eof 退出码 0，令牌文件已删，残留 0。
 - root-codex：卡片 `runIn` 是项目根，会话 `cwd.kind` 是 `project-root`；审批卡 2 张，都是 command / shell、高风险，一张读 `notes.txt`（读也先问了，untrusted 下的预期），一张写 `hello.txt`；`hello.txt` 在项目根里、内容对，自建目录和 DSH 目录里没有。
 - root-claude：卡片 `runIn` 是项目根，会话 `cwd.kind` 是 `project-root`；审批卡 2 张：读 `notes.txt` 一张（tool / other，不是高风险，r4 §8.5 tainted 会话 cwd 内的读也问，卡是普通风险），写 `hello.txt` 一张（file-change / write，不是高风险）；`hello.txt` 在项目根里、内容对。
 - work-claude：卡片 `runIn` 为空（`no-roots`），会话 `cwd.kind` 是 `work`；审批卡 1 张（file-change / write）；`hello.txt` 在会话自建目录里、内容 hi。
