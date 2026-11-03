@@ -1,0 +1,29 @@
+{
+  "name": "@local/orchestra-seat",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Orchestra as a governed Codex / Claude subagent backend for DSH: each delegation is a request a person dispatches on the paired Orchestra page",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "dsh": "0.2.1-rc.2"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  }
+}

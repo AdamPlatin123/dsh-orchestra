@@ -1,0 +1,30 @@
+# @local/orchestra-seat (seat, step 2): one host row for the two governed providers, and two stock
+# @deepseek-ai/dsh-tool-subagent rows that turn them into model tools. Top-level insert: the rows are
+# global tools, visible to every preset (scratchpad seat-lab/api-check.md §2.13).
+#
+# The orchestra-seat config below is the real profile's pipe and no token file, so the bundle registers
+# no provider until a profile says where orchestrad is. A profile overrides the whole config in its own
+# cordis.patch.yml, e.g. for orchestrad's test profile (--test-dir %TEMP%\orchestra-test-<name>):
+#   - id: orchestra-seat
+#     config:
+#       pipe: '\\.\pipe\orchestra-agent-test-<name>'
+#       tokenFile: '%TEMP%\orchestra-test-<name>\orchestra\agent-port.token'   (written out, absolute)
+#       requestTimeoutMs: 600000
+- insert:
+    - id: orchestra-seat
+      name: '@local/orchestra-seat'
+      config:
+        pipe: '\\.\pipe\orchestra-agent-real'
+        requestTimeoutMs: 600000
+    - id: tool-subagent-orchestra-codex
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: orchestra-codex
+        toolName: subagent_codex_governed
+        maxDepth: provider-managed
+    - id: tool-subagent-orchestra-claude
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: orchestra-claude
+        toolName: subagent_claude_governed
+        maxDepth: provider-managed
