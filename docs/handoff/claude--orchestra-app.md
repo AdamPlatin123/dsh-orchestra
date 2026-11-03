@@ -2,10 +2,10 @@
 
 ## Facts
 - Owner: AdamPlatin123
-- When: 2026-11-03（seat 项目根实跑、等你栏来源不可信卡之后；本机 shell 报的时区是 GMT）
+- When: 2026-11-03（审批卡来源链、键入放行实测之后；本机 shell 报的时区是 GMT）
 - Machine: 550W备份1号机
 - Branch: claude/orchestra-app（从 `claude/alpha-0.2-interactive` 的 76807ec 切出）
-- Commit: 见本文件所在提交的父提交（等你栏的来源不可信卡修正）。之前依次是 ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
+- Commit: eb8d621（来源链复核修正；本交接文件随后单独提交）。之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
 - Pushed: no（远端还没有这条分支。76807ec 之后的提交只在这台机器上）
 - Uncommitted on that machine: `.claude/launch.json`（未跟踪，本机某次会话的预览配置，不要提交）。主检出目录里 r4 规格有用户本人的未提交改动，见 Do not touch。
 
@@ -13,6 +13,8 @@
 用户 2026-11-02 的目标：把 Orchestra 做到「应用整体可用」。一个守护进程 orchestrad，首页是塔表（你 → agent → subagent 的跨项目树），能只读观察 Claude、DSH、Codex 三家的会话；能经本机模型网关 magpie（`http://127.0.0.1:3425`，不要密钥）开 Orchestra 自己拥有的 Codex 和 Claude 会话（下称「自有会话」），在页面上对话、审批、停下；有一个派活台，先跑规则、再问路由模型，给出「派给谁」的建议卡片，由人点「派出」；DSH 会话可以经 seat 请求派自有会话，由人在配对页派出或拒绝。总计划见 `docs/plans/2026-11-02-orchestra-app-plan.md`，给主人看的上手指南见 `docs/quickstart.md`，启动脚本 `start-orchestra.cmd`。
 
 ## Done（已完成且已验证）
+- 审批卡来源链（d5b40e1、eb8d621，r4 §8.5）— seat 派出的会话，审批卡和等你栏都写「来源不可信：DSH 会话 <id>（自称，未核实）→ 请求「<标签>」（标签是对方写的，未核实）→ 这个会话」；没报 id 写「未知」；等你栏里截断并标明；r4 原文的第三段（发送者自己的污染源）Orchestra 拿不到，卡上照实写。只加显示，审批行为不变，不进 journal。复核 5 条都修了（标签能伪造链结构、LRM/RLM/ALM 和行分隔符漏网、截断拆字形、备注文案、origin 不带 tainted 时整张列表 500）。全量 1542 条，1539 过，0 失败。
+- 来源链和键入放行的页面实测（2026-11-03，测试 profile，内置浏览器）：用实验室 ask-once.ts 提一个 seat 请求，配对、解锁、派出；等你栏这张卡是红条，提示位是上面那行来源链，按钮只有「拒绝」「输入确认词允许」。点「输入确认词允许」后页面弹出的确认框写「来源不可信（DSH 会话的请求）的高风险请求：…」；因为内置浏览器的原生确认框点不进去，由测试代人把确认词「放行」交给页面（覆盖 window.prompt），之后卡片消失、命令跑了、hello.txt 内容 hi。测试实例停掉后没有残留进程，测试目录已删。
 全部在本 worktree 根目录跑，node 用主检出目录的 `.tools/node24/node.exe`，只用测试 profile（代-2）。
 
 - seat 落在项目根里 live 跑（371509b 记录，实验室 seat-smoke.ts 新模式 root-codex、root-claude、work-claude，各跑两次：实现者一次、独立复核者一次）：派出 200，请求 done，会话 cwd.kind 为 project-root（root-*），hello.txt 在项目根里、内容对；日志 owned-started tainted true；审批卡全部 tainted；读 notes.txt 也出了审批卡（Codex 是命令卡，Claude 是工具卡）；Codex ran-unasked 0、没有 policy-mismatch；Claude 问过的次数等于跑过的次数（ran-unasked 标记只有 Codex 会发）；DSH 退出码 0；残余 0；`~/.dsh` 0 差异。
@@ -45,7 +47,7 @@
 
 ## Unverified（做了但没验证，或验证没过）
 - **真实 profile 一次都没跑过**（代-2：只能由用户在可见控制台里启动）。塔表在真实数据上有多少项目和节点、真实 profile 下自有会话能不能起停、`start-orchestra.cmd` 实际启动（等 5 秒开浏览器、Ctrl+C 只停 orchestrad、退出后停在「按任意键」）、带 `--project-root` 的真实启动，全部未知。
-- 项目根：seat 派出的会话按 r4 §8.5 记为 tainted（d212b86：Codex 用 untrusted 审批策略启动并校验回显，Claude 每次工具调用都问），这些都已 live 跑过（见 Done）；untrusted 下读文件先问人只在 Orchestra 外的探针里测过一次（Get-Content、列目录、写，3/3 先问），别的读法未测；tainted 会话的审批卡在页面上看过（等你栏，见 Done），键入放行没点过；卡上只写「来自 DSH 会话」，没有 r4 §8.5 说的完整来源链；受保护路径的卡是「按住或键入」确认，不是 §7.4 说的「必须键入」；`package.json` 整个文件算受保护；`.git/config` 不在清单里；r4 §10.8 双写者告警没做；根只能用启动参数给，改根要重启（原计划写「在设置里登记」，已记分歧）。
+- 项目根：seat 派出的会话按 r4 §8.5 记为 tainted（d212b86：Codex 用 untrusted 审批策略启动并校验回显，Claude 每次工具调用都问），这些都已 live 跑过（见 Done）；untrusted 下读文件先问人只在 Orchestra 外的探针里测过一次（Get-Content、列目录、写，3/3 先问），别的读法未测；tainted 会话的审批卡、来源链和键入放行都在页面上实测过（见 Done），但人在真实浏览器的原生确认框里亲手键入没有测（测试是覆盖 window.prompt 交的确认词）；服务器不区分按住和键入，「必须键入」只在页面这一侧生效；来源链挂在会话上，不是逐回合；受保护路径的卡是「按住或键入」确认，不是 §7.4 说的「必须键入」；`package.json` 整个文件算受保护；`.git/config` 不在清单里；r4 §10.8 双写者告警没做；根只能用启动参数给，改根要重启（原计划写「在设置里登记」，已记分歧）。
 - seat 装进日常 DSH profile 的步骤（README 新一节）没在真 DSH 上走过；卸载命令写的是「未知」。
 - seat：抢管道的冒名实例只有单元测试，没有用真的第二个管道实例复现；读到令牌文件又抢到管道的进程仍能冒充 orchestrad（已记残余）。Codex 沙箱里的进程能不能连上请求口管道，没验证。
 - 真正的系统级「标签页隐藏」在内置浏览器里模拟不出来（后台标签页 `document.hidden` 仍为 false，只是 requestAnimationFrame 停了），后台标题只在模拟 hidden 时看过。
@@ -58,7 +60,6 @@
 ## Next（按优先级，每条可独立执行）
 1. 真实 profile 启动检查（只能由用户本人做）— 先关掉 2026-11-01 从 `.claude\worktrees\m0-thin-slice-e9066d\orchestra.cmd --peek-port 7470` 起的旧 orchestrad（M0 旧代码，真实 profile，2026-11-03 还在跑并占着 7470 端口；不关的话新实例起不来，浏览器打开的也是旧页面）。然后在普通（非管理员）cmd 里双击或运行仓库根的 `start-orchestra.cmd`（worktree 里先设 `ORCHESTRA_NODE` 指向主检出目录的 `.tools\node24\node.exe`）。验收：控制台打印配对码、`procguard on`、两家 `owned … sessions on`、`working (real profile …)`；浏览器自动打开 `http://orchestra.localhost:7470/`；配对后塔表有数据、顶栏数字等于点开后的行数；派一个 Codex 会话「只回复 ok，不用工具」到空闲后结束；Ctrl+C 后任务管理器里没有 codex.exe、procguard.exe。结果记进本文件。
 2. 决定 push / 合并（只能由用户本人做）— 本分支只在这台机器上；`hosts/claude/node_modules` 也只在这个 worktree。要推远端或合进主线，由用户定目标分支。
-3. 来源不可信卡的「输入确认词允许」实际键入放行没在浏览器里点过（内置浏览器的 window.prompt 对话框没试），只点了拒绝。验收：键入「放行」后命令跑、对话流 answer:accept。
 
 ## Do not touch
 - 主检出目录里 `docs/specs/2026-10-27-dsh-orchestra-design-r4.md` 的未提交改动：用户本人的第七批改动。本分支只读引用它，不改、不提交、不覆盖。
