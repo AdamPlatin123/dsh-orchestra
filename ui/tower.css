@@ -278,8 +278,10 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
 @media (min-width: 900px) {
   body { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
   .main { flex: 1; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
-  .pins { max-height: 32vh; overflow: auto; }
-  .split { min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 32vw, 460px); }
+  /* Rows by name: an empty waiting bar is display:none, and auto-placement would move the dock into 1fr (0px). */
+  .pins { grid-row: 1; max-height: 32vh; overflow: auto; }
+  .split { grid-row: 2; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) clamp(320px, 32vw, 460px); }
+  .main > .dock { grid-row: 3; }
   .tower, .detail { overflow: auto; }
   .about { flex: 1; overflow: auto; max-width: none; }
 }

@@ -176,6 +176,15 @@ test('motion: animations only without a reduced-motion preference; keyframes onl
   assert.ok(!rules.some((r) => /data-state=waiting/.test(r.sel) && /animation/.test(r.body)));
 });
 
+test('wide screens: the waiting bar, the split and the dock keep their rows, so an empty (hidden) bar never squeezes the dock to 0px', () => {
+  const wide = cssRules(CSS).filter((r) => r.at.includes('min-width: 900px'));
+  const rowOf = (sel: string) => wide.find((r) => r.sel === sel)?.body.match(/grid-row: (\d)/)?.[1];
+  assert.match(wide.find((r) => r.sel === '.main')!.body, /grid-template-rows: auto minmax\(0, 1fr\) auto/);
+  assert.equal(rowOf('.pins'), '1');
+  assert.equal(rowOf('.split'), '2', 'the tree and detail take the 1fr row');
+  assert.equal(rowOf('.main > .dock'), '3', 'the composer and stop buttons take the last auto row');
+});
+
 test('narrow screens: one column, rows 44px tall, the node page full screen, nothing wider than the screen', () => {
   const rules = cssRules(CSS);
   const narrow = rules.filter((r) => r.at.includes('max-width: 899px'));
