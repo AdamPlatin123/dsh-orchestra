@@ -2,10 +2,10 @@
 
 ## Facts
 - Owner: AdamPlatin123
-- When: 2026-11-03 00:24（本机 shell 报的时区是 GMT）
+- When: 2026-11-03 01:05（本机 shell 报的时区是 GMT）
 - Machine: 550W备份1号机
 - Branch: claude/orchestra-app（从 `claude/alpha-0.2-interactive` 的 76807ec 切出）
-- Commit: 1691129
+- Commit: 3324659
 - Pushed: no（这一轮的编排要求不 push；远端还没有这条分支。本分支 76807ec 之后的提交只在这台机器上）
 - Uncommitted on that machine: `.claude/launch.json`（未跟踪，指向某次会话临时目录里的预览脚本，别的机器上没用，不要提交）。主检出目录里 r4 规格有用户本人的未提交改动，见 Do not touch。
 
@@ -26,6 +26,11 @@
   - `node scripts/live-smoke.ts --harness claude --daemon-stop`，退出码 0：同上，Job 里是 node.exe（host）、claude.exe、conhost.exe，0 个幸存，leftovers 0。
   - `node scripts/live-smoke.ts --harness codex`（普通结束），退出码 0：ended/you-ended，tree-ended，之后 orchestrad 经关 stdin 停机（退出码 0），0 个幸存，leftovers 0。
   - 三次的测试目录都已删除。
+- 第 4 阶段复核修正（3324659）— 验证：
+  - 全量单元测试：1421 条，1418 过，0 失败，1 跳过（同上，目录链接 EPERM），2 todo，约 40 秒。procguard-real 三条真机用例（含新增「常驻的刚收到 kill-job 就被关 stdin，仍结束 Job 并回答」）跑了，没有跳过。
+  - `live-smoke.ts --harness codex`、`--harness claude` 各一次，退出码 0：ended/you-ended，tree-ended，0 个幸存；新的 leftovers 按 Job 名字查，leftover 0、unverified 0、unchecked 0；脚本自己的 procguard 先比对 orchestrad 日志里的 sha256 才启动（probe 为 null，即比对通过）。
+  - `live-smoke.ts --harness codex --daemon-stop --keep` 一次，退出码 0：日志里 owned-tree 在 stopped 之前（found false，Job 已随包装进程关闭），说明停机时的核对这次真的做了。测试目录事后已删。
+  - `--brake` 两种、`claude --daemon-stop` 这次没有重跑。
 
 ## Unverified（做了但没验证，或验证没过）
 - **真实 profile 下的启动检查没做**：编排要求让实现会话在真实 profile 下用 `orchestra.cmd --owned` 启动、经 API 配对、开一个自有 Codex 会话。没做，原因有两条：M0 计划 §2 的「agent 只能起测试 profile」和代-2（真实 profile 只由用户在可见控制台里启动、由用户配对）；代码的守卫 `decidePairingOutput` 在 stdin 和 stdout 不都是控制台时不打印配对码，脚本启动拿不到码。没有绕过。只查了：本会话 shell 是 Medium 完整性级别（不是管理员）；本会话环境里没设 `ORCHESTRA_HOME`，按 `src/runtime/env.ts` 真实数据目录是用户目录下的 `.orchestra`。真实 profile 能不能启动、塔表有多少项目和节点、自有会话在真实 profile 下能不能起停，全部未知。
@@ -62,6 +67,7 @@
 - 0.2 交接文件（`docs/handoff/claude--alpha-0.2-interactive.md`）里列的设计 §8 待定项（SDK 许可证、配置目录、单条消息上限、M0 动作是否接操控令牌等）仍没有逐条问过用户。
 
 ## Divergence（接手者填写：交接与现实的差异）
+- 2026-11-03 AdamPlatin123（第 4 阶段复核）：procguard 没开时自有会话改为整个关闭（以前不经 Job 照开，和 r4 D4 冲突）；procguard.exe 每次启动重新编译、校验值只在内存里。细节和残余见计划「分歧和残余风险」里「进程树的 Job 回收」一条。
 - 2026-11-02 AdamPlatin123：本分支第一次写交接。和 r4、0.2 设计的出入都记在 `docs/plans/2026-11-02-orchestra-app-plan.md` 的「分歧和残余风险」一节，这里不重复。
 - 2026-11-03 AdamPlatin123：上一份交接写在 4465924，之后的 6b6af32（procguard 的 Job 和刹车）没有更新交接，那份的「进程树回收」「刹车」两条 Unverified 和 Next 第 5、6 条已过时。本次改写：那两条移进 Done，Next 重排。编排要求的真实 profile 检查和 M0 计划的「agent 只能起测试 profile」冲突，没做，记在 Unverified 和 Open questions。
 
