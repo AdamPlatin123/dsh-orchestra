@@ -133,8 +133,9 @@ export class ClaudeOwned {
    * A new session; `text` (with the uuid of its human record) is its first message, `title` (the dispatch desk's) names it in place of that message's first line.
    * `cwd`: a project root (or a folder in one) the composition root let through (--project-root); absent, the session gets its own ORCHESTRA_HOME\work\<id>.
    * The spawn gate holds either to its cwd table again. The model is checked before anything is made.
+   * `tainted` (r4 §8.5): the first message comes from an unbound sender (a seat request run in a project root): the host asks for every tool call, reads in cwd too.
    */
-  create(req: { model?: string; text?: string; uuid?: string; title?: string; cwd?: string } = {}): NewClaude {
+  create(req: { model?: string; text?: string; uuid?: string; title?: string; cwd?: string; tainted?: boolean } = {}): NewClaude {
     const model = req.model ?? DEFAULT_CLAUDE_MODEL;
     if (!isClaudeModel(model)) return { ok: false, reason: 'model-refused', detail: String(model) };
     if (this.full()) return { ok: false, reason: 'owned-limit', detail: `${this.maxActive} running` };
@@ -168,6 +169,7 @@ export class ClaudeOwned {
         o.onChange?.();
       },
       ...(o.judge !== undefined ? { judge: o.judge } : {}),
+      ...(req.tainted === true ? { tainted: true } : {}),
     }, req.text === undefined ? null : { text: req.text, uuid: req.uuid ?? '' });
     if (!started.ok) return started;
     mine = started.session;

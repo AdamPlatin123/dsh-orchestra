@@ -203,6 +203,14 @@ export const BODY_SCHEMAS = frozen({
     requestId: id, actionId: uuid, verdict: en(AGENT_VERDICTS), harness: en(ROUTE_HARNESSES), requesterKind: en(['dsh']), requesterDigest: digest,
     ownedId: nul(id), decisionId: nul(digest),
   }),
+  // Project roots (orchestra app plan 项目根): where an owned session a person started works, when that is a
+  // project root named at startup or a folder in one (a session in its own ORCHESTRA_HOME\work\<id> writes
+  // none), in the batch of its owned-new `human` records. For an agent request (seat) this binds the
+  // person's dispatch to the runIn its card showed, which the request body (and so requestDigest) does not
+  // hold; requestId names the request, null for the dispatch dialog's own root. A path is not source free
+  // text a body may keep: only the sha256 of the cwd and of the root it lies in. A new kind, not new fields
+  // of `agent-request`: every field of a kind is required, and an older journal must still replay.
+  'owned-cwd': obj({ actionId: uuid, ownedId: id, requestId: nul(id), cwdDigest: digest, rootDigest: digest }),
 } satisfies Record<string, Schema>);
 
 export type Kind = keyof typeof BODY_SCHEMAS;

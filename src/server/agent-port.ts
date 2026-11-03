@@ -351,6 +351,8 @@ export async function startAgentPort(deps: AgentPortDeps): Promise<AgentPortStar
         const status = made.why === 'stopped' ? 503 : made.why === 'text-too-long' || made.why === 'cwd-too-long' ? 422 : 429;
         return reply(status, { error: made.why });
       }
+      // Where a dispatch would run (in a project root or the work dir, and why): no path, the card shows it.
+      log.info('agent-request-placed', { requestId: made.request.requestId, inRoot: made.request.runIn !== null, why: made.request.runInWhy });
       // The withdraw key goes to this reply alone: never logged, never listed, never on the page.
       return reply(200, { requestId: made.request.requestId, state: made.request.state, expiresAt: made.request.expiresWall, withdrawKey: made.withdrawKey });
     }

@@ -8,6 +8,7 @@ import type { FeedInput, FeedTokens } from './feed.ts';
 import type { Redact } from './text.ts';
 import { isWithin } from '../fs/paths.ts';
 import { RpcError, makeRpcClient } from './codex-rpc.ts';
+import { guardedPlace } from './guarded.ts';
 import { Feed } from './feed.ts';
 import { isOwnedModel } from './models.ts';
 import { OWNED_TEXT_LIMITS, liveTail, shown, splitUtf8 } from './text.ts';
@@ -164,6 +165,8 @@ export type CodexSessionOptions = {
   hub?: ClockHub;
   /** Judges the paths an approval names; without one only the lexical place in the work dir counts. */
   judge?: PathJudge;
+  /** cwd is a project root or a folder in one (--project-root): thread/start must answer the read-only sandbox, else policy-mismatch. */
+  projectRoot?: boolean;
 };
 
 export type SendResult = { ok: true; via: 'turn/start' | 'turn/steer' | 'queued' } | { ok: false; reason: 'ended' | 'queue-full' };
@@ -778,9 +781,12 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     for (const c of changes ?? []) lines.push(`--- ${c.kind} ${askPath(c.path)}`, c.diff);
     const places = [...(changes ?? []).map((c) => place(c.path)), ...(grantRoot === null ? [] : [place(grantRoot)])];
     const away = places.some((x) => x.outside);
+    // r4 §7.4: a file other programs run or read as configuration (.git/hooks, .claude, package.json ...) is no ordinary write.
+    const guarded = [...new Set(places.map((x) => guardedPlace({ p: x.abs, real: x.real }, cwd, realCwd)).filter((g): g is string => g !== null))];
+    if (guarded.length > 0) lines.unshift(`changes a protected path in the work dir (r4 §7.4, run by other programs outside this session): ${guarded.join(', ')}`);
     return {
       kind: 'file-change', title: changes === null ? 'file change' : `${changes.length} file change${changes.length === 1 ? '' : 's'}`, preview: lines.join('\n'),
-      risk: away ? 'protected' : 'write', canAccept: changes !== null && grantRoot === null, canText: false,
+      risk: away || guarded.length > 0 ? 'protected' : 'write', canAccept: changes !== null && grantRoot === null, canText: false,
       refuse: places.find((x) => x.hit !== null)?.hit ?? null, reply: decide,
     };
   };
@@ -876,6 +882,12 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       }
       if (r.approvalPolicy !== 'on-request' || (sandbox !== 'workspaceWrite' && sandbox !== 'readOnly')) {
         fail('policy-mismatch', `approvalPolicy ${JSON.stringify(r.approvalPolicy)}, sandbox ${String(sandbox)}`);
+        return;
+      }
+      // In a project root (a real project, not its own empty work dir) only the read-only sandbox (as measured
+      // on Windows, codex 0.165.0) keeps every write asking: under workspace-write, on-request writes in cwd unasked.
+      if (opts.projectRoot === true && sandbox !== 'readOnly') {
+        fail('policy-mismatch', `sandbox ${String(sandbox)} in a project root: Orchestra runs codex there only with the read-only sandbox`);
         return;
       }
       threadId = tid;

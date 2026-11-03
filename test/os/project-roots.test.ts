@@ -153,3 +153,69 @@ test('the project-root read gate stats a path in a root and nothing else: no rea
   assert.equal(g.decide(f.proj, 'readdir').allow, false);
   assert.equal(g.decide(f.home, 'stat').allow, false);
 });
+
+// --- project-root review ------------------------------------------------------------------------------
+
+test('a sibling whose name toLowerCase folds onto the root\'s (KELVIN SIGN U+212A for K) is another directory on NTFS: the gate and placeRunIn keep it out', (t) => {
+  const f = fixture(t);
+  const kit = path.join(f.testDir, 'kit');
+  const kelvin = path.join(f.testDir, '\u212Ait');
+  fs.mkdirSync(kit);
+  fs.mkdirSync(path.join(kelvin, 'x'), { recursive: true });
+  assert.notEqual(fs.realpathSync.native(path.join(kelvin, 'x')), path.join(kit, 'x'), 'NTFS keeps two directories');
+  // The test profile: the AppData exemption is an allow, so it holds only strictly inside the root; the sibling hits the row.
+  const p = f.policy({ testDir: f.testDir, projectRoots: [kit] });
+  const v = p.check(path.join(kelvin, 'x'));
+  assert.deepEqual(v.ok ? 'ok' : [v.reason, v.detail], ['protected', 'user-profile\\AppData']);
+  assert.deepEqual(p.check(kit), { ok: true, path: kit }, 'the root itself still passes');
+  assert.equal(p.place(path.join(kelvin, 'x', 'a.txt')).hit, 'user-profile\\AppData', 'an approval naming a file in the sibling is not in the root');
+  const g = f.gate([kit]);
+  const deps = { roots: [kit], check: (x: string) => p.check(x), isDirectory: (x: string) => g.stat(x).isDirectory() };
+  assert.deepEqual(placeRunIn(path.join(kelvin, 'x'), deps), { runIn: null, why: 'protected' });
+  // With no AppData row in the way (as a real-profile root outside AppData): the realpaths compare strictly, outside-allowed.
+  const plain = new CwdPolicy({ spec: { allowedRoots: [], protectedDirs: [f.home, f.harness], userHome: f.profile, projectRoots: [kit] }, env: {}, systemRoot: SYS, realpath });
+  const w = plain.check(path.join(kelvin, 'x'));
+  assert.deepEqual(w.ok ? 'ok' : w.reason, 'outside-allowed');
+  assert.deepEqual(plain.check(path.join(kit)), { ok: true, path: kit });
+  assert.deepEqual(placeRunIn(path.join(kelvin, 'x'), { ...deps, check: (x: string) => plain.check(x) }), { runIn: null, why: 'outside-roots' });
+  // An ASCII case difference still passes (NTFS folds ASCII as toLowerCase does).
+  fs.mkdirSync(path.join(kit, 'Web'));
+  assert.deepEqual(plain.check(path.join(kit, 'WEB')), { ok: true, path: path.join(kit, 'WEB') });
+});
+
+test('placeRunIn: a directory the read gate will not stat (a name rule such as *credentials*) is stat-refused, never not-found (T1)', (t) => {
+  const f = fixture(t);
+  fs.mkdirSync(path.join(f.proj, 'credentials-svc'));
+  const p = f.policy({ testDir: f.testDir, projectRoots: [f.proj] });
+  const g = f.gate([f.proj]);
+  const deps = { roots: [f.proj], check: (x: string) => p.check(x), isDirectory: (x: string) => g.stat(x).isDirectory() };
+  assert.deepEqual(placeRunIn(path.join(f.proj, 'credentials-svc'), deps), { runIn: null, why: 'stat-refused' });
+  assert.deepEqual(placeRunIn(path.join(f.proj, 'missing'), deps), { runIn: null, why: 'not-found' }, 'what is not there stays not-found');
+  // A realpath that failed for another reason (EACCES) is unknown too; ENOENT is not-found.
+  const unresolved = (detail: string) => placeRunIn(path.join(f.proj, 'sub'), { ...deps, check: () => ({ ok: false, reason: 'unresolved', detail }) as never });
+  assert.deepEqual(unresolved('EACCES'), { runIn: null, why: 'stat-refused' });
+  assert.deepEqual(unresolved('ENOENT'), { runIn: null, why: 'not-found' });
+  const thrown = (code: string) => placeRunIn(path.join(f.proj, 'sub'), { ...deps, isDirectory: () => {
+    throw Object.assign(new Error(code), { code });
+  } });
+  assert.deepEqual(thrown('EPERM'), { runIn: null, why: 'stat-refused' });
+  assert.deepEqual(thrown('ENOENT'), { runIn: null, why: 'not-found' });
+});
+
+test('checkProjectRoots: a root the page\'s contract or owned-new\'s route would refuse (a bidi or C1 character, too long) refuses the start; a root is kept as the disk spells it', (t) => {
+  const f = fixture(t);
+  const deps = f.deps(f.policy({ testDir: f.testDir }));
+  const no = (roots: string[]) => {
+    const v = checkProjectRoots(roots, deps);
+    assert.equal(v.ok, false, JSON.stringify(v));
+    return v as Extract<typeof v, { ok: false }>;
+  };
+  assert.equal(no([path.join(f.testDir, 'p\u202Eq')]).why, 'bad-chars');
+  assert.equal(no([path.join(f.testDir, 'p\u0085q')]).why, 'bad-chars');
+  const long = path.join(f.testDir, 'x'.repeat(Math.max(1, 261 - f.testDir.length)));
+  assert.equal(no([long]).why, 'too-long');
+  const wide = path.join(f.testDir, '\u4e2d'.repeat(250));
+  assert.equal(no([wide]).why, 'too-long', 'over 780 UTF-8 bytes');
+  const v = checkProjectRoots([path.join(f.testDir, 'PROJ')], deps);
+  assert.deepEqual(v, { ok: true, roots: [f.proj] }, 'the realpath\'s spelling, as the cwd table compares an allow');
+});

@@ -55,12 +55,25 @@ test('a request card says where its session runs: in its cwd inside a root, else
   assert.ok(meta({ runIn: null, runInWhy: 'outside-roots' }).includes(fill('req.cwd', { cwd: `${ROOT}\\web`, why: TOWER_TEXT['cwdwhy.outside-roots']! })));
   assert.ok(meta({ runIn: null, runInWhy: 'no-roots' }).includes(TOWER_TEXT['cwdwhy.no-roots']!));
   assert.ok(meta({ runIn: null, runInWhy: 'brand-new' }).includes('原因未知：brand-new'));
+  // Project-root review: a Claude request says its session is held as untrusted (every read asks too) and that its last reply goes back to the requester.
+  const claude = meta({ harness: 'claude', runIn: `${ROOT}\\web`, runInWhy: null });
+  assert.ok(claude.includes(fill('req.cwdRootClaude', { cwd: `${ROOT}\\web`, run: `${ROOT}\\web` })), claude);
+  assert.ok(claude.includes('读、查找、写文件、跑命令每次都先来问你') && claude.includes('回复会交给发请求的 DSH 会话'));
+  assert.ok(!claude.includes(fill('req.cwdRoot', { cwd: `${ROOT}\\web`, run: `${ROOT}\\web` })));
+  // Codex: what was measured, and that whether a read asks is unknown (T1).
+  const codex = meta({ runIn: `${ROOT}\\web`, runInWhy: null });
+  assert.ok(codex.includes('未知') && codex.includes('回复会交给发请求的 DSH 会话'));
+  // A directory the read gate would not stat: unknown whether it is one, never "it does not exist" (T1).
+  assert.ok(meta({ runIn: null, runInWhy: 'stat-refused' }).includes(TOWER_TEXT['cwdwhy.stat-refused']!));
+  assert.ok(TOWER_TEXT['cwdwhy.stat-refused']!.includes('未知'));
 });
 
 test('a session page names where it works: a project root, Orchestra\'s own dir, or unknown from before a restart', () => {
   const o = { ownedId: 'a'.repeat(20), harness: 'codex', model: 'codex/gpt-6.1-sol', title: 't', state: 'idle', endReason: null, waiting: null, queued: 0, tokens: null, lastSeq: 0, createdAt: 0, brake: true };
   const st = (cwd: unknown) => (describeOwned(o.ownedId, { ...LIST, roots: [ROOT], requests: [], requestedGone: [], owned: [{ ...o, cwd }] }, undefined, g) as any).ownSt.text as string;
   assert.ok(st({ path: ROOT, kind: 'project-root' }).includes(fill('own.cwdRoot', { d: ROOT })));
+  // A folder below a root is not itself a root the person named: the page says it lies in one.
+  assert.ok(st({ path: `${ROOT}\\web`, kind: 'project-root' }).includes(`工作目录 ${ROOT}\\web（在你放行的项目根里）`));
   assert.ok(st({ path: 'C:\\o\\work\\x', kind: 'work' }).includes(fill('own.cwdWork', { d: 'C:\\o\\work\\x' })));
   assert.ok(st(null).includes(TOWER_TEXT['own.cwdUnknown']!));
 });

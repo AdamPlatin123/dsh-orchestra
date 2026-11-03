@@ -173,14 +173,24 @@
 - seat 请求：请求进来时（`src/server/agent-port.ts` `placeCwd`），`cwd` 落在某个根里（根本身或子目录，规范化后比较、不分大小写）、DSH 写的路径里没有 `..`、realpath 等于自己（防链接逃逸）、过拒绝表、是目录，就记下 `runIn`；卡片写「这在你放行的项目根里，派出后在 <cwd> 里跑」，派出时会话就在那里跑。否则 `runIn` 为空、`runInWhy` 写原因（没放行根、不在根里、有 `..`、有链接、不存在、不是目录、受保护、路径被脱敏器改过），会话照旧在自建目录里跑，卡片照实写原因。
 - 会话页写「工作目录 <路径>（你放行的项目根 / Orchestra 自建）」，重启前开的会话写「工作目录未知」。塔表里自有会话那一行在解锁后多一段「在 <文件夹名>」（数据来自解锁后的 owned 列表；塔表快照本身不带路径，解锁前看不到）。
 - 契约：`GET /api/owned` 加 `roots`，每个会话加 `cwd {path, kind}`（或 null），每个请求加 `runIn`、`runInWhy`；`shared/owned-contract.js` 的校验器管这些字段（`runIn` 和 `runInWhy` 恰好一个为空，根不重复、是绝对路径）。契约冻结测试同步更新。
-- journal：RouteDecision（`route`）结构没动，也没加新 kind。从派活台选的根在请求 body 里，`human` 记录的 `requestDigest` 已经覆盖；seat 请求的落点只在日志 `owned-started`（`projectRoot: true, cwd`）里。
+- journal：RouteDecision（`route`）结构没动。从派活台选的根在请求 body 里，`human` 记录的 `requestDigest` 已经覆盖；seat 请求的落点原先只在日志 `owned-started`（`projectRoot: true, cwd`）里，复核后加了 `owned-cwd` kind（见下「复核后改」）。
 
 **实测**（2026-11-03，本机，测试 profile，一次）：`scripts/live-smoke.ts --harness codex --project-root`（脚本新加的参数：在测试目录下建 `proj` 当项目根，用 `--project-root` 启动，按列表里的根派出）。列表列出 `<testDir>\proj`；会话 starting → running → idle，命令审批 2 次（shell，都由脚本代人允许）；`smoke.txt` 写在项目根里、内容正确；会话自建工作目录没有建；列表里会话的 `cwd.kind` 是 `project-root`；结束后 Job 里 0 个进程存活，orchestrad 经 stdin-eof 停机、退出码 0，残留进程 0；测试目录已删。
 
 **没做、未验证的**：
 - 真实 profile 下带 `--project-root` 启动、配对和走查：未验证（代-2：真实 profile 只由用户在可见控制台里启动）。
 - Claude 会话在项目根里跑：未实测（只跑了 Codex）；Claude host 对 cwd 内读不问人，这在真实项目里意味着它能不经批准读整个项目，页面已写明。
-- r4 §7.4 列的项目内受保护路径（`.claude/**`、`.mcp.json`、`.git/hooks/**`、`package.json` 的 scripts 等，写入要键入确认）：现有代码没有这些行，项目根里写这些文件和写普通文件一样是一张要点的卡（Codex 每次写都问，仍需人点，D8 不变），没有额外的键入确认。
+- r4 §7.4 列的项目内受保护路径：复核后已加（见下「复核后改」），但只到「高风险卡」（risk `protected`，和 cwd 外的写入同一档：按住或键入）；`package.json` 整个文件算受保护，不解析是不是改了 scripts。`.git/config`（能设 `core.hooksPath`）不在 r4 的清单里，这次也没加。
+
+**复核后改（2026-11-03，提交 "orchestra app: project-root review fixes"）**：
+- seat 请求落在项目根里、派给 Claude 时，会话按 r4 §8.5 记为 tainted（来源链里有 unbound 发送者）：host 对每次工具调用都询问，cwd 内的 Read/Glob/Grep 也问（卡片是普通风险）。派活台自己选根的 Claude 会话不变（读不问人，页面照写）。Codex 的 r4 §8.5 untrusted 审批策略没做（没实测过 app-server 对 `approvalPolicy: untrusted` 的回复），卡片写明「它读那里的文件会不会先问你，未知」和「最后的回复会交给发请求的 DSH 会话」。
+- 项目内受保护路径（r4 §7.4）：`src/owned/guarded.ts`，按会话 cwd 相对路径、任意深度、不分大小写，按原路径和 realpath（8.3 短名会解析）各查一次；Codex 的改文件请求、Claude 的非读工具命中时审批卡 risk 为 `protected`，预览第一行写明命中哪条。
+- 项目根里的 Codex 会话只接受 `thread/start` 回 `readOnly` 沙箱，回 `workspaceWrite` 就以 policy-mismatch 结束（自建工作目录照旧两种都收）。派活台的 Codex 说明改成实测口径。
+- 「在根内」的比较：允许类判断（cwd 在允许根内、工作根和项目根的豁免）改用只折叠 ASCII 的比较，并且拿 realpath 和根的 realpath 比；`toLowerCase` 会把 KELVIN SIGN（U+212A）等折成 ASCII，NTFS 不会。项目根按磁盘上的写法（realpath）保存。拒绝类判断仍用原来的宽折叠。
+- seat 请求的目录读闸不让 stat（例如名字含 credentials）或 realpath 因 ENOENT 以外的原因失败时，`runInWhy` 记 `stat-refused`（是不是目录未知），不再记成「不存在」。
+- 启动检查拒掉页面契约或 owned-new 路由不收的根：含控制符或 bidi 字符（`bad-chars`）、超过 260 码点或 780 UTF-8 字节（`too-long`）。
+- journal 新 kind `owned-cwd`：会话在项目根里时，和 owned-new 的 human 记录同批写入 cwd 与根的 sha256、requestId（seat）或 null（派活台）。按契约冻结流程更新了金标准；`agent-request` 的字段没动，旧 journal 照样能重放。
+- 会话页写「工作目录 <路径>（在你放行的项目根里）」。
 - r4 §10.8 双写者告警：两个会话放在同一个根里可以同时改文件，没有告警。
 - 计划第 2 节原写「真实 profile 下允许用户在设置里登记的项目根」：这次是启动参数，没有设置页；改根要重启 orchestrad。
 - `orchestra.cmd` 没有参数说明，没改；`docs/quickstart.md` 留给另一个 agent 补。

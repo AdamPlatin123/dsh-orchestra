@@ -178,6 +178,8 @@ export class CodexOwned {
       ...(o.rpcLineMaxBytes !== undefined ? { rpcLineMaxBytes: o.rpcLineMaxBytes } : {}),
       ...(o.hub !== undefined ? { hub: o.hub } : {}),
       ...(o.judge !== undefined ? { judge: o.judge } : {}),
+      // A cwd handed in is a project root (or a folder in one): only the read-only sandbox is taken there.
+      ...(req.cwd !== undefined ? { projectRoot: true } : {}),
     });
     if (!started.ok) return started;
     mine = started.session;

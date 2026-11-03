@@ -66,6 +66,25 @@ export function isWithin(child: string, parent: string): boolean {
   return c.startsWith(p.endsWith('\\') ? p : p + '\\');
 }
 
+/**
+ * The strict comparison key, for an allow (a path may run or be exempt only if it lies in a root): only
+ * the ASCII letters fold. pathKey folds with toLowerCase, which maps characters NTFS keeps apart onto
+ * ASCII (KELVIN SIGN U+212A to k, ANGSTROM SIGN U+212B to å, OHM SIGN U+2126 to ω): a sibling `<dir>\Kit`
+ * spelled with U+212A would be "inside" `<dir>\kit` under pathKey. pathKey stays the key of a deny (it
+ * matches more); an allow uses this one, best on two realpaths (both in the case the disk keeps).
+ */
+export function strictKey(p: string): string {
+  return p.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
+/** isWithin under strictKey: for an allow. Both must be normalized absolute paths, best both realpaths. */
+export function isWithinStrict(child: string, parent: string): boolean {
+  const c = strictKey(child);
+  const p = strictKey(parent);
+  if (c === p) return true;
+  return c.startsWith(p.endsWith('\\') ? p : p + '\\');
+}
+
 /** realpath of an existing path; the native one is minted in src/fs/node-io.ts and handed down by boot. */
 export type RealpathFn = (p: string) => string;
 

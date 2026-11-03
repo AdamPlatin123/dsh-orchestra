@@ -61,6 +61,10 @@ import { makeOwnedHandlers } from './owned.ts';
 //                                       (dispatched, naming the RouteDecision) joins the batch. It runs where the
 //                                       card said: the request's runIn (its cwd, inside a project root), else
 //                                       its own ORCHESTRA_HOME\work\<id>; the spawn gate holds either to its table.
+//                                       In a project root its Claude session is tainted (r4 §8.5: the request came
+//                                       from an unbound sender, so every tool call asks, reads in cwd too).
+//   owned-new in a project root         (the dialog's root or a request's runIn) adds an `owned-cwd` record to the
+//                                       batch: the sha256 of the cwd and its root, and the requestId if any.
 //   GET  /api/owned                     OwnedList (shared/owned-contract.js).
 //   GET  /api/owned/:id/feed?after=     OwnedFeed.
 // POST /api/owned/:id/retry and the import routes keep no handler (501): an owned Codex session is not
@@ -137,6 +141,17 @@ export function agentRequestRec(r: AgentRequest, d: { actionId: string; verdict:
       requestId: r.requestId, actionId: d.actionId, verdict: d.verdict, harness: r.harness, requesterKind: r.requester.kind,
       requesterDigest: canonicalDigest(requesterName(r.requester)), ownedId: d.ownedId, decisionId: d.decisionId,
     },
+  };
+}
+
+/**
+ * Where a session a person started works, for the journal (src/store/records.ts `owned-cwd`): only in a project
+ * root (or a folder in one); the sha256 of the cwd and of that root, and the agent request it runs (seat), if any.
+ */
+export function ownedCwdRec(d: { actionId: string; ownedId: string; requestId: string | null; cwd: string; root: string }): Rec {
+  return {
+    kind: 'owned-cwd',
+    body: { actionId: d.actionId, ownedId: d.ownedId, requestId: d.requestId, cwdDigest: canonicalDigest(d.cwd), rootDigest: canonicalDigest(d.root) },
   };
 }
 
@@ -258,8 +273,14 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     if (routeId !== null && kept === null) log.info('route-not-kept', { routeId });
     // The router model's title names the session only when the person took the candidate it chose; else the sentence's first line does.
     const title = kept === null || desk === null || typeof body.model !== 'string' ? null : desk.titleFor(kept, harness, body.model);
+    // The project root the cwd lies in (the journal names it); a cwd outside every root never comes this far.
+    const root = cwd === undefined ? null : (deps.projectRoots ?? []).find((r) => isWithin(cwd!, r)) ?? null;
+    // r4 §8.5: a seat request comes from an unbound sender (a DSH session asked; the person only dispatched it).
+    // In a project root its Claude session asks for every tool call, reads in cwd too (host-core.mjs judge).
+    const tainted = asked !== null && cwd !== undefined && harness === 'claude';
     const made = manager.create({
       text, uuid: call.actionId!, ...(typeof body.model === 'string' ? { model: body.model } : {}), ...(title === null ? {} : { title }), ...(cwd === undefined ? {} : { cwd }),
+      ...(tainted ? { tainted: true } : {}),
     });
     if (!made.ok) {
       if (made.reason === 'owned-limit') return refuse('owned-limit');
@@ -268,13 +289,18 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
       // (model-refused: owned-disabled for that harness and model). What is left is the child or its dirs.
       return refuse(made.reason === 'model-refused' ? 'owned-disabled' : 'spawn-failed');
     }
-    log.info('owned-started', { harness, ownedId: made.ownedId, model: made.session.model, ...(cwd === undefined ? {} : { projectRoot: true, cwd }) });
+    log.info('owned-started', { harness, ownedId: made.ownedId, model: made.session.model, ...(cwd === undefined ? {} : { projectRoot: true, cwd, tainted }) });
     // The session runs the request from now on (bound in the same turn as the claim: no second dispatch gets it).
     if (asked !== null) {
       requests!.bind(asked.requestId, made.ownedId);
       log.info('agent-request-dispatched', { requestId: asked.requestId, ownedId: made.ownedId });
     }
-    const requestRec = (decisionId: string | null): Rec[] => (asked === null ? [] : [agentRequestRec(asked, { actionId: call.actionId!, verdict: 'dispatched', ownedId: made.ownedId, decisionId })]);
+    // In a project root: where it works, bound to this dispatch (the card's runIn for a request).
+    const cwdRec: Rec[] = cwd === undefined || root === null ? [] : [ownedCwdRec({ actionId: call.actionId!, ownedId: made.ownedId, requestId: asked?.requestId ?? null, cwd, root })];
+    const requestRec = (decisionId: string | null): Rec[] => [
+      ...(asked === null ? [] : [agentRequestRec(asked, { actionId: call.actionId!, verdict: 'dispatched', ownedId: made.ownedId, decisionId })]),
+      ...cwdRec,
+    ];
     if (desk === null) return { ok: true, reply: { ownedId: made.ownedId }, targetId: made.ownedId, records: requestRec(null) };
     // Every dispatch is a RouteDecision (r4 §9.5), from a suggestion for this very sentence or by hand.
     const d = { ownedId: made.ownedId, harness, model: made.session.model } as const;

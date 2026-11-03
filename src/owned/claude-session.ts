@@ -11,6 +11,7 @@ import type { Redact } from './text.ts';
 import { isWithin } from '../fs/paths.ts';
 import { endHostNow, stopHostInOrder } from '../os/owned-proc.ts';
 import { Feed } from './feed.ts';
+import { guardedPlace } from './guarded.ts';
 import { isClaudeModel } from './models.ts';
 import { OWNED_TEXT_LIMITS, shown } from './text.ts';
 import { frozen } from '../../shared/frozen.js';
@@ -99,6 +100,12 @@ export type ClaudeSessionOptions = {
   hub: ClockHub;
   onChange?: () => void;
   judge?: PathJudge;
+  /**
+   * r4 §8.5 来源追踪: the session's turns come from an unbound sender (a seat request: a DSH session asked, a
+   * person only dispatched it), so the host's canUseTool asks for everything, Read, Glob and Grep in cwd
+   * too (host-core.mjs judge). Absent: false, as before (a person's own sentence).
+   */
+  tainted?: boolean;
 };
 
 export type ClaudeSendResult = { ok: true; via: 'turn/start' | 'queued' } | { ok: false; reason: 'ended' | 'queue-full' };
@@ -400,14 +407,21 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
         j = { real: null, hit: `unresolved: ${errText(e)}` };
       }
       const real = j.real ?? p;
-      return { p, hit: j.hit, outside: !isWithin(p, cwd) || !isWithin(real, realCwd) };
+      return { p, real, hit: j.hit, outside: !isWithin(p, cwd) || !isWithin(real, realCwd) };
     });
     const hit = placed.find((x) => x.hit !== null)?.hit ?? null;
     const away = placed.filter((x) => x.outside);
     const hostRisk = str(f.risk);
-    const risk: ApprovalRisk = away.length > 0 || f.unplaced === true || hostRisk === 'read' ? 'protected' : hostRisk === 'shell' ? 'shell' : hostRisk === 'write' ? 'write' : hostRisk === 'net' ? 'net' : 'other';
+    // r4 §7.4: a change to a file other programs run or read as configuration (.git/hooks, .claude, package.json ...) is no ordinary write.
+    const guarded = hostRisk === 'read' ? [] : [...new Set(placed.map((x) => guardedPlace(x, cwd, realCwd)).filter((g): g is string => g !== null))];
+    // A read that asks: outside cwd (it asks nobody inside, unless the session is tainted, r4 §8.5). A tainted
+    // session's read of a named place inside cwd is an ordinary card; one that names no place stays protected.
+    const readInside = hostRisk === 'read' && opts.tainted === true && placed.length > 0 && away.length === 0 && f.unplaced !== true;
+    const risk: ApprovalRisk = away.length > 0 || f.unplaced === true || guarded.length > 0 || (hostRisk === 'read' && !readInside) ? 'protected'
+      : hostRisk === 'shell' ? 'shell' : hostRisk === 'write' ? 'write' : hostRisk === 'net' ? 'net' : 'other';
     const lines = [
       `tool: ${toolName}`,
+      ...(guarded.length > 0 ? [`changes a protected path in the work dir (r4 §7.4, run by other programs outside this session): ${guarded.join(', ')}`] : []),
       ...away.map((x) => `outside the work dir: ${x.p}`),
       ...(f.unplaced === true ? ['reaches a place Orchestra could not name'] : []),
       '',
@@ -609,7 +623,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
 
   // --- start -----------------------------------------------------------------------------------------
   write({
-    t: 'start', ownedId, model, cwd, configDir: opts.configDir, tainted: false, claudeExe: opts.claudeExe,
+    t: 'start', ownedId, model, cwd, configDir: opts.configDir, tainted: opts.tainted === true, claudeExe: opts.claudeExe,
     protectedRoots: [...opts.protectedRoots], askTimeoutMs: opts.askTimeoutMs,
   });
   if (first !== null) {

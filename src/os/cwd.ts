@@ -1,6 +1,6 @@
 import * as path from 'node:path';
 import type { RealpathFn } from '../fs/paths.ts';
-import { canonicalize, checkPath, isWithin, pathKey } from '../fs/paths.ts';
+import { canonicalize, checkPath, isWithin, isWithinStrict, pathKey } from '../fs/paths.ts';
 import { envGet, ownFields } from '../runtime/own.ts';
 import { frozenClass } from '../../shared/frozen.js';
 
@@ -110,6 +110,8 @@ export type CwdPolicyInput = {
 export class CwdPolicy {
   readonly #table: readonly Entry[];
   readonly #allowed: readonly string[];
+  /** The allowed roots as the disk spells them (their realpaths): a cwd's realpath must lie in one under strictKey. */
+  readonly #allowedReal: readonly string[];
   readonly #realpath: RealpathFn;
   /** The work root in both forms, and its parent (the data dir) keyed in both forms; empty without one. */
   readonly #work: readonly string[];
@@ -178,19 +180,23 @@ export class CwdPolicy {
     this.#work = Object.freeze([]);
     this.#workParents = Object.freeze([]);
     // A project root is its own realpath (no link on it) and no row hits it, or no policy is made.
+    const projectsReal: string[] = [];
     const projects = (s.projectRoots ?? []).map((r) => {
       const lexical = trimSep(mustPath(r, 'project root'));
       const real = trimSep(canonicalize(lexical, realpath));
       if (pathKey(real) !== pathKey(lexical)) throw new Error(`cwd policy: a project root is behind a link (${real}): ${lexical}`);
       const hit = this.rootHit(lexical);
       if (hit !== null) throw new Error(`cwd policy: a project root is refused (${hit}): ${lexical}`);
+      projectsReal.push(real);
       return lexical;
     });
     this.#projects = Object.freeze(projects);
-    this.#allowed = Object.freeze([...s.allowedRoots.map((r) => {
+    const allowedReal = s.allowedRoots.map((r) => {
       const lexical = mustPath(r, 'allowed root');
       return trimSep(canonicalize(lexical, realpath));
-    }), ...projects]);
+    });
+    this.#allowed = Object.freeze([...allowedReal, ...projects]);
+    this.#allowedReal = Object.freeze([...allowedReal, ...projectsReal]);
     if (s.ownedWorkRoot !== undefined) {
       const lexical = trimSep(mustPath(s.ownedWorkRoot, 'owned work root'));
       if (lexical.length === 3) throw new Error(`cwd policy: the owned work root is a drive root: ${lexical}`);
@@ -250,6 +256,9 @@ export class CwdPolicy {
     }
     if (pathKey(real) !== pathKey(p)) return { ok: false, reason: 'reparsed', detail: real };
     if (!this.#allowed.some((root) => isWithin(p, root))) return { ok: false, reason: 'outside-allowed', detail: p };
+    // And as the disk spells both (strictKey: only ASCII folds): a sibling whose name toLowerCase folds onto
+    // the root's (`<dir>\Kit` with KELVIN SIGN beside `<dir>\kit`) is another directory on NTFS, not inside.
+    if (!this.#allowedReal.some((root) => isWithinStrict(real, root))) return { ok: false, reason: 'outside-allowed', detail: p };
     return { ok: true, path: p };
   }
 
@@ -273,10 +282,11 @@ export class CwdPolicy {
   }
 
   /** The row `p` hits, or null. `inProject`: p is (inside) a test-profile project root, where the AppData row does not apply. */
-  #hit(p: string, inProject: boolean = this.#testDir.length > 0 && this.#projects.some((r) => isWithin(p, r))): string | null {
+  // An exemption is an allow: inside the work root or a project root under strictKey only (see src/fs/paths.ts).
+  #hit(p: string, inProject: boolean = this.#testDir.length > 0 && this.#projects.some((r) => isWithinStrict(p, r))): string | null {
     const top = p.slice(3).split('\\')[0]!;
     if (PROGRAM_FILES_TOP.test(top)) return 'program-files';
-    const inWork = this.#work.some((w) => isWithin(p, w));
+    const inWork = this.#work.some((w) => isWithinStrict(p, w));
     for (const e of this.#table) {
       if (isWithin(e.path, p)) return e.label;
       if (e.kind === 'tree' && isWithin(p, e.path)) {

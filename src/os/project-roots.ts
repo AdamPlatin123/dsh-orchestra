@@ -1,6 +1,7 @@
 import type { RealpathFn } from '../fs/paths.ts';
 import { checkPath, isWithin, pathKey } from '../fs/paths.ts';
 import { frozen } from '../../shared/frozen.js';
+import { OWNED_BOUNDS, holdsControl } from '../../shared/owned-contract.js';
 
 // Project roots (orchestra app plan 项目根; --project-root, only with --owned): directories the person
 // names at startup, in which an owned session may be started (or in a folder inside one) instead of
@@ -8,7 +9,8 @@ import { frozen } from '../../shared/frozen.js';
 // owned sessions work only in the work root, as before.
 //
 // checkProjectRoots holds each named root, at startup and before the lock, to what a cwd must be: a plain
-// absolute path (bad-path), no drive root, not refused by the spawn gate's own cwd table (src/os/cwd.ts
+// absolute path (bad-path) that the page's contract and owned-new's route take too (no control or bidi
+// character: bad-chars; at most ROOT_MAX_CP code points and OWNED_BOUNDS.cwdBytes UTF-8 bytes: too-long), no drive root, not refused by the spawn gate's own cwd table (src/os/cwd.ts
 // rootHit: the user profile itself, AppData, the system dirs, Program Files, this repository and its
 // parents, the data dir, a harness root; in the test profile anything not strictly inside the test dir),
 // there (not-found), its own realpath (no junction, link or 8.3 name on it: reparsed), a directory
@@ -21,7 +23,7 @@ import { frozen } from '../../shared/frozen.js';
 // directory. Otherwise it says why, and the session runs in Orchestra's own work dir, as before.
 
 /** Why a named project root refuses the start. */
-export type ProjectRootWhy = 'bad-path' | 'drive-root' | 'outside-test-dir' | 'protected' | 'not-found' | 'reparsed' | 'not-a-directory' | 'stat-refused' | 'duplicate';
+export type ProjectRootWhy = 'bad-path' | 'bad-chars' | 'too-long' | 'drive-root' | 'outside-test-dir' | 'protected' | 'not-found' | 'reparsed' | 'not-a-directory' | 'stat-refused' | 'duplicate';
 export type ProjectRootsVerdict = { ok: true; roots: readonly string[] } | { ok: false; root: string; why: ProjectRootWhy; detail: string | null };
 
 export type ProjectRootsDeps = {
@@ -41,14 +43,35 @@ function errCode(e: unknown): string {
   return String(e);
 }
 
-/** The named roots in order, each checked; the first that fails refuses them all. */
+/** The longest root owned-new's route takes (src/server/routes.ts `root: text(260, 'root-path')`), in code points. */
+export const ROOT_MAX_CP = 260;
+
+const codePoints = (s: string): number => {
+  let n = 0;
+  for (const _ of s) n++;
+  return n;
+};
+/** Why a root as GET /api/owned would list it is no fit there (bad-chars, too-long), or null. */
+const listWhy = (p: string): { why: 'bad-chars' | 'too-long'; detail: string | null } | null => {
+  if (holdsControl(p)) return { why: 'bad-chars', detail: null };
+  const cp = codePoints(p);
+  const bytes = Buffer.byteLength(p, 'utf8');
+  return cp > ROOT_MAX_CP || bytes > OWNED_BOUNDS.cwdBytes ? { why: 'too-long', detail: `${cp} code points, ${bytes} UTF-8 bytes` } : null;
+};
+
+/** The named roots in order, each checked; the first that fails refuses them all. Each is kept as the disk spells it (its realpath). */
 export function checkProjectRoots(given: readonly string[], deps: ProjectRootsDeps): ProjectRootsVerdict {
   const out: string[] = [];
   for (const raw of given) {
     const no = (why: ProjectRootWhy, detail: string | null = null): ProjectRootsVerdict => ({ ok: false, root: raw, why, detail });
+    // What GET /api/owned's contract refuses would make the whole list a 500 (no card, no approval shown);
+    // what owned-new's route refuses could be listed but never picked.
+    if (typeof raw === 'string' && holdsControl(raw)) return no('bad-chars');
     const c = checkPath(raw);
     if (!c.ok) return no('bad-path', c.reason);
     const p = c.path;
+    const lw = listWhy(p);
+    if (lw !== null) return no(lw.why, lw.detail);
     if (p.length === 3) return no('drive-root', p);
     // The table first, on the name as given: in the test profile a root outside the test dir is refused
     // before its realpath is ever taken (as the read gate drops such a root unseen).
@@ -63,7 +86,8 @@ export function checkProjectRoots(given: readonly string[], deps: ProjectRootsDe
     } catch (e) {
       return no('not-found', errCode(e));
     }
-    if (pathKey(real.length > 3 ? real.replace(/\\+$/, '') : real) !== pathKey(p)) return no('reparsed', real);
+    const own = real.length > 3 ? real.replace(/\\+$/, '') : real;
+    if (pathKey(own) !== pathKey(p)) return no('reparsed', real);
     let dir: boolean;
     try {
       dir = deps.isDirectory(p);
@@ -72,8 +96,11 @@ export function checkProjectRoots(given: readonly string[], deps: ProjectRootsDe
       return code === 'not-found' || code === 'ENOENT' ? no('not-found', code) : no('stat-refused', code);
     }
     if (!dir) return no('not-a-directory', p);
-    if (out.some((r) => pathKey(r) === pathKey(p))) return no('duplicate', p);
-    out.push(p);
+    if (out.some((r) => pathKey(r) === pathKey(own))) return no('duplicate', p);
+    // As the disk spells it: the cwd table compares an allow strictly (src/fs/paths.ts strictKey).
+    const ow = listWhy(own);
+    if (ow !== null) return no(ow.why, ow.detail);
+    out.push(own);
   }
   return { ok: true, roots: Object.freeze(out) };
 }
@@ -81,6 +108,8 @@ export function checkProjectRoots(given: readonly string[], deps: ProjectRootsDe
 /** What a refused root's why says on the console. */
 export const PROJECT_ROOT_WHY_TEXT: Readonly<Record<ProjectRootWhy, string>> = frozen({
   'bad-path': 'not a plain absolute path',
+  'bad-chars': 'it holds a control or bidi character (the page could not show it)',
+  'too-long': `longer than ${ROOT_MAX_CP} code points or ${OWNED_BOUNDS.cwdBytes} UTF-8 bytes (the page could not take it)`,
   'drive-root': 'a drive root',
   'outside-test-dir': 'not inside the test dir (the test profile only takes project roots there)',
   protected: 'a protected place (the cwd table refuses it)',
@@ -92,7 +121,7 @@ export const PROJECT_ROOT_WHY_TEXT: Readonly<Record<ProjectRootWhy, string>> = f
 });
 
 /** Why an agent request's cwd does not run in a project root (the card says it; the session runs in the work dir). */
-export type RunInWhy = 'no-roots' | 'bad-path' | 'dot-segments' | 'outside-roots' | 'protected' | 'reparsed' | 'not-found' | 'not-a-directory' | 'redacted';
+export type RunInWhy = 'no-roots' | 'bad-path' | 'dot-segments' | 'outside-roots' | 'protected' | 'reparsed' | 'not-found' | 'not-a-directory' | 'stat-refused' | 'redacted';
 export type RunIn = { runIn: string; why: null } | { runIn: null; why: RunInWhy };
 
 export type RunInDeps = {
@@ -103,6 +132,8 @@ export type RunInDeps = {
   /** Whether `p` is a directory (the stat-only project-root read gate); throws when it cannot be told. */
   isDirectory(p: string): boolean;
 };
+
+const isMissing = (code: string | null | undefined): boolean => code === 'ENOENT' || code === 'ENOTDIR' || code === 'not-found';
 
 /** Where an owned session for this cwd would run: in it, when it lies in a project root and passes; else null and why. */
 export function placeRunIn(cwd: string, deps: RunInDeps): RunIn {
@@ -116,13 +147,18 @@ export function placeRunIn(cwd: string, deps: RunInDeps): RunIn {
   const p = c.path;
   if (!deps.roots.some((r) => isWithin(p, r))) return no('outside-roots');
   const v = deps.check(p);
-  if (!v.ok) return no(v.reason === 'reparsed' ? 'reparsed' : v.reason === 'unresolved' ? 'not-found' : v.reason === 'outside-allowed' ? 'outside-roots' : v.reason === 'bad-path' ? 'bad-path' : 'protected');
+  if (!v.ok) {
+    // T1: a realpath that failed for another reason than "not there" (access denied, say) is not "it does not exist".
+    if (v.reason === 'unresolved') return no(isMissing(v.detail) ? 'not-found' : 'stat-refused');
+    return no(v.reason === 'reparsed' ? 'reparsed' : v.reason === 'outside-allowed' ? 'outside-roots' : v.reason === 'bad-path' ? 'bad-path' : 'protected');
+  }
   // The table compared the realpath with the name: equal, so the real path lies in the root too.
   let dir: boolean;
   try {
     dir = deps.isDirectory(v.path);
-  } catch {
-    return no('not-found');
+  } catch (e) {
+    // The read gate refusing to look (a name rule such as *credentials*), or a stat that failed: unknown, not missing (T1).
+    return no(isMissing(errCode(e)) ? 'not-found' : 'stat-refused');
   }
   return dir ? { runIn: v.path, why: null } : no('not-a-directory');
 }

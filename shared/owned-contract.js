@@ -56,9 +56,10 @@ export const OWNED_ENUMS = frozen({
   /**
    * Why an agent request's session would run in Orchestra's own work dir and not in its cwd (src/os/project-roots.ts
    * RunInWhy): no project root named, not a plain absolute path, a `..` in it, outside every root, a protected
-   * place, a link on it, not there, not a directory, or hidden in part by the redactor.
+   * place, a link on it, not there, not a directory, not known to be a directory (stat-refused: the read gate
+   * would not look, or the lookup failed otherwise; T1, not "not there"), or hidden in part by the redactor.
    */
-  runInWhy: ['no-roots', 'bad-path', 'dot-segments', 'outside-roots', 'protected', 'reparsed', 'not-found', 'not-a-directory', 'redacted'],
+  runInWhy: ['no-roots', 'bad-path', 'dot-segments', 'outside-roots', 'protected', 'reparsed', 'not-found', 'not-a-directory', 'stat-refused', 'redacted'],
 });
 
 export const OWNED_BOUNDS = frozen({
@@ -130,6 +131,10 @@ export const OWNED_MODEL_NAME_RE = frozen(/^(?:zcode|opencode-go|codex)\/[A-Za-z
 const ABS_PATH_RE = /^[A-Za-z]:\\/;
 // C0 and C1 controls but tab and newline, DEL, and the bidi embeddings, overrides and isolates.
 const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
+/** Whether a text holds what every shown text here refuses (src/os/project-roots.ts holds a project root to it). @param {string} s */
+export function holdsControl(s) {
+  return CONTROLS.test(s);
+}
 
 /**
  * @typedef {{

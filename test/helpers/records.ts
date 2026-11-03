@@ -91,6 +91,14 @@ export function agentRequestRec(actionId: string, over: Record<string, unknown> 
   };
 }
 
+/** Where a session a person started works, in a project root (the `owned-cwd` record): the sha256 of its cwd and of the root. */
+export function ownedCwdRec(actionId: string, over: Record<string, unknown> = {}): Rec {
+  return {
+    kind: 'owned-cwd',
+    body: { actionId, ownedId: '3123456789abcdef0123', requestId: null, cwdDigest: canonicalDigest('D:\\work\\proj\\web'), rootDigest: canonicalDigest('D:\\work\\proj'), ...over },
+  };
+}
+
 export function oneOfEach(): Rec[][] {
   const a = uuidOf('each-action');
   const b = uuidOf('each-brake');
@@ -117,6 +125,11 @@ export function oneOfEach(): Rec[][] {
     [
       R.human(uuidOf('each-reject'), 'request-reject', 'abcdef0123456789abcd'), R.result(uuidOf('each-reject'), 'request-reject', 'abcdef0123456789abcd'),
       agentRequestRec(uuidOf('each-reject'), { verdict: 'rejected', ownedId: null, decisionId: null }),
+    ],
+    // Project roots: a session started in a project root: owned-new's human records and its `owned-cwd` record, one batch.
+    [
+      R.human(uuidOf('each-cwd'), 'owned-new', '3123456789abcdef0123'), R.result(uuidOf('each-cwd'), 'owned-new', '3123456789abcdef0123'),
+      ownedCwdRec(uuidOf('each-cwd')),
     ],
   ];
 }

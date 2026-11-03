@@ -38,6 +38,10 @@ import { mustOpen, storeFixture } from '../helpers/store.ts';
 // optional root (a project root GET /api/owned lists, at most 260 characters) and its own code cwd-forbidden
 // (409, an existing code) for a root not on that list. No journal kind is added: the root a person picked
 // is in the request body, which the `human` record's requestDigest covers.
+// The project-root review changes the journal on purpose: the `owned-cwd` kind (where a session a person
+// started works when that is a project root: the sha256 of its cwd and root, and the agent request it runs),
+// in the batch of owned-new's human records, so a seat dispatch is bound to the runIn its card showed (the
+// request body does not hold it). A new kind, no new field of an old one: an older journal still replays.
 
 const PROTOCOL = {
   "ACK_PHASES": ["dispatched","shown","error"],
@@ -170,6 +174,7 @@ const JOURNAL_BODIES = {
   "item": {"itemId":"id","itemKind":"enum:approval|question|failure|runaway|policy|ready-for-review|flood|reminder|unknown-outcome","sev":"enum:P0|P1|P2|P3","group":"enum:fermatas|wrong-notes|ready-for-review|reminders","conf":"enum:high|low","projectId":{"nullable":"id"},"partRef":{"nullable":"id"},"dedupKey":"digest","reminderId":{"nullable":"id"}},
   "judgment": {"name":"enum:redact","inputDigest":"digest","ver":"int[0,max]","value":{"ver":"int[0,max]","dropped":{"nullable":"enum:env-dump"},"known":"int[0,max]","format":{"record":["pem","sk-ant","sk","github","aws","jwt","authorization","bearer","url-credentials","secret-param"],"value":"int[0,max]"},"entropy":"int[0,max]"}},
   "notified": {"itemId":"id","attempt":"int[1,max]","via":"enum:browser|toast","atMono":"int[0,max]","atWall":"int[0,max]"},
+  "owned-cwd": {"actionId":"uuid","ownedId":"id","requestId":{"nullable":"id"},"cwdDigest":"digest","rootDigest":"digest"},
   "part": {"partRef":"id","harness":"enum:claude|dsh|codex","projectId":{"nullable":"id"},"cwd":{"nullable":"src:cwd"},"version":{"nullable":"src:version"}},
   "part.cursor": {"partRef":"id","cursor":"int[0,max]","srcSeq":"int[0,max]"},
   "project": {"projectId":"id","cwd":"src:cwd","hue":"int[0,11]"},
@@ -183,7 +188,7 @@ const JOURNAL_BODIES = {
 
 const JOURNAL = {
   "lineKeys": ["body","bootId","digest","hash","jseq","kind","obsMono","obsWall","prevHash"],
-  "kinds": ["agent-request","brake.plan","clock","command","commit","event","human","human.result","item","judgment","notified","part","part.cursor","project","protect","recovered","reminder","route","snooze","transition"],
+  "kinds": ["agent-request","brake.plan","clock","command","commit","event","human","human.result","item","judgment","notified","owned-cwd","part","part.cursor","project","protect","recovered","reminder","route","snooze","transition"],
   "journalKinds": ["commit","recovered"],
   "migrations": [{"name":"0001-m0","setVersion":"PRAGMA user_version = 1","sha256":"0f6114b92429bad59918a674a3280f7ab6082a6aa1195ac518606ef09f3ae06d"}],
 };

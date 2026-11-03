@@ -1,6 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as os from 'node:os';
 import * as fs from 'node:fs';
+import * as seat from '../../integrations/dsh-seat/index.js';
 import * as path from 'node:path';
 import type { TestContext } from 'node:test';
 import type { TestProfile } from '../../src/runtime/test-profile.ts';
@@ -15,7 +17,7 @@ import { PROJECT_ROOTS_MAX, describeRefusal, parseProfileArgs } from '../../src/
 import { makeDbOpener } from '../../src/store/node-sqlite.ts';
 import { captureConsole, minimalEnv, runWorkingInProcess } from '../helpers/start.ts';
 import { fakeSpawn } from '../helpers/fake-spawn.ts';
-import { put, withTmp } from '../helpers/tmp.ts';
+import { put, rmTree, withTmp } from '../helpers/tmp.ts';
 
 // --project-root (orchestra app plan 项目根): a flag of either profile, repeatable, only with --owned. Its
 // value is checked in working mode before the lock (src/os/project-roots.ts): a root that is no place an
@@ -125,6 +127,59 @@ test('working: an unfit project root refuses the start before the lock: which on
       assert.equal(fs.existsSync(path.join(r.home, 'run')), false, `${what}: no data dir prepared, no lock`);
       assert.equal(r.specs.length, 0, `${what}: no gate made`);
     });
+  }
+});
+
+test('the composition root (project-root review): an agent request through the real agent pipe is placed by the owned gates\' own table and the project-root read gate', async (t) => {
+  if (process.platform !== 'win32') return t.skip('named pipes in this form are Windows only');
+  // Low-entropy names on purpose: the card shows the cwd redacted, and a run in a root only for the very path
+  // (src/route/requests.ts: runInWhy redacted), so a random temp name (orchestra-test-AbC123) would never run there.
+  // The pid, as letters, keeps two runs apart (the dir, and the agent pipe named after the test dir).
+  const tag = String(process.pid).replace(/[0-9]/g, (d) => 'klmnoprstu'[Number(d)]!);
+  const base = path.join(fs.realpathSync.native(os.tmpdir()), `orchestra-test-review-${tag}`);
+  rmTree(base);
+  fs.mkdirSync(base);
+  t.after(() => rmTree(base));
+  const name = `roots-${tag}`;
+  const testDir = path.join(base, `orchestra-test-${name}`);
+  const home = path.join(testDir, 'orchestra');
+  const proj = path.join(testDir, 'proj');
+  for (const d of [path.join(proj, 'web'), path.join(proj, 'credentials-svc'), path.join(testDir, 'outside')]) fs.mkdirSync(d, { recursive: true });
+  fs.symlinkSync(path.join(testDir, 'outside'), path.join(proj, 'escape'), 'junction');
+  const appData = path.join(base, 'Roaming');
+  put(path.join(appData, CODEX_EXE_REL), 'not really codex');
+  const profile: TestProfile = { kind: 'test', testDir, orchestraHome: home, rootsDir: path.join(testDir, 'roots'), rootsDirGiven: false, rootPids: [] };
+  const log = new Log({ clock: CLOCK.port(null) });
+  const spy = fakeSpawn(() => ({ hang: true }));
+  const o = await runWorkingInProcess({
+    profile, home, userHome: path.join(base, 'user-home'), roots: [], notes: [], log, pidLog: new PidLog(), console: captureConsole().port,
+    pid: process.pid, clock: CLOCK, tty: () => ({ stdin: false, stdout: false }), realpath: (p: string) => fs.realpathSync.native(p),
+    makeReadGate, makeWriteFence, makeDbOpener, env: { ...minimalEnv(), APPDATA: appData, LOCALAPPDATA: base },
+    makeSpawnGate: (spec: SpawnGateSpec) => new SpawnGate({ ...spec, backend: spy.backend }),
+    owned: true, agentPort: true, peekPort: 0, projectRoots: [proj],
+  });
+  assert.equal(o.mode, 'working', JSON.stringify(o));
+  if (o.mode !== 'working') return;
+  try {
+    assert.ok(o.agentPort.on, JSON.stringify(o.agentPort));
+    if (!o.agentPort.on) return;
+    const port = seat.makePipePort({ pipe: o.agentPort.pipe, tokenFile: o.agentPort.tokenFile });
+    const ask = async (cwd: string, sessionId: string) => (await port.call('POST', '/agent/v1/requests', { harness: 'codex', text: '看看这个项目', cwd, requester: { kind: 'dsh', sessionId } })) as { status: number; json: any };
+    const placed = (id: string) => log.entries().find((e) => e.event === 'agent-request-placed' && e.fields.requestId === id)?.fields;
+    const inside = await ask(path.join(proj, 'web'), 's1');
+    assert.equal(inside.status, 200, JSON.stringify(inside.json));
+    assert.deepEqual(placed(inside.json.requestId), { requestId: inside.json.requestId, inRoot: true, why: null });
+    const elsewhere = await ask(path.join(path.parse(base).root, `orchestra-no-such-dir-${name}`), 's2');
+    assert.equal(elsewhere.status, 200, JSON.stringify(elsewhere.json));
+    assert.deepEqual(placed(elsewhere.json.requestId), { requestId: elsewhere.json.requestId, inRoot: false, why: 'outside-roots' });
+    const cred = await ask(path.join(proj, 'credentials-svc'), 's3');
+    assert.deepEqual(placed(cred.json.requestId), { requestId: cred.json.requestId, inRoot: false, why: 'stat-refused' }, 'the dirs read gate refuses the name: unknown, not missing');
+    const dots = await ask(`${proj}\\web\\..\\..\\outside`, 's4');
+    assert.equal(dots.status, 422, 'a .. that leads into the AppData row is refused before it is placed');
+    const escape = await ask(path.join(proj, 'escape'), 's5');
+    assert.deepEqual([escape.status, escape.json], [422, { error: 'cwd-forbidden' }], 'a junction out of the root is refused before it is placed (its realpath hits the table)');
+  } finally {
+    await o.stop();
   }
 });
 
