@@ -7,6 +7,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import type { TestContext } from 'node:test';
 import type { ChildPipe } from '../../src/os/child-pipe.ts';
+import type { OwnedJob } from '../../src/os/procguard.ts';
 import type { ApprovalOutcome, ApprovalView } from '../../src/owned/approvals.ts';
 import type { PeekServer } from '../../src/server/http.ts';
 import type { Store } from '../../src/store/store.ts';
@@ -44,7 +45,7 @@ type Rig = {
   answers(): [string, Record<string, unknown>][];
 };
 
-async function rig(t: TestContext, opts: { codex?: boolean } = {}): Promise<Rig> {
+async function rig(t: TestContext, opts: { codex?: boolean; job?: () => OwnedJob; brakeWhy?: string | null } = {}): Promise<Rig> {
   // Registered before the store fixture's own cleanup, so the children are gone before their work dirs are.
   let stop: () => Promise<void> = async () => {};
   t.after(() => stop());
@@ -80,7 +81,7 @@ async function rig(t: TestContext, opts: { codex?: boolean } = {}): Promise<Rig>
       return d;
     },
     launch: (cwd) => {
-      const pipe: ChildPipe = childPipe(gate.start({ exe: process.execPath, argv: [FAKE_CODEX_SCRIPT], cwd }));
+      const pipe: ChildPipe = childPipe(gate.start({ exe: process.execPath, argv: [FAKE_CODEX_SCRIPT], cwd }), opts.job?.() ?? null);
       closes.push(new Promise((r) => pipe.onClose(() => r())));
       return pipe;
     },
@@ -91,7 +92,7 @@ async function rig(t: TestContext, opts: { codex?: boolean } = {}): Promise<Rig>
     },
   });
   const codex = opts.codex === false ? null : owned;
-  const deps = { codex, codexOff: 'not-asked', claude: null, log };
+  const deps = { codex, codexOff: 'not-asked', claude: null, log, ...(opts.brakeWhy === undefined ? {} : { brakeWhy: opts.brakeWhy }) };
   const printed: string[] = [];
   const server = await startPeekServer({
     port: 0, gate: new ReadGate({ roots: [], io: realIo, testDirs: [sf.dir] }), roots: [], redact: (s) => s, clock: clock.port(null), log, pairingCode: PAIR, profile: 'test',
@@ -375,4 +376,43 @@ test('interrupt: open approvals are declined first, then the turn stops; the rep
   await until('the decline', () => r.answers().length > 0);
   assert.deepEqual(r.answers(), [['srv-1', { decision: 'decline' }]]);
   assert.deepEqual(r.settled.map(([, o]) => [o.decision, o.cause]), [['decline', 'interrupt']]);
+});
+
+test('brake (r4 D4/D8): the session Job ended, its open approval declined, the session ended as braked; a human record; a second brake finds it ended', async (t) => {
+  const r = await rig(t, {
+    brakeWhy: null,
+    job: () => Object.freeze({ name: `orchestra-job-${'e'.repeat(32)}`, endTree: async () => ({ ok: true as const, found: true, killed: 2, left: 0 }) }),
+  });
+  const p = await page(r);
+  const { ownedId, list } = await startAndAsk(r, p, 'run echo braked');
+  assert.equal(list.brakeWhy, null);
+  assert.equal(list.owned[0].brake, true);
+  const res = await post(r, p, `/api/owned/${ownedId}/brake`, { actionId: uuid() });
+  assert.equal(res.status, 200, res.body);
+  assert.deepEqual([res.json.killed, res.json.left], [2, 0]);
+  // Declined, never allowed (D8). The child is stopped right after, so whether it read the answer first is not asserted.
+  assert.deepEqual(r.settled.map(([, o]) => [o.decision, o.cause]), [['decline', 'brake']]);
+  const after = (await get(r, p, '/api/owned')).json;
+  assert.ok(validateOwnedList(after).ok);
+  assert.deepEqual([after.owned[0].state, after.owned[0].endReason, after.owned[0].brake], ['ended', 'braked', false]);
+  const feed = (await get(r, p, `/api/owned/${ownedId}/feed`)).json;
+  assert.ok(feed.events.some((e: { kind: string; state: string }) => e.kind === 'lifecycle' && e.state === 'braked'));
+  assert.ok(feed.events.some((e: { kind: string; state: string; text: string }) => e.kind === 'note' && e.state === 'tree-stopped' && e.text === '2'));
+  assert.deepEqual(humans(r).filter((h) => h.kind === 'human').map((h) => h.body.verb), ['owned-new', 'owned-brake']);
+  const again = await post(r, p, `/api/owned/${ownedId}/brake`, { actionId: uuid() });
+  assert.deepEqual([again.status, again.json], [409, { error: 'owned-ended' }]);
+});
+
+test('brake on a session without a Job (procguard off): 503 brake-unavailable, nothing ends; the list says why there is none', async (t) => {
+  const r = await rig(t);
+  const p = await page(r);
+  const { ownedId, list } = await startAndAsk(r, p, 'run echo kept');
+  assert.equal(list.brakeWhy, 'not-asked');
+  assert.equal(list.owned[0].brake, false);
+  const res = await post(r, p, `/api/owned/${ownedId}/brake`, { actionId: uuid() });
+  assert.deepEqual([res.status, res.json], [503, { error: 'brake-unavailable' }]);
+  const still = (await get(r, p, '/api/owned')).json;
+  assert.equal(still.owned[0].state, 'running');
+  assert.equal(still.approvals.length, 1, 'the card still waits for the person');
+  assert.deepEqual(humans(r).filter((h) => h.kind === 'human').map((h) => h.body.verb), ['owned-new']);
 });

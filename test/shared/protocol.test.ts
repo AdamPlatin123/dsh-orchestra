@@ -26,7 +26,7 @@ test('the enums are the frozen sets of UI design 一, each unique and frozen', (
   assert.deepEqual([...HUMAN_VERBS], [
     'seen', 'snooze', 'acted', 'remind', 'brake', 'roots-add', 'roots-confirm', 'protect-add', 'protect-remove', 'dsh-connect', 'self-rating',
     // alpha 0.2's owned sessions (slice design §2.7): new, message, interrupt, end, retry, allow, deny, and the two imports
-    'owned-new', 'owned-message', 'owned-interrupt', 'owned-end', 'owned-retry', 'approval-allow', 'approval-deny', 'import-claude', 'import-dsh',
+    'owned-new', 'owned-message', 'owned-interrupt', 'owned-end', 'owned-brake', 'owned-retry', 'approval-allow', 'approval-deny', 'import-claude', 'import-dsh',
   ]);
   assert.deepEqual(Object.keys(HUMAN_VERB_ROUTES), [...HUMAN_VERBS], 'every human verb has its route, in the same order');
   assert.ok(Object.values(HUMAN_VERB_ROUTES).every((r) => /^\/api\/[a-z/:-]+$/.test(r)));

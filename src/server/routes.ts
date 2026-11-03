@@ -365,6 +365,10 @@ export const ROUTES: readonly Route[] = Object.freeze([
   owned('owned-message', 'owned', { text: message }, accepted({ uuid, queued: count, via: en(MESSAGE_VIA) }), ['text-too-long', 'slash-command', 'owned-ended', 'queue-full']),
   owned('owned-interrupt', 'owned', {}, accepted({ withdrawn: count, denied: count })),
   owned('owned-end', 'owned', {}, accepted()),
+  // The brake (r4 D4, D8): the session's whole Job ended now. killed: the processes it held; left: those
+  // still counted after the wait (0: the whole tree stopped); each null when procguard could not say (T1).
+  // A session that runs without a Job (procguard off) is brake-unavailable; one that ended, owned-ended.
+  owned('owned-brake', 'owned', {}, accepted({ killed: nul(count), left: nul(count) }), ['owned-ended', 'brake-unavailable']),
   owned('owned-retry', 'owned', { confirmGone: konst(true) }, accepted(), ['owned-disabled', 'owned-limit', 'still-running', 'cwd-gone', 'cwd-forbidden'], SPAWN_FAILS),
   owned('approval-allow', 'approval', { digest: re(DIGEST_RE, 'digest'), rev: count }, accepted(), ['approval-gone', 'digest-mismatch', 'stale-view']),
   owned('approval-deny', 'approval', {}, accepted(), ['approval-gone']),

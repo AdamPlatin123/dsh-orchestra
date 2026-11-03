@@ -91,6 +91,8 @@ const state = {
   noteOff: null,
   to: null,
   endArm: null,
+  /** The session whose brake waits for its second click (ARM_MS). @type {string | null} */
+  brakeArm: null,
   told: new Set(),
   // The dispatch desk: the last suggestion and the sentence it was for (null: none); a suggestion out.
   /** @type {{ text: string, reply: any } | null} */ desk: null,
@@ -196,7 +198,7 @@ function render() {
   if (follow && chatEl.scrollHeight !== undefined) chatEl.scrollTop = chatEl.scrollHeight;
   const dock = describeDock(snap, state.sel);
   const to = state.to ?? mine;
-  Object.assign(/** @type {any} */ (dock.slots), describeOwnedDock(to, state.owned, g, state.to !== null, to !== null && state.endArm === to.id), state.to === null ? {} : { to: { text: t('dock.to', { who: state.to.title }) } });
+  Object.assign(/** @type {any} */ (dock.slots), describeOwnedDock(to, state.owned, g, state.to !== null, to !== null && state.endArm === to.id, to !== null && state.brakeArm === to.id), state.to === null ? {} : { to: { text: t('dock.to', { who: state.to.title }) } });
   dom.paintId('dock', { ...dock, attr: { 'aria-disabled': String(to === null || !g.unlocked) } });
   const about = dom.byId('about');
   dom.paint(about, { data: { hide: view === 'about' ? '0' : '1' } });
@@ -489,17 +491,23 @@ async function sendMsg() {
   said(a, t(a?.body?.via === 'queued' ? 'op.queued' : 'op.done', { what: to.title }));
 }
 
-/** Two stops; ending takes a second click within ARM_MS. @param {'interrupt' | 'end'} verb */
+/** Three stops; ending and the brake each take a second click within ARM_MS. @param {'interrupt' | 'end' | 'brake'} verb */
 async function stop(verb) {
   const to = state.to ?? selTo();
   if (to === null) return;
-  if (verb === 'end' && state.endArm !== to.id) {
-    state.endArm = to.id;
-    after(ARM_MS, () => { state.endArm = null; schedule(); });
+  const arm = verb === 'end' ? 'endArm' : verb === 'brake' ? 'brakeArm' : null;
+  if (arm !== null && state[arm] !== to.id) {
+    state[arm] = to.id;
+    after(ARM_MS, () => { state[arm] = null; schedule(); });
     return schedule();
   }
   state.endArm = null;
-  said(await op(`owned/${to.id}/${verb}`, {}), t('op.done', { what: t(`dock.${verb}`) }));
+  state.brakeArm = null;
+  const a = await op(`owned/${to.id}/${verb}`, {});
+  if (verb !== 'brake') return said(a, t('op.done', { what: t(`dock.${verb}`) }));
+  // The brake's reply counts what the Job held and what is left; null: procguard could not say (T1).
+  const b = a?.body;
+  said(a, b?.left === 0 ? t('op.braked', { n: b.killed ?? 0 }) : typeof b?.left === 'number' ? t('op.brakeLeft', { n: b.left }) : t('op.brakedUnsure'));
 }
 
 /** An allow carries the shown digest and the queue rev; high risk only `sure` (held, typed). @param {string} id @param {boolean} sure @param {boolean} inPin @param {Element | null} el */
@@ -675,7 +683,7 @@ function act(el) {
     return schedule();
   }
   if (a === 'send') return void sendMsg();
-  if (a === 'interrupt' || a === 'end') return void stop(a);
+  if (a === 'interrupt' || a === 'end' || a === 'brake') return void stop(a);
   if (a === 'deny') {
     return void op(`approvals/${appr}/deny`, {}).then((r) => {
       if (r?.ok) answeredAt(t0, appr);

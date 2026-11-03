@@ -39,10 +39,11 @@ export type ApprovalRisk = (typeof APPROVAL_RISKS)[number];
 export type Answer = { readonly decision: 'accept' } | { readonly decision: 'decline' } | { readonly decision: 'text'; readonly text: string };
 
 /**
- * Who answered: the person, the deadline, a stop of the turn, the end of the session, or a mismatch (the
- * person allowed, but not what the queue holds, or a card that offers no allow: declined, and not their word).
+ * Who answered: the person, the deadline, a stop of the turn, the end of the session, the brake (the
+ * person stopped the session's whole tree), or a mismatch (the person allowed, but not what the queue
+ * holds, or a card that offers no allow: declined, and not their word).
  */
-export type AnswerCause = 'human' | 'clock' | 'interrupt' | 'end' | 'mismatch';
+export type AnswerCause = 'human' | 'clock' | 'interrupt' | 'end' | 'brake' | 'mismatch';
 
 export type ApprovalInput = {
   ownedId: string;
@@ -198,8 +199,8 @@ export class Approvals {
     return 'ok';
   }
 
-  /** Declines every open entry of a session (a stop of the turn, the end); the count declined. */
-  declineOwned(ownedId: string, cause: 'interrupt' | 'end'): number {
+  /** Declines every open entry of a session (a stop of the turn, the end, the brake); the count declined. */
+  declineOwned(ownedId: string, cause: 'interrupt' | 'end' | 'brake'): number {
     const mine = [...this.#open.values()].filter((e) => e.view.ownedId === ownedId);
     for (const e of mine) this.#answer(e, { decision: 'decline' }, cause);
     return mine.length;

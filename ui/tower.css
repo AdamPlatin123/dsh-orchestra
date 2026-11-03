@@ -200,6 +200,9 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
 .op:hover, .btn:hover { background: var(--hover); }
 .btn[disabled], .btn[aria-disabled=true] { color: var(--ink2); cursor: not-allowed; }
 .btn[aria-pressed=true], .btn[data-armed="1"], .btn[data-high="1"] { border-color: var(--ink); font-weight: 600; }
+/* The brake: the irreversible verb, drawn heavier than end (vermilion stays for errors); armed, filled with ink. */
+.btn[data-act=brake] { border: 2px solid var(--ink); font-weight: 600; }
+.btn[data-act=brake][data-armed="1"] { background: var(--ink); color: var(--paper); }
 .acts .btn { min-height: 44px; min-width: 44px; }
 .btn[data-high="1"] { touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 /* An allow's bar: grey while void (750 ms), ink while held. */

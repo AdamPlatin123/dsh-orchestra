@@ -1,3 +1,4 @@
+import type { OwnedJob } from './procguard.ts';
 import type { ProcHandle } from './spawn.ts';
 
 // The Claude host as its driver sees it (alpha 0.2 design §2.1 "停止顺序"; orchestra app step 4), and the
@@ -7,8 +8,9 @@ import type { ProcHandle } from './spawn.ts';
 // the SDK started, would be left. So a kill is the last step, never the first:
 //   1. the close frame: the host calls query.close(), the SDK ends claude.exe, the host exits; wait 3 s;
 //   2. stdin closed: the host reads EOF and does the same; wait 2 s;
-//   3. kill the host. claude.exe may then remain (no kill-on-close Job yet, D4's residual risk): the
-//      caller hears `killed` and says so in the feed.
+//   3. kill the host. Started inside a procguard Job (rule procguard-claude), the handle is procguard's,
+//      and its end closes the Job: claude.exe and whatever it ran go with it (r4 D4). Started without one
+//      (procguard off), claude.exe may remain: the caller hears `killed` and says so in the feed.
 
 export const HOST_STOP_MS = Object.freeze({ afterClose: 3000, afterEof: 2000 });
 
@@ -21,16 +23,19 @@ export type HostPipe = {
   onError(cb: (code: string) => void): void;
   /** Closes stdin; the host takes EOF as goodbye. */
   closeStdin(): void;
-  /** The last resort: ends node.exe only (claude.exe may remain). */
+  /** The last resort: ends node.exe only (claude.exe may remain) or, in a Job, procguard and so the whole tree. */
   kill(): void;
+  /** The Job the host's whole tree runs in, or null when it was started without one (procguard off). */
+  readonly job: OwnedJob | null;
 };
 
 /** The pipe over a handle the spawn gate started (rule claude-host); frozen, without a prototype, with no path back to the handle. */
-export function hostPipe(h: ProcHandle): HostPipe {
+export function hostPipe(h: ProcHandle, job: OwnedJob | null = null): HostPipe {
   let eof = false;
   let killed = false;
   const pipe = Object.assign(Object.create(null) as HostPipe, {
     pid: h.pid,
+    job,
     write: (data: string) => {
       if (!eof) h.write(data);
     },
@@ -54,6 +59,15 @@ export function hostPipe(h: ProcHandle): HostPipe {
     },
   });
   return Object.freeze(pipe);
+}
+
+/**
+ * The brake's end of a host (no stop order: its Job was killed already, or is being killed): the host's
+ * handle goes at once, so its pipes close and its session hears the close.
+ */
+export function endHostNow(p: HostPipe): void {
+  p.closeStdin();
+  p.kill();
 }
 
 /** A one-shot timer of the caller's Clock: runs `fn` after `ms`; the returned function cancels it. */

@@ -243,6 +243,8 @@ export function restoredSession(r: OwnedRecord, now: () => number): ClaudeSessio
     send: () => ({ ok: false as const, reason: 'ended' as const }),
     interrupt: async () => ({ withdrawn: 0, denied: 0 }),
     end: () => ({ denied: 0 }),
+    jobbed: false,
+    brake: async () => ({ ok: false as const, reason: 'ended' as const }),
     stats: () => ({ stderrTail: '', failure: RESTORED, exit: null, closed: true }),
   });
 }

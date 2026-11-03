@@ -19,7 +19,10 @@
 //   tool-call       a server request Orchestra does not answer (item/tool/call)
 //   garbage         lines that are not JSON-RPC, a stray response, a line past 1 KiB, then says ok
 //   hold            the turn stays open until turn/interrupt
+//   sleeper         starts cmd.exe /c ping -t 127.0.0.1, says its pid (a grandchild-maker: the ping is a
+//                   grandchild that libuv lets break away from this node's own Job, S4 baseline), turn ends
 // thread/start with model codex/fake-loose answers approvalPolicy 'never'; codex/fake-die exits first.
+import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as readline from 'node:readline';
 
@@ -163,6 +166,13 @@ async function runTurn(turnId: string, n: number, text: string): Promise<void> {
       return;
     case 'hold':
       return;
+    case 'sleeper': {
+      const sys32 = `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32`;
+      const c = spawn(`${sys32}\\cmd.exe`, ['/d', '/c', `${sys32}\\PING.EXE -t 127.0.0.1 >nul`], { stdio: 'ignore', windowsHide: true, windowsVerbatimArguments: true });
+      say(turnId, `sleeper ${c.pid ?? 0}`, n);
+      endTurn(turnId);
+      return;
+    }
     default:
       say(turnId, `unknown script ${word}`, n);
       endTurn(turnId);

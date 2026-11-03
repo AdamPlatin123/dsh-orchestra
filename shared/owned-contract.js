@@ -33,9 +33,10 @@ export const OWNED_ENUMS = frozen({
    * owned Claude session's host stopped it on a safety check (a model, a tool, a plugin it may not have);
    * interrupt-unsure: an interrupt left something queued that could still run, so Orchestra ended it;
    * protocol-error: the child said something Orchestra cannot read, so Orchestra stopped it;
-   * daemon-stop: orchestrad ended it on its own way out (nobody pressed end).
+   * daemon-stop: orchestrad ended it on its own way out (nobody pressed end); braked: you pressed the
+   * brake, and its whole process tree (its procguard Job) was ended.
    */
-  endReason: ['you-ended', 'exited', 'start-failed', 'policy-mismatch', 'daemon-restart', 'safety-stop', 'interrupt-unsure', 'protocol-error', 'daemon-stop'],
+  endReason: ['you-ended', 'exited', 'start-failed', 'policy-mismatch', 'daemon-restart', 'safety-stop', 'interrupt-unsure', 'protocol-error', 'daemon-stop', 'braked'],
   approvalKind: ['command', 'file-change', 'permissions', 'question', 'elicitation', 'tool'],
   risk: ['shell', 'write', 'net', 'protected', 'other'],
   feedKind: ['you', 'text', 'tool', 'tool-result', 'ask', 'answer', 'auto-denied', 'lifecycle', 'result', 'note'],
@@ -72,6 +73,7 @@ export const OWNED_TOWER_TEXT = frozen({
   'end.interrupt-unsure': '已结束：你按了中断，但它还有没处理的消息，为免停不住，Orchestra 结束了它',
   'end.protocol-error': '已结束：它发来了 Orchestra 读不懂的内容，Orchestra 停了它',
   'end.daemon-stop': '已结束：orchestrad 停机时结束了它',
+  'end.braked': '已结束：你踩了刹车，整棵进程树已停',
   'end.unknown': '已结束',
   // The newest thing the session said or did, for its activity line (src/sources/tower.ts ownedNode).
   'act.command': '命令：',
@@ -93,15 +95,18 @@ const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
 
 /**
  * @typedef {{
- *   v: 1, kind: 'owned-list', rev: number, enabled: boolean, disabledWhy: string | null,
+ *   v: 1, kind: 'owned-list', rev: number, enabled: boolean, disabledWhy: string | null, brakeWhy: string | null,
  *   harnesses: { codex: boolean, claude: boolean },
  *   owned: OwnedEntry[], approvals: ApprovalEntry[], limits: { maxOwned: number, active: number },
  * }} OwnedList
  *   rev: the approval queue's revision; the page sends it back with an allow (stale-view otherwise).
  *   enabled: whether any harness can start a session now; disabledWhy says why not (null when enabled).
+ *   brakeWhy: why a new session's tree runs without a procguard Job of its own, so it has no brake (a code;
+ *   null: every new session gets one). T1: no brake says why.
+ *   brake (of an entry): its tree runs in a Job of its own and it still runs, so the brake can stop it.
  * @typedef {{
  *   ownedId: string, harness: 'codex' | 'claude', model: string, title: string, state: string, endReason: string | null,
- *   waiting: string | null, queued: number, tokens: Tokens | null, lastSeq: number, createdAt: number,
+ *   waiting: string | null, queued: number, tokens: Tokens | null, lastSeq: number, createdAt: number, brake: boolean,
  * }} OwnedEntry
  *   title: the first line of its first message, shown (possibly empty); waiting: an approvalId.
  * @typedef {{ input: number, cachedInput: number, output: number, total: number }} Tokens
@@ -206,7 +211,7 @@ function checkTokens(c, v, at) {
  */
 export function validateOwnedList(x) {
   const c = checker();
-  const s = c.obj(x, '$', ['v', 'kind', 'rev', 'enabled', 'disabledWhy', 'harnesses', 'owned', 'approvals', 'limits']);
+  const s = c.obj(x, '$', ['v', 'kind', 'rev', 'enabled', 'disabledWhy', 'brakeWhy', 'harnesses', 'owned', 'approvals', 'limits']);
   if (s === null) return { ok: false, errors: c.errors };
   if (s.v !== OWNED_V) c.bad('$.v', `${JSON.stringify(s.v)}, not ${OWNED_V}`);
   if (s.kind !== 'owned-list') c.bad('$.kind', `${JSON.stringify(s.kind)}, not owned-list`);
@@ -215,6 +220,7 @@ export function validateOwnedList(x) {
   if (s.disabledWhy !== null) c.re(s.disabledWhy, '$.disabledWhy', OWNED_CODE_RE, 'code');
   // T1: off says why; on has no why.
   if ((s.enabled === false) !== (s.disabledWhy !== null)) c.bad('$.disabledWhy', 'set exactly when enabled is false');
+  if (s.brakeWhy !== null) c.re(s.brakeWhy, '$.brakeWhy', OWNED_CODE_RE, 'code');
   const h = c.obj(s.harnesses, '$.harnesses', OWNED_ENUMS.harness);
   if (h !== null) {
     for (const k of OWNED_ENUMS.harness) c.bool(h[k], `$.harnesses.${k}`);
@@ -226,7 +232,7 @@ export function validateOwnedList(x) {
   const sessions = new Map();
   c.arr(s.owned, '$.owned').forEach((e, i) => {
     const at = `$.owned[${i}]`;
-    const o = c.obj(e, at, ['ownedId', 'harness', 'model', 'title', 'state', 'endReason', 'waiting', 'queued', 'tokens', 'lastSeq', 'createdAt']);
+    const o = c.obj(e, at, ['ownedId', 'harness', 'model', 'title', 'state', 'endReason', 'waiting', 'queued', 'tokens', 'lastSeq', 'createdAt', 'brake']);
     if (o === null) return;
     c.re(o.ownedId, `${at}.ownedId`, OWNED_ID_RE, 'owned id');
     if (sessions.has(o.ownedId)) c.bad(`${at}.ownedId`, `${String(o.ownedId)} listed twice`);
@@ -246,6 +252,9 @@ export function validateOwnedList(x) {
     checkTokens(c, o.tokens, `${at}.tokens`);
     c.int(o.lastSeq, `${at}.lastSeq`);
     c.int(o.createdAt, `${at}.createdAt`);
+    c.bool(o.brake, `${at}.brake`);
+    // Nothing of an ended session runs here: there is no tree to brake.
+    if (over && o.brake === true) c.bad(`${at}.brake`, 'an ended session has no tree to brake');
   });
 
   /** @type {Map<unknown, Record<string, unknown>[]>} */

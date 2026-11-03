@@ -229,6 +229,7 @@ export async function start(f: Features, fence: FenceStatus, given: BootPorts, o
     tty: d.tty,
     stopping: d.stopping,
     ...(parsed.peekPort !== undefined ? { peekPort: parsed.peekPort } : {}),
-    ...(parsed.owned === true ? { owned: true as const } : {}),
+    // With --owned, procguard always: every owned session's tree in a Job of its own (r4 D4).
+    ...(parsed.owned === true ? { owned: true as const, procguard: true as const } : {}),
   });
 }

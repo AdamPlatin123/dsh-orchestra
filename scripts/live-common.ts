@@ -4,11 +4,13 @@
 // the end of an owned session waited out through the stop order before orchestrad is killed (a kill on
 // Windows is TerminateProcess: orchestrad's own stop never runs); and a look at the children orchestrad
 // recorded (run/pids.jsonl of the test dir) once it is gone, ending only those still there whose image is
-// the one the rule started (node.exe for claude-host, codex.exe for codex-app-server), with their trees.
+// the one the rule started (node.exe for claude-host, codex.exe for codex-app-server, procguard.exe for
+// the wrapped rules and the resident), with their trees. With procguard on, a session's whole tree is in
+// its Job: jobsOf and probe read the Jobs orchestrad made and what is in them (by pid + creation time).
 //
 // Listed in EXEMPT_SCRIPTS (test/helpers/scan-rules.ts), as the two scripts that use it: it speaks HTTP to
 // orchestrad on 127.0.0.1, waits on timers, reads the pid log of a test dir and ends recorded children.
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as path from 'node:path';
@@ -70,7 +72,9 @@ export async function endAndWait(end: () => Promise<Reply>, state: () => Promise
   return { endAnswer, settled };
 }
 
-const IMAGE: Readonly<Record<string, string>> = { 'claude-host': 'node.exe', 'codex-app-server': 'codex.exe' };
+const IMAGE: Readonly<Record<string, string>> = {
+  'claude-host': 'node.exe', 'codex-app-server': 'codex.exe', 'procguard-claude': 'procguard.exe', 'procguard-codex': 'procguard.exe', procguard: 'procguard.exe',
+};
 
 /** The image name of a running pid (tasklist), or null when none runs under it. */
 function imageOf(pid: number): string | null {
@@ -124,4 +128,86 @@ export function leftovers(testDir: string): { recorded: number; leftover: number
     }
   }
   return { recorded: pids.size, leftover, ended, otherImage };
+}
+
+// --- procguard's Jobs (orchestra app: owned sessions in procguard Jobs) -----------------------------------
+
+/** The Jobs orchestrad's wrapped starts made, from the test dir's run/pids.jsonl (the `job` of each entry), in order. */
+export function jobsOf(testDir: string): { rule: string; job: string; pid: number | null }[] {
+  const file = path.join(testDir, 'orchestra', 'run', 'pids.jsonl');
+  let lines: string[] = [];
+  try {
+    lines = fs.readFileSync(file, 'utf8').split('\n').filter((l) => l.trim() !== '');
+  } catch {
+    lines = [];
+  }
+  const out: { rule: string; job: string; pid: number | null }[] = [];
+  for (const l of lines) {
+    try {
+      const e = JSON.parse(l) as { rule?: unknown; job?: unknown; pid?: unknown };
+      if (typeof e.rule === 'string' && typeof e.job === 'string' && /^orchestra-job-[0-9a-f]{32}$/.test(e.job)) out.push({ rule: e.rule, job: e.job, pid: typeof e.pid === 'number' ? e.pid : null });
+    } catch {
+      // A torn line.
+    }
+  }
+  return out;
+}
+
+export type JobProc = { pid: number; createTime: string | null; image: string | null };
+
+/**
+ * A resident procguard of the script's own, from the exe orchestrad built in the test dir
+ * (orchestra\runtime\procguard\<hash>\procguard.exe): it opens a Job by name to say what is in it and
+ * checks processes by pid + creation time. Null when no such exe is there (procguard was off).
+ */
+export function probe(testDir: string): { info(job: string): Promise<{ found: boolean; procs: JobProc[] }>; alive(procs: { pid: number; createTime: string }[]): Promise<string[]>; close(): void } | null {
+  const root = path.join(testDir, 'orchestra', 'runtime', 'procguard');
+  let exe: string | null = null;
+  try {
+    for (const d of fs.readdirSync(root)) if (fs.existsSync(path.join(root, d, 'procguard.exe'))) exe = path.join(root, d, 'procguard.exe');
+  } catch {
+    exe = null;
+  }
+  if (exe === null) return null;
+  const child = spawn(exe, [], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true, env: { SystemRoot: process.env.SystemRoot ?? 'C:\\Windows' } });
+  let tail = '';
+  let seq = 0;
+  const waiting = new Map<number, (v: any) => void>();
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (d: string) => {
+    tail += d;
+    let i: number;
+    while ((i = tail.indexOf('\n')) >= 0) {
+      const line = tail.slice(0, i);
+      tail = tail.slice(i + 1);
+      try {
+        const m = JSON.parse(line) as { id?: number };
+        if (typeof m.id === 'number') waiting.get(m.id)?.(m);
+      } catch {
+        // Not ours.
+      }
+    }
+  });
+  const ask = (cmd: Record<string, unknown>): Promise<any> => new Promise((resolve, reject) => {
+    const id = ++seq;
+    const timer = setTimeout(() => reject(new Error(`probe: ${String(cmd.cmd)} had no answer`)), 10_000);
+    waiting.set(id, (v) => {
+      clearTimeout(timer);
+      resolve(v);
+    });
+    child.stdin.write(`${JSON.stringify({ id, ...cmd })}\n`);
+  });
+  return {
+    info: async (job) => {
+      const r = await ask({ cmd: 'job-info', name: job });
+      return { found: r.found === true, procs: Array.isArray(r.procs) ? r.procs : [] };
+    },
+    alive: async (procs) => {
+      const r = await ask({ cmd: 'alive', procs });
+      return Array.isArray(r.alive) ? r.alive : [];
+    },
+    close: () => {
+      child.stdin.end();
+    },
+  };
 }

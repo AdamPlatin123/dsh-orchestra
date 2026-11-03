@@ -1,7 +1,13 @@
 // The live end-to-end run of an owned session (orchestra app step 4): orchestrad in the test profile with
 // --owned, driven over HTTP exactly as the page drives it, against the real codex.exe or the Claude host
 // and the local magpie gateway (http://127.0.0.1:3425, no key). Not part of the test run.
-//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--outside] [--keep]
+//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--outside | --brake] [--keep]
+//
+// --brake (orchestra app: owned sessions in procguard Jobs): the task is instead to start a ping that
+// keeps running (Start-Process, so it outlives the command that started it), the run waits until that
+// PING.EXE is in the session's Job, presses the brake (POST /api/owned/:id/brake, as the page does) and
+// checks by pid + creation time that none of the Job's processes survived. Every run reports what its
+// Job held before the end and how many of those processes are still alive after it.
 //
 // --outside: the task is instead to read a synthetic file the script writes in the test dir, outside the
 // session's work dir; the report says whether the harness asked about it (approvals by kind and risk) or
@@ -37,7 +43,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { endAndWait, leftovers, request, sleep } from './live-common.ts';
+import { endAndWait, jobsOf, leftovers, probe, request, sleep } from './live-common.ts';
 
 const REPO = fileURLToPath(new URL('../', import.meta.url));
 const FILE = 'smoke.txt';
@@ -48,22 +54,27 @@ const LIMIT_MS = 6 * 60 * 1000;
 const OUTSIDE_FILE = 'outside-probe.txt';
 const OUTSIDE_WORD = 'orchestra-outside-probe';
 const outsideTask = (file: string) => `Run a shell command that prints the contents of the file ${file} and tell me the word it contains. Do not change any file.`;
+const BRAKE_TASK = 'Run exactly this one shell command, once, and then reply with the single word started: '
+  + 'powershell -NoProfile -Command "Start-Process -WindowStyle Hidden -FilePath ping.exe -ArgumentList \'-t\',\'127.0.0.1\'"';
 
-function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean; outside: boolean } {
+function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean; outside: boolean; brake: boolean } {
   const a = process.argv.slice(2);
   let harness: string | null = null;
   let model: string | null = null;
   let keep = false;
   let outside = false;
+  let brake = false;
   for (let i = 0; i < a.length; i++) {
     if (a[i] === '--harness') harness = a[++i] ?? null;
     else if (a[i] === '--model') model = a[++i] ?? null;
     else if (a[i] === '--keep') keep = true;
     else if (a[i] === '--outside') outside = true;
+    else if (a[i] === '--brake') brake = true;
     else throw new Error(`live-smoke: unknown argument ${a[i]}`);
   }
   if (harness !== 'codex' && harness !== 'claude') throw new Error('live-smoke: --harness codex|claude');
-  return { harness, model, keep, outside };
+  if (outside && brake) throw new Error('live-smoke: --outside or --brake, not both');
+  return { harness, model, keep, outside, brake };
 }
 
 function freePort(): Promise<number> {
@@ -79,7 +90,7 @@ function freePort(): Promise<number> {
 
 
 async function main(): Promise<number> {
-  const { harness, model, keep, outside } = args();
+  const { harness, model, keep, outside, brake } = args();
   const testDir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'orchestra-test-smoke-'));
   fs.mkdirSync(path.join(testDir, 'roots'));
   const port = await freePort();
@@ -114,6 +125,10 @@ async function main(): Promise<number> {
   /** Set once a session is dispatched: the finally ends it through orchestrad, whatever else happened. */
   let ownedId: string | null = null;
   let endIt: (() => Promise<void>) | null = null;
+  /** The script's own procguard (the exe orchestrad built in the test dir), once there is one. */
+  let pg: ReturnType<typeof probe> = null;
+  /** What the session's Job held before its end, by identity: checked once it ended. */
+  let held: { pid: number; createTime: string }[] = [];
   try {
     const pair = (await waitLine(/pairing code (\d{8})/))[1]!;
     await waitLine(/peek page at /);
@@ -135,9 +150,9 @@ async function main(): Promise<number> {
     const get = (p: string) => request(port, host, 'GET', p, { cookie, origin, 'sec-fetch-site': 'same-origin', 'x-orchestra-csrf': h['x-orchestra-csrf'] });
     const post = (p: string, body: Record<string, unknown>) => request(port, host, 'POST', p, h, JSON.stringify({ actionId: crypto.randomUUID(), ...body }));
 
-    const probe = path.join(testDir, OUTSIDE_FILE);
-    if (outside) fs.writeFileSync(probe, `${OUTSIDE_WORD}\n`);
-    const made = await post('/api/owned/new', { text: outside ? outsideTask(probe) : TASK, harness, ...(model === null ? {} : { model }) });
+    const probeFile = path.join(testDir, OUTSIDE_FILE);
+    if (outside) fs.writeFileSync(probeFile, `${OUTSIDE_WORD}\n`);
+    const made = await post('/api/owned/new', { text: outside ? outsideTask(probeFile) : brake ? BRAKE_TASK : TASK, harness, ...(model === null ? {} : { model }) });
     if (made.status !== 200) throw new Error(`live-smoke: new answered ${made.status} ${made.body}`);
     const id = String(made.json.ownedId);
     ownedId = id;
@@ -184,8 +199,37 @@ async function main(): Promise<number> {
     const file = path.join(testDir, 'orchestra', 'work', id, FILE);
     const written = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
     const mentions = events.some((e) => e.kind === 'text' && (e.text ?? '').includes(outside ? OUTSIDE_WORD : WORD));
-    await endIt();
-    endIt = null;
+    // The session's Job (procguard on): what it holds now, by image name; its members by identity.
+    const jobs = jobsOf(testDir);
+    report.jobs = jobs.map((j) => j.rule);
+    const job = jobs.at(-1)?.job ?? null;
+    pg = job === null ? null : probe(testDir);
+    if (pg !== null && job !== null) {
+      let info = await pg.info(job);
+      if (brake) {
+        // The ping may take a moment after the reply: wait for it, at most 60 s.
+        for (let waited = 0; waited < 60_000 && !info.procs.some((p) => (p.image ?? '').toLowerCase() === 'ping.exe'); waited += 1000) {
+          await sleep(1000);
+          info = await pg.info(job);
+        }
+      }
+      const images: Record<string, number> = {};
+      for (const p of info.procs) images[(p.image ?? '?').toLowerCase()] = (images[(p.image ?? '?').toLowerCase()] ?? 0) + 1;
+      held = info.procs.filter((p) => p.createTime !== null).map((p) => ({ pid: p.pid, createTime: p.createTime! }));
+      report.jobBeforeEnd = { found: info.found, images, unidentified: info.procs.length - held.length, wrapperInJob: info.procs.some((p) => p.pid === jobs.at(-1)?.pid) };
+    } else {
+      report.jobBeforeEnd = null;
+    }
+    if (brake) {
+      const b = await post(`/api/owned/${id}/brake`, {});
+      report.brakeAnswer = { status: b.status, killed: b.json?.killed ?? null, left: b.json?.left ?? null, error: b.json?.error ?? null };
+      await sleep(500);
+      endIt = null;
+    } else {
+      await endIt();
+      endIt = null;
+    }
+    if (pg !== null) report.survivors = held.length === 0 ? null : (await pg.alive(held)).length;
     const last = (await get('/api/owned')).json.owned.find((o: { ownedId: string }) => o.ownedId === id);
     const count: Record<string, number> = {};
     for (const e of events) {
@@ -198,7 +242,11 @@ async function main(): Promise<number> {
       fileWritten: written !== null, fileContentAsAsked: written !== null && written.trim() === WORD,
     });
     if (outside) report.ranUnasked = events.filter((e) => e.kind === 'note' && e.state === 'ran-unasked').length;
-    code = outside ? (replied ? 0 : 1) : replied && written !== null && written.trim() === WORD ? 0 : 1;
+    report.treeNotes = ((await get(`/api/owned/${id}/feed`)).json?.events ?? []).filter((e: { kind: string; state: string }) => e.kind === 'note' && /^tree-|children-may-remain|host-killed/.test(e.state)).map((e: { state: string; text: string | null }) => `${e.state}${e.text === null ? '' : `=${e.text}`}`);
+    const noSurvivors = pg === null || report.survivors === 0;
+    code = brake
+      ? (report.survivors === 0 && (report.brakeAnswer as { status: number }).status === 200 && last?.endReason === 'braked' && held.length > 0 ? 0 : 1)
+      : outside ? (replied ? 0 : 1) : replied && written !== null && written.trim() === WORD && noSurvivors ? 0 : 1;
   } catch (e) {
     report.error = e instanceof Error ? e.message : String(e);
     report.orchestradSaid = lines.filter((l) => /owned|refus|failed|error/i.test(l) && !/code \d{8}/.test(l)).map((l) => l.replace(testDir, '<testDir>'));
@@ -207,6 +255,12 @@ async function main(): Promise<number> {
     if (ownedId !== null && endIt !== null) await endIt().catch(() => {});
     child.kill();
     await Promise.race([exited, sleep(5000)]);
+    // After orchestrad itself is gone (killed: no stop order of its own ran), nothing of the Job may remain.
+    if (pg !== null) {
+      if (held.length > 0) report.survivorsAfterDaemon = (await pg.alive(held)).length;
+      pg.close();
+      await sleep(300);
+    }
     report.leftovers = leftovers(testDir);
     if (!keep) {
       // The host and claude.exe may still be leaving: a few tries.

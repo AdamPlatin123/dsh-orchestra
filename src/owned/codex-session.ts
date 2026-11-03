@@ -1,5 +1,6 @@
 import * as path from 'node:path';
 import type { ChildPipe } from '../os/child-pipe.ts';
+import type { JobOutcome } from '../os/procguard.ts';
 import type { ClockHub } from '../runtime/clock.ts';
 import type { Answer, AnswerCause, ApprovalKind, ApprovalRisk, Approvals } from './approvals.ts';
 import type { RpcClient, RpcExit, RpcId, RpcStats } from './codex-rpc.ts';
@@ -24,9 +25,15 @@ const win = path.win32;
 //              thread is still starting, or a turn/start is in flight, it waits here (at most 5).
 //   stop:      every open approval of the session is declined first, the waiting messages withdrawn,
 //              then turn/interrupt (sent as soon as the turn has an id, if it had none yet).
-//   end:       open approvals declined, then the child is stopped (stdin closed, then killed). Only
-//              codex.exe itself is killed: what its commands started may outlive it (no kill-on-close
-//              Job yet, D4's residual risk), and the feed says so (note children-may-remain).
+//   end:       open approvals declined, then the child is stopped (stdin closed, then killed). Started
+//              inside a procguard Job (pipe.job), the child is procguard and its end closes the Job, so
+//              what codex's commands started dies with it (r4 D4); once it closed, the Job is checked
+//              through the resident procguard and the feed says what was found (tree-ended, tree-left,
+//              or tree-unsure: unknown, T1). Without a Job (procguard off) only codex.exe itself is
+//              killed and the feed says its commands' children may remain (children-may-remain).
+//   brake:     (a Job only) every process in the Job is ended at once through the resident procguard,
+//              the open approvals are declined, the session ends as braked, then the child's handle
+//              goes; the feed says how many processes the Job held and whether any is left.
 //   deadlines: initialize and thread/start get 60 s (then start-failed), turn/start and turn/steer 60 s
 //              (then the message is msg-unsure: sent, its fate unknown), turn/interrupt 10 s.
 //
@@ -102,8 +109,27 @@ export const CODEX_DEADLINES = frozen({ startMs: 60_000, turnMs: 60_000, interru
 
 /** unknown: a session an earlier orchestrad started (its registry entry outlived a restart); nobody here holds its child. */
 export type CodexSessionState = 'starting' | 'idle' | 'running' | 'ended' | 'failed' | 'unknown';
-/** daemon-stop: orchestrad ended it on its own way out (nobody pressed end); the rest: shared/owned-contract.js. */
-export type CodexEndReason = 'you-ended' | 'exited' | 'start-failed' | 'policy-mismatch' | 'daemon-restart' | 'daemon-stop';
+/** daemon-stop: orchestrad ended it on its own way out (nobody pressed end); braked: you stopped its whole tree; the rest: shared/owned-contract.js. */
+export type CodexEndReason = 'you-ended' | 'exited' | 'start-failed' | 'policy-mismatch' | 'daemon-restart' | 'daemon-stop' | 'braked';
+
+/**
+ * What the brake did: ok with the processes the Job held when it came (killed) and those left after the
+ * wait (left: 0 is the whole tree stopped), each null when procguard could not say (T1: unknown); not ok
+ * when the session had ended already, or runs without a Job (procguard off: brake-unavailable).
+ */
+export type OwnedBrake = { ok: true; killed: number | null; left: number | null } | { ok: false; reason: 'ended' | 'no-job' };
+
+/**
+ * The feed note of a Job's end: tree-stopped (the Job held processes when the kill came, its text their
+ * count, and none is left), tree-ended (no process was left in it, or no Job of that name is left at
+ * all), tree-left (some still counted after the wait, its text how many), tree-unsure (procguard could
+ * not say, its text why: T1, unknown, never "none left").
+ */
+export function treeNote(o: JobOutcome): { state: 'tree-stopped' | 'tree-ended' | 'tree-left' | 'tree-unsure'; text: string | null } {
+  if (!o.ok) return { state: 'tree-unsure', text: o.why };
+  if (o.left > 0) return { state: 'tree-left', text: `${o.left}` };
+  return o.found && o.killed > 0 ? { state: 'tree-stopped', text: `${o.killed}` } : { state: 'tree-ended', text: null };
+}
 /** No child of it runs here any more (or, unknown, none ever did in this orchestrad). */
 export const isOver = (state: CodexSessionState): boolean => state === 'ended' || state === 'failed' || state === 'unknown';
 
@@ -155,6 +181,10 @@ export type CodexSession = {
   interrupt(): Promise<{ withdrawn: number; denied: number }>;
   /** Ends the session: a person's end (you-ended) unless orchestrad itself is stopping (daemon-stop). */
   end(why?: 'you-ended' | 'daemon-stop'): { denied: number };
+  /** Whether its child's whole tree runs in a Job of its own (so the brake can stop it), as long as it runs. */
+  readonly jobbed: boolean;
+  /** The brake: the whole tree stopped now, the approvals declined, the session ended as braked. */
+  brake(): Promise<OwnedBrake>;
   stats(): { rpc: RpcStats | null; stderrTail: string; failure: string | null };
 };
 
@@ -308,8 +338,25 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     if (lost.length > 0) note('withdrawn', `${lost.length}`);
     return lost.length;
   };
-  /** Only codex.exe is killed: what its commands started may outlive it (no kill-on-close Job yet). */
-  const residue = () => note('children-may-remain');
+  /** The Job the child's tree runs in (null: procguard off). */
+  const job = pipe.job ?? null;
+  /** The brake took the tree: the check after the close is its own, not repeated. */
+  let braked = false;
+  /** Without a Job only codex.exe is killed: what its commands started may outlive it. With one, the check after the close says. */
+  const residue = () => {
+    if (job === null) note('children-may-remain');
+  };
+  const noteTree = (o: JobOutcome) => {
+    const n = treeNote(o);
+    note(n.state, n.text);
+    changed();
+  };
+  // However the child closed (an end, a failure, an exit of its own), its Job is checked once it did:
+  // the wrapper's close closed the Job, so this finds nothing left, or ends what is and says so.
+  pipe.onClose(() => {
+    if (job === null || braked) return;
+    void job.endTree().then(noteTree);
+  });
 
   // --- ending ----------------------------------------------------------------------------------------
 
@@ -895,6 +942,29 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       settleReady(false);
       changed();
       return { denied };
+    },
+    get jobbed() {
+      return job !== null && !terminal();
+    },
+    async brake(): Promise<OwnedBrake> {
+      if (terminal()) return { ok: false, reason: 'ended' };
+      if (job === null) return { ok: false, reason: 'no-job' };
+      braked = true;
+      // The kill goes first; the rest of the end happens while procguard ends the tree.
+      const ending = job.endTree();
+      approvals.declineOwned(ownedId, 'brake');
+      state = 'ended';
+      endReason = 'braked';
+      turnId = null;
+      withdrawAll();
+      feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'braked' });
+      settleReady(false);
+      changed();
+      const o = await ending;
+      // The wrapper too: its Job is empty (or going with it, when procguard could not say).
+      rpc.stop();
+      noteTree(o);
+      return o.ok ? { ok: true, killed: o.killed, left: o.left } : { ok: true, killed: null, left: null };
     },
     stats: () => ({ rpc: rpc.stats(), stderrTail, failure }),
   };

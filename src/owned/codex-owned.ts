@@ -215,7 +215,8 @@ export class CodexOwned {
   /**
    * Ends every running session as orchestrad stops (endReason daemon-stop, not you-ended: nobody pressed
    * end): their open approvals are declined first, then each child is stopped (stdin closed, then killed
-   * at once, child-pipe.ts). What its commands started may remain (children-may-remain, D4's residual).
+   * at once, child-pipe.ts). In a Job, its whole tree goes with it; without one (procguard off), what its
+   * commands started may remain (children-may-remain).
    */
   endAll(): number {
     let n = 0;
@@ -267,6 +268,8 @@ export function restoredSession(r: OwnedRecord, now: () => number): CodexSession
     send: () => ({ ok: false as const, reason: 'ended' as const }),
     interrupt: async () => ({ withdrawn: 0, denied: 0 }),
     end: () => ({ denied: 0 }),
+    jobbed: false,
+    brake: async () => ({ ok: false as const, reason: 'ended' as const }),
     stats: () => ({ rpc: null, stderrTail: '', failure: RESTORED }),
   });
 }

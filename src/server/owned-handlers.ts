@@ -34,6 +34,11 @@ import { makeOwnedHandlers } from './owned.ts';
 //                                       messages, then sends the turn's interrupt (not awaited: its
 //                                       outcome is the feed's).
 //   POST /api/owned/:id/end             declines the open approvals, then stops the child.
+//   POST /api/owned/:id/brake           r4 D4/D8: the session's whole Job (its child and every process
+//                                       under it) ended now through procguard, its open approvals declined,
+//                                       the session ended as braked; the reply counts what the Job held and
+//                                       what was left (null: procguard could not say). Only a session in a
+//                                       Job has a brake: one without (procguard off) is brake-unavailable.
 //   POST /api/approvals/:id/allow       {digest, rev}: D8, only here and only by a person. Another
 //                                       digest is declined (digest-mismatch), another rev or a list
 //                                       that moved in the last 750 ms changes nothing (stale-view).
@@ -56,6 +61,11 @@ export type OwnedRoutesDeps = {
   restored?: readonly RestoredOwned[];
   /** The limit of running sessions both harnesses share (codex-owned.ts OWNED_POOL_MAX); absent: each manager's own, summed. */
   maxOwned?: number;
+  /**
+   * Why a new session's tree runs without a Job of its own, so it has no brake (working.ts: procguard's
+   * status), or null when every new session gets one. Absent: not asked (no procguard at all).
+   */
+  brakeWhy?: string | null;
   log: Log;
 };
 
@@ -86,7 +96,7 @@ function feedEntry(e: FeedEvent) {
 }
 
 /** GET /api/owned's reply: every session the manager keeps, the open approvals in queue order, the limits. */
-export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'codexOff' | 'restored' | 'maxOwned'>) {
+export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'codexOff' | 'restored' | 'maxOwned' | 'brakeWhy'>) {
   const { codex, claude } = deps;
   const queue = queueOf(deps);
   const approvals = queue === null ? [] : queue.list();
@@ -102,12 +112,13 @@ export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'code
     return {
       ownedId: s.ownedId, harness, model: s.model, title: meta?.title ?? '', state: s.state, endReason: s.endReason,
       waiting: first === null ? null : first.approvalId, queued: FINAL(s) ? 0 : s.queued, tokens: s.tokens === null ? null : { ...s.tokens },
-      lastSeq: s.feed.lastSeq, createdAt: meta?.createdAt ?? 0,
+      lastSeq: s.feed.lastSeq, createdAt: meta?.createdAt ?? 0, brake: !FINAL(s) && s.jobbed,
     };
   });
   const enabled = ownedEnabled(deps);
   return {
     v: OWNED_V, kind: 'owned-list', rev: queue === null ? 0 : queue.rev, enabled, disabledWhy: enabled ? null : deps.codexOff,
+    brakeWhy: deps.brakeWhy === undefined ? 'not-asked' : deps.brakeWhy,
     harnesses: { codex: codex !== null, claude: claude !== null },
     owned, approvals: approvals.map(approvalEntry),
     limits: { maxOwned: deps.maxOwned ?? (codex === null ? 0 : codex.maxActive) + (claude === null ? 0 : claude.maxActive), active: sessions.filter(({ s }) => !FINAL(s)).length },
@@ -202,6 +213,17 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     if (s === null) return refuse('item-unknown');
     s.end();
     return { ok: true, reply: {} };
+  });
+
+  handlers.register('POST', '/api/owned/:id/brake', async (call) => {
+    const s = session(call);
+    if (s === null) return refuse('item-unknown');
+    if (FINAL(s)) return refuse('owned-ended');
+    if (!s.jobbed) return refuse('brake-unavailable');
+    const r = await s.brake();
+    if (!r.ok) return refuse(r.reason === 'ended' ? 'owned-ended' : 'brake-unavailable');
+    log.info('owned-braked', { ownedId: s.ownedId, killed: r.killed, left: r.left });
+    return { ok: true, reply: { killed: r.killed, left: r.left } };
   });
 
   handlers.register('POST', '/api/approvals/:id/allow', (call) => {

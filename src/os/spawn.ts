@@ -18,8 +18,39 @@ const win = path.win32;
 // reaches a gate only through node-proc.ts's gate factory: a gate built anywhere else spawns through whatever its
 // builder wrote, which cannot start a process.
 
-export type SpawnRule = 'whoami' | 'csc' | 'powershell-toast' | 'procguard' | 'codex-app-server' | 'codex-app-server-fake' | 'claude-host';
-const RULES: readonly SpawnRule[] = Object.freeze(['whoami', 'csc', 'powershell-toast', 'procguard', 'codex-app-server', 'codex-app-server-fake', 'claude-host']);
+export type SpawnRule =
+  | 'whoami' | 'csc' | 'powershell-toast' | 'procguard' | 'codex-app-server' | 'codex-app-server-fake' | 'claude-host'
+  | 'procguard-codex' | 'procguard-codex-fake' | 'procguard-claude';
+const RULES: readonly SpawnRule[] = Object.freeze([
+  'whoami', 'csc', 'powershell-toast', 'procguard', 'codex-app-server', 'codex-app-server-fake', 'claude-host', 'procguard-codex', 'procguard-codex-fake', 'procguard-claude',
+]);
+
+/**
+ * The owned sessions' children, each started inside a Job of its own (r4 D4; orchestra app: owned
+ * sessions in procguard Jobs): procguard.exe run-in-job --name <job> --env-allowlist <file> -- <the inner
+ * rule's exe and argv, exactly as that rule allows them>. The inner rule decides the exe, the argv, the
+ * cwd and the environment; procguard only puts its tree into the Job and passes its stdio through.
+ */
+export type WrappableRule = 'codex-app-server' | 'codex-app-server-fake' | 'claude-host';
+export type WrappedRule = 'procguard-codex' | 'procguard-codex-fake' | 'procguard-claude';
+export const WRAPPED_OF: Readonly<Record<WrappedRule, WrappableRule>> = Object.freeze({
+  'procguard-codex': 'codex-app-server', 'procguard-codex-fake': 'codex-app-server-fake', 'procguard-claude': 'claude-host',
+});
+const WRAP_OF: Readonly<Record<WrappableRule, WrappedRule>> = Object.freeze({
+  'codex-app-server': 'procguard-codex', 'codex-app-server-fake': 'procguard-codex-fake', 'claude-host': 'procguard-claude',
+});
+const isWrapped = (r: SpawnRule): r is WrappedRule => Object.hasOwn(WRAPPED_OF, r);
+const isWrappable = (r: SpawnRule): r is WrappableRule => Object.hasOwn(WRAP_OF, r);
+/** The rule whose whitelist and extras a rule's child gets: a wrapped rule's is its inner rule's (procguard passes them on by name). */
+const envRuleOf = (r: SpawnRule): SpawnRule => (isWrapped(r) ? WRAPPED_OF[r] : r);
+/** A Job's name as orchestrad makes it (src/os/procguard.ts newJobName) and procguard takes it (native/procguard/ProcGuard.cs). */
+export const PROCGUARD_JOB_RE = frozen(/^orchestra-job-[0-9a-f]{32}$/);
+/** The fixed head of a wrapped argv; the job, the env file, `--` and the inner exe and argv follow in that order. */
+export const RUN_IN_JOB = 'run-in-job';
+/** procguard's argv for a wrapped start: run-in-job --name <job> --env-allowlist <file> -- <exe> <argv...>. */
+export function runInJobArgv(job: string, envFile: string, exe: string, argv: readonly string[]): readonly string[] {
+  return Object.freeze([RUN_IN_JOB, '--name', job, '--env-allowlist', envFile, '--', exe, ...argv]);
+}
 
 // The argv tables the gate decides from on every call are frozen where they are defined: a module that
 // imports one could otherwise push an argument into what the gate allows (P8).
@@ -67,6 +98,12 @@ export const ENV_WHITELIST: Readonly<Record<SpawnRule, readonly string[]>> = Obj
   // gateway, the private config dir and the model come as fixed extras (CLAUDE_HOST_REQUIRED_ENV), and
   // the gate adds CLAUDE_HOST_FIXED_ENV itself; no key, no proxy with credentials, no NODE_OPTIONS.
   'claude-host': Object.freeze([...SYSTEM_ENV, 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PATH', 'PATHEXT', 'COMSPEC']),
+  // A wrapped rule hands procguard exactly its inner rule's environment; procguard builds the child's
+  // from zero with the same names (its --env-allowlist, SpawnGate.envAllowlist), so the child sees what
+  // it saw when the gate started it directly, libuv's own additions (LIBUV_ADDED_ENV) included.
+  'procguard-codex': Object.freeze([...SYSTEM_ENV, 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA']),
+  'procguard-codex-fake': Object.freeze([...SYSTEM_ENV, 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA']),
+  'procguard-claude': Object.freeze([...SYSTEM_ENV, 'TEMP', 'TMP', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'PATH', 'PATHEXT', 'COMSPEC']),
 });
 const isNever = (name: string) => ENV_NEVER.some((x) => x.toLowerCase() === name.toLowerCase());
 for (const names of Object.values(ENV_WHITELIST)) if (names.some(isNever)) throw new Error('spawn gate: a whitelist names NODE_OPTIONS or NODE_PATH');
@@ -253,7 +290,8 @@ export function resolveSystemRoot(env: Readonly<Record<string, string | undefine
   return proven;
 }
 
-export type PidEntry = { at: string; rule: SpawnRule; exe: string; pid: number | null; error?: string };
+/** job: the Job a wrapped start made (procguard's --name), so run/pids.jsonl says which Job holds which session's tree. */
+export type PidEntry = { at: string; rule: SpawnRule; exe: string; pid: number | null; job?: string; error?: string };
 
 /**
  * Every spawn, in order. Lines wait in memory until a sink is attached (working mode attaches
@@ -440,15 +478,16 @@ export type SpawnDenyReason =
   | 'exe-reparsed'
   | 'cwd-not-allowed'
   | 'cwd-denied'
-  | 'host-tampered';
+  | 'host-tampered'
+  | 'procguard-tampered';
 
 /** The rules that run as a long-lived child, the only ones start() may launch; run-only rules stay run(). */
-const STARTABLE: readonly SpawnRule[] = ['procguard', 'powershell-toast', 'codex-app-server', 'codex-app-server-fake', 'claude-host'];
+const STARTABLE: readonly SpawnRule[] = ['procguard', 'powershell-toast', 'codex-app-server', 'codex-app-server-fake', 'claude-host', 'procguard-codex', 'procguard-codex-fake', 'procguard-claude'];
 /** The rules that run in a cwd their caller names, checked by the gate's CwdPolicy; the rest run in their exe's directory. */
 const CALLER_CWD: readonly SpawnRule[] = Object.freeze(['codex-app-server', 'codex-app-server-fake', 'claude-host']);
 
 export type SpawnDecision =
-  | { allow: true; rule: SpawnRule; exe: string; argv: readonly string[]; cwd: string }
+  | { allow: true; rule: SpawnRule; exe: string; argv: readonly string[]; cwd: string; job?: string }
   | { allow: false; reason: SpawnDenyReason; exe: string; rule?: SpawnRule; detail?: string };
 
 export class SpawnRefusedError extends Error {
@@ -493,11 +532,21 @@ export type SpawnGateConfig = {
    * unless the env source carries TEST_RUNNER_MARKER; the static scan bans the name in daemon code.
    */
   fakeCodexNode?: string;
-  /** The Claude host's node.exe, host.mjs and pin check; required when the rule claude-host is on. */
+  /** The Claude host's node.exe, host.mjs and pin check; required when the rule claude-host (or procguard-claude) is on. */
   claudeHost?: ClaudeHostSite;
+  /**
+   * procguard.exe's pin check (src/os/procguard.ts: the sha256 the build recorded), run before every
+   * start of it, resident or wrapped: a procguard that changed since startup starts nothing
+   * (procguard-tampered). Required when a wrapped rule is on.
+   */
+  procguardPin?: () => string | null;
+  /** The --env-allowlist file of each wrapped rule, by its inner rule; required for every wrapped rule that is on. */
+  procguardEnv?: Partial<Record<WrappableRule, string>>;
 };
 
-const CONFIG_KEYS = ['systemRoot', 'rules', 'csc', 'procguard', 'record', 'backend', 'realpath', 'clock', 'env', 'envExtra', 'cwd', 'fakeCodexNode', 'claudeHost'] as const;
+const CONFIG_KEYS = [
+  'systemRoot', 'rules', 'csc', 'procguard', 'record', 'backend', 'realpath', 'clock', 'env', 'envExtra', 'cwd', 'fakeCodexNode', 'claudeHost', 'procguardPin', 'procguardEnv',
+] as const;
 
 /** timeoutMs is a positive integer (a Clock due time is whole milliseconds), at most 2^31 - 1. */
 export type RunLimits = { timeoutMs: number; maxBytes: number };
@@ -591,6 +640,10 @@ export class SpawnGate {
   readonly #cwd: CwdPolicy | null;
   /** The Claude host's entry and pin check, when the rule claude-host is on. */
   readonly #claudeHost: { entry: string; verify(): string | null } | null;
+  /** procguard.exe's pin check, when one was given (always, when a wrapped rule is on). */
+  readonly #pgPin: (() => string | null) | null;
+  /** Each wrapped rule's --env-allowlist file, by its inner rule. */
+  readonly #pgEnv: ReadonlyMap<WrappableRule, string>;
   /** run() deadlines by timerId; the Clock fires into #expire, which looks the run up here. */
   readonly #deadlines = new Map<string, () => void>();
 
@@ -624,13 +677,13 @@ export class SpawnGate {
     // the rule is off reads rule-not-enabled, and enabling the rule without it refuses the gate.
     const codex = codexExeOf(envSource);
     if (codex.ok) add('codex-app-server', codex.path);
-    else if (this.#rules.has('codex-app-server')) throw new Error(`spawn gate: codex-app-server enabled without codex.exe below %APPDATA% (${codex.reason})`);
+    else if (this.#rules.has('codex-app-server') || this.#rules.has('procguard-codex')) throw new Error(`spawn gate: codex-app-server enabled without codex.exe below %APPDATA% (${codex.reason})`);
     if (cfg.fakeCodexNode !== undefined) {
       if (envGet(envSource, TEST_RUNNER_MARKER) === undefined) throw new Error('spawn gate: the fake codex app-server runs only under the test runner');
       const node = mustPath(cfg.fakeCodexNode, 'fake codex node.exe');
       if (win.basename(node).toLowerCase() !== 'node.exe') throw new Error(`spawn gate: the fake codex app-server runs under node.exe, not ${node}`);
       add('codex-app-server-fake', node);
-    } else if (this.#rules.has('codex-app-server-fake')) {
+    } else if (this.#rules.has('codex-app-server-fake') || this.#rules.has('procguard-codex-fake')) {
       throw new Error('spawn gate: codex-app-server-fake enabled without fakeCodexNode');
     }
     let host: { entry: string; verify(): string | null } | null = null;
@@ -644,10 +697,25 @@ export class SpawnGate {
       const verify = site.verify;
       add('claude-host', node);
       host = Object.freeze({ entry, verify: () => verify() });
-    } else if (this.#rules.has('claude-host')) {
+    } else if (this.#rules.has('claude-host') || this.#rules.has('procguard-claude')) {
       throw new Error('spawn gate: claude-host enabled without its site (node.exe, host.mjs, the pin check)');
     }
     this.#claudeHost = host;
+    const pin = cfg.procguardPin;
+    if (pin !== undefined && typeof pin !== 'function') throw new Error('spawn gate: procguardPin must be a function');
+    this.#pgPin = pin === undefined ? null : () => pin();
+    const envFiles = ownFields(cfg.procguardEnv as Record<WrappableRule, unknown> | undefined, ['codex-app-server', 'codex-app-server-fake', 'claude-host'] as const);
+    const pgEnv = new Map<WrappableRule, string>();
+    for (const wrapped of Object.keys(WRAPPED_OF) as WrappedRule[]) {
+      if (!this.#rules.has(wrapped)) continue;
+      const inner = WRAPPED_OF[wrapped];
+      if (pgDirs.size === 0) throw new Error(`spawn gate: ${wrapped} enabled without a procguard site`);
+      if (this.#pgPin === null) throw new Error(`spawn gate: ${wrapped} enabled without procguard's pin check (procguardPin)`);
+      const file = envFiles[inner];
+      if (typeof file !== 'string') throw new Error(`spawn gate: ${wrapped} needs procguardEnv.${inner}, the --env-allowlist file`);
+      pgEnv.set(inner, mustPath(file, `procguard env allowlist of ${inner}`));
+    }
+    this.#pgEnv = pgEnv;
     this.#exes = exes;
     if (this.#rules.has('powershell-toast') && TOAST_ENCODED === null) {
       throw new Error('spawn gate: powershell-toast needs the constant script of os/toast-script.ts, which arrives in step 17');
@@ -660,14 +728,17 @@ export class SpawnGate {
     if (typeof source !== 'object' || source === null) throw new Error('spawn gate: env is required, there is no default');
     const extra = cfg.envExtra;
     if (extra !== undefined && (typeof extra !== 'object' || extra === null)) throw new Error('spawn gate: envExtra must be a record per rule');
-    for (const k of extra === undefined ? [] : Object.keys(extra)) if (!RULES.includes(k as SpawnRule)) throw new Error(`spawn gate: envExtra names an unknown rule ${k}`);
+    for (const k of extra === undefined ? [] : Object.keys(extra)) {
+      if (!RULES.includes(k as SpawnRule)) throw new Error(`spawn gate: envExtra names an unknown rule ${k}`);
+      if (isWrapped(k as SpawnRule)) throw new Error(`spawn gate: envExtra.${k}: a wrapped rule takes its inner rule's extras (envExtra.${WRAPPED_OF[k as WrappedRule]})`);
+    }
     const extras = ownFields(extra, RULES);
     for (const rule of ['codex-app-server', 'codex-app-server-fake'] as const) {
-      if (!this.#rules.has(rule)) continue;
+      if (!this.#rules.has(rule) && !this.#rules.has(WRAP_OF[rule])) continue;
       const home = ownFields(extras[rule] as Record<string, unknown> | undefined, [CODEX_HOME_VAR] as const)[CODEX_HOME_VAR];
       if (typeof home !== 'string' || !checkPath(home).ok) throw new Error(`spawn gate: ${rule} needs envExtra.${rule}.${CODEX_HOME_VAR}, an absolute path (else codex.exe uses the user's own ~/.codex)`);
     }
-    if (this.#rules.has('claude-host')) {
+    if (this.#rules.has('claude-host') || this.#rules.has('procguard-claude')) {
       const given = (extras['claude-host'] ?? {}) as Record<string, unknown>;
       const names = Object.keys(given);
       const value = (name: string) => given[names.find((n) => n.toLowerCase() === name.toLowerCase()) ?? ''];
@@ -681,7 +752,7 @@ export class SpawnGate {
       if (!MODEL_ENV_RE.test(value('ANTHROPIC_SMALL_FAST_MODEL') as string)) throw new Error('spawn gate: claude-host\'s ANTHROPIC_SMALL_FAST_MODEL must be a zcode/ or opencode-go/ model');
       for (const name of CLAUDE_HOST_REFUSED_ENV) if (value(name) !== undefined) throw new Error(`spawn gate: envExtra.claude-host: ${name} is never handed to the Claude host`);
     }
-    this.#env = new Map(RULES.map((rule) => [rule, ruleEnv(rule, source, extras[rule])]));
+    this.#env = new Map(RULES.map((rule) => [rule, ruleEnv(envRuleOf(rule), source, extras[envRuleOf(rule)])]));
     this.#cwd = cfg.cwd === undefined ? null : new CwdPolicy({ spec: cfg.cwd, env: source, systemRoot: sys.path, realpath: cfg.realpath! });
     this.#backend = cfg.backend!;
     this.#record = cfg.record;
@@ -712,6 +783,7 @@ export class SpawnGate {
     if (!lower.endsWith('.exe')) return deny('not-exe');
     const known = this.#exes.get(pathKey(c.path));
     if (known === undefined) return deny('unknown-exe');
+    if (known.rule === 'procguard' && r.argv[0] === RUN_IN_JOB) return this.#decideWrapped(r, known.exe, deny);
     const rule = known.rule;
     if (!this.#rules.has(rule)) return deny('rule-not-enabled', { rule });
     const argvCheck = this.#argvOk(rule, r.argv);
@@ -733,6 +805,10 @@ export class SpawnGate {
       }
       if (why !== null) return deny('host-tampered', { rule, detail: why });
     }
+    if (rule === 'procguard') {
+      const why = this.#pinWhy();
+      if (why !== null) return deny('procguard-tampered', { rule, detail: why });
+    }
     let cwd = win.dirname(known.exe);
     if (CALLER_CWD.includes(rule)) {
       if (r.cwd === undefined) return deny('cwd-not-allowed', { rule, detail: 'required' });
@@ -744,6 +820,77 @@ export class SpawnGate {
       return deny('cwd-not-allowed', { rule });
     }
     return { allow: true, rule, exe: known.exe, argv: r.argv, cwd };
+  }
+
+  /** procguard.exe's pin check now: null when it holds (or none was given for a resident-only gate), else why not. */
+  #pinWhy(): string | null {
+    if (this.#pgPin === null) return null;
+    try {
+      return this.#pgPin();
+    } catch (e) {
+      return `verify failed: ${errCode(e)}`;
+    }
+  }
+
+  /**
+   * A wrapped start: procguard.exe run-in-job --name <job> --env-allowlist <file> -- <inner exe> <inner argv>.
+   * The job must have PROCGUARD_JOB_RE's form, the file must be the one given for the inner rule, and the
+   * inner exe and argv exactly what the inner rule allows; the wrapped rule (not the inner) must be on.
+   * Then both exes must be their own realpath, the pins hold (the Claude host's, procguard's), and the cwd
+   * is checked as the inner rule's would be.
+   */
+  #decideWrapped(r: Extract<RequestCopy, { ok: true }>, pgExe: string, deny: (reason: SpawnDenyReason, extra?: { rule?: SpawnRule; detail?: string }) => SpawnDecision): SpawnDecision {
+    const a = r.argv;
+    if (a.length < 7 || a[1] !== '--name' || a[3] !== '--env-allowlist' || a[5] !== '--') return deny('argv-mismatch', { rule: 'procguard' });
+    const job = a[2]!;
+    if (!PROCGUARD_JOB_RE.test(job)) return deny('argv-mismatch', { rule: 'procguard', detail: 'job name' });
+    const ic = checkPath(a[6]!);
+    if (!ic.ok || ic.path !== a[6]) return deny('argv-mismatch', { rule: 'procguard', detail: 'inner exe' });
+    const inner = this.#exes.get(pathKey(ic.path));
+    if (inner === undefined || !isWrappable(inner.rule)) return deny('argv-mismatch', { rule: 'procguard', detail: 'inner exe' });
+    const rule = WRAP_OF[inner.rule];
+    if (!this.#rules.has(rule)) return deny('rule-not-enabled', { rule });
+    const file = this.#pgEnv.get(inner.rule);
+    if (file === undefined || a[4] !== file) return deny('argv-mismatch', { rule, detail: 'env allowlist' });
+    const innerWhy = this.#argvOk(inner.rule, a.slice(7));
+    if (innerWhy !== null) return deny(innerWhy, { rule });
+    for (const exe of [pgExe, inner.exe]) {
+      let real: string;
+      try {
+        real = this.#realpath(exe);
+      } catch (e) {
+        return deny('exe-unresolved', { rule, detail: errCode(e) });
+      }
+      if (pathKey(real) !== pathKey(exe)) return deny('exe-reparsed', { rule, detail: real });
+    }
+    if (inner.rule === 'claude-host') {
+      let why: string | null;
+      try {
+        why = this.#claudeHost!.verify();
+      } catch (e) {
+        why = `verify failed: ${errCode(e)}`;
+      }
+      if (why !== null) return deny('host-tampered', { rule, detail: why });
+    }
+    const pinWhy = this.#pinWhy();
+    if (pinWhy !== null) return deny('procguard-tampered', { rule, detail: pinWhy });
+    if (r.cwd === undefined) return deny('cwd-not-allowed', { rule, detail: 'required' });
+    if (this.#cwd === null) return deny('cwd-denied', { rule, detail: 'no-policy' });
+    const v = this.#cwd.check(r.cwd);
+    if (!v.ok) return deny('cwd-denied', { rule, detail: v.detail === undefined ? v.reason : `${v.reason}: ${v.detail}` });
+    return { allow: true, rule, exe: pgExe, argv: r.argv, cwd: v.path, job };
+  }
+
+  /**
+   * The --env-allowlist a wrapped rule's procguard reads: the names of the environment the gate hands its
+   * inner rule, then the names libuv adds on Windows (LIBUV_ADDED_ENV) when they are missing. procguard
+   * copies each from its own environment, which is the gate's with libuv's additions: the child gets the
+   * very environment the gate gave it when it started it directly, and no value is ever written to disk.
+   */
+  envAllowlist(rule: WrappableRule): string {
+    const names = Object.keys(this.#env.get(rule) ?? {});
+    for (const n of LIBUV_ADDED_ENV) if (!names.some((x) => x.toLowerCase() === n.toLowerCase())) names.push(n);
+    return `# procguard --env-allowlist for ${rule} (src/os/spawn.ts SpawnGate.envAllowlist): names only, values come from procguard's own environment.\n${names.join('\n')}\n`;
   }
 
   #argvOk(rule: SpawnRule, argv: readonly string[]): SpawnDenyReason | null {
@@ -760,6 +907,11 @@ export class SpawnGate {
         return argv.length === 1 && argv[0] === FAKE_CODEX_SCRIPT ? null : 'argv-mismatch';
       case 'claude-host':
         return argv.length === 1 && argv[0] === this.#claudeHost!.entry ? null : 'argv-mismatch';
+      case 'procguard-codex':
+      case 'procguard-codex-fake':
+      case 'procguard-claude':
+        // Decided whole in #decideWrapped; never by the plain path.
+        return 'argv-mismatch';
       case 'procguard':
         return argv.length === 0 || (argv.length === 2 && argv[0] === '--protect' && PROTECT_LIST.test(argv[1]!)) ? null : 'argv-mismatch';
       case 'csc': {
@@ -789,10 +941,10 @@ export class SpawnGate {
     try {
       child = this.#backend(d.exe, d.argv, { cwd: d.cwd, env: this.#env.get(d.rule)!, windowsHide: true, shell: false, stdio: [stdin, 'pipe', 'pipe'] });
     } catch (e) {
-      this.#record({ at, rule: d.rule, exe: d.exe, pid: null, error: errCode(e) });
+      this.#record({ at, rule: d.rule, exe: d.exe, pid: null, ...(d.job === undefined ? {} : { job: d.job }), error: errCode(e) });
       throw e;
     }
-    this.#record({ at, rule: d.rule, exe: d.exe, pid: typeof child.pid === 'number' ? child.pid : null });
+    this.#record({ at, rule: d.rule, exe: d.exe, pid: typeof child.pid === 'number' ? child.pid : null, ...(d.job === undefined ? {} : { job: d.job }) });
     return child;
   }
 

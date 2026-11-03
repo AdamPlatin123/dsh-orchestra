@@ -288,7 +288,7 @@ test('owned sessions: every route needs the pairing cookie; all but the unlock p
   const ownedPaths = ROUTES.filter((r) => /^\/api\/(?:owned|approvals|import|route)\//.test(r.path) || r.path === '/api/owned');
   assert.deepEqual(ownedPaths.map((r) => `${r.method} ${r.path}`), [
     'POST /api/owned/unlock-code', 'POST /api/owned/unlock', 'GET /api/owned', 'GET /api/owned/:id/feed', 'GET /api/import/:id/check',
-    'POST /api/route/suggest', 'POST /api/owned/new', 'POST /api/owned/:id/message', 'POST /api/owned/:id/interrupt', 'POST /api/owned/:id/end', 'POST /api/owned/:id/retry',
+    'POST /api/route/suggest', 'POST /api/owned/new', 'POST /api/owned/:id/message', 'POST /api/owned/:id/interrupt', 'POST /api/owned/:id/end', 'POST /api/owned/:id/brake', 'POST /api/owned/:id/retry',
     'POST /api/approvals/:id/allow', 'POST /api/approvals/:id/deny', 'POST /api/import/claude', 'POST /api/import/dsh',
   ]);
   for (const r of ownedPaths) assert.equal(r.auth, r.path.startsWith('/api/owned/unlock') ? 'cookie' : 'unlocked', r.path);

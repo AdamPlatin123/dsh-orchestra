@@ -22,7 +22,7 @@ export const PROTOCOL_V = 1;
  */
 export const HUMAN_VERBS = Object.freeze(/** @type {const} */ ([
   'seen', 'snooze', 'acted', 'remind', 'brake', 'roots-add', 'roots-confirm', 'protect-add', 'protect-remove', 'dsh-connect', 'self-rating',
-  'owned-new', 'owned-message', 'owned-interrupt', 'owned-end', 'owned-retry', 'approval-allow', 'approval-deny', 'import-claude', 'import-dsh',
+  'owned-new', 'owned-message', 'owned-interrupt', 'owned-end', 'owned-brake', 'owned-retry', 'approval-allow', 'approval-deny', 'import-claude', 'import-dsh',
 ]));
 /** @typedef {typeof HUMAN_VERBS[number]} HumanVerb */
 
@@ -43,6 +43,8 @@ export const HUMAN_VERB_ROUTES = Object.freeze(/** @type {const} */ ({
   'owned-message': '/api/owned/:id/message',
   'owned-interrupt': '/api/owned/:id/interrupt',
   'owned-end': '/api/owned/:id/end',
+  // The owned session's brake (orchestra app, r4 D4/D8): its whole process tree, by its procguard Job.
+  'owned-brake': '/api/owned/:id/brake',
   'owned-retry': '/api/owned/:id/retry',
   'approval-allow': '/api/approvals/:id/allow',
   'approval-deny': '/api/approvals/:id/deny',

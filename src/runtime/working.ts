@@ -7,6 +7,7 @@ import type { ReadGate } from '../fs/read-gate.ts';
 import type { WriteFence } from '../fs/write-fence.ts';
 import type { SpawnGateSpec } from '../os/node-proc.ts';
 import type { PidLog, SpawnGate } from '../os/spawn.ts';
+import type { ProcguardOffWhy, Resident } from '../os/procguard.ts';
 import type { Approvals } from '../owned/approvals.ts';
 import type { ClaudeOwned } from '../owned/claude-owned.ts';
 import type { CodexOwned, OwnedPool } from '../owned/codex-owned.ts';
@@ -91,6 +92,12 @@ export type WorkingContext = {
   peekPort?: number;
   /** --owned: owned Codex sessions over codex app-server and owned Claude sessions over the 0.2 host (orchestra app plan §2). Absent: off. */
   owned?: true;
+  /**
+   * With --owned: build (or find) procguard and start every owned session's child in a Job of its own
+   * (r4 D4), with the brake. main.ts always asks; absent (the in-process tests), the sessions run without
+   * Jobs and the page says the brake was not asked for.
+   */
+  procguard?: true;
 };
 
 /**
@@ -122,8 +129,12 @@ export const ROUTER_REPLY_MAX_BYTES = 256 * 1024;
  * the private CODEX_HOME, the work root or the gate could not be set up.
  */
 export type OwnedCodexStatus =
-  | { on: true; exe: string; codexHome: string; workRoot: string; model: string; gateway: string; restored: number }
-  | { on: false; why: 'not-asked' | 'codex-appdata-unset' | 'codex-appdata-bad-path' | 'codex-missing' | 'codex-reparsed' | 'no-spawn-gate' | 'setup-failed'; detail: string | null };
+  | { on: true; exe: string; codexHome: string; workRoot: string; model: string; gateway: string; restored: number; jobs: boolean }
+  | {
+    on: false;
+    why: 'not-asked' | 'codex-appdata-unset' | 'codex-appdata-bad-path' | 'codex-missing' | 'codex-reparsed' | 'no-spawn-gate' | 'setup-failed' | 'procguard-tampered';
+    detail: string | null;
+  };
 
 /**
  * Whether owned Claude sessions run, and if not why (T1): not asked for, the host's node.exe, host.mjs or
@@ -131,8 +142,23 @@ export type OwnedCodexStatus =
  * a host file or the SDK changed since they were pinned), no spawn gate factory, or the setup failed.
  */
 export type OwnedClaudeStatus =
-  | { on: true; node: string; entry: string; claudeExe: string; configRoot: string; model: string; gateway: string; restored: number }
-  | { on: false; why: 'not-asked' | 'claude-node-missing' | 'claude-host-missing' | 'claude-exe-missing' | 'claude-reparsed' | 'host-tampered' | 'no-spawn-gate' | 'setup-failed'; detail: string | null };
+  | { on: true; node: string; entry: string; claudeExe: string; configRoot: string; model: string; gateway: string; restored: number; jobs: boolean }
+  | {
+    on: false;
+    why: 'not-asked' | 'claude-node-missing' | 'claude-host-missing' | 'claude-exe-missing' | 'claude-reparsed' | 'host-tampered' | 'no-spawn-gate' | 'setup-failed' | 'procguard-tampered';
+    detail: string | null;
+  };
+
+/**
+ * procguard for the owned sessions (r4 D4; src/os/procguard.ts): on, with the exe it built or found and
+ * pinned, so every owned session's child starts in a Job of its own and has a brake; or off and why (T1):
+ * not asked, a source that does not match its pin, a build that failed, an exe changed since it was built
+ * (tampered: then the owned sessions are off too), a resident that did not start, a setup that failed.
+ * Off for any other reason, the owned sessions run as before, without Jobs and without a brake.
+ */
+export type ProcguardStatus =
+  | { on: true; exe: string; dir: string; sha256: string; built: boolean }
+  | { on: false; why: ProcguardOffWhy; detail: string | null };
 
 export type WorkingOutcome =
   | { mode: 'lock-held'; code: typeof EXIT.lockHeld; pipe: string; holder: DaemonInfo | null }
@@ -157,6 +183,8 @@ export type WorkingOutcome =
     ownedCodex: OwnedCodexStatus;
     /** Owned Claude sessions: on, or why not (also in the log and on the console). */
     ownedClaude: OwnedClaudeStatus;
+    /** procguard: on (the owned sessions in Jobs, with a brake), or why not (also in the log and on the console). */
+    procguard: ProcguardStatus;
     /** Ends this orchestrad through ctx.stopping.end (in main.ts: the process exits). */
     stop(): Promise<void>;
     /** Settles once stop() has given up the lock, whoever called it (in main.ts: never, the process is gone). */
@@ -312,6 +340,9 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   let claudeOwned: ClaudeOwned | null = null;
   let ownedCodex: OwnedCodexStatus = { on: false, why: 'not-asked', detail: null };
   let ownedClaude: OwnedClaudeStatus = { on: false, why: 'not-asked', detail: null };
+  let procguard: ProcguardStatus = { on: false, why: 'not-asked', detail: null };
+  /** The resident procguard (one per orchestrad): it ends a session's Job for the brake and checks it after an end. */
+  let resident: Resident | null = null;
   /** The running-session limit both harnesses share (slice design §2.4: 3 in all). */
   let pool: OwnedPool | null = null;
   /** Sessions an earlier orchestrad left for a harness that is off now: listed read only (src/owned/restored.ts). */
@@ -320,10 +351,20 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
     const { OWNED_POOL_MAX } = await import('../owned/codex-owned.ts');
     pool = Object.freeze({ max: OWNED_POOL_MAX, active: () => (codexOwned?.active() ?? 0) + (claudeOwned?.active() ?? 0) });
     const shared = await setUpOwnedShared(ctx, fence, gate, home, pool);
-    const set = shared.ok ? await setUpOwnedCodex(ctx, fence, home, shared.base) : { status: { on: false as const, why: shared.why, detail: shared.detail }, owned: null };
+    const pg = shared.ok && ctx.procguard === true ? await setUpProcguard(ctx, fence, gate, shared.base) : null;
+    if (pg !== null) {
+      procguard = pg.status;
+      resident = pg.jobs?.resident ?? null;
+    }
+    const jobs = pg?.jobs ?? null;
+    // A procguard changed since it was built starts nothing: no owned session at all (T1, the reason said).
+    const tampered = procguard.on === false && procguard.why === 'procguard-tampered' ? { on: false as const, why: 'procguard-tampered' as const, detail: procguard.detail } : null;
+    const set = !shared.ok ? { status: { on: false as const, why: shared.why, detail: shared.detail }, owned: null }
+      : tampered !== null ? { status: tampered, owned: null } : await setUpOwnedCodex(ctx, fence, home, shared.base, jobs);
     ownedCodex = set.status;
     codexOwned = set.owned;
-    const cl = shared.ok ? await setUpOwnedClaude(ctx, fence, home, shared.base) : { status: { on: false as const, why: shared.why, detail: shared.detail }, owned: null };
+    const cl = !shared.ok ? { status: { on: false as const, why: shared.why, detail: shared.detail }, owned: null }
+      : tampered !== null ? { status: tampered, owned: null } : await setUpOwnedClaude(ctx, fence, home, shared.base, jobs);
     ownedClaude = cl.status;
     claudeOwned = cl.owned;
     if (shared.ok && (codexOwned === null || claudeOwned === null)) {
@@ -339,6 +380,13 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
       for (const r of restoredOff) {
         if (r.restored > 0) ctx.console.out(`orchestrad: ${r.restored} owned ${r.harness} session(s) from before the restart are listed read only (${r.harness} is off now; those that had not ended show as unknown)`);
       }
+    }
+    if (procguard.on) {
+      log.info('procguard', { on: true, exe: procguard.exe, built: procguard.built });
+      ctx.console.out(`orchestrad: procguard on (${procguard.built ? 'built' : 'found'} ${procguard.exe}): each owned session runs in a Job of its own; the brake stops its whole tree`);
+    } else if (ctx.procguard === true) {
+      log.warn('procguard', { on: false, why: procguard.why, detail: procguard.detail });
+      ctx.console.out(`orchestrad: procguard is off: ${procguard.why}${procguard.detail === null ? '' : ` (${procguard.detail})`}${procguard.why === 'procguard-tampered' ? '; owned sessions are off' : '; owned sessions run without Jobs, no brake'}`);
     }
     if (ownedClaude.on) {
       log.info('owned-claude', { on: true, node: ownedClaude.node, claudeExe: ownedClaude.claudeExe, model: ownedClaude.model });
@@ -388,6 +436,8 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
       }
       const deps = {
         codex: codexOwned, codexOff: ownedCodex.on ? 'on' : ownedCodex.why, claude: claudeOwned, desk, log, restored: restoredOff,
+        // Why a new session has no brake (null: each runs in a Job of its own).
+        brakeWhy: procguard.on ? null : procguard.why,
         ...(pool === null ? {} : { maxOwned: pool.max }),
       };
       const owners: { towerSeats(): OwnedSeat[] }[] = [...[codexOwned, claudeOwned].filter((x): x is CodexOwned | ClaudeOwned => x !== null), ...restoredOff];
@@ -444,6 +494,8 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
       // T1: a host that did not close in time is said, never taken for gone.
       log.info('owned-claude-ended', { sessions: ended, stillOpen: claudeOwned.open() });
     }
+    // Last of the owned part: the resident procguard reads EOF and exits (the Jobs died with their wrappers).
+    resident?.stop();
     if (peek !== null) await peek.close();
     log.info('stopped', { pidSinkFailures: ctx.pidLog.failures() });
     // Nothing reaches ORCHESTRA_HOME from here on, then the process ends with the lock.
@@ -460,7 +512,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   log.info('working', { profile: ctx.profile.kind, pipe, bootId });
   // Last line of the startup: everything above is on disk and on the console before it.
   ctx.console.out(`orchestrad: working (${ctx.profile.kind} profile, pid ${ctx.pid}, data ${home})`);
-  return { mode: 'working', profile: ctx.profile.kind, home, pipe, pairing, testRoots, store, ownedCodex, ownedClaude, stop, stopped };
+  return { mode: 'working', profile: ctx.profile.kind, home, pipe, pairing, testRoots, store, ownedCodex, ownedClaude, procguard, stop, stopped };
 }
 
 
@@ -531,15 +583,96 @@ async function setUpOwnedShared(ctx: WorkingContext, fence: WriteFence, gate: Re
   }
 }
 
+/** What a harness's wiring needs to start its children in Jobs: the procguard site and the resident. */
+type Jobs = {
+  /** procguard.exe, its site dir and the sha256 it was built as. */
+  exe: string;
+  dir: string;
+  homeReal: string;
+  sourceHash: string;
+  /** The spawn gate's pin check: procguard.exe still the one built. */
+  pin(): string | null;
+  resident: Resident;
+};
+
+/** How long csc may take (S4: 1.1-1.6 s; a loaded machine is slower). */
+const CSC_LIMITS = Object.freeze({ timeoutMs: 120_000, maxBytes: 256 * 1024 });
+
+/**
+ * procguard for the owned sessions (r4 D4; src/os/procguard.ts): the source read through a read gate
+ * pinned on it and held to PROCGUARD_SOURCE_SHA256, the site ORCHESTRA_HOME\runtime\procguard\<that
+ * hash>\ made through the fence, the exe found there (held to the sha256 recorded when it was built) or
+ * built by the system csc.exe (a spawn gate with the rules csc and procguard only), then the resident
+ * procguard started through the same gate (it must say ready). Off with the reason otherwise.
+ */
+async function setUpProcguard(ctx: WorkingContext, fence: WriteFence, gate: ReadGate, base: OwnedBase): Promise<{ status: ProcguardStatus; jobs: Jobs | null }> {
+  const off = (why: ProcguardOffWhy, detail: string | null = null) => ({ status: { on: false as const, why, detail }, jobs: null });
+  if (ctx.makeSpawnGate === undefined) return off('procguard-setup-failed', 'no spawn gate');
+  try {
+    const { CSC_FLAGS, CSC_REL, PROCGUARD_SOURCE } = await import('../os/spawn.ts');
+    const { ensureProcguard, procguardPin, residentOf } = await import('../os/procguard.ts');
+    const { PROCGUARD_SOURCE_SHA256 } = await import('../os/procguard-pins.ts');
+    const homeReal = fence.homeReal;
+    const dir = win.join(homeReal, 'runtime', 'procguard', PROCGUARD_SOURCE_SHA256);
+    let pin: (() => string | null) | null = null;
+    const pgGate = ctx.makeSpawnGate({
+      systemRoot: base.sys,
+      rules: ['csc', 'procguard'],
+      csc: { outAllowed: (out) => fence.check(out, 'write').allow },
+      procguard: [{ at: 'runtime', homeReal, sourceHash: PROCGUARD_SOURCE_SHA256 }],
+      // Before the build there is nothing to start: the resident waits for the pin the build gives.
+      procguardPin: () => (pin === null ? 'procguard.exe not built yet' : pin()),
+      record: (e) => ctx.pidLog.record(e),
+      realpath: ctx.realpath,
+      clock: ctx.clock,
+      env: ctx.env,
+    });
+    const source = ctx.makeReadGate({ roots: [], pinnedFiles: [PROCGUARD_SOURCE] });
+    const site = await ensureProcguard({
+      dir, sourceHash: PROCGUARD_SOURCE_SHA256,
+      readSource: () => source.readFile(PROCGUARD_SOURCE),
+      readFile: (file) => gate.readFile(file),
+      mkdirp: (d) => {
+        fence.mkdirp(d);
+      },
+      writeAtomic: (file, data) => fence.writeAtomic(file, data),
+      rm: (file) => {
+        fence.rm(file);
+      },
+      runCsc: (out) => pgGate.run({ exe: win.join(base.sys.path, CSC_REL), argv: [...CSC_FLAGS, `/out:${out}`, PROCGUARD_SOURCE] }, CSC_LIMITS),
+    });
+    if (!site.ok) return off(site.why, site.detail);
+    pin = procguardPin((file) => gate.readFile(file), site.exe, site.sha256);
+    let h: ReturnType<SpawnGate['start']>;
+    try {
+      h = pgGate.start({ exe: site.exe, argv: [] });
+    } catch (e) {
+      return off('procguard-start-failed', describe(e));
+    }
+    const resident = residentOf(h, oneShot(ctx.clock, 'procguard'));
+    if (!(await resident.ready)) {
+      resident.stop();
+      return off('procguard-start-failed', 'the resident procguard did not say ready');
+    }
+    const thePin = pin;
+    return {
+      status: { on: true, exe: site.exe, dir, sha256: site.sha256, built: site.built },
+      jobs: { exe: site.exe, dir, homeReal, sourceHash: PROCGUARD_SOURCE_SHA256, pin: () => thePin(), resident },
+    };
+  } catch (e) {
+    return off('procguard-setup-failed', describe(e));
+  }
+}
+
 /**
  * The owned Codex sessions' wiring (orchestra app plan §2), in both profiles: codex.exe at its pinned
  * path below %APPDATA% (not found: off, with the reason), the private CODEX_HOME's config.toml written
  * through the fence, and a spawn gate that allows only codex-app-server, with CODEX_HOME as its one
  * extra and the shared cwd table, whose only allowed root is the work root.
  */
-async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: string, base: OwnedBase): Promise<{ status: OwnedCodexStatus; owned: CodexOwned | null }> {
+async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: string, base: OwnedBase, jobs: Jobs | null): Promise<{ status: OwnedCodexStatus; owned: CodexOwned | null }> {
   const off = (why: Extract<OwnedCodexStatus, { on: false }>['why'], detail: string | null = null) => ({ status: { on: false as const, why, detail }, owned: null });
-  const { CODEX_APP_SERVER_ARGV, resolveCodexExe } = await import('../os/spawn.ts');
+  const { CODEX_APP_SERVER_ARGV, resolveCodexExe, runInJobArgv } = await import('../os/spawn.ts');
   const exe = resolveCodexExe(ctx.env, ctx.realpath);
   if (!exe.ok) return off(`codex-${exe.reason}`, exe.detail ?? null);
   if (ctx.makeSpawnGate === undefined) return off('no-spawn-gate');
@@ -548,17 +681,29 @@ async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: str
     const { writeCodexHome } = await import('../owned/codex-home.ts');
     const { DEFAULT_CODEX_MODEL } = await import('../owned/models.ts');
     const { CodexOwned: Owned } = await import('../owned/codex-owned.ts');
+    const { envAllowlistFile, newJobName, ownedJob } = await import('../os/procguard.ts');
     const codexHome = writeCodexHome(fence, home, { model: DEFAULT_CODEX_MODEL, gatewayBaseUrl: MAGPIE_BASE_URL });
+    const envFile = jobs === null ? null : envAllowlistFile(jobs.dir, 'codex-app-server');
+    // With procguard: only the wrapped rule, so no codex.exe starts outside a Job; without: as before.
     const spawnGate = ctx.makeSpawnGate({
       systemRoot: base.sys,
-      rules: ['codex-app-server'],
+      rules: [jobs === null ? 'codex-app-server' : 'procguard-codex'],
       record: (e) => ctx.pidLog.record(e),
       realpath: ctx.realpath,
       clock: ctx.clock,
       env: ctx.env,
       envExtra: { 'codex-app-server': { CODEX_HOME: codexHome } },
       cwd: base.cwdSpec,
+      ...(jobs === null || envFile === null ? {} : {
+        procguard: [{ at: 'runtime' as const, homeReal: jobs.homeReal, sourceHash: jobs.sourceHash }], procguardPin: jobs.pin, procguardEnv: { 'codex-app-server': envFile },
+      }),
     });
+    if (envFile !== null) fence.writeAtomic(envFile, spawnGate.envAllowlist('codex-app-server'));
+    const launch = (cwd: string) => {
+      if (jobs === null || envFile === null) return childPipe(spawnGate.start({ exe: exe.path, argv: CODEX_APP_SERVER_ARGV, cwd }));
+      const job = newJobName();
+      return childPipe(spawnGate.start({ exe: jobs.exe, argv: runInJobArgv(job, envFile, exe.path, CODEX_APP_SERVER_ARGV), cwd }), ownedJob(job, jobs.resident));
+    };
     const owned = new Owned({
       approvals: base.approvals,
       makeWorkDir: (ownedId) => {
@@ -566,7 +711,7 @@ async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: str
         fence.mkdirp(dir);
         return dir;
       },
-      launch: (cwd) => childPipe(spawnGate.start({ exe: exe.path, argv: CODEX_APP_SERVER_ARGV, cwd })),
+      launch,
       hub: ctx.clock,
       judge: base.judge,
       registry: base.registry,
@@ -574,7 +719,7 @@ async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: str
       now: base.now,
       redact: base.redact,
     });
-    return { status: { on: true, exe: exe.path, codexHome, workRoot: base.workRoot, model: DEFAULT_CODEX_MODEL, gateway: MAGPIE_BASE_URL, restored: owned.restored }, owned };
+    return { status: { on: true, exe: exe.path, codexHome, workRoot: base.workRoot, model: DEFAULT_CODEX_MODEL, gateway: MAGPIE_BASE_URL, restored: owned.restored, jobs: jobs !== null }, owned };
   } catch (e) {
     return off('setup-failed', describe(e));
   }
@@ -589,11 +734,12 @@ async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: str
  * that allows only claude-host, with the gateway, the placeholder token, the small fast model and
  * NO_PROXY as its extras, the pin check again before every start, and the shared cwd table.
  */
-async function setUpOwnedClaude(ctx: WorkingContext, fence: WriteFence, home: string, base: OwnedBase): Promise<{ status: OwnedClaudeStatus; owned: ClaudeOwned | null }> {
+async function setUpOwnedClaude(ctx: WorkingContext, fence: WriteFence, home: string, base: OwnedBase, jobs: Jobs | null): Promise<{ status: OwnedClaudeStatus; owned: ClaudeOwned | null }> {
   const off = (why: Extract<OwnedClaudeStatus, { on: false }>['why'], detail: string | null = null) => ({ status: { on: false as const, why, detail }, owned: null });
   if (ctx.makeSpawnGate === undefined) return off('no-spawn-gate');
   try {
-    const { CLAUDE_GATEWAY_TOKEN } = await import('../os/spawn.ts');
+    const { CLAUDE_GATEWAY_TOKEN, runInJobArgv } = await import('../os/spawn.ts');
+    const { envAllowlistFile, newJobName, ownedJob } = await import('../os/procguard.ts');
     const { hostPipe } = await import('../os/owned-proc.ts');
     const { MAIN_CHECKOUT, REPO_ROOT } = await import('../os/cwd.ts');
     const { checkExe, checkPins, exeMark, pinnedFiles, resolveHostSite } = await import('../owned/claude-site.ts');
@@ -615,9 +761,10 @@ async function setUpOwnedClaude(ctx: WorkingContext, fence: WriteFence, home: st
     fence.mkdirp(configHome);
     const configRoot = win.join(home, 'claude');
     fence.mkdirp(configRoot);
+    const envFile = jobs === null ? null : envAllowlistFile(jobs.dir, 'claude-host');
     const spawnGate = ctx.makeSpawnGate({
       systemRoot: base.sys,
-      rules: ['claude-host'],
+      rules: [jobs === null ? 'claude-host' : 'procguard-claude'],
       record: (e) => ctx.pidLog.record(e),
       realpath: ctx.realpath,
       clock: ctx.clock,
@@ -630,7 +777,16 @@ async function setUpOwnedClaude(ctx: WorkingContext, fence: WriteFence, home: st
       },
       cwd: base.cwdSpec,
       claudeHost: { node: site.node, entry: site.entry, verify },
+      ...(jobs === null || envFile === null ? {} : {
+        procguard: [{ at: 'runtime' as const, homeReal: jobs.homeReal, sourceHash: jobs.sourceHash }], procguardPin: jobs.pin, procguardEnv: { 'claude-host': envFile },
+      }),
     });
+    if (envFile !== null) fence.writeAtomic(envFile, spawnGate.envAllowlist('claude-host'));
+    const launch = (cwd: string) => {
+      if (jobs === null || envFile === null) return hostPipe(spawnGate.start({ exe: site.node, argv: [site.entry], cwd }));
+      const job = newJobName();
+      return hostPipe(spawnGate.start({ exe: jobs.exe, argv: runInJobArgv(job, envFile, site.node, [site.entry]), cwd }), ownedJob(job, jobs.resident));
+    };
     const owned = new Owned({
       approvals: base.approvals,
       makeWorkDir: (ownedId) => {
@@ -643,7 +799,7 @@ async function setUpOwnedClaude(ctx: WorkingContext, fence: WriteFence, home: st
         fence.mkdirp(dir);
         return dir;
       },
-      launch: (cwd) => hostPipe(spawnGate.start({ exe: site.node, argv: [site.entry], cwd })),
+      launch,
       claudeExe: site.claudeExe,
       // The host denies every tool call into these (and into ~/.claude, ~/.dsh, ~/.orchestra and the
       // session's own config dir, which it adds itself); a session's own work dir stays open through
@@ -657,7 +813,7 @@ async function setUpOwnedClaude(ctx: WorkingContext, fence: WriteFence, home: st
       redact: base.redact,
     });
     return {
-      status: { on: true, node: site.node, entry: site.entry, claudeExe: site.claudeExe, configRoot, model: DEFAULT_CLAUDE_MODEL, gateway: CLAUDE_GATEWAY_URL, restored: owned.restored },
+      status: { on: true, node: site.node, entry: site.entry, claudeExe: site.claudeExe, configRoot, model: DEFAULT_CLAUDE_MODEL, gateway: CLAUDE_GATEWAY_URL, restored: owned.restored, jobs: jobs !== null },
       owned,
     };
   } catch (e) {

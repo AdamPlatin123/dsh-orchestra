@@ -34,6 +34,9 @@ export const EXEMPT_SCRIPTS: readonly string[] = [
   // dir. Daemon rules (spawn gate, read gate, clock) would ban each of those; it is never part of the
   // test run and touches no harness root.
   'scripts/pin-claude-host.ts',
+  // procguard's pin (orchestra app: owned sessions in procguard Jobs): reads native/procguard/ProcGuard.cs
+  // and writes the one generated src/os/procguard-pins.ts, as pin-claude-host does for the host.
+  'scripts/pin-procguard.ts',
   'scripts/live-smoke.ts',
   // The dispatch desk's live run (orchestra app plan §3), the same kind as live-smoke: it starts orchestrad
   // in the test profile, speaks HTTP to it on 127.0.0.1 and waits on timers; it touches no harness root.

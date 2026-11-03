@@ -14,6 +14,11 @@ import { Log } from '../../src/runtime/log.ts';
 import { makeDbOpener } from '../../src/store/node-sqlite.ts';
 import { captureConsole, minimalEnv, runWorkingInProcess } from '../helpers/start.ts';
 import { fakeSpawn } from '../helpers/fake-spawn.ts';
+import type { FakeBehavior, FakeCall } from '../helpers/fake-spawn.ts';
+import { PROCGUARD_SOURCE_SHA256 } from '../../src/os/procguard-pins.ts';
+import { LIBUV_ADDED_ENV } from '../../src/os/spawn.ts';
+
+type FakeBehave = (call: FakeCall) => FakeBehavior;
 import { put, withTmp } from '../helpers/tmp.ts';
 
 // The composition root's part (orchestra app plan §2): with --owned, working mode finds codex.exe at its
@@ -26,7 +31,7 @@ const CLOCK = makeRealClock();
 type Working = { o: Extract<WorkingOutcome, { mode: 'working' }>; out: string[]; home: string; specs: SpawnGateSpec[] };
 
 /** A test-profile working orchestrad; `body` runs while it works, and it is stopped before the temp dir goes. */
-async function working(t: TestContext, env: Record<string, string>, owned: boolean, body: (w: Working) => void, opts: { readGate?: typeof makeReadGate } = {}): Promise<void> {
+async function working(t: TestContext, env: Record<string, string>, owned: boolean, body: (w: Working) => void, opts: { readGate?: typeof makeReadGate; procguard?: true; behave?: FakeBehave } = {}): Promise<void> {
   const base = withTmp(t);
   fs.mkdirSync(path.join(base, 'orchestra-test-x'));
   const testDir = fs.realpathSync.native(path.join(base, 'orchestra-test-x'));
@@ -34,7 +39,7 @@ async function working(t: TestContext, env: Record<string, string>, owned: boole
   const profile: TestProfile = { kind: 'test', testDir, orchestraHome: home, rootsDir: path.join(testDir, 'roots'), rootsDirGiven: false, rootPids: [] };
   const con = captureConsole();
   const specs: SpawnGateSpec[] = [];
-  const spy = fakeSpawn(() => ({ hang: true }));
+  const spy = fakeSpawn(opts.behave ?? (() => ({ hang: true })));
   const o = await runWorkingInProcess({
     profile, home, userHome: path.join(base, 'user-home'), roots: [], notes: [], log: new Log({ clock: CLOCK.port(null) }), pidLog: new PidLog(), console: con.port,
     pid: process.pid, clock: CLOCK, tty: () => ({ stdin: false, stdout: false }), realpath: (p: string) => fs.realpathSync.native(p),
@@ -44,6 +49,7 @@ async function working(t: TestContext, env: Record<string, string>, owned: boole
       return new SpawnGate({ ...spec, backend: spy.backend });
     },
     ...(owned ? { owned: true as const } : {}),
+    ...(opts.procguard === true ? { procguard: true as const } : {}),
   });
   assert.equal(o.mode, 'working', JSON.stringify(o));
   if (o.mode !== 'working') return;
@@ -150,4 +156,91 @@ test('--owned with a host file that does not match its pin: off as host-tampered
     assert.ok(w.out.includes('orchestrad: owned Claude sessions are off: host-tampered (hosts/claude/host.mjs: changed)'), w.out.join('\n'));
     assert.equal(w.specs.filter((x) => x.rules.includes('claude-host')).length, 0);
   }, { readGate: tampered });
+});
+
+// ---- procguard (orchestra app: owned sessions in procguard Jobs; r4 D4) ------------------------------
+
+/** csc as the spy plays it: writes `bytes` (or nothing) to its /out: and exits 0; procguard says ready and stays. */
+const pgBehave = (bytes: string | null): FakeBehave => (call) => {
+  if (/csc\.exe$/i.test(call.exe)) {
+    const out = call.argv.find((a) => a.startsWith('/out:'))!.slice('/out:'.length);
+    if (bytes !== null) fs.writeFileSync(out, bytes);
+    return { exitCode: 0 };
+  }
+  if (/procguard\.exe$/i.test(call.exe) && call.argv.length === 0) return { stdout: '{"event":"ready","pid":1}\n', hang: true };
+  return { hang: true };
+};
+
+test('procguard asked: csc builds it into runtime\\procguard\\<source sha256>, the resident says ready, and the codex gate allows only the wrapped rule, with its env allowlist written', async (t) => {
+  const appData = path.join(fs.realpathSync.native(withTmp(t)), 'Roaming');
+  put(path.join(appData, CODEX_EXE_REL), 'not really codex');
+  await working(t, { APPDATA: appData }, true, (w) => {
+    const pg = w.o.procguard;
+    assert.equal(pg.on, true, JSON.stringify(pg));
+    if (!pg.on) return;
+    const dir = path.join(w.home, 'runtime', 'procguard', PROCGUARD_SOURCE_SHA256);
+    assert.equal(pg.exe, path.join(dir, 'procguard.exe'));
+    assert.equal(pg.built, true);
+    assert.equal(fs.readFileSync(path.join(dir, 'procguard.exe'), 'utf8'), 'MZ fake');
+    assert.equal(fs.readFileSync(path.join(dir, 'procguard.exe.sha256'), 'utf8').trim(), pg.sha256);
+    assert.equal(fs.existsSync(path.join(dir, 'procguard.new.exe')), false);
+    assert.ok(w.out.some((l) => l.startsWith('orchestrad: procguard on (built ')), w.out.join('\n'));
+    const s = w.o.ownedCodex;
+    assert.ok(s.on && s.jobs, JSON.stringify(s));
+    const spec = w.specs.find((x) => x.rules.includes('procguard-codex'))!;
+    assert.deepEqual([...spec.rules], ['procguard-codex'], 'no codex.exe outside a Job');
+    assert.equal(spec.procguardEnv?.['codex-app-server'], path.join(dir, 'env-codex-app-server.txt'));
+    const text = fs.readFileSync(path.join(dir, 'env-codex-app-server.txt'), 'utf8');
+    const names = text.split('\n').filter((l) => l !== '' && !l.startsWith('#'));
+    assert.ok(names.includes('CODEX_HOME') && names.includes('APPDATA') && LIBUV_ADDED_ENV.every((n) => names.some((x) => x.toLowerCase() === n.toLowerCase())), names.join(','));
+    assert.ok(!text.includes(appData), 'names only, no value on disk');
+    const pgSpec = w.specs.find((x) => x.rules.includes('csc'))!;
+    assert.deepEqual([...pgSpec.rules], ['csc', 'procguard']);
+  }, { procguard: true, behave: pgBehave('MZ fake') });
+});
+
+test('procguard that cannot be built: the owned sessions run as before (no Job), and why there is no brake is on the console and in the outcome', async (t) => {
+  const appData = path.join(fs.realpathSync.native(withTmp(t)), 'Roaming');
+  put(path.join(appData, CODEX_EXE_REL), 'not really codex');
+  await working(t, { APPDATA: appData }, true, (w) => {
+    assert.deepEqual(w.o.procguard, { on: false, why: 'procguard-build-failed', detail: 'csc wrote no exe' });
+    assert.ok(w.out.includes('orchestrad: procguard is off: procguard-build-failed (csc wrote no exe); owned sessions run without Jobs, no brake'), w.out.join('\n'));
+    const s = w.o.ownedCodex;
+    assert.ok(s.on && !s.jobs, JSON.stringify(s));
+    assert.deepEqual([...w.specs.find((x) => x.rules.includes('codex-app-server'))!.rules], ['codex-app-server']);
+  }, { procguard: true, behave: pgBehave(null) });
+});
+
+test('a procguard.exe that does not match the sha256 recorded at its build is tampered: the owned sessions stay off, with the reason', async (t) => {
+  const appData = path.join(fs.realpathSync.native(withTmp(t)), 'Roaming');
+  put(path.join(appData, CODEX_EXE_REL), 'not really codex');
+  let built = false;
+  await working(t, { APPDATA: appData }, true, (w) => {
+    assert.equal(w.o.procguard.on, false);
+    if (w.o.procguard.on) return;
+    assert.equal(w.o.procguard.why, 'procguard-tampered');
+    assert.equal(w.o.ownedCodex.on ? 'on' : w.o.ownedCodex.why, 'procguard-tampered');
+    assert.equal(w.o.ownedClaude.on ? 'on' : w.o.ownedClaude.why, 'procguard-tampered');
+    assert.equal(w.specs.filter((x) => x.rules.some((r) => r !== 'csc' && r !== 'procguard')).length, 0, 'no session gate at all');
+    assert.ok(w.out.some((l) => l.startsWith('orchestrad: procguard is off: procguard-tampered') && l.endsWith('; owned sessions are off')), w.out.join('\n'));
+    assert.equal(built, false, 'a tampered exe is not rebuilt over');
+  }, {
+    procguard: true,
+    behave: (call) => {
+      if (/csc\.exe$/i.test(call.exe)) built = true;
+      return { hang: true };
+    },
+    // The site as an earlier build left it, then changed: put in place before the working mode reads it.
+    readGate: ((spec) => {
+      const home = (spec as { orchestraHome?: string }).orchestraHome;
+      if (home !== undefined) {
+        const dir = path.join(home, 'runtime', 'procguard', PROCGUARD_SOURCE_SHA256);
+        if (!fs.existsSync(dir)) {
+          put(path.join(dir, 'procguard.exe'), 'MZ changed later');
+          put(path.join(dir, 'procguard.exe.sha256'), `${'0'.repeat(64)}\n`);
+        }
+      }
+      return makeReadGate(spec);
+    }) as typeof makeReadGate,
+  });
 });

@@ -4,9 +4,12 @@ import type { ClockHub, Fired } from '../runtime/clock.ts';
 import type { Answer, AnswerCause, ApprovalKind, ApprovalRisk, Approvals } from './approvals.ts';
 import type { PathJudge } from './codex-session.ts';
 import type { FeedInput, FeedTokens } from './feed.ts';
+import type { JobOutcome } from '../os/procguard.ts';
+import type { OwnedBrake } from './codex-session.ts';
+import { treeNote } from './codex-session.ts';
 import type { Redact } from './text.ts';
 import { isWithin } from '../fs/paths.ts';
-import { stopHostInOrder } from '../os/owned-proc.ts';
+import { endHostNow, stopHostInOrder } from '../os/owned-proc.ts';
 import { Feed } from './feed.ts';
 import { isClaudeModel } from './models.ts';
 import { OWNED_TEXT_LIMITS, shown } from './text.ts';
@@ -31,8 +34,14 @@ const win = path.win32;
 //              are withdrawn, then the interrupt frame (design §2.5). An interrupt receipt that does not
 //              say "nothing still queued" ends the session (the host is closed).
 //   end:       open approvals declined, waiting messages withdrawn, then the host is stopped in the
-//              design's order (src/os/owned-proc.ts): the close frame, stdin closed, a kill last; when
-//              the kill was needed the feed says claude.exe may remain (note host-killed).
+//              design's order (src/os/owned-proc.ts): the close frame, stdin closed, a kill last. Started
+//              inside a procguard Job (pipe.job), the host's close closes the Job, so claude.exe and what
+//              it ran go too (r4 D4); once the host closed, the Job is checked through the resident
+//              procguard and the feed says what was found (tree-ended, tree-left, tree-unsure). Without a
+//              Job (procguard off), when the kill was needed the feed says claude.exe may remain
+//              (note host-killed).
+//   brake:     (a Job only) every process in the Job ended at once, the approvals declined, the session
+//              ended as braked, then the host's handle goes, with no stop order (codex-session.ts).
 //
 // What the host says becomes feed events: text (a reply, in chunks of at most 2 KB), tool (a tool call
 // by name; hidden while an approval about it is open, told again after the answer, as codex-session.ts
@@ -63,7 +72,7 @@ export type ClaudeSessionState = 'starting' | 'idle' | 'running' | 'ended' | 'fa
  * host said something Orchestra cannot read, so Orchestra stopped it; exited: the host went away by
  * itself; start-failed, safety-stop, daemon-restart: shared/owned-contract.js.
  */
-export type ClaudeEndReason = 'you-ended' | 'exited' | 'start-failed' | 'safety-stop' | 'daemon-restart' | 'interrupt-unsure' | 'protocol-error' | 'daemon-stop';
+export type ClaudeEndReason = 'you-ended' | 'exited' | 'start-failed' | 'safety-stop' | 'daemon-restart' | 'interrupt-unsure' | 'protocol-error' | 'daemon-stop' | 'braked';
 export const isClaudeOver = (state: ClaudeSessionState): boolean => state === 'ended' || state === 'failed' || state === 'unknown';
 
 export type ClaudeSessionOptions = {
@@ -113,6 +122,10 @@ export type ClaudeSession = {
   interrupt(): Promise<{ withdrawn: number; denied: number }>;
   /** Ends the session: a person's end (you-ended) unless orchestrad itself is stopping (daemon-stop). */
   end(why?: 'you-ended' | 'daemon-stop'): { denied: number };
+  /** Whether its host's whole tree runs in a Job of its own (so the brake can stop it), as long as it runs. */
+  readonly jobbed: boolean;
+  /** The brake: the whole tree stopped now, the approvals declined, the session ended as braked. */
+  brake(): Promise<OwnedBrake>;
   /** closed: the host process closed (or none of it runs here). */
   stats(): { stderrTail: string; failure: string | null; exit: { reason: string; detail: string | null } | null; closed: boolean };
 };
@@ -279,6 +292,16 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
 
   // --- ending ----------------------------------------------------------------------------------------
 
+  /** The Job the host's tree runs in (null: procguard off). */
+  const job = pipe.job ?? null;
+  /** The brake took the tree: the check after the close is its own, not repeated. */
+  let braked = false;
+  const noteTree = (o: JobOutcome) => {
+    const n = treeNote(o);
+    note(n.state, n.text);
+    changed();
+  };
+
   const stopHost = () => {
     cancelInit();
     cancelStop = stopHostInOrder(pipe, {
@@ -286,6 +309,8 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
       after,
       closed: () => closed,
       killed: () => {
+        // In a Job the kill took the whole tree, and the check after the close says so.
+        if (job !== null) return;
         note('host-killed');
         changed();
       },
@@ -313,6 +338,8 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     cancelStop();
     cancelInit();
     settleExited();
+    // However the host closed, its Job is checked once it did (codex-session.ts does the same).
+    if (job !== null && !braked) void job.endTree().then(noteTree);
     // Nobody can answer what the host asked any more, however the session ended: a card an ask frame
     // brought in while it was ending would otherwise wait on a host that is gone.
     approvals.forgetOwned(ownedId);
@@ -662,6 +689,30 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
       return { withdrawn, denied };
     },
     end: (why: 'you-ended' | 'daemon-stop' = 'you-ended') => endSession('end', why === 'daemon-stop' ? 'daemon-stop' : 'you-ended'),
+    get jobbed() {
+      return job !== null && !terminal();
+    },
+    async brake(): Promise<OwnedBrake> {
+      if (terminal()) return { ok: false, reason: 'ended' };
+      if (job === null) return { ok: false, reason: 'no-job' };
+      braked = true;
+      const ending = job.endTree();
+      approvals.declineOwned(ownedId, 'brake');
+      cancelInit();
+      state = 'ended';
+      endReason = 'braked';
+      turn = false;
+      withdrawAll();
+      unsureAll();
+      showAllTools();
+      feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'braked' });
+      settleReady(false);
+      changed();
+      const o = await ending;
+      if (!closed) endHostNow(pipe);
+      noteTree(o);
+      return o.ok ? { ok: true, killed: o.killed, left: o.left } : { ok: true, killed: null, left: null };
+    },
     stats: () => ({ stderrTail, failure, exit: exitFrame, closed }),
   };
   return Object.freeze(session);

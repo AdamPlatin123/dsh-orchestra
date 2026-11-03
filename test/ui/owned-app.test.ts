@@ -61,9 +61,9 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
   let mono = 1000;
   let seats: OwnedSeat[] = [seat(ID.a, 'fix the css', 'running', OBSERVED + 20 * MIN), seat(ID.b, 'run tests', 'idle', OBSERVED + 10 * MIN), seat(ID.c, 'refactor', 'idle', OBSERVED + 25 * MIN)];
   let list: Record<string, any> = {
-    v: 1, kind: 'owned-list', rev: 3, enabled: true, disabledWhy: null, harnesses: { codex: true, claude: false },
+    v: 1, kind: 'owned-list', rev: 3, enabled: true, disabledWhy: null, brakeWhy: null, harnesses: { codex: true, claude: false },
     owned: [
-      { ownedId: ID.a, harness: 'codex', model: 'codex/gpt-6.1-sol', title: 'fix the css', state: 'running', endReason: null, waiting: AP.a, queued: 0, tokens: { input: 1, cachedInput: 0, output: 1, total: 2 }, lastSeq: 7, createdAt: 1 },
+      { ownedId: ID.a, harness: 'codex', model: 'codex/gpt-6.1-sol', title: 'fix the css', state: 'running', endReason: null, waiting: AP.a, queued: 0, tokens: { input: 1, cachedInput: 0, output: 1, total: 2 }, lastSeq: 7, createdAt: 1, brake: true },
       { ownedId: ID.b, harness: 'codex', model: 'codex/gpt-6.1-sol', title: 'run tests', state: 'idle', endReason: null, waiting: AP.b, queued: 0, tokens: null, lastSeq: 1, createdAt: 2 },
       { ownedId: ID.c, harness: 'codex', model: 'zcode/GLM-5.3', title: 'refactor', state: 'idle', endReason: null, waiting: AP.c, queued: 0, tokens: null, lastSeq: 1, createdAt: 3 },
     ],
@@ -316,6 +316,14 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     assert.equal(posts(`/api/owned/${ID.a}/end`).length, 1);
     await click(act(dock, 'interrupt'));
     assert.equal(posts(`/api/owned/${ID.a}/interrupt`).length, 1);
+    // The brake (a session in a Job of its own): the third stop, two clicks like end, its whole tree.
+    assert.equal(act(dock, 'brake')!.textContent, TOWER_TEXT['dock.brake']);
+    await click(act(dock, 'brake'));
+    assert.equal(posts('/brake').length, 0, 'one click arms it only');
+    assert.equal(act(dock, 'brake')!.textContent, TOWER_TEXT['dock.brakeSure']);
+    assert.equal(act(dock, 'brake')!.getAttribute('data-armed'), '1');
+    await click(act(dock, 'brake'));
+    assert.deepEqual(posts('/brake').map((r) => [r.url, Object.keys(r.body)]), [[`/api/owned/${ID.a}/brake`, ['actionId']]]);
 
     // Dispatch: Claude greyed with why; nothing goes until 派出; the request names harness and model.
     await click(bar.querySelector('[data-act=new]'));
@@ -529,6 +537,16 @@ test('owned descriptors (review fixes): words for notes and fates, unknown outco
   assert.ok(dock.st.text.startsWith(TOWER_TEXT['dock.afterQueue']!));
   const deny = apprActs(approval(AP.a, ID.a, { rev: 1 }) as Approval, { ...g, busy: true }, 'card')[0]!;
   assert.deepEqual([deny.attr!.disabled, deny.attr!['aria-disabled']], [undefined, 'true']);
+  // No brake without a Job of its own: the note says why, in words (procguard's state, from the list).
+  assert.ok(dock.note.text.includes(TOWER_TEXT['dock.noBrake']!.replace('{why}。结束会话只停 codex 或 host 本身', '')), dock.note.text);
+  assert.ok(dock.note.text.includes(TOWER_TEXT['bwhy.no-job']!));
+  const noPg = describeOwnedDock({ id: o.ownedId }, { ...list, brakeWhy: 'procguard-build-failed' }, g, false, false) as any;
+  assert.ok(noPg.note.text.includes(TOWER_TEXT['bwhy.procguard-build-failed']!), noPg.note.text);
+  const braking = describeOwnedDock({ id: o.ownedId }, { ...list, brakeWhy: null, owned: [{ ...o, brake: true }] }, g, false, false, true) as any;
+  assert.deepEqual(braking.btns.kids.map((b: any) => [b.data.act, b.data.armed ?? null, b.text]), [
+    ['send', null, TOWER_TEXT['dock.send']], ['interrupt', null, TOWER_TEXT['dock.interrupt']], ['end', '0', TOWER_TEXT['dock.end']], ['brake', '1', TOWER_TEXT['dock.brakeSure']],
+  ]);
+  assert.ok(!braking.note.text.includes(TOWER_TEXT['dock.noBrake']!.slice(0, 5)), 'with a brake, no note says there is none');
   const gone = describeOwnedDock({ id: o.ownedId }, { ...list, owned: [{ ...o, state: 'unknown', endReason: 'daemon-restart' }] }, g, false, false) as any;
   assert.equal(gone.note.text, TOWER_TEXT['dock.unknown']);
   assert.ok((describeOwned(o.ownedId, { ...list, owned: [{ ...o, state: 'unknown', endReason: 'daemon-restart' }] }, undefined, g) as any).ownSt.text.includes(TOWER_TEXT['life.daemon-restart']!));
