@@ -13,6 +13,8 @@
 用户 2026-11-02 的目标：把 Orchestra 做到「应用整体可用」。一个守护进程 orchestrad，首页是塔表（你 → agent → subagent 的跨项目树），能只读观察 Claude、DSH、Codex 三家的会话；能经本机模型网关 magpie（`http://127.0.0.1:3425`，不要密钥）开 Orchestra 自己拥有的 Codex 和 Claude 会话（下称「自有会话」），在页面上对话、审批、停下；有一个派活台，先跑规则、再问路由模型，给出「派给谁」的建议卡片，由人点「派出」；DSH 会话可以经 seat 请求派自有会话，由人在配对页派出或拒绝。总计划见 `docs/plans/2026-11-02-orchestra-app-plan.md`，给主人看的上手指南见 `docs/quickstart.md`，启动脚本 `start-orchestra.cmd`。
 
 ## Done（已完成且已验证）
+- 真实 profile 第一次由用户启动（2026-11-03 07:41 UTC，start-orchestra.cmd，用户本人在可见控制台）。只读查了真实数据目录的 run/orchestrad.log（码已遮）：procguard on、owned-claude on、owned-codex on、页面 7470、agent-port（orchestra-agent-real）、working profile real；peek-pair ok；owned-unlock 先 wrong 后 ok。派会话、塔表内容、Ctrl+C 停机还没有用户的结果。
+- 真实 profile 上发现的解锁码问题（本次修正）：日志里一次解锁在 60 ms 内发了 7 个解锁码（每个都替换上一个），用户填了不是最后一个的码，第一次判 wrong。页面改为：解锁对话框开着或请求还在路上时，不再要新码。新断言不带修复时失败；测试 profile 页面上连点 7 次只发 1 个码。全量 1542 条，1539 过，0 失败。用户正在跑的实例是修正前启动的，重启后才生效。
 - 审批卡来源链（d5b40e1、eb8d621，r4 §8.5）— seat 派出的会话，审批卡和等你栏都写「来源不可信：DSH 会话 <id>（自称，未核实）→ 请求「<标签>」（标签是对方写的，未核实）→ 这个会话」；没报 id 写「未知」；等你栏里截断并标明；r4 原文的第三段（发送者自己的污染源）Orchestra 拿不到，卡上照实写。只加显示，审批行为不变，不进 journal。复核 5 条都修了（标签能伪造链结构、LRM/RLM/ALM 和行分隔符漏网、截断拆字形、备注文案、origin 不带 tainted 时整张列表 500）。全量 1542 条，1539 过，0 失败。
 - 来源链和键入放行的页面实测（2026-11-03，测试 profile，内置浏览器）：用实验室 ask-once.ts 提一个 seat 请求，配对、解锁、派出；等你栏这张卡是红条，提示位是上面那行来源链，按钮只有「拒绝」「输入确认词允许」。点「输入确认词允许」后页面弹出的确认框写「来源不可信（DSH 会话的请求）的高风险请求：…」；因为内置浏览器的原生确认框点不进去，由测试代人把确认词「放行」交给页面（覆盖 window.prompt），之后卡片消失、命令跑了、hello.txt 内容 hi。测试实例停掉后没有残留进程，测试目录已删。
 全部在本 worktree 根目录跑，node 用主检出目录的 `.tools/node24/node.exe`，只用测试 profile（代-2）。
