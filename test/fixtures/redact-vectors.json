@@ -1,0 +1,95 @@
+{
+  "about": "Redaction vectors (alpha 0.2 design \u00a72.6). Every secret is made up. src/store/redact.ts (with an empty env) and the preview redaction of hosts/claude/host-core.mjs must both turn \"text\" into \"out\" with \"count\" replacements.",
+  "vectors": [
+    {
+      "text": "key sk-ant-api03-Zx9_Qw8-Er7Ty6Ui5Op4 end",
+      "out": "key [redacted:sk-ant] end",
+      "count": 1
+    },
+    {
+      "text": "remote ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 x",
+      "out": "remote [redacted:github] x",
+      "count": 1
+    },
+    {
+      "text": "pat github_pat_11ABCDEFG0123456789_abcdefghijklmnop",
+      "out": "pat [redacted:github]",
+      "count": 1
+    },
+    {
+      "text": "id AKIAIOSFODNN7EXAMPLE.",
+      "out": "id [redacted:aws].",
+      "count": 1
+    },
+    {
+      "text": "tok eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk ok",
+      "out": "tok [redacted:jwt] ok",
+      "count": 1
+    },
+    {
+      "text": "a\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\nz",
+      "out": "a\n[redacted:pem]\nz",
+      "count": 1
+    },
+    {
+      "text": "Authorization: Bearer abc.def.ghi\nnext",
+      "out": "Authorization: [redacted:authorization]\nnext",
+      "count": 1
+    },
+    {
+      "text": "curl -H 'x: Bearer abcdefgh12345678' u",
+      "out": "curl -H 'x: Bearer [redacted:bearer]' u",
+      "count": 1
+    },
+    {
+      "text": "db postgres://admin:hunter22@db.local:5432/app",
+      "out": "db postgres://[redacted:url-credentials]db.local:5432/app",
+      "count": 1
+    },
+    {
+      "text": "login password=hunter2&next=1",
+      "out": "login password=[redacted:secret-param]&next=1",
+      "count": 1
+    },
+    {
+      "text": "{\"apiKey\": \"abc123\", \"n\": 1}",
+      "out": "{\"apiKey\": [redacted:secret-param], \"n\": 1}",
+      "count": 1
+    },
+    {
+      "text": "client_secret='shh'",
+      "out": "client_secret=[redacted:secret-param]",
+      "count": 1
+    },
+    {
+      "text": "Cookie: sid=s3ss10n",
+      "out": "Cookie: [redacted:secret-param]",
+      "count": 1
+    },
+    {
+      "text": "blob 9fK2mQ7xL4vB8nR1tY6wZ3pH5sD0gJ",
+      "out": "blob [redacted:entropy]",
+      "count": 1
+    },
+    {
+      "text": "command: git push https://user:tok3n@example.test/repo.git\ndescription: push it",
+      "out": "command: git push https://[redacted:url-credentials]example.test/repo.git\ndescription: push it",
+      "count": 1
+    },
+    {
+      "text": "plain text with nothing secret, a path C:\\Users\\u\\work and a number 0123456789",
+      "out": "plain text with nothing secret, a path C:\\Users\\u\\work and a number 0123456789",
+      "count": 0
+    },
+    {
+      "text": "two: password=a1 and token=b2",
+      "out": "two: password=[redacted:secret-param] and token=[redacted:secret-param]",
+      "count": 2
+    },
+    {
+      "text": "no secret here: sk-short and ghp_short",
+      "out": "no secret here: sk-short and ghp_short",
+      "count": 0
+    }
+  ]
+}

@@ -1,0 +1,123 @@
+{
+  "about": "Canonical JSON vectors (alpha 0.2 design \u00a72.2): each \"in\" is JSON text read with JSON.parse; src/store/canonical-json.ts and hosts/claude/host-core.mjs must both give \"out\", or both refuse with \"reason\".",
+  "ok": [
+    {
+      "in": "{\"b\":1,\"a\":{\"z\":[3,1,2],\"y\":null},\"B\":true,\"10\":\"ten\",\"2\":\"two\"}",
+      "out": "{\"10\":\"ten\",\"2\":\"two\",\"B\":true,\"a\":{\"y\":null,\"z\":[3,1,2]},\"b\":1}"
+    },
+    {
+      "in": "{\"\\uffff\":4,\"\\ud83d\\ude00\":2,\"\\uff5a\":3,\"\\u00e9\":1,\"e\":0}",
+      "out": "{\"e\":0,\"\u00e9\":1,\"\ud83d\ude00\":2,\"\uff5a\":3,\"\uffff\":4}"
+    },
+    {
+      "in": "-0",
+      "out": "0"
+    },
+    {
+      "in": "[0,-0,1,-1,9007199254740991,-9007199254740991,1e3,1E2]",
+      "out": "[0,0,1,-1,9007199254740991,-9007199254740991,1000,100]"
+    },
+    {
+      "in": "\"q\\\"b\\\\s/\\u0000\\u001f\\u007f \\u202e\"",
+      "out": "\"q\\\"b\\\\s/\\u0000\\u001f\u007f \u202e\""
+    },
+    {
+      "in": "\"\\b\\f\\n\\r\\t\"",
+      "out": "\"\\b\\f\\n\\r\\t\""
+    },
+    {
+      "in": "\"\\ud83d\\ude00\"",
+      "out": "\"\ud83d\ude00\""
+    },
+    {
+      "in": "\"caf\\u00e9\"",
+      "out": "\"caf\u00e9\""
+    },
+    {
+      "in": "\"cafe\\u0301\"",
+      "out": "\"cafe\u0301\""
+    },
+    {
+      "in": "{}",
+      "out": "{}"
+    },
+    {
+      "in": "[]",
+      "out": "[]"
+    },
+    {
+      "in": "true",
+      "out": "true"
+    },
+    {
+      "in": "false",
+      "out": "false"
+    },
+    {
+      "in": "null",
+      "out": "null"
+    },
+    {
+      "in": "\"\"",
+      "out": "\"\""
+    },
+    {
+      "in": "[[],[{}],{\"a\":[null,true,false]}]",
+      "out": "[[],[{}],{\"a\":[null,true,false]}]"
+    },
+    {
+      "in": "{\"toolName\":\"Write\",\"toolUseId\":\"toolu_01\",\"input\":{\"file_path\":\"C:\\\\w\\\\a.txt\",\"content\":\"hi\\r\\nthere\\n\"}}",
+      "out": "{\"input\":{\"content\":\"hi\\r\\nthere\\n\",\"file_path\":\"C:\\\\w\\\\a.txt\"},\"toolName\":\"Write\",\"toolUseId\":\"toolu_01\"}"
+    },
+    {
+      "in": "{\"toolName\":\"PowerShell\",\"toolUseId\":\"toolu_02\",\"input\":{\"command\":\"Get-ChildItem\",\"timeout\":120000,\"description\":\"list\"}}",
+      "out": "{\"input\":{\"command\":\"Get-ChildItem\",\"description\":\"list\",\"timeout\":120000},\"toolName\":\"PowerShell\",\"toolUseId\":\"toolu_02\"}"
+    }
+  ],
+  "refuse": [
+    {
+      "in": "0.5",
+      "reason": "non-integer"
+    },
+    {
+      "in": "1.5e-7",
+      "reason": "non-integer"
+    },
+    {
+      "in": "{\"x\":[1,2.25]}",
+      "reason": "non-integer"
+    },
+    {
+      "in": "9007199254740992",
+      "reason": "unsafe-integer"
+    },
+    {
+      "in": "-9007199254740992",
+      "reason": "unsafe-integer"
+    },
+    {
+      "in": "1e21",
+      "reason": "unsafe-integer"
+    },
+    {
+      "in": "1e400",
+      "reason": "non-finite"
+    },
+    {
+      "in": "[-1e400]",
+      "reason": "non-finite"
+    },
+    {
+      "in": "\"\\ud800\"",
+      "reason": "lone-surrogate"
+    },
+    {
+      "in": "\"a\\udc00b\"",
+      "reason": "lone-surrogate"
+    },
+    {
+      "in": "{\"k\\ud83d\":1}",
+      "reason": "lone-surrogate"
+    }
+  ]
+}

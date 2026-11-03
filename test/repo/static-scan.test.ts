@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import type { Rule } from '../helpers/scan-rules.ts';
 import { BUILTIN_ROWS } from '../../src/runtime/builtin-policy.ts';
 import { GLOBAL_POWERS, PROCESS_POWERS } from '../../src/runtime/process-powers.ts';
-import { EXEMPT_SCRIPTS, RULES, SCANNED_DIRS, findImports, scan } from '../helpers/scan-rules.ts';
+import { EXEMPT_SCRIPTS, RULES, SCANNED_DIRS, findImports, isScanSkipped, scan } from '../helpers/scan-rules.ts';
 
 const repo = fileURLToPath(new URL('../../', import.meta.url));
 
@@ -583,6 +583,51 @@ const CASES: readonly Case[] = [
   pos('builtin-policy', 'shared/x.js', "import * as path from 'node:path';"),
   pos('builtin-policy', 'shared/x.js', "/** @typedef {import('node:fs').Stats} S */"),
   neg('builtin-policy', 'src/model/x.ts', "import * as path from 'node:path';"),
+
+  // The Claude host (alpha 0.2 design §6): its own rules, nothing of src/ or shared/.
+  pos('hosts:import-allowlist', 'hosts/claude/host-core.mjs', "import { createHash } from 'node:crypto';"),
+  pos('hosts:import-allowlist', 'hosts/claude/host-core.mjs', "import { x } from './util.mjs';"),
+  pos('hosts:import-allowlist', 'hosts/claude/host.mjs', "import { spawn } from 'node:child_process';"),
+  pos('hosts:import-allowlist', 'hosts/claude/host.mjs', "import { query } from '@anthropic-ai/claude-agent-sdk';"),
+  pos('hosts:import-allowlist', 'hosts/claude/host.mjs', "const sdk = await import('./node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs');"),
+  pos('hosts:import-allowlist', 'hosts/claude/host.mjs', "import { canonicalJson } from '../../src/store/canonical-json.ts';"),
+  pos('hosts:import-allowlist', 'hosts/claude/host.mjs', "import { x } from '../other/x.mjs';"),
+  neg('hosts:import-allowlist', 'hosts/claude/host.mjs', "import { createHash, randomBytes } from 'node:crypto';\nimport { realpath } from 'node:fs/promises';\nimport { runHost } from './host-core.mjs';"),
+  neg('hosts:import-allowlist', 'src/model/x.ts', "import { spawn } from 'node:child_process';"),
+  pos('hosts:no-src-or-shared', 'hosts/claude/host.mjs', "const p = new URL('../../src/store/redact.ts', import.meta.url);"),
+  pos('hosts:no-src-or-shared', 'hosts/claude/host-core.mjs', 'const at = `${repo}\\\\shared\\\\protocol.js`;'),
+  neg('hosts:no-src-or-shared', 'hosts/claude/host-core.mjs', '// a copy of src/store/canonical-json.ts (the host cannot import it)'),
+  neg('hosts:no-src-or-shared', 'hosts/claude/host-core.mjs', "const name = 'resource';"),
+  pos('hosts:sdk-import-only-in-entry', 'hosts/claude/host-core.mjs', 'const sdk = await import(url);'),
+  pos('hosts:sdk-import-only-in-entry', 'hosts/claude/host.mjs', "const SDK_URL = new URL('./node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs', import.meta.url);\nconst sdk = await import(other);"),
+  pos('hosts:sdk-import-only-in-entry', 'hosts/claude/host.mjs', "const SDK_URL = new URL('../node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs', import.meta.url);\nconst sdk = await import(SDK_URL.href);"),
+  pos('hosts:sdk-import-only-in-entry', 'hosts/claude/host.mjs', "const SDK_URL = new URL('./node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs', import.meta.url);\nconst sdk = await import(SDK_URL.href);\nconst u = new URL('./x.mjs', import.meta.url);"),
+  pos('hosts:sdk-import-only-in-entry', 'hosts/claude/host.mjs', "const SDK_URL = new URL('./node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs', import.meta.url);\nSDK_URL = new URL('file:///C:/x.mjs');\nawait import(SDK_URL.href);"),
+  pos('hosts:sdk-import-only-in-entry', 'hosts/claude/host.mjs', 'const sdk = await import(SDK_URL.href);'),
+  neg('hosts:sdk-import-only-in-entry', 'hosts/claude/host.mjs', "const SDK_URL = new URL('./node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs', import.meta.url);\nconst sdk = await import(SDK_URL.href);"),
+  neg('hosts:sdk-import-only-in-entry', 'hosts/claude/host-core.mjs', 'export function runHost(powers) {}'),
+  pos('hosts:setTimeout-only-in-entry', 'hosts/claude/host-core.mjs', 'setTimeout(fn, ms);'),
+  pos('hosts:setTimeout-only-in-entry', 'hosts/claude/host.mjs', 'setInterval(fn, ms);'),
+  pos('hosts:setTimeout-only-in-entry', 'hosts/claude/host.mjs', "import { setTimeout as wait } from 'node:timers/promises';"),
+  neg('hosts:setTimeout-only-in-entry', 'hosts/claude/host.mjs', 'const timer = setTimeout(fn, ms);\nclearTimeout(timer);'),
+  neg('hosts:setTimeout-only-in-entry', 'hosts/claude/host-core.mjs', 'const cancel = schedule(ms, fn);'),
+  pos('hosts:core-pure', 'hosts/claude/host-core.mjs', 'const env = process.env;'),
+  pos('hosts:core-pure', 'hosts/claude/host-core.mjs', 'const g = globalThis;'),
+  pos('hosts:core-pure', 'hosts/claude/host-core.mjs', "const fs = require('fs');"),
+  neg('hosts:core-pure', 'hosts/claude/host.mjs', 'env: { ...process.env },'),
+  neg('hosts:core-pure', 'hosts/claude/host-core.mjs', 'const { env } = powers;'),
+  pos('hosts:no-permission-bypass', 'hosts/claude/host-core.mjs', "permissionMode: 'bypassPermissions',"),
+  pos('hosts:no-permission-bypass', 'hosts/claude/host-core.mjs', "permissionMode: 'acceptEdits',"),
+  pos('hosts:no-permission-bypass', 'hosts/claude/host-core.mjs', 'allowDangerouslySkipPermissions: true,'),
+  pos('hosts:no-permission-bypass', 'hosts/claude/host-core.mjs', "permissionPromptToolName: 'mcp__x__approve',"),
+  pos('hosts:no-permission-bypass', 'hosts/claude/host.mjs', 'const flag = DANGEROUSLY;'),
+  neg('hosts:no-permission-bypass', 'hosts/claude/host-core.mjs', "permissionMode: 'default',"),
+  neg('hosts:no-permission-bypass', 'test/hosts/claude-host.test.ts', "for (const k of ['allowDangerouslySkipPermissions']) assert.ok(!(k in o));"),
+  pos('hosts:no-dynamic-code', 'hosts/claude/host-core.mjs', 'eval(text);'),
+  pos('hosts:no-dynamic-code', 'hosts/claude/host.mjs', "const f = new Function('return 1');"),
+  pos('hosts:no-dynamic-code', 'hosts/claude/host.mjs', 'const req = createRequire(import.meta.url);'),
+  pos('hosts:no-dynamic-code', 'hosts/claude/host-core.mjs', 'const reqId = Math.random();'),
+  neg('hosts:no-dynamic-code', 'hosts/claude/host-core.mjs', 'const reqId = hexOf(randomBytes(16));'),
 ];
 
 for (const c of CASES) {
@@ -717,6 +762,40 @@ test('calibration: without the narrowed eval rule the derivation reports exactly
   assert.ok(gaps(coverage(RULES.filter((r) => r.id !== 'builtin-policy'))).some((g) => g.endsWith('| src/model/x.ts')));
 });
 
+test('hosts/ meets the hosts: rules alone, the hosts: rules nothing else, and an installed SDK is never walked', () => {
+  const HOST_FILES = ['hosts/claude/host.mjs', 'hosts/claude/host-core.mjs', 'hosts/other/x.mjs'];
+  const OTHER_FILES = ['src/model/x.ts', 'shared/x.js', 'ui/app.js', 'scripts/check-real-claude.ts', 'vendor/x.ts', 'test/x.test.ts'];
+  for (const rule of RULES) {
+    const isHostRule = rule.id.startsWith('hosts:');
+    for (const f of HOST_FILES) {
+      if (!isHostRule) assert.equal(rule.applies(f), false, `${rule.id} applies to ${f}`);
+    }
+    if (isHostRule) {
+      assert.ok(HOST_FILES.some((f) => rule.applies(f)), `${rule.id} applies to no host file`);
+      for (const f of OTHER_FILES) assert.equal(rule.applies(f), false, `${rule.id} applies to ${f}`);
+    }
+  }
+  assert.ok(RULES.filter((r) => r.id.startsWith('hosts:')).length >= 7);
+  for (const rule of RULES.filter((r) => r.id.startsWith('hosts:'))) assert.equal(rule.applies('hosts/claude/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs'), false, rule.id);
+  assert.equal(isScanSkipped('hosts/claude/node_modules'), true);
+  assert.equal(isScanSkipped('hosts\\claude\\node_modules\\@anthropic-ai\\claude-agent-sdk\\sdk.mjs'), true);
+  assert.equal(isScanSkipped('hosts/claude/host.mjs'), false);
+  assert.equal(isScanSkipped('node_modules/x.js'), false, 'only a host\'s node_modules is skipped');
+  assert.equal(isScanSkipped('src/node_modules/x.ts'), false);
+  assert.ok(SCANNED_DIRS.includes('hosts'));
+});
+
+test('the host files as written pass the hosts: rules, and one changed spelling of the SDK URL fails them', () => {
+  const entry = fs.readFileSync(path.join(repo, 'hosts/claude/host.mjs'), 'utf8');
+  assert.deepEqual(scan('hosts/claude/host.mjs', entry), []);
+  const moved = entry.replace("'./node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs'", "'../../node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs'");
+  assert.notEqual(moved, entry);
+  assert.ok(scan('hosts/claude/host.mjs', moved).some((h) => h.rule === 'hosts:sdk-import-only-in-entry'));
+  const bare = entry.replace('await import(SDK_URL.href)', "await import('@anthropic-ai/claude-agent-sdk')");
+  assert.notEqual(bare, entry);
+  assert.deepEqual([...new Set(scan('hosts/claude/host.mjs', bare).map((h) => h.rule))].sort(), ['hosts:import-allowlist', 'hosts:sdk-import-only-in-entry']);
+});
+
 test('findImports reads every import form and keeps type-only imports apart', () => {
   const refs = findImports([
     "import type { A } from 'node:fs';",
@@ -742,6 +821,7 @@ function walk(dir: string, out: string[] = []): string[] {
   if (!fs.existsSync(dir)) return out;
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name);
+    if (isScanSkipped(path.relative(repo, p))) continue;
     if (e.isDirectory()) walk(p, out);
     else if (/\.(ts|js|mjs|cjs|html)$/.test(e.name)) out.push(p);
   }
@@ -752,6 +832,8 @@ test('the repository passes every rule', () => {
   const files = SCANNED_DIRS.flatMap((d) => walk(path.join(repo, d)));
   assert.ok(files.some((f) => f.endsWith('write-fence.ts')), 'the scan saw src/');
   assert.ok(files.some((f) => f.endsWith('startup-modes.test.ts')), 'the scan saw test/');
+  assert.ok(files.some((f) => f.endsWith('host-core.mjs')) && files.some((f) => f.endsWith('host.mjs')), 'the scan saw hosts/');
+  assert.ok(!files.some((f) => f.split(path.sep).includes('node_modules')), 'no installed SDK is scanned');
   const hits = files.flatMap((f) => {
     const rel = path.relative(repo, f).split(path.sep).join('/');
     return EXEMPT_SCRIPTS.includes(rel) ? [] : scan(rel, fs.readFileSync(f, 'utf8'));

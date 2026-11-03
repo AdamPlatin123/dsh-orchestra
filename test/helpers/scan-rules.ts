@@ -29,7 +29,11 @@ export const EXEMPT_SCRIPTS: readonly string[] = [
 ];
 
 // test/ is scanned for in-process-start-only-in-helper alone: every other rule's scope excludes it.
-export const SCANNED_DIRS: readonly string[] = ['src', 'shared', 'ui', 'scripts', 'vendor', 'test'];
+// hosts/ (alpha 0.2 design §6) gets the hosts: rules alone, the same way.
+export const SCANNED_DIRS: readonly string[] = ['src', 'shared', 'ui', 'scripts', 'vendor', 'test', 'hosts'];
+
+/** Repo-relative paths under SCANNED_DIRS the scan never walks: a host's SDK, which the user installs (design §1). */
+export const isScanSkipped = (rel: string): boolean => /^hosts\/[^/]+\/node_modules(?:\/|$)/.test(rel.replace(/\\/g, '/'));
 
 const exempt = (f: string) => EXEMPT_SCRIPTS.includes(f);
 /** Daemon-side code: src, shared and the scanned scripts. */
@@ -589,6 +593,56 @@ const readGateFlag: Rule = {
   find: (text) => openNotReadOnly(text),
 };
 
+// The Claude host (alpha 0.2 design §1 route B, §6 "扫描"). It runs as its own node process outside
+// orchestrad's import fence, beside an SDK the user installed, so none of the rules above reach it
+// (their scopes are src/, shared/, scripts/, ui/, vendor/ and test/) and it gets rules of its own. The
+// entry host.mjs wires powers: it alone imports builtins (a short list), loads the SDK by one absolute
+// file URL built from its own location, and holds the one timer. Every other host file is pure and
+// imports nothing. No host file names a permission bypass (r4's dangerously scan lands here).
+const hosts = (f: string) => f.startsWith('hosts/') && !isScanSkipped(f);
+const HOST_ENTRY = 'hosts/claude/host.mjs';
+const HOST_BUILTINS: readonly string[] = ['node:crypto', 'node:fs/promises'];
+const HOST_SDK_URL = "const SDK_URL = new URL('./node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs', import.meta.url);";
+
+const hostImports: Rule = {
+  id: 'hosts:import-allowlist',
+  applies: hosts,
+  find: (text, file) => findImports(text)
+    .filter((r) => !(file === HOST_ENTRY && HOST_BUILTINS.includes(r.spec)) && !(file === HOST_ENTRY && /^\.\/[\w-]+\.mjs$/.test(r.spec)))
+    .map((r) => ({ index: r.index, text: `${r.form} import of ${r.spec}` })),
+};
+
+// Any other way to reach daemon code: a path literal into src/ or shared/, wherever it stands.
+const hostNoDaemonPath = ban('hosts:no-src-or-shared', hosts, /['"`][^'"`\n]*(?:^|[\\/])(?:src|shared)[\\/][^'"`\n]*['"`]/);
+
+// The one computed import: the SDK, by the URL built from host.mjs's own location. findImports sees
+// literal specifiers only, so every `import(` is matched here.
+const hostDynamicImport: Rule = {
+  id: 'hosts:sdk-import-only-in-entry',
+  applies: hosts,
+  find(text, file) {
+    const entry = file === HOST_ENTRY;
+    const sdkAt = entry ? text.indexOf(HOST_SDK_URL) : -1;
+    const inSdkUrl = (i: number) => sdkAt >= 0 && i >= sdkAt && i < sdkAt + HOST_SDK_URL.length;
+    const out = [
+      ...matches(/\bimport\s*\(/)(text).filter((m) => !(entry && text.startsWith('import(SDK_URL.href)', m.index))),
+      ...[/\bnew\s+URL\s*\(/, /\bimport\s*\.\s*meta\b/, /\bSDK_URL\s*=/].flatMap((re) => matches(re)(text).filter((m) => !inSdkUrl(m.index))),
+    ];
+    if (entry && text.split(HOST_SDK_URL).length !== 2) out.push({ index: 0, text: 'host.mjs defines SDK_URL exactly once, as the URL of the installed sdk.mjs next to it' });
+    return out;
+  },
+};
+
+const hostTimers = ban('hosts:setTimeout-only-in-entry', hosts, /\bset(?:Interval|Immediate)\b/, /['"`]node:timers/);
+const hostTimeout: Rule = { id: 'hosts:setTimeout-only-in-entry', applies: hosts, find: (text, file) => [...hostTimers.find(text, file), ...(file === HOST_ENTRY ? [] : matches(/\bsetTimeout\b/)(text))] };
+
+const hostPure = ban('hosts:core-pure', (f) => hosts(f) && f !== HOST_ENTRY, /\bprocess\s*(?:\?\.|\.|\[)/, /\bglobalThis\b/, /\brequire\s*\(/);
+
+const hostNoBypass = ban('hosts:no-permission-bypass', hosts,
+  /bypassPermissions/, /acceptEdits/, /allowDangerouslySkipPermissions/, /permissionPrompt/, /dangerously/i);
+
+const hostNoDynamicCode = ban('hosts:no-dynamic-code', hosts, /\beval\s*\(/, /\bnew\s+Function\b/, /\bcreateRequire\b/, /\bMath\s*(?:\?\.|\.)\s*random\b/);
+
 export const RULES: readonly Rule[] = [
   builtinPolicy,
   builtinOnlyNames,
@@ -669,6 +723,13 @@ export const RULES: readonly Rule[] = [
   ban('ban:Math.random', code, /\bMath\s*(?:\?\.|\.)\s*random\b/, /\bMath\s*\[\s*(['"`])random\1\s*\]/),
   sharedSelfContained,
   noTestImport,
+  hostImports,
+  hostNoDaemonPath,
+  hostDynamicImport,
+  hostTimeout,
+  hostPure,
+  hostNoBypass,
+  hostNoDynamicCode,
 ];
 
 function lineOf(text: string, index: number): number {
