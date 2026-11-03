@@ -144,7 +144,8 @@ function render() {
   };
   dom.paintId('new-dlg', { slots: { ...describeNew(state.owned, nowDesk.harness, state.busy), ...describeDesk(state.desk, nowDesk) } });
   if (snap === null) return;
-  const waiting = snap.tally.waiting;
+  // A pending agent request waits for you too (seat): the tab says so, though the bar's 等你 filters nodes only.
+  const waiting = snap.tally.waiting + (snap.router.asks?.length ?? 0);
   dom.title(waiting > 0 ? t('page.titleWait', { n: waiting }) : t('page.title'));
 
   const fresh = buildRows(snap, { filter: state.filter, collapsed: state.collapsed, open: state.open });

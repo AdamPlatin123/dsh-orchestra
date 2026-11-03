@@ -187,6 +187,7 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     assert.equal(ask.querySelector('[data-slot=clock]')!.textContent, '剩 7:00 自动拒');
     assert.deepEqual(btns(ask).map((b) => b.textContent), [TOWER_TEXT['op.lock']]);
     assert.equal(doc.getElementById('pins')!.querySelector('[data-slot=n]')!.textContent, '6 件', 'T3: the count is the list');
+    assert.equal(doc.title, `(6) ${TOWER_TEXT['page.title']}`, 'the tab counts the pending request with the waiting nodes');
     asks = [];
     for (const id of [ID.a, ID.b, ID.c]) assert.deepEqual(btns(pinOf(id)).map((b) => b.textContent), [TOWER_TEXT['op.lock']]);
     const foreign = pins().filter((p) => p.getAttribute('data-src') !== 'orchestra' && !p.classList.contains('req'));
