@@ -37,6 +37,8 @@ test('the page boots, renders the fetched tower, and drives selection, keys, fil
   let tower: Record<string, any> = structuredClone(GOLDEN);
   /** How the next session reads fail: as a fetch past its deadline, or not at all. */
   let sessionFails: 'timeout' | null = null;
+  /** While set, session reads wait here until the test answers them, each in the order it picks. */
+  let held: { url: string; answer: (timeout: boolean) => void }[] | null = null;
   const loc = { hash: '', href: '', pathname: '/', search: '', replaced: [] as string[], replace(u: string) { this.replaced.push(u); this.hash = u.slice(u.indexOf('#')); } };
   const win = {};
   let narrow = false;
@@ -60,7 +62,15 @@ test('the page boots, renders the fetched tower, and drives selection, keys, fil
   define('localStorage', { getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); } });
   define('fetch', async (url: string) => {
     fetched.push(url);
-    if (sessionFails === 'timeout' && url.startsWith('/api/peek/session')) throw new DOMException('signal timed out', 'TimeoutError');
+    // A timeout comes back when the page's 4 s deadline has passed, not at once.
+    if (sessionFails === 'timeout' && url.startsWith('/api/peek/session')) {
+      mono += 4000;
+      throw new DOMException('signal timed out', 'TimeoutError');
+    }
+    if (held !== null && url.startsWith('/api/peek/session')) {
+      const list = held;
+      return new Promise((resolve, reject) => list.push({ url, answer: (timeout) => (timeout ? reject(new DOMException('signal timed out', 'TimeoutError')) : resolve({ status: 200, ok: true, json: async () => ({ session: { id: url.slice(-20) }, events: [{ at: '2026-11-02T10:00:00.000Z', type: 'assistant', text: 'synthetic event' }], unparsed: 0, note: null }) })) }));
+    }
     const body = url === '/api/tower' ? tower : { session: { id: url.slice(-20) }, events: [{ at: '2026-11-02T10:00:00.000Z', type: 'assistant', text: 'synthetic event' }], unparsed: 0, note: null };
     return { status: 200, ok: true, json: async () => structuredClone(body) };
   });
@@ -101,23 +111,82 @@ test('the page boots, renders the fetched tower, and drives selection, keys, fil
     assert.equal(detail.querySelectorAll('.ev').length, 0);
     const reads = () => fetched.filter((u) => u === `/api/peek/session?id=${claude.session}`).length;
     assert.equal(reads(), 1);
-    // Within POLL_MS nothing goes out again; past it, the same rev, the read goes out again and lands.
-    sessionFails = null;
-    mono += 1000;
-    intervals[1]!();
-    await flush();
-    assert.equal(reads(), 1);
-    mono += 1000;
-    intervals[1]!();
-    await flush();
+    // The answer came back 4 s after the read went out: the next goes out POLL_MS after the answer, not
+    // at once, then 4 s and 8 s after the next answers, on the same rev; one read at a time.
+    const tick = async (ms: number) => {
+      mono += ms;
+      intervals[1]!();
+      await flush();
+      await flush(); // a read that went out has its answer back
+    };
+    await tick(0);
+    await tick(1000);
+    assert.equal(reads(), 1, 'nothing at once, nor 1 s after the failed answer');
+    await tick(1000);
+    assert.equal(reads(), 2, '2 s after it');
+    await tick(3000);
     assert.equal(reads(), 2);
+    await tick(1000);
+    assert.equal(reads(), 3, '4 s after the second');
+    await tick(7000);
+    assert.equal(reads(), 3);
+    await tick(1000);
+    assert.equal(reads(), 4, '8 s after the third');
+    // Four reads in a row got no answer: no more on the same rev, and the note says so.
+    for (let i = 0; i < 6; i++) await tick(10_000);
+    assert.equal(reads(), 4);
+    assert.equal(detail.querySelector('[data-slot=evNote]')!.textContent, TOWER_TEXT['detail.err.timeout.last'].replace('{s}', '4').replace('{n}', '4'));
+    // A new rev reads it again, and it lands.
+    sessionFails = null;
+    tower.meta.rev = '00000000000000aa';
+    intervals[0]!();
+    await flush();
+    await tick(0);
+    assert.equal(reads(), 5);
     await flush();
     assert.equal(detail.querySelectorAll('.ev').length, 1);
     // A read that landed is not read again on the same rev.
-    mono += 5000;
-    intervals[1]!();
+    await tick(5000);
+    assert.equal(reads(), 5);
+
+    // Answers out of order: A (a new rev), B, then A again go out; the first A's answer, a timeout,
+    // comes back while the second is out. Only the latest read's answer lands, and no other read of A
+    // goes out meanwhile.
+    const other = GOLDEN.projects[0].nodes.find((n: any) => typeof n.session === 'string' && n.session !== claude.session);
+    assert.ok(other !== undefined, 'the golden tower has a second session');
+    const select = async (key: string) => {
+      fire(doc, 'click', { target: rows().find((r) => r.getAttribute('data-key') === key)!.querySelector('[data-slot=act]') });
+      fire(win, 'hashchange');
+      await flush();
+    };
+    const replacedBefore = loc.replaced.length;
+    const queue: { url: string; answer: (timeout: boolean) => void }[] = [];
+    held = queue;
+    tower.meta.rev = '00000000000000bb';
+    intervals[0]!();
     await flush();
-    assert.equal(reads(), 2);
+    await tick(0);
+    assert.equal(reads(), 6, 'A1');
+    await select(other.id);
+    await select(claude.id);
+    assert.equal(reads(), 7, 'A2');
+    assert.deepEqual(queue.map((q) => q.url), [`/api/peek/session?id=${claude.session}`, `/api/peek/session?id=${other.session}`, `/api/peek/session?id=${claude.session}`]);
+    queue[0]!.answer(true);
+    await flush();
+    assert.equal(detail.querySelector('[data-slot=evNote]')!.textContent, TOWER_TEXT['detail.loading'], 'A1 did not land');
+    await tick(3000);
+    await tick(3000);
+    assert.equal(reads(), 7, 'no read of A while A2 is out');
+    queue[1]!.answer(false);
+    queue[2]!.answer(false);
+    held = null;
+    await flush();
+    await flush();
+    assert.equal(detail.querySelectorAll('.ev').length, 1, 'A2 landed');
+    await tick(5000);
+    assert.equal(reads(), 7);
+    assert.equal(loc.hash, `#/n/${claude.id}`);
+    loc.replaced.splice(replacedBefore); // the two wide-screen selections above; the narrow-screen check below counts from here
 
     // Down moves the selection and the focus to the next row; Space opens its peek in place.
     fire(tree, 'keydown', { target: row, key: 'ArrowDown' });

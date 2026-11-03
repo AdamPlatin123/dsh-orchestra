@@ -8,7 +8,7 @@ import type { HarnessRoot } from '../../src/fs/harness-roots.ts';
 import type { ReadIo } from '../../src/fs/read-gate.ts';
 import { ReadGate } from '../../src/fs/read-gate.ts';
 import { VirtualClock } from '../../src/runtime/clock.ts';
-import { makeRedactor } from '../../src/store/redact.ts';
+import { makeRedactor, marker, redactText } from '../../src/store/redact.ts';
 import type { Player, StageSnapshot, WorkItem } from '../../src/sources/stage.ts';
 import { KEYS, RULES, STAGE_LIMITS, classifyInstrument, deriveLook, joinClones, makeStageBuilder, slugTail } from '../../src/sources/stage.ts';
 import { PEEK_LIMITS, eachRecord, listSessions } from '../../src/sources/peek.ts';
@@ -22,7 +22,7 @@ import { put, withTmp } from '../helpers/tmp.ts';
 const BASE = 1_793_560_000_000;
 const NOW = BASE + 30_000;
 const redactor = makeRedactor({ env: {} });
-const redact = (text: string) => redactor.redact({ text }).text;
+const redact = redactText(redactor); // as orchestrad wires it (src/runtime/working.ts)
 
 type Fx = { dir: string; roots: HarnessRoot[]; gate: ReadGate; hub: VirtualClock; opened: string[]; build: () => ReturnType<typeof makeStageBuilder> };
 
@@ -420,6 +420,28 @@ test('SEC-3: a lane named by its project directory shows the last segment only, 
   assert.equal(d.session.label, 'secretapp');
   assert.equal((JSON.stringify(s) + JSON.stringify(d)).includes('someone'), false);
   assert.deepEqual([slugTail('--G-fx-shop--'), slugTail('plain'), slugTail('---')], ['shop', 'plain', 'project']);
+});
+
+test('a lane named after a worktree shows its name; a pass phrase in the same session is still replaced', (t) => {
+  // Orchestra app, 2026-11-03: the real profile showed a project as [redacted:entropy]. The name rule
+  // applies to the cwd's last segment only (src/store/redact.ts, RedactInput.name); free text is judged
+  // by entropy alone, so a pass phrase there goes. Both made up.
+  const name = 'zen-superagent-exploration-04992d';
+  const phrase = 'correct-horse-battery-staple-42';
+  const fx = fixture(t, (dir) => {
+    const at = new Date(BASE).toISOString();
+    const cwd = path.win32.join('G:\\fx', name);
+    put(path.join(dir, 'roots', 'claude', 'projects', 'G--fx-wt', `${FX.claudeSession}.jsonl`), jl([
+      { type: 'user', sessionId: FX.claudeSession, cwd, timestamp: at, message: { role: 'user', content: 'hi' } },
+      { type: 'assistant', sessionId: FX.claudeSession, cwd, timestamp: at, message: { role: 'assistant', model: 'fx', content: [{ type: 'tool_use', id: 'toolu_fx1', name: 'TodoWrite', input: { todos: [{ content: `rotate ${phrase}`, status: 'pending', activeForm: 'x' }] } }] } },
+    ]));
+  });
+  const s = fx.build().snapshot();
+  ok(s);
+  assert.deepEqual(s.lanes.map((l) => [l.name, l.basis]), [[name, 'cwd']]);
+  const all = JSON.stringify(s);
+  assert.equal(all.includes(phrase), false, 'the pass phrase never reaches the snapshot');
+  assert.equal(all.includes(`rotate ${marker('entropy')}`), true, 'it is replaced where it stood');
 });
 
 test('SEC-4: a file the system will not open marks its source, and neither fails the snapshot nor shows its path', (t) => {

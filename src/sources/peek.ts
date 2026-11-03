@@ -70,7 +70,11 @@ export const PEEK_LIMITS = frozen({
   codexMaxDecodedBytes: 16 * 1024 * 1024,
 });
 
-export type Redact = (text: string) => string;
+/**
+ * Source text to its shown form. `as = 'name'` marks a directory's name (a lane's, from a cwd): a name
+ * made of words and short tags then passes the entropy rule (src/store/redact.ts, RedactInput.name).
+ */
+export type Redact = (text: string, as?: 'name') => string;
 
 const win = path.win32;
 const UUID = /^(?:session-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

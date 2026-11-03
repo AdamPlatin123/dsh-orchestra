@@ -22,8 +22,10 @@ import { frozen, frozenClass } from '../../shared/frozen.js';
 // let every secret through. A frozen RegExp cannot be handed to replace() with its g flag (replace
 // resets lastIndex first), so redact() uses a fresh copy of each, made from its internal pattern.
 
-// 2 (2026-11-03): the entropy rule lets path-like names through (isPathLikeName).
-export const REDACT_VERSION = 2;
+// 2 (2026-11-03): the entropy rule lets path-like names through (isPathLikeName), in every text.
+// 3 (2026-11-03): only in a text marked `name: true` (a project's directory name); every other text is
+//   judged as in 1 again, so a pass phrase or a grouped key in an event or a snippet is replaced.
+export const REDACT_VERSION = 3;
 
 /** Known values shorter than this are not replaced: they would wreck ordinary text and are no secret. */
 export const MIN_KNOWN = 8;
@@ -117,9 +119,13 @@ export function isHighEntropy(token: string): boolean {
 //
 // So a base64 or hex key, a UUID, a key with a readable prefix (`sk_live_<random>`, `xoxb-<digits>-
 // <random>`) and a run of short mixed pieces (`a1b2c-3d4e5-f6g7h-8i9j0`) are judged by entropy as
-// before. What still goes through is random text that happens to read as words: lower-case letters
-// with dashes, mostly; test/store/redact.test.ts measures how often. The format rules run first and
-// are untouched, and so are the known values.
+// before. What goes through is anything made of word-like pieces, and secrets are made that way too:
+// a pass phrase (`correct-horse-battery-staple-42`, every one), a 6-6-6 strong password of the kind a
+// keychain suggests (about half), lower-case base32 in groups of 4 (about half), lower-case letters
+// and digits in groups of 5 (about 1 in 7). So this test applies only where the text is a directory's
+// name, which redact() is told by `name: true` (src/sources/stage.ts, a lane's name from a cwd); every
+// other text (events, snippets, owned-session text, the router's titles) is judged by entropy alone.
+// The format rules run first and are untouched, and so are the known values.
 const PATH_SEPARATORS = /[-_/]+/;
 const WORD_PIECE = /^([a-z]+|[A-Z][a-z]+|[a-z]+(?:[A-Z][a-z]{2,})+|[A-Z][a-z]{2,}(?:[A-Z][a-z]{2,})+)[0-9]{0,4}$/;
 const CAPITALS_PIECE = /^[A-Z]{1,10}[0-9]{0,4}$/;
@@ -171,6 +177,11 @@ export type RedactInput = {
   text: string;
   /** The command or tool input that produced `text`, when the source knows it (a tool_use's command, say). */
   command?: string;
+  /**
+   * `text` is a directory's name (a project's, from a cwd), not free text: a name made of words and
+   * short tags passes the entropy rule (isPathLikeName). Nothing else sets it.
+   */
+  name?: boolean;
 };
 
 /** Small and structured: what a judgment record stores (plan step 3), never the text. Keys in a fixed order. */
@@ -197,6 +208,11 @@ export class RedactError extends Error {
 frozenClass(RedactError);
 
 export const marker = (rule: string) => `[redacted:${rule}]`;
+
+/** A string-to-string redact over `r`: free text by default, a directory's name with `as = 'name'` (see RedactInput.name). */
+export function redactText(r: Redactor): (text: string, as?: 'name') => string {
+  return (text, as) => r.redact(as === 'name' ? { text, name: true } : { text }).text;
+}
 
 export type Redactor = { redact(input: RedactInput): RedactResult; readonly knownCount: number };
 
@@ -242,7 +258,8 @@ export function knownSpans(values: readonly string[], text: string): [number, nu
 }
 
 function redactWith(values: readonly string[], given: RedactInput): RedactResult {
-  const input = ownFields(given, ['text', 'command'] as const);
+  const input = ownFields(given, ['text', 'command', 'name'] as const);
+  const asName = input.name === true;
   if (typeof input.text !== 'string') throw new RedactError('redact: text must be a string');
   const format: Record<string, number> = {};
   if ((typeof input.command === 'string' && isEnvCommand(input.command)) || looksLikeEnvDump(input.text)) {
@@ -260,7 +277,7 @@ function redactWith(values: readonly string[], given: RedactInput): RedactResult
   }
   let entropy = 0;
   text = text.replace(TOKEN, (t) => {
-    if (!isHighEntropy(t) || isPathLikeName(t)) return t;
+    if (!isHighEntropy(t) || (asName && isPathLikeName(t))) return t;
     entropy++;
     return marker('entropy');
   });

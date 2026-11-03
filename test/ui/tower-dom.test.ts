@@ -353,6 +353,17 @@ test('detail: a node shows its fields and basis, unknown said as unknown, its la
   }
   assert.notEqual(TOWER_TEXT['detail.err.timeout'], TOWER_TEXT['detail.err.network']);
   assert.match(t('detail.err.timeout', { s: 4 }), /4 秒内没有回复/);
+  // Once the page stops reading again on its own (ui/app.js, DETAIL_RETRIES), the body carries how many
+  // reads in a row got no answer, and the note says it waits for new data instead of "in a few seconds".
+  for (const [code, text] of [
+    ['timeout', t('detail.err.timeout.last', { s: 4, n: 4 })],
+    ['network', t('detail.err.network.last', { n: 4 })],
+  ]) {
+    ui.detail = { id: unk.session, body: { error: code, reads: 4 } };
+    render(s);
+    assert.equal(slotText(d, 'evNote'), text, code);
+    assert.match(text, /连续 4 次没读到，不再定时重读/);
+  }
   // Nothing selected: the hint, and the dock says to pick a row first.
   ui.sel = null;
   render(s);

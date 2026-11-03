@@ -273,6 +273,8 @@ export const TOWER_TEXT = frozen({
   'detail.err': '读取失败：{code}',
   'detail.err.timeout': 'Orchestra 后台 {s} 秒内没有回复，事件没读到；几秒后自动再读',
   'detail.err.network': '连不上 Orchestra 后台（连接被拒绝或中断），事件没读到；几秒后自动再读',
+  'detail.err.timeout.last': 'Orchestra 后台 {s} 秒内没有回复，事件没读到；已连续 {n} 次没读到，不再定时重读，塔表有更新时再读',
+  'detail.err.network.last': '连不上 Orchestra 后台（连接被拒绝或中断），事件没读到；已连续 {n} 次没读到，不再定时重读，塔表有更新时再读',
   'detail.err.not-found': 'Orchestra 后台在会话目录里找不到这个会话文件了',
   'detail.gone': '这一行已不在最新数据里，显示的是它消失前的样子',
   'detail.full': '打开完整记录',

@@ -16,7 +16,7 @@ import { indexOf, pathOf } from './tree.js';
  * @typedef {import('../shared/tower-contract.js').Group} Group
  * @typedef {'claude' | 'dsh' | 'codex'} Harness
  * @typedef {{ session: { id: string }, events: { at: string | null, type: string, text: string }[], unparsed: number, note: string | null }} SessionDetail
- * @typedef {{ id: string, body: SessionDetail | { error: string } | null }} Detail
+ * @typedef {{ id: string, body: SessionDetail | { error: string, reads?: number } | null }} Detail
  * @typedef {{ sel: string | null, peek: ReadonlySet<string>, flash: ReadonlyMap<string, string>, detectsError?: boolean, cwdOf?: (id: string) => string | null }} RowCtx
  */
 
@@ -414,11 +414,14 @@ export function describeDetail(snap, sel, rows, detail, ctx) {
 
 /**
  * Why a session's events were not read, in words where the code is known (T1): no answer within the page's
- * deadline, no connection, or no such file now; any other code as it came.
- * @param {string} code
+ * deadline, no connection, or no such file now; any other code as it came. `reads` is set once the page
+ * has stopped reading again on its own (ui/app.js, DETAIL_RETRIES): that many reads in a row got no answer.
+ * @param {string} code @param {number} [reads]
  */
-export function detailErr(code) {
-  if (code === 'timeout') return t('detail.err.timeout', { s: TIMEOUT_MS / 1000 });
+export function detailErr(code, reads) {
+  const last = reads !== undefined && (code === 'timeout' || code === 'network');
+  if (code === 'timeout') return t(last ? 'detail.err.timeout.last' : 'detail.err.timeout', { s: TIMEOUT_MS / 1000, n: reads ?? 0 });
+  if (last) return t('detail.err.network.last', { n: reads });
   return Object.hasOwn(TOWER_TEXT, `detail.err.${code}`) ? t(`detail.err.${code}`) : t('detail.err', { code });
 }
 
@@ -428,7 +431,7 @@ function events(session, detail, fmtIso) {
   if (session === null) return { evBox: box, evNote: { text: t('detail.noSession') }, events: { kids: [] }, full: { data: { hide: '1' } } };
   const body = detail !== null && detail.id === session ? detail.body : null;
   if (body === null) return { evBox: box, evNote: { text: t('detail.loading') }, events: { kids: [] }, full: { data: { hide: '0' } } };
-  if ('error' in body) return { evBox: box, evNote: { text: detailErr(body.error) }, events: { kids: [] }, full: { data: { hide: '0' } } };
+  if ('error' in body) return { evBox: box, evNote: { text: detailErr(body.error, body.reads) }, events: { kids: [] }, full: { data: { hide: '0' } } };
   const last = body.events.slice(-EVENTS_SHOWN).reverse();
   const notes = [];
   if (body.note !== null && Object.hasOwn(TOWER_TEXT, `note.${body.note}`)) notes.push(t(`note.${body.note}`));

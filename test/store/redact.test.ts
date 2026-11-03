@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ENTROPY_BITS, FORMAT_RULES, MIN_KNOWN, REDACT_VERSION, RedactError, entropyBits, isEnvCommand, isHighEntropy, isKnownEnvValue, isPathLikeName, isSystemVariable,
-  knownSpans, looksLikeEnvDump, makeRedactor, marker,
+  knownSpans, looksLikeEnvDump, makeRedactor, marker, redactText,
 } from '../../src/store/redact.ts';
 
 // Plan step 3, r4 §6.1 #1, invariant 14: three layers of redaction before source text reaches the
@@ -10,6 +10,8 @@ import {
 
 const NO_ENV = makeRedactor({ env: {} });
 const red = (text: string, command?: string) => NO_ENV.redact(command === undefined ? { text } : { text, command });
+/** `text` as a directory's name (RedactInput.name): what a lane's name from a cwd goes through. */
+const redName = (text: string) => NO_ENV.redact({ text, name: true });
 
 // A fixed 20-character value standing in for "random": the test must be repeatable.
 const FOO_VALUE = 'q7Lw2ZxR9vKp4MnB8tYs';
@@ -73,7 +75,9 @@ test('high entropy: a long token with letters and digits at 3.5 bits per charact
 
 // Orchestra app, 2026-11-03: the tower showed a project as `[redacted:entropy]`. Claude Code names a
 // project directory after the whole cwd, and a worktree's name reads like these; all were above 3.5 bits.
-test('path-like names: words, numbers and short tags joined by - _ / are not secrets, whatever their entropy', () => {
+// The name rule applies to a text marked as a directory's name only (name: true); free text is judged
+// by entropy alone, as in version 1.
+test('path-like names: as a directory name, words, numbers and short tags joined by - _ / pass whatever their entropy; as free text they do not', () => {
   const names = [
     'G---Projects-dsh-orchestra--claude-worktrees-zen-superagent-exploration-04992d',
     'C--Users-someone-Projects-my-app-2024',
@@ -87,10 +91,15 @@ test('path-like names: words, numbers and short tags joined by - _ / are not sec
   for (const name of names) {
     assert.ok(isHighEntropy(name), `the old rule took ${name} for a secret`);
     assert.ok(isPathLikeName(name), name);
-    const text = `cd ${name} && ls`;
-    assert.deepEqual(red(text), { text, verdict: { ver: REDACT_VERSION, dropped: null, known: 0, format: {}, entropy: 0 } }, name);
+    assert.deepEqual(redName(name), { text: name, verdict: { ver: REDACT_VERSION, dropped: null, known: 0, format: {}, entropy: 0 } }, name);
+    assert.equal(redactText(NO_ENV)(name, 'name'), name);
+    // The same token in free text (an event, a snippet) is judged by entropy alone.
+    assert.equal(red(`cd ${name} && ls`).text, `cd ${marker('entropy')} && ls`, name);
+    assert.equal(redactText(NO_ENV)(name), marker('entropy'));
   }
-  assert.equal(REDACT_VERSION, 2, 'a rule changed, so the version did (see the comment on REDACT_VERSION)');
+  assert.equal(REDACT_VERSION, 3, 'a rule changed, so the version did (see the comment on REDACT_VERSION)');
+  // `name` must be true itself: a truthy look-alike does not switch the rule.
+  assert.equal(NO_ENV.redact({ text: names[2]!, name: 'yes' as unknown as boolean }).text, marker('entropy'));
 });
 
 test('path-like names: keys, digests and ids with separators are still replaced, as are names with one random piece', () => {
@@ -110,13 +119,14 @@ test('path-like names: keys, digests and ids with separators are still replaced,
     assert.ok(isHighEntropy(s), `${s} must be a test of the entropy rule`);
     assert.equal(isPathLikeName(s), false, s);
     assert.deepEqual(red(`x ${s} y`), { text: `x ${marker('entropy')} y`, verdict: { ver: REDACT_VERSION, dropped: null, known: 0, format: {}, entropy: 1 } }, s);
+    assert.equal(redName(s).text, marker('entropy'), `as a name too: ${s}`);
   }
   for (const one of ['superagent', 'Folder2', '04992d', '', '---']) assert.equal(isPathLikeName(one), false, `one piece or none: ${JSON.stringify(one)}`);
   // The format rules run before the entropy rule and keep their markers.
   assert.equal(red(`k ${FAKE_SK} and ${'my-app-'}eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dBjftJeZ4CVPmB92K27uhbUJU1p1r`).text, `k ${marker('sk')} and my-app-${marker('jwt')}`);
 });
 
-test('path-like names: random keys almost never pass for names (a fixed-seed sweep over 4 alphabets and UUIDs)', () => {
+test('path-like names: character-random keys almost never pass for names (a fixed-seed sweep over 4 alphabets and UUIDs); grouped secrets often do, so free text never uses the rule', () => {
   // mulberry32: a fixed seed, so the sweep is the same on every run.
   let seed = 0x0c4e57a;
   const next = () => {
@@ -148,10 +158,46 @@ test('path-like names: random keys almost never pass for names (a fixed-seed swe
   }
   const uuid = sweep(() => `${draw(hex, 8)}-${draw(hex, 4)}-4${draw(hex, 3)}-${draw('89ab', 1)}${draw(hex, 3)}-${draw(hex, 12)}`);
   assert.equal(uuid.passed, 0, `UUIDs: ${uuid.passed} of ${uuid.high}`);
-  // What does pass: lower-case letters and digits with dashes, whose letter runs read as words to
+  // Lower-case letters and digits with dashes falling anywhere: their letter runs read as words to
   // this rule. Under 1 in 200 here (about 1 in 1100 in a larger run when this rule was written).
   const lower = sweep(() => draw(`${L}${D}-`, len()));
   assert.ok(lower.passed * 200 < lower.high, `lower case with dashes: ${lower.passed} of ${lower.high}`);
+
+  // Those sweeps place every dash at random. Secrets made in fixed groups are another matter, and
+  // this rule lets many of them through (2026-11-03 review): pass phrases of words and a number,
+  // every one; 6-6-6 strong passwords of the kind a keychain suggests, about half; lower-case base32
+  // in groups of 4, about half; lower-case letters and digits in groups of 5, about 1 in 7. That is
+  // why only a directory's name is judged by it (RedactInput.name): in free text every one of these
+  // that the entropy rule takes for a key is replaced.
+  const WORDS = ['correct', 'horse', 'battery', 'staple', 'uncle', 'bravely', 'sprout', 'orbit', 'tiger', 'maple', 'velvet', 'quartz', 'sunset', 'lemon', 'drift', 'harbor', 'pepper', 'canyon', 'violet', 'meadow'];
+  const pick = (xs: readonly string[] | string) => xs[Math.floor(next() * xs.length)]!;
+  const groups = (alphabet: string, n: number, size: number) => Array.from({ length: n }, () => draw(alphabet, size)).join('-');
+  const strong = () => {
+    const c = draw(L, 18).split('');
+    const at = Math.floor(next() * 18);
+    c[at] = c[at]!.toUpperCase();
+    c[(at + 1 + Math.floor(next() * 17)) % 18] = pick(D);
+    return [c.slice(0, 6), c.slice(6, 12), c.slice(12)].map((g) => g.join('')).join('-');
+  };
+  const shapes: [string, () => string, number][] = [
+    ['pass phrase', () => `${Array.from({ length: 4 + Math.floor(next() * 3) }, () => pick(WORDS)).join('-')}-${draw(D, 1 + Math.floor(next() * 4))}`, 0.9],
+    ['6-6-6 strong password', strong, 0.3],
+    ['base32 in groups of 4', () => groups(`${L}234567`, 8, 4), 0.3],
+    ['letters and digits in groups of 5', () => groups(`${L}${D}`, 5, 5), 0.05],
+  ];
+  for (const [name, make, atLeast] of shapes) {
+    let high = 0;
+    let asName = 0;
+    for (let i = 0; i < 4000; i++) {
+      const s = make();
+      if (!isHighEntropy(s)) continue;
+      high++;
+      if (redName(s).text === s) asName++;
+      assert.equal(red(`x ${s} y`).text, `x ${marker('entropy')} y`, `${name} in free text: ${s}`);
+    }
+    assert.ok(high > 1000, `${name}: ${high} of 4000 above the entropy line`);
+    assert.ok(asName >= atLeast * high, `${name}: as a name ${asName} of ${high} pass (the measured share; a drop means the rule was tightened)`);
+  }
 });
 
 test('known values: a custom variable FOO=<20 random characters> is replaced everywhere; a cwd under the user\'s profile stays as it is', () => {

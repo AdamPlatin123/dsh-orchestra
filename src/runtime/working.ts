@@ -34,7 +34,7 @@ import type { StdinEndWhy, StdinKind } from './stdin-end.ts';
 import type { PairingOutput, Profile } from './test-profile.ts';
 import { rootDenyList } from '../fs/harness-roots.ts';
 import { checkPath, pathKey } from '../fs/paths.ts';
-import { makeRedactor } from '../store/redact.ts';
+import { makeRedactor, redactText } from '../store/redact.ts';
 import { openStore } from '../store/store.ts';
 import { oneShot } from './clock.ts';
 import { checkDataDir, describeDataDir, prepareDataDir } from './data-dir.ts';
@@ -567,7 +567,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
         return { ...d, title: meta?.title ?? '' };
       };
       const server = await startPeekServer({
-        port: ctx.peekPort, gate, roots: ctx.roots, redact: (text) => redactor.redact({ text }).text, clock: ctx.clock.port(null), log, pairingCode: code, profile: ctx.profile.kind,
+        port: ctx.peekPort, gate, roots: ctx.roots, redact: redactText(redactor), clock: ctx.clock.port(null), log, pairingCode: code, profile: ctx.profile.kind,
         // alpha 0.2's owned-session base (slice design §2.7): unlock codes go where the pairing code
         // goes. Owned sessions start only when --owned set them up (owned Codex sessions; the Claude
         // host is not wired yet); otherwise new answers 409 owned-disabled and GET /api/owned says why.

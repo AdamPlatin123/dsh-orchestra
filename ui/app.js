@@ -61,8 +61,10 @@ const state = {
   /** The rows on screen. @type {Row[]} */ rows: [],
   /** @type {Detail | null} */ detail: null,
   detailRev: '',
-  /** A session read is out: a failed one goes out again only when none is. */ detailOut: false,
-  /** When the last session read went out (monotonic ms). */ detailMono: 0,
+  /** The latest session read is out: no other goes out for the same session meanwhile. */ detailOut: false,
+  /** The latest session read's number: only its answer lands (an older one's is dropped). */ detailSeq: 0,
+  /** When the latest session read's answer came back (monotonic ms). */ detailMono: 0,
+  /** Session reads in a row that got no answer (timeout, network), for the selected session. */ detailFails: 0,
   /** @type {Map<string, string>} */ lastState: new Map(),
   /** A changed row's new state, lit once until `until`. @type {Map<string, { state: string, until: number }>} */ flash: new Map(),
   /** The last render's view, to move the focus when the node page opens or closes. */ lastView: 'tower',
@@ -259,27 +261,40 @@ function answeredAt(el, id) {
   if (list) state.apprFocus = { id, el: item, list, card: item.classList.contains('card'), i: Array.from(list.children).indexOf(item) };
 }
 
+/** Session reads that got no answer go out again this many times, 2, 4 and 8 s after each failed answer. */
+const DETAIL_RETRIES = 3;
+
 /**
- * The selected node's session detail, read once per session and rev. A read that got no answer (timeout,
- * network) goes out again POLL_MS after the last one, rev or not: the note says it is read again.
+ * The selected node's session detail, read once per session and rev, one read at a time. A read that got
+ * no answer (timeout, network) goes out again POLL_MS after its answer came back, then 2x and 4x that
+ * (DETAIL_RETRIES times, the note says it is read again); after that only when the rev changes, and the
+ * note says so. A stuck orchestrad answers the tower with no new rev either, so the page stops asking.
  * @param {TowerSnapshot} snap @returns {Detail | null}
  */
 function detailFor(snap) {
   const hit = state.sel === null ? undefined : indexOf(snap).byId.get(state.sel);
   const id = hit?.node.session ?? null;
   if (id === null) return null;
-  const body = state.detail !== null && state.detail.id === id ? state.detail.body : null;
+  const same = state.detail !== null && state.detail.id === id;
+  const body = same ? /** @type {Detail} */ (state.detail).body : null;
   const unanswered = body !== null && 'error' in body && (body.error === 'timeout' || body.error === 'network');
-  const retry = unanswered && !state.detailOut && nowMono() - state.detailMono >= POLL_MS;
-  if (state.detail !== null && state.detail.id === id && state.detailRev === snap.meta.rev && !retry) return state.detail;
-  if (state.detail === null || state.detail.id !== id) state.detail = { id, body: null };
+  const waiting = unanswered && state.detailFails <= DETAIL_RETRIES;
+  const retry = waiting && nowMono() - state.detailMono >= POLL_MS * 2 ** (state.detailFails - 1);
+  if (same && (state.detailOut || (waiting ? !retry : state.detailRev === snap.meta.rev))) return state.detail;
+  if (!same) {
+    state.detail = { id, body: null };
+    state.detailFails = 0;
+  }
   state.detailRev = snap.meta.rev;
   state.detailOut = true;
-  state.detailMono = nowMono();
+  const seq = ++state.detailSeq;
   void getSession(id).then((a) => {
-    if (state.detail === null || state.detail.id !== id) return;
+    if (seq !== state.detailSeq) return;
     state.detailOut = false;
-    state.detail = { id, body: a.ok ? /** @type {any} */ (a.body) : { error: a.code } };
+    state.detailMono = nowMono();
+    const failed = !a.ok && (a.code === 'timeout' || a.code === 'network');
+    state.detailFails = failed ? state.detailFails + 1 : 0;
+    state.detail = { id, body: a.ok ? /** @type {any} */ (a.body) : state.detailFails > DETAIL_RETRIES ? { error: a.code, reads: state.detailFails } : { error: a.code } };
     schedule();
   });
   return state.detail;

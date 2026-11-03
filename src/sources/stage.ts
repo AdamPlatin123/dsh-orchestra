@@ -339,7 +339,9 @@ function emptyDigest(harness: Harness, note: PeekNote | null): Digest {
 
 function laneOf(cwd: string, redact: Redact): { key: string; name: string } {
   const norm = win.normalize(cwd).replace(/[\\/]+$/, '').toLowerCase();
-  return { key: key(`cwd:${norm}`), name: text120(win.basename(win.normalize(cwd)) || 'root', redact) };
+  // The directory's name only is judged as a name (redact.ts, RedactInput.name): a worktree reads like
+  // zen-superagent-exploration-04992d, which the entropy rule alone takes for a key.
+  return { key: key(`cwd:${norm}`), name: text120(win.basename(win.normalize(cwd)) || 'root', (t) => redact(t, 'name')) };
 }
 
 /**
