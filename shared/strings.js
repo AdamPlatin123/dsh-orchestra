@@ -417,7 +417,7 @@ export const TOWER_TEXT = frozen({
   'new.cwdLabel': '工作目录',
   'new.cwdWork': 'Orchestra 自建的工作目录（默认）',
   'new.cwdWorkNote': '会话在 Orchestra 自建的工作目录里跑：每个会话一个新目录，碰不到你的项目',
-  'new.cwdRootCodex': '会话在 {d} 里跑：经你批准，它能改这个目录里的文件。这里只在 Codex 的沙箱只读时启动（不是只读就停下）；实测（codex 0.165.0）它写文件、跑命令会先来问你，没来问就跑的，对话流里会标出来；它读这个目录里的文件会不会先问你，未知。改 .claude、.git/hooks、package.json 这类会被别的程序执行的文件，审批卡标为高风险；碰这个目录外的地方也是',
+  'new.cwdRootCodex': '会话在 {d} 里跑：经你批准，它能改这个目录里的文件。这里只在 Codex 的沙箱只读时启动（不是只读就停下）；实测（codex 0.165.0）它写文件、跑命令会先来问你，没来问就跑的，对话流里会标出来；实测一次（codex 0.165.0，on-request 审批策略）它用 Get-Content 读文件、列目录也先来问你，别的读法没测。改 .claude、.git/hooks、package.json 这类会被别的程序执行的文件，审批卡标为高风险；碰这个目录外的地方也是',
   'new.cwdRootClaude': '会话在 {d} 里跑：它读、查找这个目录里的文件不问你；写文件、跑命令每次先来问你，经你批准它能改这里的文件；改 .claude、.git/hooks、package.json 这类会被别的程序执行的文件，审批卡标为高风险；碰这个目录外的地方也是',
   'new.sandbox': 'Codex 在 Windows 上的沙箱只能只读：它每次写文件、跑命令，都会先来问你',
   'new.go': '派出',
@@ -603,7 +603,10 @@ export const TOWER_TEXT = frozen({
   'req.whoNone': '未知',
   'req.lockedWhat': '任务内容和请求方解锁后可见',
   'req.cwd': '它想在 {cwd} 干活；派出后仍在 Orchestra 自建的工作目录里跑（{why}）',
-  'req.cwdRoot': '它想在 {cwd} 干活：这在你放行的项目根里，派出后在 {run} 里跑，经你批准它能改那里的文件。实测（codex 0.165.0）它写文件、跑命令会先来问你；它读那里的文件会不会先问你，未知；它最后的回复会交给发请求的 DSH 会话',
+  'req.cwdRoot': '它想在 {cwd} 干活：这在你放行的项目根里，派出后在 {run} 里跑，经你批准它能改那里的文件。请求来自 DSH 会话，派出的会话按来源不可信处理：Codex 用 untrusted 审批策略启动（回的不是它就停下）；实测（codex 0.165.0，一次）它用 Get-Content 读文件、列目录、写文件都先来问你，别的读法没测，没来问就跑的，对话流里会标出来；它最后的回复会交给发请求的 DSH 会话',
+  // A request whose session runs in Orchestra's own work dir: tainted all the same (r4 §8.5: an unbound sender), per harness.
+  'req.untrustedCodex': '请求来自 DSH 会话，派出的会话按来源不可信处理：Codex 用 untrusted 审批策略启动（回的不是它就停下）；实测（codex 0.165.0，一次）它用 Get-Content 读文件、列目录、写文件都先来问你，别的读法没测，没来问就跑的，对话流里会标出来；它最后的回复会交给发请求的 DSH 会话',
+  'req.untrustedClaude': '请求来自 DSH 会话，派出的会话按来源不可信处理：它读、查找、写文件、跑命令每次都先来问你；它最后的回复会交给发请求的 DSH 会话',
   'req.cwdRootClaude': '它想在 {cwd} 干活：这在你放行的项目根里，派出后在 {run} 里跑。请求来自 DSH 会话，派出的会话按来源不可信处理：它读、查找、写文件、跑命令每次都先来问你；它最后的回复会交给发请求的 DSH 会话',
   // Why a request's session would run in Orchestra's own work dir (shared/owned-contract.js runInWhy).
   'cwdwhy.no-roots': '启动时没有放行任何项目根（--project-root）',

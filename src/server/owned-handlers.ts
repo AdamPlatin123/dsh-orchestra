@@ -61,8 +61,9 @@ import { makeOwnedHandlers } from './owned.ts';
 //                                       (dispatched, naming the RouteDecision) joins the batch. It runs where the
 //                                       card said: the request's runIn (its cwd, inside a project root), else
 //                                       its own ORCHESTRA_HOME\work\<id>; the spawn gate holds either to its table.
-//                                       In a project root its Claude session is tainted (r4 §8.5: the request came
-//                                       from an unbound sender, so every tool call asks, reads in cwd too).
+//                                       Its session is tainted wherever it runs (r4 §8.5: the request came from an
+//                                       unbound sender): Claude asks for every tool call, reads in cwd too; Codex
+//                                       starts with the untrusted approval policy, echoed or policy-mismatch.
 //   owned-new in a project root         (the dialog's root or a request's runIn) adds an `owned-cwd` record to the
 //                                       batch: the sha256 of the cwd and its root, and the requestId if any.
 //   GET  /api/owned                     OwnedList (shared/owned-contract.js).
@@ -275,9 +276,11 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     const title = kept === null || desk === null || typeof body.model !== 'string' ? null : desk.titleFor(kept, harness, body.model);
     // The project root the cwd lies in (the journal names it); a cwd outside every root never comes this far.
     const root = cwd === undefined ? null : (deps.projectRoots ?? []).find((r) => isWithin(cwd!, r)) ?? null;
-    // r4 §8.5: a seat request comes from an unbound sender (a DSH session asked; the person only dispatched it).
-    // In a project root its Claude session asks for every tool call, reads in cwd too (host-core.mjs judge).
-    const tainted = asked !== null && cwd !== undefined && harness === 'claude';
+    // r4 §8.5: a seat request comes from an unbound sender (a DSH session asked; the person only dispatched it),
+    // so every turn of its session is tainted, wherever it runs (a project root or its own work dir): a Claude
+    // session asks for every tool call, reads in cwd too (host-core.mjs judge); a Codex one starts its thread
+    // with the untrusted approval policy and ends as policy-mismatch unless thread/start echoes it.
+    const tainted = asked !== null;
     const made = manager.create({
       text, uuid: call.actionId!, ...(typeof body.model === 'string' ? { model: body.model } : {}), ...(title === null ? {} : { title }), ...(cwd === undefined ? {} : { cwd }),
       ...(tainted ? { tainted: true } : {}),
@@ -289,7 +292,7 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
       // (model-refused: owned-disabled for that harness and model). What is left is the child or its dirs.
       return refuse(made.reason === 'model-refused' ? 'owned-disabled' : 'spawn-failed');
     }
-    log.info('owned-started', { harness, ownedId: made.ownedId, model: made.session.model, ...(cwd === undefined ? {} : { projectRoot: true, cwd, tainted }) });
+    log.info('owned-started', { harness, ownedId: made.ownedId, model: made.session.model, tainted, ...(cwd === undefined ? {} : { projectRoot: true, cwd }) });
     // The session runs the request from now on (bound in the same turn as the claim: no second dispatch gets it).
     if (asked !== null) {
       requests!.bind(asked.requestId, made.ownedId);

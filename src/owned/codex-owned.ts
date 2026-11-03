@@ -143,8 +143,10 @@ export class CodexOwned {
    * A new session; `text` (with the uuid of its human record) is its first message, `title` (the dispatch desk's) names it in place of that message's first line.
    * `cwd`: a project root (or a folder in one) the composition root let through (--project-root); absent, the session gets its own ORCHESTRA_HOME\work\<id>.
    * The spawn gate holds either to its cwd table again. The model is checked before anything is made.
+   * `tainted` (r4 §8.5): the first message comes from an unbound sender (a seat request): the thread starts with
+   * the untrusted approval policy, and a thread/start reply that does not echo it ends the session as policy-mismatch.
    */
-  create(req: { model?: string; text?: string; uuid?: string; title?: string; cwd?: string } = {}): NewOwned {
+  create(req: { model?: string; text?: string; uuid?: string; title?: string; cwd?: string; tainted?: boolean } = {}): NewOwned {
     const model = req.model ?? DEFAULT_CODEX_MODEL;
     if (!isOwnedModel(model)) return { ok: false, reason: 'model-refused', detail: String(model) };
     if (this.full()) return { ok: false, reason: 'owned-limit', detail: `${this.maxActive} running` };
@@ -180,6 +182,7 @@ export class CodexOwned {
       ...(o.judge !== undefined ? { judge: o.judge } : {}),
       // A cwd handed in is a project root (or a folder in one): only the read-only sandbox is taken there.
       ...(req.cwd !== undefined ? { projectRoot: true } : {}),
+      ...(req.tainted === true ? { tainted: true } : {}),
     });
     if (!started.ok) return started;
     mine = started.session;

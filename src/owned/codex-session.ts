@@ -21,7 +21,8 @@ const win = path.win32;
 //
 //   start:     initialize {clientInfo} -> notification initialized -> thread/start {cwd, model,
 //              approvalPolicy:'on-request', sandbox:'workspace-write'}. The reply must echo on-request and
-//              a workspace-write (or read-only) sandbox, else the session ends as policy-mismatch.
+//              a workspace-write (or read-only) sandbox, else the session ends as policy-mismatch. A tainted
+//              session (a seat request, r4 §8.5) asks for 'untrusted' instead, and its reply must echo that.
 //   a message: turn/start while no turn runs; turn/steer {expectedTurnId} while one does; while the
 //              thread is still starting, or a turn/start is in flight, it waits here (at most 5).
 //   stop:      every open approval of the session is declined first, the waiting messages withdrawn,
@@ -167,7 +168,17 @@ export type CodexSessionOptions = {
   judge?: PathJudge;
   /** cwd is a project root or a folder in one (--project-root): thread/start must answer the read-only sandbox, else policy-mismatch. */
   projectRoot?: boolean;
+  /**
+   * r4 §8.5 来源追踪: the session's turns come from an unbound sender (a seat request: a DSH session asked, a
+   * person only dispatched it). thread/start asks for the untrusted approval policy and its reply must echo
+   * it, else policy-mismatch. The thread keeps it: turn/start names no approvalPolicy (its schema's field
+   * overrides "this turn and subsequent turns" only when given). Absent: on-request, as before.
+   */
+  tainted?: boolean;
 };
+
+/** The approval policy thread/start asks for, and its reply must echo (codex-cli 0.165.0 AskForApproval: untrusted | on-request | never | {granular}). */
+export const codexApprovalPolicy = (tainted: boolean): 'untrusted' | 'on-request' => (tainted ? 'untrusted' : 'on-request');
 
 export type SendResult = { ok: true; via: 'turn/start' | 'turn/steer' | 'queued' } | { ok: false; reason: 'ended' | 'queue-full' };
 
@@ -872,7 +883,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
         return;
       }
       rpc.notify('initialized');
-      const r = obj(await rpc.request('thread/start', { cwd, model, approvalPolicy: 'on-request', sandbox: 'workspace-write' }, D.startMs));
+      const policy = codexApprovalPolicy(opts.tainted === true);
+      const r = obj(await rpc.request('thread/start', { cwd, model, approvalPolicy: policy, sandbox: 'workspace-write' }, D.startMs));
       if (terminal()) return;
       const tid = id(obj(r.thread).id);
       const sandbox = str(obj(r.sandbox).type);
@@ -880,7 +892,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
         fail('start-failed', 'thread/start returned no thread id');
         return;
       }
-      if (r.approvalPolicy !== 'on-request' || (sandbox !== 'workspaceWrite' && sandbox !== 'readOnly')) {
+      if (r.approvalPolicy !== policy || (sandbox !== 'workspaceWrite' && sandbox !== 'readOnly')) {
         fail('policy-mismatch', `approvalPolicy ${JSON.stringify(r.approvalPolicy)}, sandbox ${String(sandbox)}`);
         return;
       }

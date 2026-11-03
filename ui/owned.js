@@ -183,8 +183,12 @@ export function requestModel(r) {
 /** Who asked, as the card says it: the requester's own id, or 未知 when it named none. */
 const reqWho = (r) => (typeof r.requester === 'string' && r.requester.startsWith('dsh:') ? r.requester.slice(4) : t('req.whoNone'));
 
-/** Where a request's session runs, as its card says it: in its cwd (inside a project root; per harness, what it may do there unasked), else Orchestra's own work dir and why. */
-const reqWhere = (r) => (typeof r.runIn === 'string' ? t(r.harness === 'claude' ? 'req.cwdRootClaude' : 'req.cwdRoot', { cwd: r.cwd, run: r.runIn }) : t('req.cwd', { cwd: r.cwd, why: tk('cwdwhy', r.runInWhy ?? 'no-roots', 'cwdwhy.other') }));
+/**
+ * Where a request's session runs, as its card says it: in its cwd (inside a project root; per harness, what it may do there unasked), else
+ * Orchestra's own work dir and why. Either way the session is held as untrusted (r4 §8.5: a DSH session asked), which the card says.
+ */
+const reqWhere = (r) => (typeof r.runIn === 'string' ? t(r.harness === 'claude' ? 'req.cwdRootClaude' : 'req.cwdRoot', { cwd: r.cwd, run: r.runIn })
+  : join([t('req.cwd', { cwd: r.cwd, why: tk('cwdwhy', r.runInWhy ?? 'no-roots', 'cwdwhy.other') }), t(r.harness === 'claude' ? 'req.untrustedClaude' : 'req.untrustedCodex')], 'sep.notes'));
 
 /** Where a session works, for its page: a project root or Orchestra's own dir; unknown from before a restart (T1); nothing from a list without the field. */
 export const cwdText = (o) => (o?.cwd === undefined ? '' : o.cwd === null ? t('own.cwdUnknown') : t(o.cwd.kind === 'project-root' ? 'own.cwdRoot' : 'own.cwdWork', { d: o.cwd.path }));

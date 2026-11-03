@@ -60,9 +60,17 @@ test('a request card says where its session runs: in its cwd inside a root, else
   assert.ok(claude.includes(fill('req.cwdRootClaude', { cwd: `${ROOT}\\web`, run: `${ROOT}\\web` })), claude);
   assert.ok(claude.includes('读、查找、写文件、跑命令每次都先来问你') && claude.includes('回复会交给发请求的 DSH 会话'));
   assert.ok(!claude.includes(fill('req.cwdRoot', { cwd: `${ROOT}\\web`, run: `${ROOT}\\web` })));
-  // Codex: what was measured, and that whether a read asks is unknown (T1).
+  // Codex (r4 §8.5): started with the untrusted approval policy; what was measured (one run: Get-Content, listing,
+  // writing each asked), that other ways of reading were not, and that its last reply goes back to the requester.
   const codex = meta({ runIn: `${ROOT}\\web`, runInWhy: null });
-  assert.ok(codex.includes('未知') && codex.includes('回复会交给发请求的 DSH 会话'));
+  assert.ok(codex.includes('untrusted') && codex.includes('Get-Content') && codex.includes('别的读法没测') && codex.includes('回复会交给发请求的 DSH 会话'), codex);
+  assert.ok(!codex.includes('会不会先问你，未知'), 'measured now');
+  // In Orchestra's own work dir the session is untrusted all the same (r4 §8.5 names no cwd), per harness.
+  const workCodex = meta({ runIn: null, runInWhy: 'outside-roots' });
+  assert.ok(workCodex.includes(TOWER_TEXT['req.untrustedCodex']!) && !workCodex.includes(TOWER_TEXT['req.untrustedClaude']!), workCodex);
+  const workClaude = meta({ harness: 'claude', runIn: null, runInWhy: 'no-roots' });
+  assert.ok(workClaude.includes(TOWER_TEXT['req.untrustedClaude']!) && !workClaude.includes(TOWER_TEXT['req.untrustedCodex']!), workClaude);
+  for (const m of [claude, codex, workCodex, workClaude]) assert.equal(m.split('按来源不可信处理').length, 2, `said once: ${m}`);
   // A directory the read gate would not stat: unknown whether it is one, never "it does not exist" (T1).
   assert.ok(meta({ runIn: null, runInWhy: 'stat-refused' }).includes(TOWER_TEXT['cwdwhy.stat-refused']!));
   assert.ok(TOWER_TEXT['cwdwhy.stat-refused']!.includes('未知'));

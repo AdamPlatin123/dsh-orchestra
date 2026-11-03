@@ -200,6 +200,16 @@
 - 计划第 2 节原写「真实 profile 下允许用户在设置里登记的项目根」：这次是启动参数，没有设置页；改根要重启 orchestrad。
 - `orchestra.cmd` 没有参数说明，没改；`docs/quickstart.md` 留给另一个 agent 补。
 
+**seat 会话按来源不可信启动（r4 §8.5，2026-11-03，提交 "orchestra app: seat sessions start untrusted"）**：
+- 依据：r4 §8.5「来源追踪」写，一个回合的来源链里有 `external` 或 `unbound` 发送者就是 tainted，条件里没有 cwd；同节「未绑定的发送者标为 unbound」写，装进非自有 harness 的 opt-in shim 以 unbound 身份发送，seat 正是装进 DSH 的 opt-in bundle。tainted 回合期间：Claude 乐章 `canUseTool` 一律询问；Codex 用 untrusted 审批策略。所以 seat 派出的会话不论在项目根还是自建工作目录里都按 tainted 启动（原先只覆盖「项目根里的 Claude」）。派活台由人直接开的会话不变。
+- 和 r4 字面的差别：r4 写 Codex「在 `turn/start` 时」用 untrusted。这里在 `thread/start` 时请求，并校验应答回显；`turn/start` 不带 `approvalPolicy`（codex 0.165.0 生成的 schema 里，`turn/start` 的这个字段只在给出时覆盖「本回合及之后」），线程保持 untrusted。实测那一回合的命令确实每条都先问。
+- 代码：`src/server/owned-handlers.ts`（`tainted = asked !== null`，日志 `owned-started` 总带 `tainted`）；`src/owned/codex-owned.ts` 把 `tainted` 传下去；`src/owned/codex-session.ts` `codexApprovalPolicy`：tainted 请求 `untrusted`，否则 `on-request`，应答回显不一致就以 policy-mismatch 结束（沿用原来的校验；项目根只收 `readOnly` 沙箱的规则照旧叠加）。Claude 侧沿用 e850a20 的 host tainted。
+- schema（`codex app-server generate-json-schema`，codex-cli 0.165.0，本地生成）：`AskForApproval` = `"untrusted" | "on-request" | "never"` 或 `{granular:{…}}`；`thread/start` 的应答必有 `approvalPolicy`。
+- 探针实测（2026-11-03，本机，一次，直连 codex.exe app-server，私有 CODEX_HOME 在会话临时目录，经 magpie；不经 orchestrad）：`thread/start {approvalPolicy:'untrusted'}` 回显 `"untrusted"`，沙箱请求 `read-only` 或 `workspace-write` 都回 `readOnly`；提示让它读 `notes.txt`、列目录、写 `out.txt`，`Get-Content`、`Get-ChildItem -Force`、`Set-Content` 三条命令都先发了审批请求（3/3），没有没问就跑的。对照：`on-request` + `read-only` 同样提示，三条也都先问（一次）。
+- 卡片文案（`shared/strings.js`、`ui/owned.js`）：seat→Codex 项目根卡片把「读那里的文件会不会先问你，未知」改成实测口径（untrusted 启动、一次实测里 Get-Content 读、列目录、写都先问、别的读法没测）；自建工作目录的 seat 卡片多一句「按来源不可信处理」（Codex / Claude 各一句）；派活台的 Codex 项目根说明按 on-request 那次对照实测改。
+- 实验室 seat 冒烟（`seat-smoke.ts complete`，测试 profile orchestrad + 隔离 `DSH_HOME` 的 DSH headless，一次）：卡片 codex、`runIn` 为空（`no-roots`，自建工作目录），派出 200；请求 dispatched → running → done；会话 starting → running → idle；审批卡 1 张（command / shell，脚本代人允许）；对话流里 ran-unasked 0 条；`hello.txt` 内容 hi；日志 `owned-started` 带 `tainted: true`，没有 policy-mismatch；结束后 orchestrad stdin-eof 退出码 0，令牌文件已删，残留 0。冒烟前后 `~/.dsh` 快照对 `dsh-before.csv` 0 差异。
+- 没做、未验证的：seat→Claude（项目根或自建目录）这次没有 live 跑，只有单元测试；seat→Codex 在项目根里没有 live 跑；其他读法（`rg`、`type`、`cmd /c` 等）会不会先问未测，实测都只一次；会话页和契约里没有「这个会话按不可信处理」的字段，只有请求卡片写了；真实 profile 未验证（代-2）。
+
 ### 5. 界面：塔表
 - 首页 `/`：顶栏（计数即筛选、刹车）、「等你」钉栏（按剩余时间）、跨项目树表（你 → agent → subagent，同一行格式，缩进表层级，子树小框 `子·错·等`）、右栏详情、底部「发给 → X」输入框和停止键。
 - agent 页 `/agent/<id>`：左这一枝、中对话、右选中的 subagent。

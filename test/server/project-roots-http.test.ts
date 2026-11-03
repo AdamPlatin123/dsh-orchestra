@@ -166,7 +166,7 @@ test('cwdEntry: a session in a root (or below it) is project-root, one elsewhere
 /** The journal's records of one kind, bodies only. */
 const recordsOf = (fx: Fx, kind: string): any[] => fs.readFileSync(fx.journal, 'utf8').split('\n').filter((l) => l !== '').map((l) => JSON.parse(l)).filter((l) => l.kind === kind).map((l) => l.body);
 
-test('seat in a project root: a Claude session for the request is tainted (r4 §8.5); the dispatch dialog\'s own root and a request in the work dir are not, nor a Codex one', async (t) => {
+test('seat: every session a request starts is tainted (r4 §8.5: an unbound sender), Claude or Codex, in a project root or the work dir; the dispatch dialog\'s own sessions are not', async (t) => {
   const fx = await fixture(t, [ROOT]);
   const h = await unlocked(fx);
   const ask = (sessionId: string, harness: 'codex' | 'claude', runIn: string | null) => {
@@ -178,9 +178,13 @@ test('seat in a project root: a Claude session for the request is tainted (r4 §
   assert.equal((await go({ harness: 'claude', requestId: ask('s1', 'claude', `${ROOT}\\web`) })).status, 200);
   assert.equal((await go({ harness: 'claude', requestId: ask('s2', 'claude', null) })).status, 200);
   assert.equal((await go({ harness: 'codex', requestId: ask('s3', 'codex', `${ROOT}\\web`) })).status, 200);
+  assert.equal((await go({ harness: 'codex', requestId: ask('s4', 'codex', null) })).status, 200);
   assert.equal((await go({ harness: 'claude', root: ROOT })).status, 200);
+  assert.equal((await go({ harness: 'codex', root: ROOT })).status, 200);
+  assert.equal((await go({ harness: 'codex' })).status, 200);
   assert.deepEqual(fx.made.map((m) => [m.harness ?? 'codex', m.cwd ?? null, m.tainted ?? false]), [
-    ['claude', `${ROOT}\\web`, true], ['claude', null, false], ['codex', `${ROOT}\\web`, false], ['claude', ROOT, false],
+    ['claude', `${ROOT}\\web`, true], ['claude', null, true], ['codex', `${ROOT}\\web`, true], ['codex', null, true],
+    ['claude', ROOT, false], ['codex', ROOT, false], ['codex', null, false],
   ]);
 });
 
