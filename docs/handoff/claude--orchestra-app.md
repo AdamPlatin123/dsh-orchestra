@@ -5,7 +5,7 @@
 - When: 2026-11-03（seat 复核修正之后；本机 shell 报的时区是 GMT）
 - Machine: 550W备份1号机
 - Branch: claude/orchestra-app（从 `claude/alpha-0.2-interactive` 的 76807ec 切出）
-- Commit: 93f282d（seat 复核修正；之前依次是 a023506、ccbe1d1、64154bc 请求口、1a70a91 seat bundle、e959aa1）
+- Commit: 4d7387e（标签页标题计入待处理的 agent 请求；之前依次是 b84c0b4 交接、93f282d seat 复核修正、e959aa1、1a70a91 seat bundle、64154bc 请求口、ccbe1d1、a023506）
 - Pushed: no（这一轮的编排要求不 push；远端还没有这条分支。本分支 76807ec 之后的提交只在这台机器上）
 - Uncommitted on that machine: `.claude/launch.json`（未跟踪，指向某次会话临时目录里的预览脚本，别的机器上没用，不要提交）。主检出目录里 r4 规格有用户本人的未提交改动，见 Do not touch。
 
@@ -13,6 +13,11 @@
 用户 2026-11-02 的目标：把 Orchestra 做到「应用整体可用」。一个守护进程 orchestrad，首页是塔表（你 → agent → subagent 的跨项目树），能只读观察 Claude、DSH、Codex 三家的会话；能经本机模型网关 magpie（`http://127.0.0.1:3425`，不要密钥）开 Orchestra 自己拥有的 Codex 和 Claude 会话（下称「自有会话」），在页面上对话、审批、停下；有一个派活台，先跑规则、再问路由模型，给出「派给谁」的建议卡片，由人点「派出」。总计划见 `docs/plans/2026-11-02-orchestra-app-plan.md`，给主人看的上手指南见 `docs/quickstart.md`。
 
 ## Done（已完成且已验证）
+- seat 真实浏览器联调（4d7387e 之前的 b84c0b4 上跑，再加 4d7387e 的标题修正）— 测试 profile `--owned --agent-port`，隔离 DSH_HOME 的 DSH web（seat-dev，3199），内置浏览器手点：
+  - 派出路径：DSH web 里调 `subagent_codex_governed`，没有弹 DSH 自己的审批（之前记为未知，现已确认）；配对页未解锁时是占位卡「以 DSH 名义请求派 Codex：任务内容和请求方解锁后可见 · 剩 9:45 自动拒」；解锁后是完整卡（任务原文、「自称来自 DSH 会话 …（未核实）」、模型 codex/gpt-6.1-sol）；点「派出」→ Codex 一次 shell 审批（高风险，按住 1 秒允许）→ hello.txt 写进 `work\<ownedId>`；会话页写「请求现在第一回合已返回，结果已从请求口发给请求方（对方是否读到：未知；不是对工作的判定）」；DSH 回答里原样引用了 Codex 的输出。
+  - 拒绝路径：第二个请求点「拒绝」，DSH 收到「没有派出：人在 Orchestra 配对页上点了『拒绝』…（r4 D8…）」，模型照转、没重试。
+  - 发现并修了一处：请求在等人时标签页标题不带「(n)」。4d7387e 让标题把 `router.asks` 也算进去；顶栏「等你」按钮仍只数树里的节点（它是筛选，T3）。新断言不带修复时失败（(5) ≠ (6)）。全量 1480 条，1477 过，0 失败。
+  - 收尾：DSH 和 orchestrad 都停了；`%TEMP%\orchestra-test-seat` 已删；`~/.dsh` 109387 行，0 差异。orchestrad 是被强停的（不是 stdin EOF），所以令牌文件当时没删，随测试目录一起删了。
 - seat 复核修正（93f282d，本会话）— 验证：
   - 全量单元测试 `node --test "test/**/*.test.ts"`：1480 条，1477 过，0 失败，1 跳过（目录链接 EPERM，同下），2 todo。
   - seat 单元测试 `node --test integrations/dsh-seat/test/provider.test.mjs`：21 条全过；仓库侧 `test/integrations/dsh-seat.test.ts` 再加 2 条（bundle 重述的 HMAC 与 orchestrad 一致；bundle 的管道客户端对真请求口提交、超时撤回）全过。
@@ -38,10 +43,10 @@
   - `--brake` 两种、`claude --daemon-stop` 这次没有重跑。
 
 ## Unverified（做了但没验证，或验证没过）
-- seat：Claude 后端（`subagent_claude_governed`）没联调；DSH web profile 下人在浏览器里点「派出」没跑完；请求卡、锁定时的占位卡、请求通知只有假 DOM 测试，没在真实浏览器里看过。
+- seat：Claude 后端（`subagent_claude_governed`）没联调；浏览器后台时的请求通知没在真实浏览器里看过；orchestrad 自己的 10 分钟到期（expired）没实跑；4d7387e 的标题计数只有假 DOM 测试（浏览器联调时跑的是改动前启动的 orchestrad）。
 - seat：抢管道的冒名实例（复核者用 .NET 复现过）在新的 HMAC 下会被 seat 识破（proof-bad），这一点只有单元测试（假服务器不带证明或用别的令牌），没有用真的第二个管道实例复现。读到令牌文件又抢到管道的进程仍能冒充 orchestrad，属已记残余。
 - seat：Codex 沙箱里的进程能不能连上请求口管道，没验证（复核者也没验证）。
-- seat：冒烟各模式只跑了一次；冒烟留下的测试目录 `%TEMP%\orchestra-test-seat` 没删（下次冒烟要求它不存在）。
+- seat：冒烟各模式只跑了一次（最终核查又跑了一次 complete、expiry、withdraw，都过）。
 
 - **真实 profile 下的启动检查没做**：编排要求让实现会话在真实 profile 下用 `orchestra.cmd --owned` 启动、经 API 配对、开一个自有 Codex 会话。没做，原因有两条：M0 计划 §2 的「agent 只能起测试 profile」和代-2（真实 profile 只由用户在可见控制台里启动、由用户配对）；代码的守卫 `decidePairingOutput` 在 stdin 和 stdout 不都是控制台时不打印配对码，脚本启动拿不到码。没有绕过。只查了：本会话 shell 是 Medium 完整性级别（不是管理员）；本会话环境里没设 `ORCHESTRA_HOME`，按 `src/runtime/env.ts` 真实数据目录是用户目录下的 `.orchestra`。真实 profile 能不能启动、塔表有多少项目和节点、自有会话在真实 profile 下能不能起停，全部未知。
 - 被 Node 写的启动器直接启动、没有 detached 时：父进程被杀后 orchestrad 也没了，但日志里没有 stop-asked 和 stopped，说明是被父进程的 libuv Job 一起强行结束的（实测一次），自己的停止顺序没跑。这时自有会话的 Job 按 S4 用例 a 的机制应该也跟着关，但没有在会话还在跑时实测过。
@@ -58,9 +63,9 @@
 - 没做的：计划阶段 7（DSH 只读插件）；0.2 设计的导入（导入 Claude 会话、DSH 快照，`ImportStager` 没有调用方）；r4 §9.2 的 router-core（硬过滤、Wilson 证据门、滞回、影子模式）；M0 的全局刹车 `/api/brake/plan`、`/api/brake/execute` 仍没有处理函数；`package.json` 的 `build:procguard` 指向的 `scripts/build-procguard.ts` 不存在。
 
 ## Next（按优先级，每条可独立执行）
-1. seat 冒烟收尾 — 删掉 `%TEMP%\orchestra-test-seat`（冒烟脚本要求它不存在），再按实验室 HOW-TO-RUN 的第 3 节（实验室目录和 seat-smoke.ts 只在这台机器的会话临时目录里，不在仓库；别的机器上要先按 `integrations/dsh-seat/README.md` 搭隔离的 DSH_HOME）跑一次 `seat-smoke.ts complete expiry withdraw`。验收：报告 exit 0，complete 的 requestAfter.state 为 done，withdraw 的 sessionAfter.endReason 为 requester-withdrew，leftovers.leftover 为 0。
+1. seat 冒烟复跑（可选）— `%TEMP%\orchestra-test-seat` 现在不存在。按实验室 HOW-TO-RUN 的第 3 节（实验室目录和 seat-smoke.ts 只在这台机器的会话临时目录里，不在仓库；别的机器上要先按 `integrations/dsh-seat/README.md` 搭隔离的 DSH_HOME）跑 `seat-smoke.ts complete expiry withdraw`。验收：报告 exit 0，complete 的 requestAfter.state 为 done，withdraw 的 sessionAfter.endReason 为 requester-withdrew，leftovers.leftover 为 0。
 2. seat 的 Claude 后端 — 在 seat-smoke.ts 加一个模式，任务改用 `subagent_claude_governed`，其余同 complete。验收：请求 done、DSH 退出码 0、残留 0；结果写进计划「seat 复核修正」一条。
-3. 真实浏览器走一遍 seat（测试 profile）— 按 HOW-TO-RUN 第 1、2 节起 orchestrad 和 DSH web，先不解锁：「等你」栏应有占位卡「以 DSH 名义请求派 Codex：任务内容和请求方解锁后可见 · 剩 X 自动拒」；解锁后变成完整卡，「自称来自 DSH 会话 …（未核实）」，点派出。验收：DSH 收到 completed，会话页写「你应 DSH 请求派出的会话…」。
+3. 标题计数实看 — 用 4d7387e 起测试 profile 和 DSH web（HOW-TO-RUN 第 1、2 节），DSH 发一个请求、先不派出。验收：标签页标题是「(1) Orchestra · 塔」，派出或拒绝后计数消失或变成审批数。
 4. 真实 profile 启动检查（只能由用户本人做）— 按 `docs/quickstart.md` 第 6 节：在普通（非管理员）cmd / PowerShell / Windows Terminal 里，在仓库根目录运行 `orchestra.cmd --owned --peek-port 7470`（worktree 里先设 `ORCHESTRA_NODE` 指向主检出目录的 `.tools\node24\node.exe`）。验收：控制台打印配对码、`procguard on`、两家 `owned … sessions on`，最后一行 `working (real profile …)`；页面配对后塔表有数据，顶栏数字等于点开后的行数；派一个 Codex 会话（「只回复 ok，不用工具」）到空闲，结束会话后对话里有 tree-ended 一类说明；Ctrl+C 后任务管理器里没有 codex.exe、procguard.exe。结果记进本文件 Done 或 Unverified。
 5. 真实浏览器走一遍（测试 profile）— 在 `%TEMP%` 下建 `orchestra-test-ui-<随机>` 和它下面的 `roots\`，运行 `node src/boot.ts --test-profile --test-dir <该目录> --peek-port <空闲端口> --owned`，浏览器开 `http://orchestra.localhost:<端口>`，配对、解锁，派一个 Codex、一个 Claude 会话，各处理一次审批（一次允许、一次拒绝），中断、结束、刹车各试一次；亮色、暗色、375px 宽各看一遍。验收：每一步页面状态和 `GET /api/owned` 一致，没有控制台报错。
 6. `scripts/live-route.ts --dispatch` — 跑一次。验收：`dispatch.status` 为 200，`dispatchEnded.settled` 为 ended，`routerRow` 不为 null 且 `linked` 为 true，`leftovers.leftover` 为 0，`orchestradStopped.how` 为 stdin-eof。
