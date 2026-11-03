@@ -20,6 +20,11 @@ rem     request still waiting for you.
 rem   - Stop it with Ctrl+C in this window.
 rem   - Extra arguments are passed on, e.g. --test-profile --test-dir %TEMP%\orchestra-test-x
 rem     for the synthetic data. A second --peek-port is refused (duplicate flag).
+rem   - Owned sessions work only in Orchestra's own work dir unless you add --project-root <absolute
+rem     dir> (repeatable, up to 16), e.g. start-orchestra.cmd --project-root D:\code\shop. Run it from
+rem     cmd or a shortcut with the arguments added; a double-click passes none. A root that is a drive
+rem     root, a protected place or a parent of one, missing, or behind a link refuses the start.
+rem     docs/quickstart.md section 1.3 has the rules.
 rem   - start-orchestra.cmd /dry-run prints what it would run and starts nothing.
 rem
 rem This file is ASCII on purpose: cmd reads a batch file in the console code page, and UTF-8
