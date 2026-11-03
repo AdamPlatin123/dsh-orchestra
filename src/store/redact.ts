@@ -22,7 +22,8 @@ import { frozen, frozenClass } from '../../shared/frozen.js';
 // let every secret through. A frozen RegExp cannot be handed to replace() with its g flag (replace
 // resets lastIndex first), so redact() uses a fresh copy of each, made from its internal pattern.
 
-export const REDACT_VERSION = 1;
+// 2 (2026-11-03): the entropy rule lets path-like names through (isPathLikeName).
+export const REDACT_VERSION = 2;
 
 /** Known values shorter than this are not replaced: they would wreck ordinary text and are no secret. */
 export const MIN_KNOWN = 8;
@@ -91,6 +92,55 @@ export function entropyBits(s: string): number {
 
 export function isHighEntropy(token: string): boolean {
   return token.length >= ENTROPY_MIN_LENGTH && /[A-Za-z]/.test(token) && /[0-9]/.test(token) && entropyBits(token) >= ENTROPY_BITS;
+}
+
+// Path-like names (orchestra app, 2026-11-03). A name built from words joined by - _ / reaches 3.5
+// bits per character as easily as a key does: Claude Code names a project directory after the whole
+// cwd (`G---Projects-shop--claude-worktrees-zen-superagent-exploration-04992d`), a worktree or a
+// branch reads `feature-login-v2-final`, and the entropy rule took them all for secrets. Shannon
+// entropy counts which characters occur, not whether they form words; the test below looks at the
+// pieces instead. A key that random characters make up has long pieces that mix case and digits (or
+// hold `+` and `=`), and those are what it refuses:
+//
+//   cut at - _ / (empty pieces dropped: Claude writes each character that is no letter or digit as
+//   `-`, so `G:\_Projects` reads `G---Projects`). The name is path-like when it has two pieces or
+//   more, every piece is one of
+//     - a word: letters in lower case, Capitalized, or camelCase whose humps have 2 lower-case
+//       letters or more (`superagent`, `Users`, `myApp`, `TowerView`), optionally followed by up to 4
+//       digits (`Folder2`, `python311`);
+//     - capitals: up to 10 capital letters, optionally followed by up to 4 digits (`C`, `README`);
+//     - a number: digits only (`2024`);
+//     - a short tag: up to 8 lower-case letters and digits (`v2`, `node24`, `04992d`, a short hash);
+//   and the letters of words of 3 letters or more are at least half of its characters (separators
+//   not counted). Capitals and tags never count toward that half: random base32 is all capitals,
+//   random hex makes short tags.
+//
+// So a base64 or hex key, a UUID, a key with a readable prefix (`sk_live_<random>`, `xoxb-<digits>-
+// <random>`) and a run of short mixed pieces (`a1b2c-3d4e5-f6g7h-8i9j0`) are judged by entropy as
+// before. What still goes through is random text that happens to read as words: lower-case letters
+// with dashes, mostly; test/store/redact.test.ts measures how often. The format rules run first and
+// are untouched, and so are the known values.
+const PATH_SEPARATORS = /[-_/]+/;
+const WORD_PIECE = /^([a-z]+|[A-Z][a-z]+|[a-z]+(?:[A-Z][a-z]{2,})+|[A-Z][a-z]{2,}(?:[A-Z][a-z]{2,})+)[0-9]{0,4}$/;
+const CAPITALS_PIECE = /^[A-Z]{1,10}[0-9]{0,4}$/;
+const NUMBER_PIECE = /^[0-9]+$/;
+const TAG_PIECE = /^[a-z0-9]{1,8}$/;
+const LONG_WORD = 3;
+
+/** Is `token` a name made of words, numbers and short tags joined by - _ / (see above), not a secret? */
+export function isPathLikeName(token: string): boolean {
+  const pieces = token.split(PATH_SEPARATORS).filter((p) => p !== '');
+  if (pieces.length < 2) return false;
+  let chars = 0;
+  let wordChars = 0;
+  for (const p of pieces) {
+    chars += p.length;
+    const word = WORD_PIECE.exec(p);
+    if (word !== null) {
+      if (word[1]!.length >= LONG_WORD) wordChars += word[1]!.length;
+    } else if (!CAPITALS_PIECE.test(p) && !NUMBER_PIECE.test(p) && !TAG_PIECE.test(p)) return false;
+  }
+  return wordChars * 2 >= chars;
 }
 
 /** Commands whose whole output is dropped (layer 3): env dumps and reads of .env files. */
@@ -210,7 +260,7 @@ function redactWith(values: readonly string[], given: RedactInput): RedactResult
   }
   let entropy = 0;
   text = text.replace(TOKEN, (t) => {
-    if (!isHighEntropy(t)) return t;
+    if (!isHighEntropy(t) || isPathLikeName(t)) return t;
     entropy++;
     return marker('entropy');
   });

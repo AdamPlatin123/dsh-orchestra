@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ENTROPY_BITS, FORMAT_RULES, MIN_KNOWN, REDACT_VERSION, RedactError, entropyBits, isEnvCommand, isHighEntropy, isKnownEnvValue, isSystemVariable,
+  ENTROPY_BITS, FORMAT_RULES, MIN_KNOWN, REDACT_VERSION, RedactError, entropyBits, isEnvCommand, isHighEntropy, isKnownEnvValue, isPathLikeName, isSystemVariable,
   knownSpans, looksLikeEnvDump, makeRedactor, marker,
 } from '../../src/store/redact.ts';
 
@@ -69,6 +69,89 @@ test('high entropy: a long token with letters and digits at 3.5 bits per charact
   assert.equal(entropyBits('aaaa'), 0);
   assert.equal(entropyBits('abcd'), 2);
   assert.ok(entropyBits(FOO_VALUE) >= ENTROPY_BITS);
+});
+
+// Orchestra app, 2026-11-03: the tower showed a project as `[redacted:entropy]`. Claude Code names a
+// project directory after the whole cwd, and a worktree's name reads like these; all were above 3.5 bits.
+test('path-like names: words, numbers and short tags joined by - _ / are not secrets, whatever their entropy', () => {
+  const names = [
+    'G---Projects-dsh-orchestra--claude-worktrees-zen-superagent-exploration-04992d',
+    'C--Users-someone-Projects-my-app-2024',
+    'zen-superagent-exploration-04992d',
+    'Zen-superagent-exploration-04992d',
+    'feature-login-v2-final',
+    'C--Users-someone-Documents-myApp-Folder2-python311',
+    'D--work-README-TowerView-build-20241103',
+    'src/store/redact-vectors-2024',
+  ];
+  for (const name of names) {
+    assert.ok(isHighEntropy(name), `the old rule took ${name} for a secret`);
+    assert.ok(isPathLikeName(name), name);
+    const text = `cd ${name} && ls`;
+    assert.deepEqual(red(text), { text, verdict: { ver: REDACT_VERSION, dropped: null, known: 0, format: {}, entropy: 0 } }, name);
+  }
+  assert.equal(REDACT_VERSION, 2, 'a rule changed, so the version did (see the comment on REDACT_VERSION)');
+});
+
+test('path-like names: keys, digests and ids with separators are still replaced, as are names with one random piece', () => {
+  // Built at run time from FOO_VALUE, so no scanner takes this file for a leak; every one is made up.
+  const secrets = [
+    `acme_live_${FOO_VALUE}`, // a readable prefix, then a random piece
+    `build_2024-${FOO_VALUE}`,
+    `my-secret-key-${FOO_VALUE}`, // the whole token goes, the words with it
+    `key-${'0123456789abcdef'.repeat(2)}`, // hex
+    '123e4567-e89b-12d3-a456-426614174000', // a UUID: its 12-hex piece is no tag
+    'a1b2c-3d4e5-f6g7h-8i9j0k1l', // short mixed pieces only: no word holds half of it
+    `${FOO_VALUE.slice(0, 8)}/${FOO_VALUE.slice(8)}+Ab=`, // base64 with / and + and =
+    'DLFO-VFEWF-PMLSFHUJ5-QZ', // capitals and a digit: capitals never count as words
+    'oeTk_LCPI3_5e_DbusjQ', // mixed case that is no camelCase
+  ];
+  for (const s of secrets) {
+    assert.ok(isHighEntropy(s), `${s} must be a test of the entropy rule`);
+    assert.equal(isPathLikeName(s), false, s);
+    assert.deepEqual(red(`x ${s} y`), { text: `x ${marker('entropy')} y`, verdict: { ver: REDACT_VERSION, dropped: null, known: 0, format: {}, entropy: 1 } }, s);
+  }
+  for (const one of ['superagent', 'Folder2', '04992d', '', '---']) assert.equal(isPathLikeName(one), false, `one piece or none: ${JSON.stringify(one)}`);
+  // The format rules run before the entropy rule and keep their markers.
+  assert.equal(red(`k ${FAKE_SK} and ${'my-app-'}eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.dBjftJeZ4CVPmB92K27uhbUJU1p1r`).text, `k ${marker('sk')} and my-app-${marker('jwt')}`);
+});
+
+test('path-like names: random keys almost never pass for names (a fixed-seed sweep over 4 alphabets and UUIDs)', () => {
+  // mulberry32: a fixed seed, so the sweep is the same on every run.
+  let seed = 0x0c4e57a;
+  const next = () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const draw = (alphabet: string, n: number) => Array.from({ length: n }, () => alphabet[Math.floor(next() * alphabet.length)]).join('');
+  const L = 'abcdefghijklmnopqrstuvwxyz';
+  const D = '0123456789';
+  const sweep = (make: () => string) => {
+    let high = 0;
+    let passed = 0;
+    for (let i = 0; i < 20000; i++) {
+      const s = make();
+      if (!isHighEntropy(s)) continue;
+      high++;
+      if (isPathLikeName(s)) passed++;
+    }
+    return { high, passed };
+  };
+  const len = () => 20 + Math.floor(next() * 45);
+  const hex = '0123456789abcdef';
+  for (const [name, alphabet] of [['base64url', `${L.toUpperCase()}${L}${D}-_`], ['base64', `${L.toUpperCase()}${L}${D}+/`], ['hex with dashes', `${hex}-`], ['base32 with dashes', `${L.toUpperCase()}234567-`]] as const) {
+    const r = sweep(() => draw(alphabet, len()));
+    assert.ok(r.high > 15000, name);
+    assert.equal(r.passed, 0, `${name}: ${r.passed} of ${r.high} random keys passed for names`);
+  }
+  const uuid = sweep(() => `${draw(hex, 8)}-${draw(hex, 4)}-4${draw(hex, 3)}-${draw('89ab', 1)}${draw(hex, 3)}-${draw(hex, 12)}`);
+  assert.equal(uuid.passed, 0, `UUIDs: ${uuid.passed} of ${uuid.high}`);
+  // What does pass: lower-case letters and digits with dashes, whose letter runs read as words to
+  // this rule. Under 1 in 200 here (about 1 in 1100 in a larger run when this rule was written).
+  const lower = sweep(() => draw(`${L}${D}-`, len()));
+  assert.ok(lower.passed * 200 < lower.high, `lower case with dashes: ${lower.passed} of ${lower.high}`);
 });
 
 test('known values: a custom variable FOO=<20 random characters> is replaced everywhere; a cwd under the user\'s profile stays as it is', () => {
