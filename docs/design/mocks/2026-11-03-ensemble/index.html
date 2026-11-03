@@ -1,0 +1,510 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>合奏方案画廊</title>
+<!--
+  2026-11-03 ensemble mock 画廊首页。自包含：不请求任何外部资源。
+  评分、评审要点来自评审轮；「仍未解决」取自各 mock 页面里设计说明的「最弱的一点」和修改者的回报。
+  小预览是 iframe，滚到附近才加载；可以在右上角关掉。
+-->
+<style>
+:root{
+  --bg:#f6f4ef; --surface:#fffdf9; --surface-2:#efece5; --ink:#1d1c1a; --ink-2:#55524c; --ink-3:#86827a;
+  --line:#dedad1; --line-2:#c9c4b8;
+  --accent:#2f5d8a; --accent-ink:#ffffff; --accent-soft:rgba(47,93,138,.12);
+  --bar:#3b6f9e; --track:#e7e3da;
+  --amber:#b4690e; --amber-soft:rgba(180,105,14,.12);
+  --ok:#3d7a4f; --shadow:0 1px 2px rgba(0,0,0,.05),0 4px 16px rgba(0,0,0,.04);
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#151618; --surface:#1d1f22; --surface-2:#25282c; --ink:#ecebe7; --ink-2:#b4b1aa; --ink-3:#85827b;
+    --line:#2f3236; --line-2:#3e4247;
+    --accent:#86b2dc; --accent-ink:#0f1720; --accent-soft:rgba(134,178,220,.14);
+    --bar:#7eaad4; --track:#2c3035;
+    --amber:#e2a54b; --amber-soft:rgba(226,165,75,.14);
+    --ok:#7fbf8f; --shadow:0 1px 2px rgba(0,0,0,.3);
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#151618; --surface:#1d1f22; --surface-2:#25282c; --ink:#ecebe7; --ink-2:#b4b1aa; --ink-3:#85827b;
+  --line:#2f3236; --line-2:#3e4247;
+  --accent:#86b2dc; --accent-ink:#0f1720; --accent-soft:rgba(134,178,220,.14);
+  --bar:#7eaad4; --track:#2c3035;
+  --amber:#e2a54b; --amber-soft:rgba(226,165,75,.14);
+  --ok:#7fbf8f; --shadow:0 1px 2px rgba(0,0,0,.3);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:15px/1.7 "PingFang SC","Hiragino Sans GB","Microsoft YaHei UI","Microsoft YaHei","Noto Sans CJK SC","Source Han Sans SC",system-ui,sans-serif;}
+a{color:var(--accent)}
+a:focus-visible,button:focus-visible,summary:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:4px}
+.wrap{max-width:1180px;margin:0 auto;padding:0 24px}
+.num{font-family:ui-monospace,"Cascadia Mono","SF Mono",Consolas,monospace;font-variant-numeric:tabular-nums}
+
+/* 顶栏 */
+.top{position:sticky;top:0;z-index:5;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);border-bottom:1px solid var(--line)}
+.top .wrap{display:flex;align-items:center;gap:12px;height:52px}
+.brand{font-weight:600;letter-spacing:.02em}
+.brand small{font-weight:400;color:var(--ink-3);margin-left:8px}
+.spacer{flex:1}
+.tbtn{font:inherit;font-size:13px;color:var(--ink-2);background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:4px 10px;cursor:pointer}
+.tbtn[aria-pressed="true"]{color:var(--ink);border-color:var(--line-2);background:var(--surface-2)}
+.tbtn:hover{border-color:var(--line-2)}
+
+/* 开篇 */
+header.hero{padding:48px 0 28px}
+.eyebrow{font-size:13px;color:var(--ink-3);letter-spacing:.08em}
+h1{font-size:34px;line-height:1.25;margin:6px 0 16px;font-weight:650;letter-spacing:.01em}
+.lede{font-size:17px;color:var(--ink-2);max-width:46em;margin:0}
+.lede b{color:var(--ink);font-weight:600}
+
+.principles{margin:28px 0 0;padding:20px 22px;background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow)}
+.principles h2{font-size:15px;margin:0 0 4px;font-weight:600}
+.principles .sub{font-size:13px;color:var(--ink-3);margin:0 0 14px}
+.plist{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 28px}
+.plist li{display:flex;gap:10px;font-size:14px;line-height:1.55;padding:4px 0;border-top:1px dashed var(--line)}
+.plist li:nth-child(-n+2){border-top:none}
+.pk{flex:none;width:2.6em;font-weight:600;color:var(--accent)}
+
+/* 总览矩阵 */
+section{margin:44px 0}
+.sh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.sh h2{font-size:20px;margin:0;font-weight:620}
+.sh p{margin:0;font-size:13px;color:var(--ink-3)}
+.matrix-wrap{background:var(--surface);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:var(--shadow)}
+table.matrix{width:100%;border-collapse:collapse;font-size:13.5px}
+.matrix th,.matrix td{padding:7px 10px;text-align:center;border-bottom:1px solid var(--line)}
+.matrix tr:last-child td{border-bottom:none}
+.matrix th{font-weight:600;color:var(--ink-2);font-size:12.5px;background:var(--surface-2);white-space:nowrap}
+.matrix th button{all:unset;cursor:pointer;display:inline-flex;gap:4px;align-items:center}
+.matrix th button:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:3px}
+.matrix th button .arr{color:var(--ink-3);font-size:10px;min-width:8px}
+.matrix th[aria-sort="descending"] button,.matrix th[aria-sort="ascending"] button{color:var(--ink)}
+.matrix td.name{text-align:left;white-space:nowrap}
+.matrix td.name a{color:var(--ink);text-decoration:none}
+.matrix td.name a:hover{text-decoration:underline}
+.matrix td.name .n{color:var(--ink-3);margin-right:8px}
+.matrix td.cell{position:relative}
+.matrix td.cell span{position:relative}
+.matrix td.cell::before{content:"";position:absolute;inset:3px 4px;border-radius:5px;background:var(--bar);opacity:var(--a,0)}
+.matrix td.mean{font-weight:600}
+.matrix tr:hover td{background:var(--accent-soft)}
+.legend-note{font-size:12.5px;color:var(--ink-3);padding:8px 12px;border-top:1px solid var(--line);background:var(--surface-2)}
+
+/* 方案卡 */
+.cards{display:flex;flex-direction:column;gap:18px}
+article.card{background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);padding:20px;display:grid;grid-template-columns:300px minmax(0,1fr) 250px;gap:22px;scroll-margin-top:68px}
+article.card:target{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.thumb{display:block;position:relative;width:300px;height:188px;border-radius:10px;overflow:hidden;background:var(--surface-2);border:1px solid var(--line);text-decoration:none;color:var(--ink-3)}
+.thumb iframe{position:absolute;top:0;left:0;width:1440px;height:900px;border:0;transform:scale(.20833);transform-origin:0 0;pointer-events:none;background:#fff}
+.thumb .ph{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:13px;text-align:center;padding:12px}
+.thumb .cover{position:absolute;inset:0}
+.thumb:hover{border-color:var(--line-2)}
+.body h3{margin:0;font-size:20px;line-height:1.35;font-weight:640;display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.body h3 .no{font-size:13px;color:var(--ink-3);font-weight:500}
+.meta{margin:4px 0 0;color:var(--ink-2);font-size:14.5px}
+.tags{display:flex;gap:6px;flex-wrap:wrap;margin:10px 0 0}
+.tag{font-size:12px;border-radius:999px;padding:1px 9px;border:1px solid var(--line);color:var(--ink-2);background:var(--surface-2)}
+.tag.seen{border-color:color-mix(in srgb,var(--ok) 45%,var(--line));color:var(--ok);background:transparent}
+.tag.unseen{border-style:dashed;color:var(--ink-3);background:transparent}
+.blk{margin-top:14px}
+.blk h4{margin:0 0 4px;font-size:12.5px;font-weight:600;color:var(--ink-3);letter-spacing:.06em}
+.keep{margin:0;padding:10px 12px;border-left:3px solid var(--accent);background:var(--accent-soft);border-radius:0 8px 8px 0;font-size:14.5px;line-height:1.7}
+ol.open{margin:0;padding-left:1.3em;font-size:14px;color:var(--ink-2)}
+ol.open li{margin:2px 0}
+.side{display:flex;flex-direction:column;gap:12px}
+.go{display:inline-flex;align-items:center;justify-content:center;gap:6px;font-weight:600;font-size:14px;text-decoration:none;background:var(--accent);color:var(--accent-ink);border-radius:10px;padding:9px 14px}
+.go:hover{filter:brightness(1.07)}
+.scores{border:1px solid var(--line);border-radius:12px;padding:10px 12px 8px;background:var(--bg)}
+.scores .cap{display:flex;justify-content:space-between;font-size:12px;color:var(--ink-3);margin-bottom:6px}
+.srow{display:grid;grid-template-columns:4.6em minmax(0,1fr) 2.2em;align-items:center;gap:8px;font-size:12.5px;height:22px}
+.srow .lab{color:var(--ink-2);white-space:nowrap}
+.srow .val{text-align:right;color:var(--ink)}
+.track{position:relative;height:8px;background:var(--track);border-radius:4px}
+.track i{position:absolute;left:0;top:0;bottom:0;border-radius:0 4px 4px 0;background:var(--bar)}
+.track::after{content:"";position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:var(--line-2)}
+.scores .axis{display:grid;grid-template-columns:4.6em minmax(0,1fr) 2.2em;gap:8px;font-size:10.5px;color:var(--ink-3);margin-top:2px}
+.scores .axis span:nth-child(2){display:flex;justify-content:space-between}
+
+/* 观察 */
+.obs{list-style:none;margin:0;padding:0;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.obs li{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:16px 18px;box-shadow:var(--shadow);font-size:14.5px}
+.obs li b.t{display:block;font-size:15.5px;margin-bottom:6px}
+.chip{display:inline-block;font-size:12px;line-height:1.5;padding:0 7px;margin:0 2px;border-radius:6px;background:var(--surface-2);border:1px solid var(--line);color:var(--ink);text-decoration:none;white-space:nowrap}
+.chip:hover{border-color:var(--accent)}
+.combo{margin-top:14px;padding:16px 18px;border-radius:14px;border:1px solid color-mix(in srgb,var(--amber) 40%,var(--line));background:var(--amber-soft);font-size:14.5px}
+.combo b.t{display:block;margin-bottom:6px}
+.combo dl{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0}
+.combo dt{font-weight:600;color:var(--ink-2)}
+.combo dd{margin:0}
+
+/* 代号速查 */
+.glossary{width:100%;border-collapse:collapse;font-size:13.5px;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.glossary th,.glossary td{text-align:left;padding:7px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+.glossary th{background:var(--surface-2);font-weight:600;color:var(--ink-2);font-size:12.5px}
+.glossary td:first-child{white-space:nowrap;font-weight:600}
+.glossary td:last-child{color:var(--ink-3);white-space:nowrap}
+footer{padding:28px 0 56px;color:var(--ink-3);font-size:13px}
+
+@media (max-width:1060px){
+  article.card{grid-template-columns:260px minmax(0,1fr)}
+  .thumb{width:260px;height:163px}
+  .thumb iframe{transform:scale(.18056)}
+  .side{grid-column:1 / -1;flex-direction:row;align-items:flex-start}
+  .side .scores{flex:1;max-width:420px}
+}
+@media (max-width:760px){
+  .wrap{padding:0 16px}
+  h1{font-size:26px}
+  .plist,.obs{grid-template-columns:1fr}
+  .plist li:nth-child(2){border-top:1px dashed var(--line)}
+  article.card{grid-template-columns:1fr;padding:16px}
+  .thumb{width:100%;height:auto;aspect-ratio:16/10}
+  .thumb iframe{display:none}
+  .side{flex-direction:column}
+  .side .scores{max-width:none;width:100%}
+  .matrix-wrap{overflow-x:auto}
+  .glossary td:last-child{white-space:normal}
+  .brand small{display:none}
+}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
+html{scroll-behavior:smooth}
+</style>
+</head>
+<body>
+
+<div class="top"><div class="wrap">
+  <span class="brand">合奏 <small>多层 agent 协作前端 · 14 个 mock · 2026-11-03</small></span>
+  <span class="spacer"></span>
+  <button class="tbtn" id="pvBtn" aria-pressed="true" title="关掉后不再加载 iframe 小预览">小预览：开</button>
+  <button class="tbtn" id="thBtn" title="切换浅色 / 深色 / 跟随系统">主题：跟随系统</button>
+</div></div>
+
+<main class="wrap">
+<header class="hero">
+  <div class="eyebrow">这批方案在回答什么问题</div>
+  <h1>在 3~5 层的乌龟塔里，怎样看见 agent 在合作，又不被对话淹没</h1>
+  <p class="lede">现有塔页一行一个会话：看不出 agent 在合作，会话一多就被淹没，派活入口也找不到。这 14 个方案用同一份剧本（想象中的丰富态，加今天真实数据的贫瘠态），回答同一个问题：怎样让你<b>看见责任沿着派出、回报、等待流动</b>，同时首屏<b>只随等你的事和工作线增长，不随会话数增长</b>。</p>
+
+  <div class="principles">
+    <h2>十二条设计原则（P1–P12）</h2>
+    <p class="sub">每条一句话，全文、理由和检验标准见 <a href="BRIEF.md">BRIEF.md</a> 第 4 节。这里的 P 编号只属于本简报，和 r4 的通知级别 P0–P3 无关。</p>
+    <ul class="plist" id="plist"></ul>
+  </div>
+</header>
+
+<section aria-labelledby="mx-h">
+  <div class="sh"><h2 id="mx-h">评分总览</h2><p>点列头排序，点名字跳到那张卡。色块越深分越高，数字是评审给的原分。</p></div>
+  <div class="matrix-wrap">
+    <table class="matrix" id="matrix"><thead></thead><tbody></tbody></table>
+    <div class="legend-note" id="mxNote"></div>
+  </div>
+</section>
+
+<section aria-labelledby="cards-h">
+  <div class="sh"><h2 id="cards-h">14 个方案</h2><p>按编号排。每张卡：隐喻、评审最想留下的想法、六项评分、还没解决的问题。小预览不能点，点「打开」进入完整 mock。</p></div>
+  <div class="cards" id="cards"></div>
+</section>
+
+<section aria-labelledby="obs-h">
+  <div class="sh"><h2 id="obs-h">跨方案观察</h2><p>哪些想法在多个方案里反复出现，哪些可以拼在一起。</p></div>
+  <ul class="obs" id="obs"></ul>
+  <div class="combo">
+    <b class="t">一种可以试的拼法（只是组合建议，还没做成 mock）</b>
+    <dl>
+      <dt>首屏顶栏</dt><dd>13 的垂坠：等你的事从条上垂下，越近自动拒垂得越长。</dd>
+      <dt>首屏左侧</dt><dd>02 的腕带卡做成唯一等你队列，按 14 的做法把剩余时间画成伸进「之后」区的荧光条。</dd>
+      <dt>首屏主体</dt><dd>02 / 13 的交接板，每条工作线一行，行内嵌 07 式的迷你时间瀑布：派出向下、回报向上。</dd>
+      <dt>下钻</dt><dd>08 的祖先脊柱或 11 的压缩阶梯，楼层感和「磨砂玻璃＝状态未知」借 03。</dd>
+      <dt>离开回来</dt><dd>09 的晨报，用接力句写出每条工作线的责任移交链。</dd>
+    </dl>
+  </div>
+</section>
+
+<section aria-labelledby="gl-h">
+  <div class="sh"><h2 id="gl-h">代号速查</h2><p>本页出现、但没在原文里展开的代号。</p></div>
+  <table class="glossary">
+    <thead><tr><th>代号</th><th>内容（一句话）</th><th>出处</th></tr></thead>
+    <tbody>
+      <tr><td>D8</td><td>只有一个审批队列，超时即拒；派出、批准、拍板、刹车只由人在配对过的页面上做</td><td>r4 §4 第 492 行</td></tr>
+      <tr><td>D19</td><td>完成是判定：agent 不能宣布完成，只来自非作者复核者的判定或你的验收</td><td>r4 §4 第 503 行</td></tr>
+      <tr><td>A16</td><td>薄完成：回报只有状态、有界摘要、引用，截断要标明</td><td>r4 附录 E 第 3420 行</td></tr>
+      <tr><td>T1 / T2 / T3</td><td>不知道写「未知」不写「没有」 / 不用「完成」描述 agent 的工作 / 任何计数等于它点开的列表长度</td><td>shared/tower-contract.js 注释；r4 里没找到这组编号</td></tr>
+      <tr><td>J4</td><td>人每天要做的事之一：知道每条工作线进展到哪，用算出来的「n/m 已验证」</td><td>BRIEF.md 第 2 节</td></tr>
+      <tr><td>seat</td><td>DSH 侧插件，让 DSH 会话向 Orchestra 请求派会话，请求变成一张等你的卡，10 分钟不理自动拒</td><td>docs/quickstart.md 3.5</td></tr>
+      <tr><td>丰富态 / 贫瘠态</td><td>共享剧本的两种数据：M1 之后会有的样子 / 今天真实数据的形状（24 个主会话、111 个分身、109 个状态未知）</td><td>BRIEF.md 第 7 节</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<footer>
+  共享剧本数据在 <a href="scenario.js">scenario.js</a>（合成数据，不来自任何真实会话）。评分和「最值得保留」来自评审轮，打分早于本轮修改；修改后的版本没有重新打分。「仍未解决」取自各 mock 页面设计说明里的「最弱的一点」和修改者的回报。
+</footer>
+</main>
+
+<script>
+(function(){
+'use strict';
+
+var PRINCIPLES = [
+  ['P1','显示单位是工作线，不是会话：首屏一级元素是一个根任务及其整棵子树。'],
+  ['P2','一个行动队列，按截止排序；在哪里点都是同一个对象。'],
+  ['P3','需要你的事冒泡到顶，带一行来路，不用展开塔就能处理。'],
+  ['P4','每个没结束的节点都说清「在等谁、要什么」，等待链的链尾高亮。'],
+  ['P5','合作画成边上的事件（派出、回报、等待、复核、打回），不画成并排的头像。'],
+  ['P6','焦点 + 上下文：一次只完整展开一条祖先链，其余折成计数。'],
+  ['P7','折叠必须诚实：分项之和等于总数，点开就是那张列表。'],
+  ['P8','实 / ≈ 推测 / 未知三种画法；未知安静但不消失，不像空闲。'],
+  ['P9','回报是薄的、算出来的；永远不出现「完成」，进度写「n/m 已验证」。'],
+  ['P10','派活入口永远在同一个显眼处；派出就是往塔上放一个新节点。'],
+  ['P11','人类动词带后果预览，并且只出现在能用的地方（只读会话上没有）。'],
+  ['P12','时间维度用「自你上次看以来」的压缩叙述，不用滚动的聊天墙。']
+];
+
+var DIMS = [
+  ['cooperation','合作可感','看得出谁把什么交给了谁、谁在等谁、谁回报了什么'],
+  ['overloadControl','不被淹没','首屏随等你的事和工作线增长，不随会话数增长'],
+  ['actionability','动作好找','等你、派活、刹车的入口好找，能就地处理'],
+  ['truth','诚实','未知写未知、不写完成、计数等于列表长度'],
+  ['craft','做工','排版、层次、细节做得多细'],
+  ['originality','新意','隐喻带来的新看法']
+];
+
+/* seen: 'yes' = 修改者在无头浏览器里打开看过；'partial' = 看过但有宽度没验；'no' = 只做过脚本检查 */
+var MOCKS = [
+ {key:'01-score',name:'总谱（乐团总谱）',
+  meta:'时间横轴，每个 agent 一行谱线，按工作线分组；派出画成向下的箭头，回报画成回流的弧线，等你画成一直延长到「现在」的延长音，你那一行在最上面。',
+  scores:{cooperation:5.5,overloadControl:5,actionability:6,truth:6.5,craft:6,originality:8},
+  keep:'把时间做成横轴，用多小节休止压缩空白时段：派出向下、回报回流、等你延长到「现在」，所有要你处理的事都有一根线升到你那一行（双线谱）。合作第一次有了先后次序。',
+  open:['今天的真实数据里几乎没有边，总谱看见先后和因果的长处大部分用不上；贫瘠态下它只是一份诚实的点名册。','评审担心的「最急的事全挤在最右一小节」，改法是在「现在」右边加一块按剩余时间排的未决区，效果要你看了才算数。'],
+  seen:'no'},
+ {key:'02-triage',name:'分诊台',
+  meta:'急诊分诊板：默认只有等你的事，一件一张大卡，按剩余时间排，卡上带它在塔里的来路和它挡住了谁；其余工作线压成一块交接板。',
+  scores:{cooperation:3.5,overloadControl:8,actionability:7.5,truth:6.5,craft:6.5,originality:5},
+  keep:'「腕带 + 竖排单链局部塔」这张卡：一件等你的事自带完整来路（▼ 派出带原文、┆ 关系未知、▲ 回报、同级折成可点开的计数），第 5 层的审批不进塔就能看清、就地处理。可作为所有方案「处理一件事」的标准卡。',
+  open:['「整体往哪走」（J4）仍弱：剧本里缺复核记录时算不出「n/m 已验证」。','交接板每条工作线只给最近一次交接和回报，长链的中段要点进去才看得到。'],
+  seen:'no'},
+ {key:'03-tower-section',name:'塔的剖面',
+  meta:'建筑剖面图：楼层就是深度，agent 是房间里的灯（亮、闪、暗、红）；派活是下行电梯，回报是上行电梯，点一个房间只亮它的竖井。',
+  scores:{cooperation:4,overloadControl:5,actionability:7,truth:6,craft:7,originality:8},
+  keep:'「楼层＝深度，磨砂玻璃＝状态未知」：纵向楼层加左侧标高栏放下 5 层祖先链，不缩进；磨砂玻璃把「不知道」画得安静，又一眼和空闲、已结束分得开。两样都能直接移植到别的方案。',
+  open:['骨架仍是从属图，合作感靠电梯缆撑；「谁在等谁」只到父子这一层。','agent 之间横向的互相等待，要等数据里真有记录才能画。'],
+  seen:'no'},
+ {key:'04-metro',name:'地铁线路图',
+  meta:'每条工作线是一条线路，交接和回报是车站，多条回报汇到同一个 agent 是换乘站；等你的站亮红色信号，左侧发车信息屏就是唯一等你队列。',
+  scores:{cooperation:5,overloadControl:7,actionability:8,truth:6,craft:6.5,originality:6},
+  keep:'左侧「发车信息屏」和地图的绑定：唯一的等你队列按剩余时间排，每条带一根用线路色画的「你 → … → 该站」来路条，可以就地处理；同一站在图上亮红并沿来路描线。配上「只画有事的站，其余折成 +n」，首屏规模只随待办数增长。',
+  open:['等你的事一旦散在各层，「只看有事的」会退化成一棵横向的树，切到「全部」能看到。','站距小时，边上的时间牌挤在一段轨道上，只能悬停看。'],
+  seen:'partial',seenNote:'1440 / 1280 / 1024 宽无头浏览器看过，390 宽没验'},
+ {key:'05-radar',name:'指挥雷达',
+  meta:'同心圆：中心是你，环是层级，扇区是项目；agent 是光点，等你的光点沿祖先链向中心发脉冲；旁边一栏只列需要你的事。',
+  scores:{cooperation:5,overloadControl:4,actionability:7,truth:7,craft:4,originality:7},
+  keep:'等你的事沿祖先链画回中心的「你」，左栏是一张带完整来路的截止队列：深层请求自己浮到人面前。另外两点也值得留：用外圈（敌我识别圈）标出自有、可操作的会话；派出未核实的 seat 请求时，要键入它真实的发起方。',
+  open:['极坐标不利于扫读，窄屏时多数标签让位，只能悬停或点开看。','派出新会话会让同扇区光点的方位轻微移动，空间记忆会漂。'],
+  seen:'yes'},
+ {key:'06-dispatch-inbox',name:'回报收件箱',
+  meta:'人只读回报和请求：像邮件收件箱，每条是一份薄回报或一个请求，对话默认隐藏；信按派活链成线程，顶部是派活写信框。',
+  scores:{cooperation:5,overloadControl:6.5,actionability:8,truth:6.5,craft:7,originality:5},
+  keep:'「信只来自有话要说的会话」：没来信的中间层压进地址栏，没来信的叶子折成「没有来信的 n 个会话」，加上派活向下、回报向上的往来条。这套压缩写法值得移植。',
+  open:['没有「等另一个 agent」的边，只能从「下游有几件等你」推出链尾在你。','来过信的兄弟会话还没聚合，同一层回报多了仍会拉长。'],
+  seen:'no'},
+ {key:'07-swimlane',name:'泳道时间线',
+  meta:'甘特 / 泳道：每个领头一条泳道，分身是泳道里的子条；派活是从父条落下的竖边，回报是升回的竖边，「你」单独一行。',
+  scores:{cooperation:5,overloadControl:7,actionability:7,truth:6,craft:6,originality:6},
+  keep:'展开后的时间瀑布：派活画成某一时刻从父条向下落的竖边，回报画成向上升回的竖边，「你」单独一行放你的派活、批准、刹车。不读字就能看出责任何时下放、何时交回、你在哪一步插手，适合做其它方案的下钻视图。',
+  open:['分段时间轴要看刻度才读得准。','同一分钟的密集派活合成 ×n 后，要展开泳道才知道各派给了谁。'],
+  seen:'yes'},
+ {key:'08-focus-context',name:'焦点 + 上下文（鱼眼树）',
+  meta:'只完整展开从你到焦点的那条祖先链（脊柱），其余按离焦点的距离缩成名牌、短牌、方点、+N；键盘在塔里走，右侧是焦点的薄回报和等待。',
+  scores:{cooperation:4,overloadControl:7,actionability:6,truth:6,craft:7,originality:6},
+  keep:'祖先链竖排成脊柱，焦点以外按距离缩成名牌 → 短牌 → 方点 → 可点开的 +N：不横滚、不缩进就放下 5 层，每个折叠数字点开都是那张表。可以当任何方案的下钻层。',
+  open:['焦点外的方点要走过去才知道是谁。','贫瘠态里脊柱两条车道大多是虚线加「状态未知」，合作感在今天的数据上几乎为零。'],
+  seen:'no'},
+ {key:'09-briefing',name:'晨报 / 战况简报',
+  meta:'一份算出来的叙事页：「自你上次看以来」每个项目一节、句数固定，句子里的 agent 名可点；顶部是要你拍板的事，计数都能点开。',
+  scores:{cooperation:4.5,overloadControl:8,actionability:7,truth:6,craft:6.5,originality:7},
+  keep:'把乌龟塔写成一句责任移交链（「派活一层层传了 5 手：你 → A → B → C → D → E」），加上固定句数的「每个项目一节」。层级不占宽度，会话增多也不加长篇幅，可以直接嫁接到别的方案。',
+  open:['句子模板写死了优先级：一节超过 5 件会折进「其余 n 件」，可能正好是你关心的那件（现在按类型写出小计来缓解）。','链上没有派活记录的那几手要画成 ≈ 虚线，这是评审给的前提，要你看页面确认。'],
+  seen:'no'},
+ {key:'10-sections',name:'声部席位图',
+  meta:'乐团舞台俯视：一个扇区是一条工作线，离指挥台的远近是层级；每个等你的席位拉一条琥珀线到你面前的谱架，谱架就是等你队列。',
+  scores:{cooperation:5,overloadControl:4,actionability:7,truth:6,craft:6,originality:7},
+  keep:'「指挥台 + 谱架」：舞台上每个等你的席位拉一条琥珀线到指挥台，台前谱架就是按截止排序的唯一队列。另一个值得带走的是「上级已出错、回报没人接收」的断线画法。按工种分扇区已经放弃，改成按工作线分。',
+  open:['扇区宽度随数据变：新派一条工作线，其余扇区都会挪一点，空间记忆会漂。','深的工作线（5 层）和浅的挤在同一个半圆里，浅的扇区显得空；贫瘠态里要点开长凳才知道哪条在动。'],
+  seen:'yes'},
+ {key:'11-compression-ladder',name:'压缩阶梯',
+  meta:'每一档是下一档的摘要：全局一句 → 项目一句 → 领头一句 → 分身一句 → 原始对话；始终标明当前在第几档、压缩和截断了什么。',
+  scores:{cooperation:3,overloadControl:8,actionability:7,truth:6,craft:6,originality:7},
+  keep:'「每一档是下一档的摘要、祖先档各收成一行、接缝上画边」这套语义缩放下钻法：5 层祖先链同屏，计数全部诚实。它解决了不被淹没，没解决感到合作，应当作别的合作视图的下钻机制。',
+  open:['没有复核、打回的边：剧本里没有这类事件，画不出来。','全局顶层的合作感仍明显弱于压缩，不宜单独做首屏。'],
+  seen:'yes'},
+ {key:'12-graph-canvas',name:'活图画布',
+  meta:'节点是 agent、边是派活和回报的图，按层分行；平静的子树收成一个胶囊（数量 + 最差状态），「你」和等你队列是左边一堵不缩放的墙。',
+  scores:{cooperation:6.5,overloadControl:5,actionability:7,truth:5.5,craft:6,originality:6.5},
+  keep:'「你」是左边那堵墙，等你的队列钉在墙上；深处每件等你的事长成就地可处理的黄色卡片，三处处理的是同一个对象。牵线应改成只在悬停或选中时出现，常驻会交叉成网。',
+  open:['图仍随层数变宽：5 层在 1024 宽下要缩到 0.86 倍；贫瘠态 24 条工作线是一长列，要往下滚。','高风险批准：修改者把「键入确认」改成了「按住 1 秒」（BRIEF 第 9.4 节 C12 写的是按住），但他回报说这和评审的硬要求有出入，要你定一个。'],
+  seen:'yes'},
+ {key:'13-ambient-bar',name:'极简环境条 + 命令面板',
+  meta:'平时只有屏幕边上一条细的状态条，每个项目一段；等你的事从条上垂下来，越接近自动拒垂得越长；按一个键打开命令面板，所有动作都能只用键盘做。',
+  scores:{cooperation:3,overloadControl:7,actionability:6.5,truth:5.5,craft:6,originality:7},
+  keep:'「等你的事从条上垂下来，越接近自动拒垂得越长」：用长度编码剩余时间，和面板里的队列是同一个对象（P2）。这个原语值得移植到任何方案的顶栏；心跳刻度式的合作表达应放弃，或改成「还没回报的交接弧」。',
+  open:['条本身只能说「这一段有几件活在别人手上」，说不出谁和谁，要看名字得往下看交接台或悬停。','小窗形态下没有交接台，合作感又退回成节拍。'],
+  seen:'no'},
+ {key:'14-hybrid-desk',name:'分诊台 × 总谱 混合',
+  meta:'左边是分诊队列，右边是一条压缩的总谱时间线；选中队列里一件事，总谱只亮出它所在的链和它挡住的下游；底部常驻派活输入框。',
+  scores:{cooperation:6,overloadControl:6,actionability:8,truth:6,craft:7,originality:7},
+  keep:'把等你画成荧光笔横条，一直伸进「现在」右边的「之后」区，停在自动拒那一刻，超时即拒（r4 D8）成了看得见的空间。再配上分诊台里每件事从你到它的整条来路和就地处理，「哪件最急、从哪来、还剩多久」一眼读出。',
+  open:['横轴是非线性的，要先学会「越往左越压缩」。','贫瘠态下总谱几乎只剩点线，合作感主要靠分诊台的来路撑着。'],
+  seen:'no'}
+];
+
+var OBS = [
+  {t:'唯一等你队列 + 整条来路，已经是共识',
+   b:'五个方案各自长出了同一个部件：一列按剩余时间排的等你条目，每条带「你 → … → 它」的整条来路，能就地处理，塔上同一个对象同步消失（P2、P3）。可以定为所有方案共用的部件，卡面用 02 的腕带卡。',
+   k:['02-triage','04-metro','05-radar','12-graph-canvas','14-hybrid-desk']},
+  {t:'剩余时间画成长度',
+   b:'三个方案把「超时即拒」（r4 D8：只有一个审批队列，超时即拒）从一个数字变成看得见的空间：01 的未决区、13 的垂坠、14 伸进「之后」区的荧光条。越急越短、越靠前，扫一眼就知道先处理哪件。',
+   k:['01-score','13-ambient-bar','14-hybrid-desk']},
+  {t:'派出向下、回报向上、等你延到「现在」',
+   b:'用时间横轴把合作画成边上的事件（P5），是合作可感得分最高的一类。三家都自认同一个弱点：今天的数据里边太少，贫瘠态下塌成点名册或点线。',
+   k:['01-score','07-swimlane','14-hybrid-desk','12-graph-canvas']},
+  {t:'行数跟着工作线走，不跟着会话走',
+   b:'每条工作线一行，只写最近一次交接 ▼ 和最近一次回报 ▲；没来信的会话压成一个计数（P1）。这是对付「乱花渐欲迷人眼」最直接的一招，10 也因此把扇区从按工种改成按工作线。',
+   k:['02-triage','13-ambient-bar','06-dispatch-inbox','10-sections']},
+  {t:'5 层深度靠一条竖着的祖先链，不靠缩进',
+   b:'楼层标高、脊柱、接力句、压缩阶梯都只完整展开一条链，其余折成诚实计数（P6、P7）。它们单独做首屏，合作感都偏弱（3–4.5 分），适合统一当下钻层。',
+   k:['03-tower-section','08-focus-context','09-briefing','11-compression-ladder']},
+  {t:'合作感的上限在数据，不在画法',
+   b:'「未知」有了可用的画法：03 的磨砂玻璃、多家的 ≈ 点线（P8）。但几乎每个方案在贫瘠态里都失去合作感，因为真实数据里只有 2/111 个分身对得上派活记录。守护进程先能登记派活和回报，前端才有边可画。',
+   k:['03-tower-section','01-score','08-focus-context','14-hybrid-desk']}
+];
+
+var byKey = {}; MOCKS.forEach(function(m){ byKey[m.key] = m; });
+function esc(s){ return String(s).replace(/[&<>"]/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function no(k){ return k.slice(0,2); }
+function mean(m){ var s=0; DIMS.forEach(function(d){ s+=m.scores[d[0]]; }); return s/DIMS.length; }
+function fmt(v){ return (Math.round(v*10)/10).toFixed(1).replace(/\.0$/,''); }
+function store(k,v){ try{ if(v===undefined) return localStorage.getItem(k); localStorage.setItem(k,v); }catch(e){ return null; } }
+
+/* 原则 */
+document.getElementById('plist').innerHTML = PRINCIPLES.map(function(p){
+  return '<li><span class="pk">'+p[0]+'</span><span>'+esc(p[1])+'</span></li>';
+}).join('');
+
+/* 评分矩阵 */
+var sortKey = 'no', sortDir = 1;
+function renderMatrix(){
+  var cols = [['no','方案']].concat(DIMS.map(function(d){ return [d[0],d[1]]; })).concat([['mean','六项平均']]);
+  document.querySelector('#matrix thead').innerHTML = '<tr>'+cols.map(function(c,i){
+    var s = sortKey===c[0] ? (sortDir>0?'ascending':'descending') : 'none';
+    var tip = i>0 && i<=DIMS.length ? ' title="'+esc(DIMS[i-1][2])+'"' : '';
+    var arr = sortKey===c[0] ? (sortDir>0?'▲':'▼') : '';
+    return '<th scope="col" aria-sort="'+s+'"'+tip+'><button data-sort="'+c[0]+'">'+c[1]+'<span class="arr">'+arr+'</span></button></th>';
+  }).join('')+'</tr>';
+  var rows = MOCKS.slice().sort(function(a,b){
+    if(sortKey==='no') return sortDir*(a.key<b.key?-1:1);
+    var va = sortKey==='mean'?mean(a):a.scores[sortKey], vb = sortKey==='mean'?mean(b):b.scores[sortKey];
+    return sortDir*(va-vb) || (a.key<b.key?-1:1);
+  });
+  document.querySelector('#matrix tbody').innerHTML = rows.map(function(m){
+    return '<tr><td class="name"><a href="#'+m.key+'"><span class="n num">'+no(m.key)+'</span>'+esc(m.name)+'</a></td>'+
+      DIMS.map(function(d){ var v=m.scores[d[0]]; return '<td class="cell num" style="--a:'+(Math.max(0,(v-2.5)/7)*0.5).toFixed(3)+'" title="'+esc(m.name+' · '+d[1]+'：'+v)+'"><span>'+fmt(v)+'</span></td>'; }).join('')+
+      '<td class="mean num">'+fmt(mean(m))+'</td></tr>';
+  }).join('');
+  var best = DIMS.map(function(d){
+    var top = Math.max.apply(null, MOCKS.map(function(m){ return m.scores[d[0]]; }));
+    var who = MOCKS.filter(function(m){ return m.scores[d[0]]===top; }).map(function(m){ return no(m.key); });
+    return d[1]+' 最高 '+fmt(top)+'（'+who.join('、')+'）';
+  });
+  document.getElementById('mxNote').textContent = '共 '+MOCKS.length+' 个方案 × '+DIMS.length+' 项。'+best.join('；')+'。评分早于本轮修改。';
+}
+document.getElementById('matrix').addEventListener('click', function(e){
+  var b = e.target.closest('button[data-sort]'); if(!b) return;
+  var k = b.getAttribute('data-sort');
+  if(sortKey===k) sortDir = -sortDir; else { sortKey = k; sortDir = k==='no'?1:-1; }
+  renderMatrix();
+});
+renderMatrix();
+
+/* 方案卡 */
+function scoreChart(m){
+  return '<div class="scores" role="img" aria-label="'+esc(m.name+' 六项评分：'+DIMS.map(function(d){ return d[1]+' '+m.scores[d[0]]; }).join('，'))+'">'+
+    '<div class="cap"><span>评审评分（0–10）</span><span>平均 <b class="num">'+fmt(mean(m))+'</b></span></div>'+
+    DIMS.map(function(d){ var v=m.scores[d[0]];
+      return '<div class="srow" title="'+esc(d[1]+'：'+d[2])+'"><span class="lab">'+d[1]+'</span><span class="track"><i style="width:'+(v*10)+'%"></i></span><span class="val num">'+fmt(v)+'</span></div>';
+    }).join('')+
+    '<div class="axis" aria-hidden="true"><span></span><span><em style="font-style:normal">0</em><em style="font-style:normal">5</em><em style="font-style:normal">10</em></span><span></span></div>'+
+  '</div>';
+}
+function seenTag(m){
+  if(m.seen==='yes') return '<span class="tag seen">修改后在无头浏览器里看过</span>';
+  if(m.seen==='partial') return '<span class="tag seen" title="'+esc(m.seenNote)+'">无头浏览器看过（部分宽度）</span>';
+  return '<span class="tag unseen" title="修改者只跑了语法检查和模拟 DOM，排版、深色、窄屏都没目测">修改后只跑过脚本，没在浏览器里看过</span>';
+}
+document.getElementById('cards').innerHTML = MOCKS.map(function(m){
+  var href = 'mocks/'+m.key+'.html';
+  return '<article class="card" id="'+m.key+'">'+
+    '<a class="thumb" href="'+href+'" aria-label="打开 '+esc(m.name)+'" data-src="'+href+'"><span class="ph">小预览已关闭<br>点这里打开完整 mock</span><span class="cover"></span></a>'+
+    '<div class="body">'+
+      '<h3><span class="no num">'+no(m.key)+'</span>'+esc(m.name)+'</h3>'+
+      '<p class="meta">'+esc(m.meta)+'</p>'+
+      '<div class="tags">'+seenTag(m)+'<span class="tag num">'+esc(m.key)+'.html</span></div>'+
+      '<div class="blk"><h4>评审最想留下的</h4><p class="keep">'+esc(m.keep)+'</p></div>'+
+      '<div class="blk"><h4>仍未解决（'+m.open.length+'）</h4><ol class="open">'+m.open.map(function(x){ return '<li>'+esc(x)+'</li>'; }).join('')+'</ol></div>'+
+    '</div>'+
+    '<div class="side"><a class="go" href="'+href+'">打开 '+no(m.key)+' →</a>'+scoreChart(m)+'</div>'+
+  '</article>';
+}).join('');
+
+/* 观察 */
+document.getElementById('obs').innerHTML = OBS.map(function(o){
+  return '<li><b class="t">'+esc(o.t)+'</b>'+esc(o.b)+
+    '<div style="margin-top:8px">'+o.k.map(function(k){ return '<a class="chip" href="#'+k+'">'+no(k)+' '+esc(byKey[k].name.replace(/（.*）/,''))+'</a>'; }).join('')+'</div></li>';
+}).join('');
+
+/* 小预览：滚到附近才加载 */
+var previewsOn = store('ens.previews') !== 'off';
+var pvBtn = document.getElementById('pvBtn');
+var io = ('IntersectionObserver' in window) ? new IntersectionObserver(function(es){
+  es.forEach(function(e){ if(e.isIntersecting){ load(e.target); io.unobserve(e.target); } });
+},{rootMargin:'300px 0px'}) : null;
+function load(t){
+  if(!previewsOn || t.querySelector('iframe') || window.matchMedia('(max-width:760px)').matches) return;
+  var f = document.createElement('iframe');
+  f.src = t.getAttribute('data-src'); f.loading = 'lazy'; f.tabIndex = -1;
+  f.setAttribute('aria-hidden','true'); f.setAttribute('title','');
+  t.insertBefore(f, t.querySelector('.cover'));
+  t.querySelector('.ph').textContent = '';
+}
+function applyPreviews(){
+  pvBtn.setAttribute('aria-pressed', String(previewsOn));
+  pvBtn.textContent = '小预览：'+(previewsOn?'开':'关');
+  document.querySelectorAll('.thumb').forEach(function(t){
+    if(previewsOn){ if(io) io.observe(t); else load(t); }
+    else { var f=t.querySelector('iframe'); if(f) f.remove(); t.querySelector('.ph').innerHTML='小预览已关闭<br>点这里打开完整 mock'; if(io) io.unobserve(t); }
+  });
+}
+pvBtn.addEventListener('click', function(){ previewsOn = !previewsOn; store('ens.previews', previewsOn?'on':'off'); applyPreviews(); });
+applyPreviews();
+
+/* 主题 */
+var themes = [['','跟随系统'],['light','浅色'],['dark','深色']];
+var ti = Math.max(0, themes.findIndex(function(t){ return t[0]===(store('ens.theme')||''); }));
+var thBtn = document.getElementById('thBtn');
+function applyTheme(){
+  if(themes[ti][0]) document.documentElement.setAttribute('data-theme', themes[ti][0]); else document.documentElement.removeAttribute('data-theme');
+  thBtn.textContent = '主题：'+themes[ti][1];
+}
+thBtn.addEventListener('click', function(){ ti=(ti+1)%themes.length; store('ens.theme', themes[ti][0]); applyTheme(); });
+applyTheme();
+})();
+</script>
+</body>
+</html>

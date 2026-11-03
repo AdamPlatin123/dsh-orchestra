@@ -1,0 +1,1679 @@
+<!doctype html>
+<!--
+方案 14-hybrid-desk：分诊台 × 总谱
+回答的原则：P2 一个按自动拒先后排的队列（左边分诊台），能在这里处理的、只能去别处回的、≈ 推测的分开计数；
+P3 第 5 层的事带整条来路出现在队列里，就地处理；P5 合作画成总谱上的边：派活向下的三角/实线，
+回报上浮的信封（截断用虚线），等你是荧光横条，一直伸进「之后」区停在自动拒那一刻（已等掉的淡，剩下的实黄）；
+P6 选中任一件事只展开它的祖先链，兄弟折成计数，折叠行另写更深处的等你和出错；P1 下属超过 6 个聚成一行，
+总览轨道按屏幕距离分桶，字形数不随会话数增长；P10 派活台常驻底部（按 N），自有领头可「发给它本人，由它拆」。
+主动放弃：不画全量的树；不做 agent 消息的逐条流；不给项目上色（颜色只花在等你与出错两处）。
+最大的风险：横轴是非线性的（更早的对数压缩，最近 15 分放大），读者要先学会读它；
+今天的数据形状下总谱只剩点线和斜线底，价值主要落在分诊台和头部那几个数字上。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>分诊台与总谱</title>
+<style>
+[hidden]{display:none!important}
+:root{
+  --bg:#e8eaee; --paper:#f8f9fb; --sunk:#eff1f4; --ink:#161a20; --ink2:#3e4551; --mute:#737b89; --faint:#a9afba;
+  --rule:#d4d8df; --rule2:#e3e6eb;
+  --hl:#ffd23f; --hl-wash:rgba(255,210,63,.5); --hl-soft:rgba(255,210,63,.22); --hl-ink:#4d3b00;
+  --err:#c8102e; --err-soft:rgba(200,16,46,.09);
+  --unk:#9aa1ad; --away:rgba(22,26,32,.035);
+  --ui:"Microsoft YaHei UI","PingFang SC","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --num:"Bahnschrift","DIN Alternate","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+  --mono:"Cascadia Mono",Consolas,ui-monospace,monospace;
+  --labw:286px; --deskw:404px;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#14171c; --paper:#1b1f26; --sunk:#171a20; --ink:#e7eaef; --ink2:#c2c8d2; --mute:#8e96a4; --faint:#5d6573;
+  --rule:#2c323c; --rule2:#232830;
+  --hl:#ffd23f; --hl-wash:rgba(255,210,63,.3); --hl-soft:rgba(255,210,63,.12); --hl-ink:#ffe27a;
+  --err:#ff5d6c; --err-soft:rgba(255,93,108,.11); --unk:#6c7482; --away:rgba(255,255,255,.025);
+  color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --bg:#14171c; --paper:#1b1f26; --sunk:#171a20; --ink:#e7eaef; --ink2:#c2c8d2; --mute:#8e96a4; --faint:#5d6573;
+  --rule:#2c323c; --rule2:#232830;
+  --hl:#ffd23f; --hl-wash:rgba(255,210,63,.3); --hl-soft:rgba(255,210,63,.12); --hl-ink:#ffe27a;
+  --err:#ff5d6c; --err-soft:rgba(255,93,108,.11); --unk:#6c7482; --away:rgba(255,255,255,.025);
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--ink);font:13px/1.5 var(--ui);-webkit-font-smoothing:antialiased;overflow:hidden}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--ink);outline-offset:2px;border-radius:3px}
+code,kbd{font-family:var(--mono);font-size:12px}
+.app{display:grid;grid-template-rows:auto auto 1fr auto;height:100vh}
+
+/* 顶栏 */
+.top{display:flex;align-items:center;gap:18px;padding:8px 16px 6px;min-width:0}
+.brand{display:flex;align-items:baseline;gap:8px;white-space:nowrap}
+.brand b{font:600 15px var(--num);letter-spacing:.02em}
+.brand span{color:var(--mute)}
+.seg{display:inline-flex;border:1px solid var(--rule);border-radius:7px;overflow:hidden;background:var(--paper)}
+.seg button{border:0;background:none;padding:3px 10px;color:var(--mute);font-size:12px}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--paper)}
+.top-r{margin-left:auto;display:flex;align-items:center;gap:12px;white-space:nowrap}
+.ghost{border:1px solid var(--rule);background:var(--paper);border-radius:6px;padding:2px 9px;font-size:12px}
+.scheme{font-size:11px;color:var(--mute)}
+.scheme a{color:var(--ink2);margin-left:8px}
+
+/* 自你上次看以来 */
+.since{display:flex;align-items:center;flex-wrap:wrap;gap:4px 14px;padding:4px 16px 8px;color:var(--ink2);font-size:12.5px;min-height:32px}
+.since select{border:1px solid var(--rule);background:var(--paper);border-radius:5px;padding:0 4px;font:500 12.5px var(--num)}
+.since .si{display:inline-flex;align-items:baseline;gap:5px}
+.since .clr{border:0;background:none;color:var(--mute);text-decoration:underline;font-size:12px;padding:0}
+
+/* 计数链接：数字点开就是列表 */
+.cnt{border:0;background:none;padding:0 2px;font:600 13px var(--num);font-variant-numeric:tabular-nums;color:var(--ink);border-bottom:1px dotted var(--faint);line-height:1.2}
+.cnt:hover{border-bottom-color:var(--ink)}
+.cnt.hl{background:var(--hl);color:#2a2000;border-radius:3px;border-bottom:0;padding:0 5px}
+.cnt.err{color:var(--err)}
+.bk{white-space:nowrap}
+.bk+.bk{margin-left:9px}
+
+.main{display:grid;grid-template-columns:var(--deskw) 1fr;min-height:0;gap:0;border-top:1px solid var(--rule)}
+
+/* 分诊台 */
+.desk{overflow:auto;padding:14px 14px 24px 16px;border-right:1px solid var(--rule);background:var(--bg)}
+.desk-h{display:flex;align-items:baseline;gap:10px;margin:0 0 10px}
+.desk-h h2{margin:0;font:700 22px/1.1 var(--ui);letter-spacing:.02em}
+.desk-h h2 .cnt{font-size:22px}
+.desk-h p{margin:0;color:var(--mute);font-size:12px}
+.tier{margin:22px 0 8px;display:flex;align-items:baseline;gap:8px;font-size:13px;font-weight:600;color:var(--ink2)}
+.tier small{font-weight:400;color:var(--mute);font-size:12px}
+.q{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.qi{display:grid;grid-template-columns:62px 1fr;gap:10px;padding:10px 10px 10px 8px;background:var(--paper);border-radius:8px;border:1px solid var(--rule2);cursor:pointer;position:relative}
+.qi:hover{border-color:var(--rule)}
+.qi.sel{border-color:var(--ink);box-shadow:0 0 0 1px var(--ink)}
+.qi.sel::before{content:"";position:absolute;left:-17px;top:12px;bottom:12px;width:5px;background:var(--hl);border-radius:0 3px 3px 0}
+.clk{display:flex;flex-direction:column;align-items:flex-start;gap:1px}
+.clk b{font:600 21px/1 var(--num);font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.clk span{font-size:11px;color:var(--mute)}
+.clk .bar{display:block;width:52px;height:3px;background:var(--rule2);border-radius:2px;margin-top:4px;overflow:hidden}
+.clk .bar i{display:block;height:100%;background:var(--hl)}
+.clk.urgent b{background:var(--hl);color:#2a2000;padding:2px 4px;margin-left:-4px;border-radius:3px}
+.clk.none b{font-size:15px;color:var(--mute);font-weight:500}
+.qb{min-width:0}
+.qw{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 8px}
+.qw b{font-weight:600}
+.qw .v{color:var(--ink2)}
+.tag{font-size:11px;padding:0 6px;border-radius:3px;border:1px solid var(--rule);color:var(--ink2);white-space:nowrap;line-height:17px}
+.tag.risk{background:var(--ink);border-color:var(--ink);color:var(--paper)}
+.tag.ro{border-style:dashed}
+.tag.inf{border-style:dashed;color:var(--mute)}
+.ask{display:block;margin:5px 0 4px;padding:4px 7px;background:var(--sunk);border-radius:4px;font-size:12px;word-break:break-all;color:var(--ink)}
+.ask.txt{font-family:var(--ui);font-size:12.5px}
+.path{font-size:11.5px;color:var(--mute);line-height:1.55}
+.path b{font-weight:500;color:var(--ink2)}
+.path .sep{color:var(--faint);margin:0 3px}
+.qd{margin:10px 0 0;padding:10px 0 0;border-top:1px solid var(--rule2);display:grid;grid-template-columns:44px 1fr;gap:5px 10px;font-size:12.5px}
+.qd dt{color:var(--mute)}
+.qd dd{margin:0;min-width:0}
+.quote{color:var(--ink2)}
+.quote cite{font-style:normal;color:var(--mute);font-size:11.5px;margin-left:4px}
+.warn{grid-column:1/-1;padding:6px 8px;border-left:3px solid var(--ink);background:var(--sunk);font-size:12px}
+.acts{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center}
+.btn{border:1px solid var(--rule);background:var(--paper);border-radius:6px;padding:4px 12px;font-size:12.5px}
+.btn:hover{border-color:var(--ink2)}
+.btn.go{background:var(--ink);border-color:var(--ink);color:var(--paper);font-weight:600}
+.btn.go:disabled{opacity:.35;cursor:not-allowed}
+.btn.no{color:var(--ink2)}
+.btn.danger{border-color:var(--err);color:var(--err)}
+.btn.danger.armed{background:var(--err);color:#fff}
+.btn.sm{padding:2px 8px;font-size:12px}
+.confirm{grid-column:1/-1;display:flex;flex-direction:column;gap:4px;margin-top:4px}
+.confirm label{font-size:12px;color:var(--ink2)}
+.confirm input{border:1px solid var(--rule);background:var(--paper);border-radius:5px;padding:4px 8px;font-family:var(--mono);font-size:12.5px;width:100%}
+.confirm input.ok{border-color:var(--ink)}
+.note{font-size:12px;color:var(--mute)}
+.qi.quiet{grid-template-columns:22px 1fr;background:transparent;border-color:transparent;padding:6px 8px}
+.qi.quiet:hover{background:var(--paper);border-color:var(--rule2)}
+.qi.quiet.sel{background:var(--paper)}
+.mark{font:700 14px var(--num);text-align:center}
+.mark.err{color:var(--err)}
+.mark.unk{color:var(--unk)}
+.mark.rep{color:var(--ink2)}
+.qx{font-size:12px;color:var(--ink2);margin-top:2px}
+.rel{font-size:12px;margin-top:3px;color:var(--ink)}
+.rel::before{content:"";display:inline-block;width:10px;height:2px;background:var(--ink2);vertical-align:middle;margin-right:5px}
+.done{list-style:none;margin:0;padding:0;font-size:12px;color:var(--mute)}
+.done li{padding:2px 0}
+.guard{animation:nudge .25s 2}
+@keyframes nudge{50%{transform:translateX(3px)}}
+
+/* 总谱 */
+.score{position:relative;display:grid;grid-template-rows:auto 1fr;min-height:0;min-width:0;background:var(--paper)}
+.score-h{display:flex;align-items:center;flex-wrap:wrap;gap:6px 16px;padding:10px 16px 8px;border-bottom:1px solid var(--rule2)}
+.score-h h2{margin:0;font-size:14px;font-weight:600}
+.score-h .back{border:1px solid var(--rule);background:var(--paper);border-radius:6px;padding:2px 10px;font-size:12px}
+.legend{margin-left:auto;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:11.5px;color:var(--mute)}
+.legend span{display:inline-flex;align-items:center;gap:5px}
+.lg{display:inline-block;position:relative;width:18px;height:12px}
+.poorbar{flex-basis:100%;font-size:12px;color:var(--ink2);padding:5px 8px;background:var(--sunk);border-radius:5px}
+.score-b{position:relative;overflow:auto}
+.sheet{position:relative;min-height:100%;padding-bottom:30px}
+.axis{position:sticky;top:0;z-index:4;display:grid;grid-template-columns:var(--labw) 1fr;height:26px;background:var(--paper);border-bottom:1px solid var(--rule2)}
+.axis .ax{position:relative}
+.axis .tk{position:absolute;top:6px;transform:translateX(-50%);font:12px var(--num);color:var(--mute);font-variant-numeric:tabular-nums;white-space:nowrap}
+.axis .tk.now{color:var(--ink);font-weight:600}
+.axis .tk.fut{color:var(--faint)}
+.axis .lab0{padding:5px 16px;font-size:11.5px;color:var(--mute)}
+.layer{position:absolute;top:0;bottom:0;pointer-events:none}
+.away{background:var(--away);border-left:1px dashed var(--faint);z-index:0}
+.away em{position:sticky;top:30px;display:block;font-style:normal;font-size:11px;color:var(--mute);padding:2px 6px}
+.nowline{border-left:1.5px solid var(--ink);z-index:3;opacity:.7}
+.future{background:repeating-linear-gradient(90deg,transparent 0 9px,var(--rule2) 9px 10px);opacity:.6;z-index:0}
+.rows{position:relative;z-index:1}
+.row{display:grid;grid-template-columns:var(--labw) 1fr;min-height:30px;border-bottom:1px solid var(--rule2);position:relative}
+.row:hover{background:var(--away)}
+.lab{padding:7px 12px 7px 16px;min-width:0;cursor:pointer;position:relative}
+.lab .nm{font-weight:600;font-size:13px;display:inline}
+.lab .nm.thin{font-weight:500}
+.lab .meta{display:flex;flex-wrap:wrap;gap:2px 9px;font-size:11.5px;color:var(--mute);margin-top:1px}
+.lab .wt{font-size:12px;color:var(--ink2);margin-top:2px;line-height:1.45}
+.lab .wt.err{color:var(--err)}
+.lab .cs{font-size:12px;color:var(--ink2);margin-top:3px;line-height:1.7}
+.row.root .wt{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.root .lab{padding-top:6px;padding-bottom:6px}
+.lab .det{position:absolute;right:8px;top:6px;border:0;background:none;color:var(--mute);font-size:11.5px;text-decoration:underline;padding:0;opacity:0}
+.row:hover .det,.row.focus .det{opacity:1}
+.own-ro .lab{box-shadow:inset 2px 0 0 0 transparent}
+.own-ro .lab::before,.own-fo .lab::before,.own-ow .lab::before{content:"";position:absolute;left:6px;top:9px;bottom:9px;width:0;border-left:2px solid var(--ink2)}
+.own-ro .lab::before{border-left:2px dashed var(--faint)}
+.own-fo .lab::before{border-left:2px dotted var(--unk)}
+.dg{display:inline-flex;gap:1.5px;vertical-align:1px;margin-right:6px}
+.dg i{width:3px;height:9px;background:var(--rule);border-radius:1px}
+.dg i.f{background:var(--ink2)}
+.trk{position:relative;min-height:30px}
+.trk::before{content:"";position:absolute;left:0;right:0;top:50%;border-top:1px solid var(--rule2)}
+.row.line .trk{min-height:52px}
+.row.root .trk{min-height:58px}
+.row.you{background:var(--sunk)}
+.row.you .trk{min-height:46px}
+.row.you .lab .nm{font-size:15px}
+.row.proj{min-height:0;border-bottom:0;background:none}
+.row.proj .lab{padding:14px 16px 4px;cursor:default;font-size:12px;color:var(--mute);grid-column:1/-1}
+.row.proj .lab b{color:var(--ink);font-weight:600;font-size:12.5px;margin-right:8px}
+.row.proj .trk{display:none}
+.row.fold .lab{padding:3px 12px 3px 34px;font-size:12px;color:var(--ink2)}
+.row.fold .trk{min-height:24px}
+.row.fold .trk::before{border-top-style:dotted}
+.row.thin .lab{padding:4px 12px 4px 30px}
+.row.thin .lab .wt{margin-top:0;font-size:11.5px}
+.row.mini{opacity:.7}
+.row.mini .lab{padding:4px 12px 4px 16px;font-size:12px}
+.row.mini .trk{min-height:26px}
+.row.focus{background:var(--hl-soft)}
+.row.lit .lab .nm,.row.focus .lab .nm{background:linear-gradient(transparent 40%,var(--hl-wash) 40%,var(--hl-wash) 92%,transparent 92%);padding:0 3px;margin:0 -3px;border-radius:2px 6px 3px 7px}
+.row.born{animation:born 1.6s ease-out}
+@keyframes born{0%{background:var(--hl-wash)}100%{background:transparent}}
+
+/* 总谱上的字形 */
+.ll{position:absolute;top:50%;height:2px;transform:translateY(-50%);background:var(--ink2);border-radius:1px}
+.ll.hist{height:1.5px;background:var(--faint)}
+.ll.run{height:3.5px;background:var(--ink)}
+.ll.wait{height:4px;background:var(--hl)}
+.ll.inf{height:3px;background:repeating-linear-gradient(90deg,var(--ink2) 0 5px,transparent 5px 9px)}
+.ll.idle{height:1.5px;background:var(--ink2)}
+.ll.rep{height:1.5px;background:var(--ink2)}
+.ll.err{height:3px;background:var(--err)}
+.ll.unk{height:9px;background:repeating-linear-gradient(135deg,var(--unk) 0 1px,transparent 1px 5px);opacity:.85}
+.ll.fresh{height:3px;background:repeating-linear-gradient(90deg,var(--ink) 0 2px,transparent 2px 4px)}
+.cap{position:absolute;top:50%;transform:translate(-50%,-50%)}
+.cap.start{width:5px;height:5px;border-radius:50%;background:var(--ink2)}
+.cap.disc{width:9px;height:9px;border-radius:50%;border:1.5px solid var(--unk);background:var(--paper)}
+.cap.end{width:2px;height:14px;background:var(--ink2)}
+.cap.brk{width:7px;height:16px;border-left:2.5px solid var(--ink);border-right:2.5px solid var(--ink)}
+.g{position:absolute;top:50%;transform:translateX(-50%);pointer-events:auto}
+.g.msg{width:1px;background:var(--faint);margin-top:5px;pointer-events:none}
+.g.dlg{width:0;height:0;border-left:4.5px solid transparent;border-right:4.5px solid transparent;border-top:7px solid var(--ink);margin-top:4px}
+.g.dlgin{width:0;height:0;border-left:4.5px solid transparent;border-right:4.5px solid transparent;border-top:7px solid var(--ink);margin-top:-13px}
+.g.rep{width:10px;height:7px;border:1.5px solid var(--ink2);background:var(--paper);margin-top:-15px;border-radius:1px}
+.g.rep.cut{border-style:dashed}
+.g.rep.in{margin-top:6px}
+.g.err{font:700 13px/1 var(--num);color:var(--err);margin-top:-6px}
+.g.apv{width:8px;height:8px;transform:translateX(-50%) rotate(45deg);border:1.5px solid var(--ink);background:var(--ink);margin-top:-4px}
+.g.apv.rej{background:var(--paper)}
+.g.apv.tmo{background:var(--paper);border-style:dashed}
+.g.cmp{font:11px/1 var(--num);color:var(--mute);margin-top:-15px}
+.g.stale{font:600 11px/1 var(--num);color:var(--unk);margin-top:-16px}
+.g.dl{width:9px;height:9px;transform:translateX(-50%) rotate(45deg);background:var(--hl);border:1.5px solid var(--hl-ink);margin-top:-5px;cursor:pointer}
+.g.mk{outline:2px solid var(--ink);outline-offset:3px;border-radius:2px;z-index:2}
+.wb{position:absolute;top:50%;height:20px;margin-top:-10px;background:linear-gradient(90deg,var(--hl-wash) 0 var(--fuse,0%),var(--hl) var(--fuse,0%) 100%);border-left:2.5px solid var(--hl-ink);border-right:3px solid var(--hl-ink);cursor:pointer;pointer-events:auto;border-radius:0 3px 3px 0}
+.wb.open{border-right:0;background:linear-gradient(90deg,var(--hl-wash),var(--hl-wash) 70%,transparent)}
+.wb.inf{background:repeating-linear-gradient(90deg,var(--hl-wash) 0 6px,transparent 6px 10px);border-left-style:dashed}
+.wb.thin{height:6px;margin-top:calc(9px + var(--i) * 8px);border-left-width:2px;border-right-width:2px}
+.wb.on{box-shadow:0 0 0 1.5px var(--ink)}
+.wb em{position:absolute;right:3px;top:2px;font:600 11.5px/16px var(--num);font-style:normal;color:#2a2000;background:var(--hl);padding:0 4px;border-radius:2px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.wbx{position:absolute;right:-3px;top:100%;margin-top:2px;font:600 10.5px/1.2 var(--num);color:var(--hl-ink);white-space:nowrap;pointer-events:none}
+.g .gn{position:absolute;font:600 10px/1 var(--num);color:var(--ink2);white-space:nowrap;pointer-events:none}
+.g.dlg .gn,.g.dlgin .gn{left:4px;top:-9px}
+.g.rep .gn{left:10px;top:-4px}
+.wires{position:absolute;inset:0;pointer-events:none;z-index:2}
+.wire{position:absolute;width:0;border-left:1.5px solid var(--ink)}
+.wire.dlg::after{content:"";position:absolute;left:-5.5px;bottom:-1px;border-left:4.5px solid transparent;border-right:4.5px solid transparent;border-top:7px solid var(--ink)}
+.wire.rep{border-left-color:var(--ink2)}
+.wire.rep::before{content:"";position:absolute;left:-6px;top:-4px;width:10px;height:7px;border:1.5px solid var(--ink2);background:var(--paper);border-radius:1px}
+.wire.rep.cut{border-left-style:dashed}
+.wire.rep.cut::before{border-style:dashed}
+.wire.guess{border-left:1.5px dotted var(--faint)}
+.wire.ask{border-left:2px dashed var(--hl-ink)}
+.wire.ask::before{content:"";position:absolute;left:-5.5px;top:-1px;border-left:4.5px solid transparent;border-right:4.5px solid transparent;border-bottom:7px solid var(--hl-ink)}
+.wire.mk{border-left-width:3px}
+.wire.kin{border-left:1px solid var(--faint)}
+.wire.kin::after{content:"同一工作线";position:absolute;left:5px;top:50%;transform:translateY(-50%);font-size:10.5px;color:var(--mute);white-space:nowrap;background:var(--paper);padding:0 3px}
+.wire.dim{opacity:.35}
+.layer.zoom{border-left:1px dashed var(--faint);z-index:0}
+.axis .brk{position:absolute;top:3px;transform:translateX(-50%);font:600 14px var(--num);color:var(--mute);background:var(--paper);padding:0 3px}
+.future em{position:sticky;top:30px;display:block;font-style:normal;font-size:11px;font-weight:600;color:var(--hl-ink);padding:2px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row.agg .lab{padding:5px 12px 5px 30px;cursor:pointer;font-size:12px}
+.row.agg .x{font:700 14px var(--num);margin-right:6px}
+.row.agg .x .cnt{font-size:14px}
+.row.agg .wt{font-size:11.5px;color:var(--mute);margin-top:1px}
+.row.agg .trk{min-height:34px}
+.lab .sub{color:var(--ink2)}
+.prog{font-size:12px;color:var(--ink2);margin-top:2px}
+.foot{position:relative;z-index:1;margin:14px 16px 0;font-size:11.5px;color:var(--mute);max-width:760px}
+.hbx{margin-top:12px;padding:10px 12px;border:1px dashed var(--err);border-radius:6px}
+.hbx h4{color:var(--err)!important;margin-top:0}
+.hbx p{margin:0 0 6px}
+.rel.ro::before{background:var(--faint)}
+.route.off{opacity:.55}
+.pop li.stub{cursor:default}
+.desk-sub{margin:-4px 0 10px;font-size:12px;color:var(--ink2)}
+.tier.faint{color:var(--mute);font-weight:500}
+.q.away .qi{background:var(--sunk)}
+.q.faint .qi{background:transparent;border-style:dashed}
+.clock{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--mute);white-space:nowrap}
+.clock b{font:600 13px var(--num);color:var(--ink);font-variant-numeric:tabular-nums}
+.clock button{border:1px solid var(--rule);background:var(--paper);border-radius:5px;padding:1px 7px;font-size:12px;color:var(--ink2)}
+.howto{position:relative}
+.howto summary{cursor:pointer;font-size:12px;color:var(--ink2);list-style:none;border:1px solid var(--rule);border-radius:6px;padding:2px 9px;background:var(--paper)}
+.howto summary::-webkit-details-marker{display:none}
+.howto[open] summary{background:var(--ink);color:var(--paper);border-color:var(--ink)}
+.howto-b{position:absolute;right:0;top:calc(100% + 6px);width:min(580px,calc(100vw - 32px));max-height:76vh;overflow:auto;z-index:60;background:var(--paper);border:1.5px solid var(--ink);border-radius:9px;padding:12px 16px 16px;box-shadow:0 14px 40px rgba(10,12,16,.2);white-space:normal;font-size:12.5px;line-height:1.6;color:var(--ink)}
+.howto-b h4{margin:12px 0 4px;font-size:12.5px}
+.howto-b h4:first-child{margin-top:0}
+.howto-b table{border-collapse:collapse;width:100%}
+.howto-b td{border-top:1px solid var(--rule2);padding:3px 8px 3px 0;vertical-align:top}
+.howto-b td:first-child{white-space:nowrap;color:var(--ink2);width:8.5em}
+.howto-b ol,.howto-b ul{margin:0;padding-left:18px}
+.howto-b .ghost{margin-top:10px}
+
+/* 抽屉、弹出列表、对话页 */
+.drawer{position:absolute;top:0;right:0;bottom:0;width:min(420px,100%);background:var(--paper);border-left:1px solid var(--rule);box-shadow:-12px 0 30px rgba(10,12,16,.08);overflow:auto;z-index:8;padding:14px 18px 30px}
+.drawer h3{margin:0 26px 2px 0;font-size:16px}
+.drawer .x{position:absolute;right:12px;top:10px;border:0;background:none;font-size:18px;color:var(--mute)}
+.drawer section{margin-top:14px}
+.drawer h4{margin:0 0 5px;font-size:12px;color:var(--mute);font-weight:500}
+.kv{display:grid;grid-template-columns:76px 1fr;gap:3px 10px;font-size:12.5px}
+.kv dt{color:var(--mute)} .kv dd{margin:0}
+.unknown{color:var(--mute);border-bottom:1px dashed var(--unk)}
+.rpt{border:1.5px solid var(--ink2);border-radius:3px;padding:10px 12px;background:var(--sunk);position:relative}
+.rpt.cut{border-style:dashed}
+.rpt .st{font-weight:600}
+.rpt .cutnote{margin-top:6px;font-size:12px;color:var(--ink);padding:4px 6px;background:var(--paper);border-radius:3px}
+.refs{margin:6px 0 0;padding:0;list-style:none}
+.refs li{font-family:var(--mono);font-size:12px;padding:1px 0}
+.refs li::before{content:"引用 ";font-family:var(--ui);color:var(--mute);font-size:11px}
+.evl{list-style:none;padding:0;margin:0;font-size:12px}
+.evl li{display:grid;grid-template-columns:42px 1fr;gap:6px;padding:3px 0;border-top:1px solid var(--rule2)}
+.evl time{font:12px var(--num);color:var(--mute);font-variant-numeric:tabular-nums}
+.stops{display:flex;flex-direction:column;gap:6px}
+.stops .btn{text-align:left}
+.blast{margin-top:6px;padding:8px 10px;border-left:3px solid var(--err);background:var(--err-soft);font-size:12px}
+.pop{position:fixed;z-index:30;width:340px;max-height:60vh;overflow:auto;background:var(--paper);border:1px solid var(--rule);border-radius:8px;box-shadow:0 14px 40px rgba(10,12,16,.18);padding:10px 12px}
+.pop h5{margin:0 0 6px;font-size:12.5px;font-weight:600}
+.pop ol{margin:0;padding:0;list-style:none}
+.pop li{padding:4px 2px;border-top:1px solid var(--rule2);font-size:12px;cursor:pointer;display:flex;gap:8px;justify-content:space-between}
+.pop li:hover{background:var(--sunk)}
+.pop li span:last-child{color:var(--mute);white-space:nowrap}
+.toast{position:fixed;right:18px;bottom:120px;z-index:40;background:var(--ink);color:var(--paper);padding:8px 14px;border-radius:7px;font-size:12.5px;max-width:420px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+.convo{position:fixed;inset:0;z-index:50;background:var(--paper);display:grid;grid-template-rows:auto 1fr auto}
+.convo header{display:flex;align-items:center;gap:14px;padding:12px 18px;border-bottom:1px solid var(--rule)}
+.convo .body{overflow:auto;padding:18px;max-width:820px;width:100%;margin:0 auto}
+.convo .msgblk{border-left:2px solid var(--rule);padding:4px 12px;margin:10px 0;font-size:13px}
+.convo footer{padding:10px 18px;border-top:1px solid var(--rule);display:flex;gap:8px}
+.convo footer input{flex:1;border:1px solid var(--rule);border-radius:6px;padding:6px 10px;background:var(--paper)}
+
+/* 派活台 */
+.dispatch{border-top:1.5px solid var(--ink);background:var(--paper);padding:8px 16px 10px;position:relative;z-index:9}
+.dp-row{display:flex;gap:8px;align-items:center}
+.dp-key{display:flex;align-items:center;gap:6px;font-weight:700;font-size:14px;white-space:nowrap}
+.dp-key kbd{border:1px solid var(--rule);border-bottom-width:2px;border-radius:4px;padding:0 5px;font-size:11px;background:var(--sunk)}
+#dpTarget{border:1px solid var(--rule);border-radius:6px;background:var(--paper);padding:5px 6px;max-width:280px;font-size:12.5px}
+#dpText{flex:1;min-width:0;border:1.5px solid var(--ink2);border-radius:7px;padding:7px 11px;background:var(--paper);font-size:13.5px}
+#dpText:focus{outline:none;border-color:var(--ink);box-shadow:0 0 0 3px var(--hl-soft)}
+.dp-drafts{display:flex;gap:6px;align-items:center;margin-top:6px;overflow-x:auto;scrollbar-width:none;font-size:12px;color:var(--mute)}
+.dp-drafts::-webkit-scrollbar{display:none}
+.chip{border:1px dashed var(--rule);background:none;border-radius:12px;padding:1px 10px;white-space:nowrap;font-size:12px;color:var(--ink2)}
+.chip:hover{border-style:solid;border-color:var(--ink2)}
+.dp-prev{position:absolute;left:16px;right:16px;bottom:100%;margin-bottom:8px;max-width:760px;background:var(--paper);border:1.5px solid var(--ink);border-radius:9px;padding:12px 14px;box-shadow:0 -10px 34px rgba(10,12,16,.14)}
+.dp-prev h4{margin:0 0 8px;font-size:14px}
+.dp-prev .kv{grid-template-columns:70px 1fr;gap:6px 12px}
+.route{display:flex;gap:8px;align-items:flex-start;padding:4px 0}
+.route input{margin-top:3px}
+.route small{color:var(--mute);display:block}
+.rules{margin:0;padding-left:16px}
+.rules li{margin:1px 0}
+
+/* 窄屏 */
+.tabs{display:none}
+@media (max-width:1180px){:root{--labw:230px;--deskw:350px}}
+@media (max-width:860px){
+  :root{--labw:0px}
+  body{overflow:auto}
+  .app{height:auto;min-height:100vh;grid-template-rows:auto auto auto 1fr auto;grid-template-columns:minmax(0,1fr)}
+  .top{flex-wrap:wrap;gap:6px 12px}
+  .top-r{margin-left:0;width:100%;justify-content:space-between;flex-wrap:wrap;white-space:normal;gap:6px 10px}
+  .top-r>*{min-width:0}
+  .scheme{order:-1}
+  .tabs{display:flex;gap:0;margin:0 16px 8px;border:1px solid var(--rule);border-radius:8px;overflow:hidden;background:var(--paper)}
+  .tabs button{flex:1;border:0;background:none;padding:6px;font-size:13px}
+  .tabs button[aria-selected="true"]{background:var(--ink);color:var(--paper)}
+  .main{grid-template-columns:1fr;border-top:0}
+  .desk{border-right:0;overflow:visible}
+  .main[data-tab="desk"] .score{display:none}
+  .main[data-tab="score"] .desk{display:none}
+  .score-b{overflow:visible}
+  .row{grid-template-columns:1fr}
+  .row .lab{padding-left:16px}
+  .row.thin .lab,.row.fold .lab{padding-left:22px}
+  .axis{grid-template-columns:1fr}
+  .axis .lab0{display:none}
+  .legend{margin-left:0}
+  .dispatch{position:sticky;bottom:0}
+  .dp-row{flex-wrap:wrap}
+  #dpTarget{max-width:none;flex:1}
+  .dp-key{width:100%}
+  .dp-prev{left:8px;right:8px}
+  .drawer{position:fixed;z-index:45;width:100%;border-left:0}
+  .clock{flex-wrap:wrap;white-space:normal}
+  .howto-b{position:fixed;left:12px;right:12px;top:60px;width:auto}
+  .wbx{display:none}
+  .pop{left:8px!important;right:8px;width:auto}
+}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand"><b>orchestrad</b><span>指挥台</span></div>
+    <div class="seg" role="group" aria-label="数据来源">
+      <button data-mode="rich" aria-pressed="true">剧本数据</button>
+      <button data-mode="poor" aria-pressed="false">今天的数据形状</button>
+    </div>
+    <div class="clock" id="clock" aria-label="演示时钟"></div>
+    <div class="top-r">
+      <details class="howto" id="howto"><summary>这个方案怎么读</summary><div class="howto-b">
+        <h4>画面上的东西是什么意思</h4>
+        <table>
+          <tr><td>左边的分诊台</td><td>唯一的等你队列，按自动拒的先后排。批准、拒绝、派出只在这里点；总谱上点黄条或菱形，选中的是这里同一条。</td></tr>
+          <tr><td>荧光黄横条</td><td>一件等你的事：从它开口那一刻起，一直伸进「现在」右边，停在自动拒那一刻。淡的一段是已经等掉的，实黄的一段是还剩的。</td></tr>
+          <tr><td>「你」那一行的菱形</td><td>每件事的自动拒时刻。</td></tr>
+          <tr><td>总谱的横轴</td><td>时间。≈ 左边按对数压缩，最近 15 分放大，「现在」右边是还没到的截止。</td></tr>
+          <tr><td>向下的三角、实线箭头</td><td>派活。旁边的小数字是这一格里有几次。</td></tr>
+          <tr><td>上浮的信封</td><td>回报（交回）。虚线信封是截断的回报。</td></tr>
+          <tr><td>点线</td><td>按文件位置挂靠，对不上是哪一次派活。</td></tr>
+          <tr><td>斜线底</td><td>状态未知：不代表在跑，也不代表空闲。</td></tr>
+          <tr><td>细灰线「同一工作线」</td><td>你替只读领头开的会话。它不是那个领头的下属。</td></tr>
+          <tr><td>左缘实线、虚线、点线</td><td>自有、只读、归属不明。</td></tr>
+        </table>
+        <h4>重押的原则</h4>
+        <ul>
+          <li>P2（只有一个行动队列，按截止排）：要人做的事只在一处处理，别处只是指向它。</li>
+          <li>P3（需要你的事冒泡到顶，带来路）：第 5 层的请求在队列里带着从你到它的整条链，不用先展开塔。</li>
+          <li>P5（合作画成边上的事件）：派活、回报、等你各有一种字形，不读字也能分。</li>
+          <li>P6（一次只展开一条祖先链）：选中谁，只展开你到它的那条链，其余折成能点开的计数。</li>
+        </ul>
+        <h4>十对张力各站哪边</h4>
+        <ol>
+          <li>合作可感对安静压缩：偏安静。合作只画成字形和边，按屏幕距离分桶，不画消息流。</li>
+          <li>空间对列表：两样都要。左边列表管处理，右边总谱管关系和时间。</li>
+          <li>全局对焦点：默认看全部工作线，每条一行；选中后只展开一条链。</li>
+          <li>实时对稳定：偏稳定。鼠标在分诊台上不重排，列表刚变的 750 ms 内点批准不算数，重画时保住你键入了一半的确认。</li>
+          <li>丰富对贫瘠：同一套画法。贫瘠时总谱只剩点线和斜线底，头部如实写出没读进来的数字。</li>
+          <li>隐喻对人话：人话。总谱只借了版式，界面里没有乐理术语。</li>
+          <li>深度对宽度：靠 5 格深度条表示层级，不缩进；1024 宽不横向滚动。</li>
+          <li>压缩对直接操作：默认压缩，详情里一步进入对话。</li>
+          <li>agent 主动对人权威：agent 说的话一律是署名引语；状态位置只放守护进程能填的。</li>
+          <li>只读对自有：同屏。只读会话没有批准、发消息、中断按钮，只有要键入确认的本机进程刹车。</li>
+        </ol>
+        <h4>自己觉得最弱的一点</h4>
+        <p>横轴是非线性的，要先学会「越往左越压缩」。今天的数据形状下，总谱几乎只剩点线和斜线底，合作感主要靠分诊台里的来路撑着。</p>
+        <button type="button" class="ghost" id="stressBtn" data-act="stress">加压：给「购物车组件重写」再挂 120 个 Explore</button>
+      </div></details>
+      <button class="ghost" id="themeBtn" type="button">切换深浅</button>
+      <span class="scheme">方案 14-hybrid-desk：分诊台 × 总谱<a href="../index.html">返回画廊</a></span>
+    </div>
+  </header>
+  <div class="since" id="since"></div>
+  <nav class="tabs" id="tabs" role="tablist"></nav>
+  <main class="main" id="main" data-tab="desk">
+    <section class="desk" id="desk" aria-label="等你处理的事"></section>
+    <section class="score" id="score" aria-label="总谱">
+      <div class="score-h" id="scoreH"></div>
+      <div class="score-b" id="scoreB"></div>
+      <aside class="drawer" id="drawer" hidden></aside>
+    </section>
+  </main>
+  <footer class="dispatch" id="dispatch">
+    <div class="dp-prev" id="dpPrev" hidden></div>
+    <div class="dp-row">
+      <label class="dp-key" for="dpText"><kbd>N</kbd>派活</label>
+      <select id="dpTarget" aria-label="挂在谁下面"></select>
+      <input id="dpText" autocomplete="off" placeholder="一句话说清要做什么，回车先看派给谁、命中哪些规则">
+      <button class="btn go" id="dpGo" type="button">预览</button>
+    </div>
+    <div class="dp-drafts" id="dpDrafts"></div>
+  </footer>
+</div>
+<div class="pop" id="pop" hidden></div>
+<div class="toast" id="toast" hidden role="status"></div>
+<div class="convo" id="convo" hidden></div>
+<script src="../scenario.js"></script>
+<script>
+(function(){
+'use strict';
+var root = typeof window !== 'undefined' ? window : globalThis;
+var S = root.SCENARIO;
+var MIN = 60000;
+function T(s){ return s ? Date.parse(s) : null; }
+var NOW0 = T(S.meta.now), T0 = T(S.meta.windowStart);
+/* 演示时钟：默认停住，评审时倒计时不会自己走掉；可以走、重置、快进到下一件自动拒 */
+var clock = {run:false, base:NOW0, wall:Date.now()};
+function simNow(){ return clock.run ? clock.base + (Date.now() - clock.wall) : clock.base; }
+function clockSet(t, run){ clock.base = t; clock.wall = Date.now(); clock.run = !!run; }
+function hm(ms){ return new Date(ms + 8 * 3600e3).toISOString().slice(11, 16); }
+function hms(ms){ return new Date(ms + 8 * 3600e3).toISOString().slice(11, 19); }
+function iso(ms){ return new Date(ms + 8 * 3600e3).toISOString().slice(0, 19) + '+08:00'; }
+function mmss(ms){ if (ms < 0) ms = 0; var s = Math.ceil(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+function esc(s){ return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+function clone(o){ return JSON.parse(JSON.stringify(o)); }
+
+var HN = function(h){ return h ? ((S.harnesses[h] || {}).label || h) : '来源未知'; };
+var OWN = {owned:'自有', observed:'只读', foreign:'归属不明'};
+var ROLE = {}; S.voices.forEach(function(v){ ROLE[v.id] = v.label; });
+/* 回报状态只放守护进程能填的四种；数据里没有就写未知 */
+var DAEMON = {turn_end:'回合结束', limit:'到上限', interrupted:'被中断', error:'出错'};
+
+var st = {mode:'rich', stress:false, focus:null, sel:null, drawer:null, openFolds:new Set(), done:[], lastSeen: NOW0 - 40 * MIN,
+  mark:null, tab:'desk', qChanged:-1e9, frozen:null, seq:0, newSeq:0, armed:null, born:null, draft:null, litSet:null};
+var D = null;
+
+/* ---------- 今天的数据形状：简报 §7.4 的抽样数字，名字自拟。所有计数仍从下面生成的列表现算 ---------- */
+// [项目, 主会话标题, 状态, 下属个数, 其中能对上派活的个数]
+var POOR_MAINS = [
+  ['shop','结算页表单迁移','running',16,0], ['shop','预发环境报错排查','inf',12,0], ['shop','商品卡片样式对齐','idle',8,0], ['shop','埋点字段核对','idle',3,0],
+  ['shop','购物车空态','idle',0,0], ['shop','改版分支 rebase','unknown',2,0], ['shop','图片懒加载','unknown',0,0], ['shop','价格格式统一','unknown',0,0],
+  ['paper','表 3 第二组复现','running',16,2], ['paper','数据集 3 校验','idle',9,0], ['paper','warmup 配置对照','idle',6,0], ['paper','评测脚本重写','unknown',2,0],
+  ['paper','训练日志整理','unknown',0,0], ['paper','附录 B 抽取','unknown',0,0],
+  ['dshplug','seat v2 解析器','running',14,0], ['dshplug','兼容层回归','idle',10,0], ['dshplug','协议文档草稿','unknown',7,0], ['dshplug','fuzz 用例整理','unknown',0,0], ['dshplug','握手超时排查','unknown',0,0],
+  ['','看一下磁盘占用','idle',5,0], ['','翻译 README','idle',1,0], ['','周报草稿','idle',0,0], ['','临时：正则调试','unknown',0,0], ['','配置备份','unknown',0,0]
+];
+var POOR_TRIMMED = 718, POOR_DSH_UNREAD = 92;
+function rng(seed){ var s = seed; return function(){ s = (s * 1103515245 + 12345) % 2147483648; return s / 2147483648; }; }
+function hex(r, n){ var h = ''; for (var i = 0; i < n; i++) h += '0123456789abcdef'[Math.floor(r() * 16)]; return h; }
+function poorData(){
+  var r = rng(1103), nodes = new Map(), events = [], attention = [], trimmed = [], dshUnread = [], seq = 0, NOW = NOW0;
+  function ev(o){ o.id = 'pv-' + (++seq); events.push(o); return o; }
+  function add(o){
+    var n = {role:null, model:null, task:null, tokens:null, costUsd:null, messages:null, children:[], stateDetail:null, report:null, spawnedAt:null, since:null, lastActivity:null};
+    Object.keys(o).forEach(function(k){ n[k] = o[k]; }); nodes.set(n.id, n); return n;
+  }
+  var mains = [];
+  POOR_MAINS.forEach(function(m, i){
+    var id = 'm' + i, kind = m[2], la, since, sd = null, state = kind;
+    var sp = NOW - (25 + Math.floor(r() * 190)) * MIN;
+    if (kind === 'running') { la = NOW - Math.floor(r() * 40) * 1000; since = NOW - (5 + Math.floor(r() * 30)) * MIN; }
+    else if (kind === 'inf') { la = NOW - 9 * MIN; since = la; state = 'waiting'; sd = {kind:'inferred', inferred:true, why:'最后一条输出以问号结尾，之后 9 分钟没动静；没有收到正式的审批请求'}; }
+    else if (kind === 'idle') { la = NOW - (10 + Math.floor(r() * 90)) * MIN; since = la; sd = {kind:'idle', why:'在等输入；没有挂起的请求'}; }
+    else { la = NOW - (30 + Math.floor(r() * 120)) * MIN; since = la; sd = {kind:'unknown', why:'不在 registry 里：可能已退出，也可能是 registry 漏记，这里分不清'}; }
+    if (sp > la - 10 * MIN) sp = la - 10 * MIN;
+    var n = add({id:id, parent:'you', depth:1, project:m[0] || null, harness:'claude', ownership:'observed', title:m[1], state:state,
+      spawnedAt:iso(sp), since:iso(since), lastActivity:iso(la), messages:20 + Math.floor(r() * 180), stateDetail:sd});
+    mains.push(n);
+    for (var k = 0; k < m[3]; k++) {
+      var kid = id + '.s' + k, ksp = sp + Math.floor(r() * Math.max(MIN, la - sp));
+      if (k < m[4]) {
+        var rep = k === 1, kla = rep ? ksp + 6 * MIN : NOW - 20000;
+        add({id:kid, parent:id, depth:2, project:n.project, harness:'claude', ownership:'observed', role:'research',
+          title: rep ? 'Explore：对照作者日志' : 'Explore：找表 3 的超参', task: rep ? '对照作者公开的训练日志，找和论文正文不一致的超参' : '在论文和附录里找表 3 第二组的全部超参',
+          state: rep ? 'reported' : 'running', spawnedAt:iso(ksp), since:iso(rep ? kla : ksp), lastActivity:iso(kla),
+          report: rep ? {to:id, at:iso(kla), status:null, daemon:'turn_end', summary:'作者日志里 warmup 是 2000 步；表 3 第二组的学习率和论文正文不一致。', refs:['logs/author-run.txt'], truncated:false} : null});
+        ev({t:iso(ksp), type:'delegate', from:id, to:kid, task:rep ? '对照作者日志' : '找表 3 的超参'});
+        if (rep) ev({t:iso(kla), type:'report', from:kid, to:id, status:null, truncated:false});
+      } else {
+        add({id:kid, parent:id, depth:2, project:n.project, harness:'claude', ownership:'observed', title:'subagent ' + hex(r, 4), state:'unknown', spawnedAt:iso(ksp),
+          stateDetail:{kind:'unknown', native:true, why:'原生 subagent 不登记状态；只知道它按文件位置挂在「' + m[1] + '」下面'}});
+      }
+    }
+  });
+  for (var i = 0; i < POOR_TRIMMED; i++) trimmed.push({label:'agent-' + hex(r, 8) + '.jsonl', where:'属于「' + mains[Math.floor(r() * mains.length)].title + '」'});
+  for (var j = 0; j < POOR_DSH_UNREAD; j++) dshUnread.push({label:'DSH 会话 ' + hex(r, 6), where:'在磁盘上，没读入'});
+  add({id:'own.a', parent:'you', depth:1, project:'shop', harness:'codex', ownership:'owned', role:'ops', model:'codex-mid', title:'Codex：依赖升级',
+    task:'把改版分支的依赖装到锁文件里的版本，跑一遍构建', state:'waiting', spawnedAt:iso(NOW - 34 * MIN), since:iso(NOW - 2 * MIN), lastActivity:iso(NOW - 2 * MIN),
+    tokens:41230, costUsd:0.38, messages:22, stateDetail:{kind:'approval', approvalId:'ap-p'}});
+  ev({t:iso(NOW - 34 * MIN), type:'delegate', from:'you', to:'own.a', task:'把改版分支的依赖装到锁文件里的版本，跑一遍构建', via:'orchestra'});
+  add({id:'own.b', parent:'you', depth:1, project:'paper', harness:'codex', ownership:'owned', role:'code', model:'codex-high', title:'Codex：表 3 第一组',
+    task:'跑表 3 第一组三个种子，记下验证集均值', state:'running', spawnedAt:iso(NOW - 71 * MIN), since:iso(NOW - 71 * MIN), lastActivity:iso(NOW - 20000),
+    tokens:120400, costUsd:1.12, messages:57});
+  ev({t:iso(NOW - 71 * MIN), type:'delegate', from:'you', to:'own.b', task:'跑表 3 第一组三个种子，记下验证集均值', via:'orchestra'});
+  add({id:'dseat', parent:'you', depth:1, project:'dshplug', harness:'dsh', ownership:'foreign', title:'DSH 会话（没读入）', state:'waiting',
+    since:iso(NOW - MIN), lastActivity:iso(NOW - MIN), stateDetail:{kind:'seat', seatId:'seat-p'}});
+  attention.push({id:'ap-p', kind:'approval', subkind:'command', risk:'medium', nodeId:'own.a', ask:'运行命令：pnpm install --frozen-lockfile',
+    why:'切到改版分支后锁文件变了', blast:'改 node_modules；会联网下载依赖', openedAt:iso(NOW - 2 * MIN), deadline:iso(NOW + 9 * MIN)});
+  attention.push({id:'seat-p', kind:'seat', subkind:'untrusted-source', risk:'high', nodeId:'dseat', ask:'经 seat 请求 Orchestra 开一个 Codex 会话：「在 dsh-plugin 仓库跑 seat v2 回归测试，允许写 tests/ 目录」',
+    requesterClaimed:'DSH 主会话（自称）', verified:false, via:'seat://dsh-local/1', why:'DSH 的会话一个也没读入，请求方是谁这里核实不了', openedAt:iso(NOW - MIN), deadline:iso(NOW + 6 * MIN)});
+  attention.push({id:'inf-p', kind:'inferred', risk:null, nodeId:'m1', ask:'≈ 可能在等你确认下一步（推测，非正式请求）', why:'最后一条输出以问号结尾，之后 9 分钟没动静；没有收到正式的审批请求', openedAt:iso(NOW - 9 * MIN), deadline:null});
+  ev({t:iso(NOW - 2 * MIN), type:'approval', node:'own.a', subkind:'command', risk:'medium', ask:'运行命令：pnpm install --frozen-lockfile'});
+  ev({t:iso(NOW - MIN), type:'seat_request', node:'dseat', requesterClaimed:'DSH 主会话（自称）', verified:false, ask:attention[1].ask});
+  return {nodes:nodes, events:events, attention:attention, trimmed:trimmed, dshUnread:dshUnread};
+}
+/* 加压：给「购物车组件重写」再挂 120 个 Explore，检验首屏元素数不随会话数增长 */
+function addStress(d){
+  var p = d.nodes.get('shop.cart'); if (!p) return;
+  var t0 = T(p.spawnedAt) + 5 * MIN;
+  for (var i = 1; i <= 120; i++) {
+    var id = 'shop.cart.x' + i, sp = t0 + Math.floor(i * 1.1 * MIN), rep = i <= 96, at = sp + 4 * MIN;
+    d.nodes.set(id, {id:id, parent:'shop.cart', depth:p.depth + 1, project:p.project, harness:'claude', ownership:'observed', role:'research', model:'haiku',
+      title:'Explore ' + i, task:'读一遍购物车相关文件，列出用到旧组件的地方', state: rep ? 'reported' : 'unknown', spawnedAt:iso(sp), since:iso(rep ? at : sp), lastActivity:iso(rep ? at : sp),
+      tokens:null, costUsd:null, messages:null, children:[], stateDetail: rep ? null : {kind:'unknown', native:true, why:'原生 subagent 不登记状态；只知道它按文件位置挂在「购物车组件重写」下面'},
+      report: rep ? {to:'shop.cart', at:iso(at), status:'自述已交付，待核实', summary:'列出了 ' + (2 + i % 7) + ' 处旧组件用法。', refs:['src/cart/'], truncated:false} : null});
+    if (rep) {
+      d.events.push({id:'sx-d' + i, t:iso(sp), type:'delegate', from:'shop.cart', to:id, task:'Explore ' + i});
+      d.events.push({id:'sx-r' + i, t:iso(at), type:'report', from:id, to:'shop.cart', status:'自述已交付，待核实', truncated:false});
+    }
+  }
+}
+function load(mode){
+  var d;
+  if (mode === 'poor') d = poorData();
+  else {
+    var nodes = new Map(); S.nodes.forEach(function(n){ nodes.set(n.id, clone(n)); });
+    d = {nodes:nodes, events:S.events.map(clone), attention:S.attention.map(clone), trimmed:[], dshUnread:[]};
+    if (st.stress) addStress(d);
+  }
+  d.mode = mode; D = d; reindex(); return d;
+}
+function reindex(){
+  var m = new Map();
+  D.nodes.forEach(function(n){ if (!m.has(n.parent)) m.set(n.parent, []); m.get(n.parent).push(n); });
+  D.kidx = m;
+  D.staleSet = new Set(D.events.filter(function(e){ return e.type === 'stale'; }).map(function(e){ return e.node; }));
+}
+function node(id){ return D.nodes.get(id); }
+function kidsOf(id){ return (D.kidx.get(id) || []).slice(); }
+function roots(){ return kidsOf('you'); }
+function chainOf(id){ var out = [], n = node(id); while (n) { out.unshift(n.id); n = n.parent && n.parent !== 'you' ? node(n.parent) : null; } return out; }
+function subtree(id){ var out = [], q = kidsOf(id); while (q.length) { var n = q.shift(); out.push(n.id); q.push.apply(q, kidsOf(n.id)); } return out; }
+function deeperOf(ids){ var out = []; ids.forEach(function(id){ out.push.apply(out, subtree(id)); }); return out; }
+function short(n){ return n.title.replace(/ · 领头$/, ''); }
+function nm(id){ if (id === 'you') return '你'; var n = node(id); return n ? short(n) : id; }
+function attOf(id){ return D.attention.filter(function(a){ return a.nodeId === id; })[0] || null; }
+function brakeable(id){ var n = node(id); return n.ownership === 'owned' && ['running', 'waiting', 'idle', 'unknown'].indexOf(n.state) >= 0; }
+function maxDepth(id){ var m = node(id).depth; subtree(id).forEach(function(k){ m = Math.max(m, node(k).depth); }); return m; }
+function projOf(n){ return S.projects.filter(function(p){ return p.id === n.project; })[0] || null; }
+
+var BUCKETS = [['wait','等你'],['inf','≈ 可能在等你'],['err','出错'],['run','在跑'],['rep','已回报'],['idle','空闲'],['unk','状态未知'],['brk','被刹车'],['end','已结束']];
+function bucketOf(n){
+  if (n.state === 'waiting') return n.stateDetail && n.stateDetail.inferred ? 'inf' : 'wait';
+  return {running:'run', error:'err', reported:'rep', idle:'idle', unknown:'unk', braked:'brk', ended:'end'}[n.state] || 'unk';
+}
+function bucketLabel(n){ var k = bucketOf(n); return BUCKETS.filter(function(b){ return b[0] === k; })[0][1]; }
+function buckets(ids){
+  var m = {}; ids.forEach(function(id){ var b = bucketOf(node(id)); (m[b] = m[b] || []).push(id); });
+  return BUCKETS.filter(function(b){ return m[b[0]]; }).map(function(b){ return {key:b[0], label:b[1], ids:m[b[0]]}; });
+}
+function attSorted(){
+  return D.attention.slice().sort(function(a, b){
+    var da = a.deadline ? T(a.deadline) : Infinity, db = b.deadline ? T(b.deadline) : Infinity;
+    return (da - db) || (T(a.openedAt) - T(b.openedAt));
+  });
+}
+/* 等你的事分三种：能在这里处理的 / 只能去它自己界面回的 / ≈ 推测 */
+function attKind(a){
+  if (a.kind === 'inferred') return 'inf';
+  if (a.kind === 'seat') return 'here';
+  var n = node(a.nodeId); return n && n.ownership === 'owned' ? 'here' : 'away';
+}
+function attGroups(){ var g = {here:[], away:[], inf:[]}; attSorted().forEach(function(a){ g[attKind(a)].push(a); }); return g; }
+function waitSplit(ids){
+  var w = [], inf = [];
+  ids.forEach(function(id){ var a = attOf(id); if (a) (attKind(a) === 'inf' ? inf : w).push(id); });
+  return {w:w, inf:inf};
+}
+function problems(){
+  var errs = [], lost = [], unk = [], nativeUnk = [];
+  D.nodes.forEach(function(n){
+    if (n.state === 'error') errs.push(n.id);
+    else if (n.state === 'unknown') {
+      if (n.stateDetail && n.stateDetail.native) nativeUnk.push(n.id);
+      else if (D.staleSet.has(n.id)) lost.push(n.id);
+      else unk.push(n.id);
+    }
+  });
+  return {errs:errs, lost:lost, unk:unk, nativeUnk:nativeUnk};
+}
+function sinceGroups(from){
+  var evs = D.events.filter(function(e){ return T(e.t) >= from; });
+  function of(f){ return evs.filter(f); }
+  var newAtt = D.attention.filter(function(a){ return T(a.openedAt) >= from; });
+  return [
+    {key:'rep', label:'回报', list: of(function(e){ return e.type === 'report'; })},
+    {key:'cut', label:'其中截断', list: of(function(e){ return e.type === 'report' && e.truncated; })},
+    {key:'att', label:'新的等你', list: newAtt.filter(function(a){ return attKind(a) !== 'inf'; }), kind:'att'},
+    {key:'inf', label:'≈ 新推测', list: newAtt.filter(function(a){ return attKind(a) === 'inf'; }), kind:'att'},
+    {key:'err', label:'出错', list: of(function(e){ return e.type === 'error'; })},
+    {key:'dlg', label:'派活', list: of(function(e){ return e.type === 'delegate'; })},
+    {key:'res', label:'已处理的审批', list: of(function(e){ return e.resolved; })},
+    {key:'brk', label:'刹车', list: of(function(e){ return e.type === 'brake'; })},
+    {key:'oth', label:'压缩、失联、新发现', list: of(function(e){ return e.type === 'compact' || e.type === 'stale' || e.type === 'discovered'; })}
+  ];
+}
+
+/* ---------- 文案 ---------- */
+function splitAsk(a){ var i = a.ask.indexOf('：'); return i > 0 ? [a.ask.slice(0, i), a.ask.slice(i + 1)] : ['', a.ask]; }
+function verbOf(a){
+  if (a.kind === 'approval') return a.subkind === 'write' ? '想写文件' : '想运行命令';
+  if (a.kind === 'seat') return '经 seat 请求开一个会话';
+  if (a.kind === 'question') return '问你';
+  if (a.kind === 'inferred') return '≈ 可能在等你';
+  return '等你';
+}
+function resText(r){
+  if (!r) return '';
+  if (r.by === 'timeout') return '（超时自动拒）';
+  return {approved:'（你批准了）', dispatched:'（你派出了）', rejected:'（你拒绝了）', braked:'（随刹车撤下）'}[r.decision] || '';
+}
+function evText(e){
+  switch (e.type) {
+    case 'delegate': return (e.from === 'you' && e.via === 'message' ? '你把活发给 ' + nm(e.to) : nm(e.from) + ' 派给 ' + nm(e.to)) + '：' + e.task + (e.via && e.via.indexOf('seat') === 0 ? '（应 seat 请求）' : '');
+    case 'report': return nm(e.from) + ' 回报给 ' + nm(e.to) + (e.truncated ? '，回报已截断' : '') + (e.status ? '（自述「' + e.status + '」）' : '');
+    case 'message': return nm(e.node) + ' 与 ' + nm(e.with) + ' 往来 ' + e.count + ' 条，最后一条：「' + e.last + '」';
+    case 'approval': case 'seat_resolve': return nm(e.node) + ' 请求：' + e.ask + resText(e.resolved);
+    case 'error': return nm(e.node) + ' 出错：' + e.msg;
+    case 'brake': return (e.host ? '你从本机进程层刹住了 ' : '你刹住了 ') + nm(e.node);
+    case 'end': return nm(e.node) + ' 退出（退出码 ' + e.exitCode + '）';
+    case 'compact': return nm(e.node) + ' 上下文压缩 ' + Math.round(e.tokensBefore / 1000) + 'k 到 ' + Math.round(e.tokensAfter / 1000) + 'k：' + e.note;
+    case 'stale': return nm(e.node) + '：' + e.note;
+    case 'discovered': return '发现 ' + nm(e.node) + '：' + e.note;
+    case 'question': return nm(e.node) + ' 问你：' + e.ask + resText(e.resolved);
+    case 'seat_request': return nm(e.node) + ' 经 seat 请求开会话，' + e.requesterClaimed + '，未核实';
+    case 'accept': return '你验收了 ' + nm(e.node) + ' 的回报';
+    case 'bounce': return '你打回了 ' + nm(e.node) + ' 的回报';
+    default: return e.type;
+  }
+}
+function evNode(e){ return e.node || e.to || e.from; }
+
+function stateHTML(n){
+  var sd = n.stateDetail || {}, a = attOf(n.id), RNow = simNow();
+  switch (n.state) {
+    case 'waiting':
+      if (sd.inferred) return '<span>≈ 可能在等你</span>：' + esc(sd.why);
+      if (a) {
+        var v = verbOf(a).replace(/^想/, '批准它').replace('问你', '回答').replace('经 seat 请求开一个会话', '决定派不派会话');
+        return '<b>等你</b>' + esc(v) + (attKind(a) === 'away' ? '（只能在 ' + esc(HN(n.harness)) + ' 里回）' : '') + (a.deadline ? '，剩 <b data-dl="' + T(a.deadline) + '">' + mmss(T(a.deadline) - RNow) + '</b> 自动拒' : '');
+      }
+      return '<b>等你</b>';
+    case 'running': {
+      var rel = [], p = node(n.parent);
+      if (p && p.state === 'error') rel.push('上级「' + esc(short(p)) + '」已出错，它仍在跑');
+      if (p) kidsOf(p.id).forEach(function(s){ if (s.id !== n.id && s.state === 'error') rel.push('兄弟「' + esc(short(s)) + '」已出错，它仍在跑'); });
+      var down = subtree(n.id).filter(function(k){ var x = attOf(k); return x && attKind(x) !== 'inf'; });
+      if (down.length) rel.push('下游 ' + down.map(function(k){ return '「' + esc(nm(k)) + '」'; }).join('') + ' 在等你');
+      if (sd.kind === 'fresh') rel.push(esc(sd.why));
+      return '在跑' + (rel.length ? '：' + rel.join('；') : n.lastActivity ? '，最后动静 ' + hm(T(n.lastActivity)) : '');
+    }
+    case 'idle': return '空闲：' + esc(sd.why || '');
+    case 'unknown': return '<span class="unknown">状态未知</span>：' + esc(sd.why || '');
+    case 'error': return '出错：' + esc(sd.error || '');
+    case 'reported': return '已回报给「' + esc(nm(n.report ? n.report.to : n.parent)) + '」' + (n.report ? '，' + hm(T(n.report.at)) + (n.report.truncated ? '，回报已截断' : '') : '');
+    case 'braked': return '被你刹住：' + esc((sd.why || '').replace(/^你在 [\d:]+ 刹住：/, ''));
+    case 'ended': return '已结束：' + esc(sd.why || '');
+  }
+  return esc(n.state);
+}
+
+/* ---------- 计数：数字点开就是列表（T3）。按区域登记，区域重画时清掉旧的 ---------- */
+var LISTS = new Map(), REG = 'x', listSeq = 0;
+function region(r){ REG = r; LISTS.forEach(function(v, k){ if (k.indexOf(r + ':') === 0) LISTS.delete(k); }); }
+function cnt(n, title, list, kind, cls){
+  var k = REG + ':' + (++listSeq); LISTS.set(k, {title:title, list:list, kind:kind || 'nodes'});
+  return '<button type="button" class="cnt ' + (cls || '') + '" data-list="' + k + '" title="点开看这 ' + list.length + ' 项">' + n + '</button>';
+}
+function bucketLine(ids, prefix){
+  return buckets(ids).map(function(b){
+    var cls = b.key === 'wait' ? 'hl' : b.key === 'err' ? 'err' : '';
+    return '<span class="bk">' + cnt(b.ids.length, (prefix || '') + b.label, b.ids, 'nodes', cls) + ' ' + b.label + '</span>';
+  }).join('');
+}
+/* 折叠的分项只算直接成员；更深的等你和出错单独再写一句，不让它们藏起来 */
+function subClause(ids){
+  var deep = deeperOf(ids); if (!deep.length) return '';
+  var ws = waitSplit(deep), e = deep.filter(function(id){ return node(id).state === 'error'; });
+  return '<span class="sub">；它们下面还有 ' + cnt(deep.length, '更深的下属', deep) + ' 个' +
+    (ws.w.length ? '，其中等你 ' + cnt(ws.w.length, '更深处等你的', ws.w, 'nodes', 'hl') : '') +
+    (ws.inf.length ? '，≈ 推测在等你 ' + cnt(ws.inf.length, '更深处 ≈ 推测在等你的', ws.inf) : '') +
+    (e.length ? '，出错 ' + cnt(e.length, '更深处出错的', e, 'nodes', 'err') : '') + '</span>';
+}
+
+/* ---------- 时间轴：最近 15 分放大，更早的按对数压缩，「现在」右边是还没到的截止 ---------- */
+var RECENT = 15 * MIN, FUT = 30 * MIN, W_OLD = 0.45, W_REC = 0.37, GAP = 0.012, W_FUT = 1 - W_OLD - W_REC - GAP, LOGK = 12 * MIN, RN = NOW0;
+function xp(t){
+  var b = RN - RECENT;
+  if (t > RN) return (W_OLD + W_REC + GAP + Math.min(1, (t - RN) / FUT) * W_FUT) * 100;
+  if (t >= b) return (W_OLD + (t - b) / RECENT * W_REC) * 100;
+  var span = Math.max(MIN, b - T0), d = Math.min(span, b - t);
+  return W_OLD * (1 - Math.log(1 + d / LOGK) / Math.log(1 + span / LOGK)) * 100;
+}
+function binKey(t){ return Math.round(xp(t) / 1.6); }   // 按屏幕上约 1.6% 宽一格分桶，字形数不随会话数增长
+function seg(cls, a, b){ var l = xp(a), r = xp(b); if (r - l < 0.05) return ''; return '<i class="ll ' + cls + '" style="left:' + l.toFixed(2) + '%;width:' + (r - l).toFixed(2) + '%"></i>'; }
+function at(t){ return 'left:' + xp(t).toFixed(2) + '%'; }
+function lineCls(n){
+  if (n.stateDetail && n.stateDetail.kind === 'fresh') return 'fresh';
+  return {running:'run', idle:'idle', reported:'rep', error:'err', unknown:'unk'}[n.state] || (n.state === 'waiting' ? (n.stateDetail && n.stateDetail.inferred ? 'inf' : 'wait') : 'idle');
+}
+function firstEv(id){ var t = null; D.events.forEach(function(e){ if (evNode(e) === id || e.to === id) { var x = T(e.t); if (t == null || x < t) t = x; } }); return t; }
+function lifeHTML(n){
+  var start = T(n.spawnedAt), since = T(n.since) || start, h = '';
+  var disc = D.events.filter(function(e){ return e.type === 'discovered' && e.node === n.id; })[0];
+  if (start == null && disc) { h += '<i class="cap disc" style="' + at(T(disc.t)) + '" title="' + esc(evText(disc)) + '"></i>'; start = T(disc.t); }
+  if (start == null) start = firstEv(n.id) || since;
+  if (start == null) return h;
+  if (since == null) since = start;
+  var closed = n.state === 'ended' || n.state === 'braked';
+  var stale = D.events.filter(function(e){ return e.type === 'stale' && e.node === n.id; })[0];
+  var cut = closed ? since : Math.max(start, stale ? T(stale.t) : since);
+  h += seg('hist', start, cut);
+  if (!closed) h += seg(lineCls(n), cut, RN);
+  if (!disc) h += '<i class="cap start" style="' + at(start) + '"></i>';
+  if (closed) h += '<i class="cap ' + (n.state === 'ended' ? 'end' : 'brk') + '" style="' + at(since) + '" title="' + (n.state === 'ended' ? '已结束 ' : '被刹住 ') + hm(since) + '"></i>';
+  return h;
+}
+function mk(e){ return st.mark && st.mark.has(e.id) ? ' mk' : ''; }
+function glyph(cls, e){ return '<i class="g ' + cls + mk(e) + '" style="' + at(T(e.t)) + '" title="' + hm(T(e.t)) + ' ' + esc(evText(e)) + '"></i>'; }
+function msgH(n){ return Math.min(12, 3 + Math.round(Math.log2(n + 1) * 1.6)); }
+/* 等你的荧光横条：从开口那一刻起，一直伸进「之后」，停在自动拒那一刻；已经等掉的部分淡，还剩的部分实黄 */
+function waitBar(a, i, thin){
+  var o = T(a.openedAt), d = a.deadline ? T(a.deadline) : null, l = xp(o), r = d ? xp(d) : xp(RN), nx = xp(RN);
+  var cls = 'wb' + (thin ? ' thin' : '') + (d ? '' : ' open') + (a.kind === 'inferred' ? ' inf' : '') + (st.sel === a.id ? ' on' : '');
+  var fuse = d ? Math.max(0, Math.min(100, (nx - l) / Math.max(0.01, r - l) * 100)) : 100;
+  var tip = nm(a.nodeId) + ' ' + verbOf(a) + '：' + splitAsk(a)[1] + (d ? '，' + hm(d) + ' 自动拒' : '，不会自动拒');
+  return '<i class="' + cls + '" data-att="' + a.id + '" style="left:' + l.toFixed(2) + '%;width:' + Math.max(0.6, r - l).toFixed(2) + '%;--i:' + i + ';--fuse:' + fuse.toFixed(1) + '%" title="' + esc(tip) + '">' +
+    (!thin && d ? '<em data-dl="' + d + '" data-pre="剩 ">剩 ' + mmss(d - RN) + '</em><span class="wbx">' + hm(d) + ' 自动拒</span>' : '') + '</i>';
+}
+/* 一行上的事件字形。R：已经画成行的 id → 行键。binned：这一行代表一群会话，按屏幕距离分桶 */
+function glyphsFor(ids, R, o){
+  o = o || {};
+  var set = new Set(ids), h = '', bins = new Map();
+  function addBin(kind, e, n){
+    var t = T(e.t), k = kind + ':' + binKey(t), b = bins.get(k);
+    if (!b) { b = {kind:kind, t0:t, t1:t, n:0, cut:false, evs:[]}; bins.set(k, b); }
+    b.t0 = Math.min(b.t0, t); b.t1 = Math.max(b.t1, t); b.n += n || 1; b.evs.push(e); if (e.truncated) b.cut = true;
+  }
+  D.events.forEach(function(e){
+    var t = T(e.t); if (t < T0) return;
+    switch (e.type) {
+      case 'message':
+        if (!set.has(e.node)) break;
+        if (o.binned) addBin('msg', e, e.count);
+        else h += '<i class="g msg" style="' + at(t) + ';height:' + msgH(e.count) + 'px"></i>';
+        break;
+      case 'delegate':
+        if (o.binned) {
+          if (set.has(e.from) && (set.has(e.to) || !R.has(e.to))) addBin('dlg', e);
+          else if (set.has(e.to) && !set.has(e.from) && !R.has(e.from)) addBin('dlgin', e);
+        } else {
+          if (set.has(e.from) && !R.has(e.to)) h += glyph('dlg', e);
+          else if (set.has(e.to) && !R.has(e.from) && !set.has(e.from)) h += glyph('dlgin', e);
+        }
+        break;
+      case 'report':
+        if (o.binned) {
+          if (set.has(e.from) && (set.has(e.to) || !R.has(e.to))) addBin('rep', e);
+          else if (set.has(e.to) && !set.has(e.from) && !R.has(e.from)) addBin('repin', e);
+        } else {
+          if (set.has(e.from) && !R.has(e.to) && !set.has(e.to)) h += glyph('rep' + (e.truncated ? ' cut' : ''), e);
+          else if (set.has(e.to) && !R.has(e.from) && !set.has(e.from)) h += glyph('rep in' + (e.truncated ? ' cut' : ''), e);
+        }
+        break;
+      case 'approval': case 'seat_resolve':
+        if (set.has(e.node) && e.resolved) h += glyph('apv' + (e.resolved.by === 'timeout' ? ' tmo' : e.resolved.decision !== 'approved' && e.resolved.decision !== 'dispatched' ? ' rej' : ''), e);
+        break;
+      case 'error': if (set.has(e.node)) h += '<i class="g err' + mk(e) + '" style="' + at(t) + '" title="' + hm(t) + ' ' + esc(evText(e)) + '">✕</i>'; break;
+      case 'compact': if (set.has(e.node) && !o.thin) h += '<i class="g cmp' + mk(e) + '" style="' + at(t) + '" title="' + hm(t) + ' ' + esc(evText(e)) + '">≋</i>'; break;
+      case 'stale': if (set.has(e.node)) h += '<i class="g stale' + mk(e) + '" style="' + at(t) + '" title="' + hm(t) + ' ' + esc(evText(e)) + '">?</i>'; break;
+      case 'brake': if (set.has(e.node) && st.mark && st.mark.has(e.id)) h += glyph('apv', e); break;
+    }
+  });
+  bins.forEach(function(b){
+    var mid = Math.min(RN, (b.t0 + b.t1) / 2);
+    var tip = (b.kind === 'msg' ? '消息往来 ' + b.n + ' 条，' : b.evs.length + ' 件，') + hm(b.t0) + (b.t1 - b.t0 >= MIN ? '–' + hm(b.t1) : '') + '\n' +
+      b.evs.slice(0, 6).map(function(e){ return hm(T(e.t)) + ' ' + evText(e); }).join('\n') + (b.evs.length > 6 ? '\n……另 ' + (b.evs.length - 6) + ' 件' : '');
+    if (b.kind === 'msg') { h += '<i class="g msg" style="' + at(mid) + ';height:' + msgH(b.n) + 'px"></i>'; return; }
+    var mkc = b.evs.some(function(e){ return st.mark && st.mark.has(e.id); }) ? ' mk' : '';
+    var cls = {dlg:'dlg', dlgin:'dlgin', rep:'rep', repin:'rep in'}[b.kind] + (b.cut ? ' cut' : '');
+    h += '<i class="g ' + cls + mkc + '" style="' + at(mid) + '" title="' + esc(tip) + '">' + (b.evs.length > 1 ? '<b class="gn">' + b.evs.length + '</b>' : '') + '</i>';
+  });
+  var atts = attSorted().filter(function(a){ return set.has(a.nodeId); });
+  atts.forEach(function(a, i){ h += waitBar(a, i, o.thin || atts.length > 1); });
+  return h;
+}
+function teamStats(all){
+  var set = new Set(all), dl = [], rp = [], acc = [];
+  D.events.forEach(function(e){
+    if (e.type === 'delegate' && set.has(e.from)) dl.push(e);
+    if (e.type === 'report' && set.has(e.from)) rp.push(e);
+    if (e.type === 'accept' && set.has(e.node)) acc.push(e);
+  });
+  return {dl:dl, rp:rp, acc:acc};
+}
+
+/* ---------- 渲染：自你上次看以来 ---------- */
+function renderSince(){
+  region('since');
+  var opts = [60, 40, 20].map(function(m){ var t = NOW0 - m * MIN; return '<option value="' + t + '"' + (t === st.lastSeen ? ' selected' : '') + '>' + hm(t) + '</option>'; }).join('');
+  var gs = sinceGroups(st.lastSeen).filter(function(g){ return g.list.length; });
+  var h = '<span>你上次看是 <select id="seenSel" aria-label="上次看的时间">' + opts + '</select>，之后：</span>';
+  h += gs.map(function(g){
+    var cls = g.key === 'att' ? 'hl' : g.key === 'err' ? 'err' : '';
+    return '<span class="si">' + g.label + ' ' + cnt(g.list.length, '自 ' + hm(st.lastSeen) + ' 以来：' + g.label, g.list, g.kind || 'events', cls) + '</span>';
+  }).join('');
+  if (!gs.length) h += '<span class="note">没有新事件</span>';
+  if (st.mark) h += '<button type="button" class="clr" id="clrMark">取消总谱上的圈注</button>';
+  document.getElementById('since').innerHTML = h;
+}
+
+/* ---------- 渲染：分诊台 ---------- */
+function pathHTML(id){
+  return '<div class="path">你' + chainOf(id).map(function(c){ return '<span class="sep">›</span>' + (c === id ? '<b>' + esc(nm(c)) + '</b>' : esc(nm(c))); }).join('') + '</div>';
+}
+/* 键入确认核到要害：高风险命令键入它要动的目标；来源未核实的 seat 键入它要进的仓库 */
+function needOf(a){
+  if (a.kind === 'approval' && a.risk === 'high') {
+    var args = splitAsk(a)[1].trim().split(/\s+/), tgt = args[args.length - 1], segs = tgt.split('/').filter(Boolean);
+    return segs.slice(-2).join('/');
+  }
+  if (a.kind === 'seat' && a.verified === false) { var p = projOf(node(a.nodeId)); return p ? p.repo : nm(a.nodeId); }
+  return null;
+}
+function qItem(a){
+  var n = node(a.nodeId), sel = st.sel === a.id, RNow = simNow(), parts = splitAsk(a), kind = attKind(a);
+  var d = a.deadline ? T(a.deadline) : null, clk;
+  if (d) {
+    var frac = Math.max(0, Math.min(1, (d - RNow) / (d - T(a.openedAt))));
+    clk = '<div class="clk' + (d - RNow < 5 * MIN ? ' urgent' : '') + '"><b data-dl="' + d + '">' + mmss(d - RNow) + '</b><span>后自动拒</span><span class="bar"><i data-bar="' + d + '" data-open="' + T(a.openedAt) + '" style="width:' + (frac * 100).toFixed(1) + '%"></i></span></div>';
+  } else clk = '<div class="clk none"><b>' + (kind === 'inf' ? '≈' : '无期限') + '</b><span>' + (kind === 'inf' ? '不是正式请求' : '不会自动拒') + '</span></div>';
+  var tags = '';
+  if (a.risk === 'high' && a.kind === 'approval') tags += '<span class="tag risk">高风险</span>';
+  if (a.kind === 'seat' && a.verified === false) tags += '<span class="tag risk">来源未核实</span>';
+  if (n.ownership !== 'owned') tags += '<span class="tag ro">' + OWN[n.ownership] + '</span>';
+  var h = '<li class="qi' + (sel ? ' sel' : '') + '" id="qi-' + a.id + '" data-att="' + a.id + '" tabindex="0">' + clk + '<div class="qb">' +
+    '<div class="qw"><b>' + esc(nm(n.id)) + '</b><span class="v">' + esc(verbOf(a)) + '</span>' + tags + '</div>' +
+    (a.kind === 'approval' ? '<code class="ask">' + esc(parts[1]) + '</code>' : '<div class="ask txt">' + esc(kind === 'inf' ? a.ask.replace(/^≈ /, '') : parts[1]) + '</div>') +
+    pathHTML(n.id);
+  if (sel) h += qDetail(a, n, kind);
+  return h + '</div></li>';
+}
+function qDetail(a, n, kind){
+  var h = '<dl class="qd">', need = needOf(a);
+  if (a.why && a.kind !== 'inferred' && a.kind !== 'seat') h += '<dt>为什么</dt><dd class="quote">「' + esc(a.why) + '」<cite>' + esc(nm(n.id)) + ' 自述</cite></dd>';
+  if (a.blast) h += '<dt>影响</dt><dd>' + esc(a.blast) + '</dd>';
+  if (a.kind === 'approval' && /\*/.test(a.ask)) h += '<dt>通配</dt><dd>会展开成哪些文件：<span class="unknown">未核实</span>，守护进程没有替它展开 <code>*</code></dd>';
+  if (a.kind === 'seat') {
+    h += '<dt>请求方</dt><dd>自称来自 ' + esc(a.requesterClaimed.replace('（自称）', '')) + '（未核实）<br><span class="note">经 ' + esc(a.via) + '，由「' + esc(nm(n.id)) + '」转来</span></dd>';
+    h += '<dt>会开出</dt><dd>一个 Codex 会话，归 Orchestra 所有（你可以随时刹住），画在「' + esc(nm(n.id)) + '」下面</dd>';
+    h += '<div class="warn">' + esc(a.why) + '。派出等于你替这个请求担保。</div>';
+  }
+  if (a.kind === 'inferred') h += '<dt>依据</dt><dd>' + esc(a.why) + '</dd><div class="warn">这是 Orchestra 按输出推测的，' + esc(HN(n.harness)) + ' 那边没有发正式审批。它是只读会话，这里没有批准按钮；去 ' + esc(HN(n.harness)) + ' 里看它。</div>';
+  if (a.kind === 'question') h += '<dt>选项</dt><dd>' + a.options.map(function(o){ return '<button type="button" class="btn sm" data-act="copy" data-txt="' + esc(o) + '">' + esc(o) + '</button>'; }).join(' ') + '</dd>' +
+    (n.ownership !== 'owned' ? '<div class="warn">「' + esc(nm(n.id)) + '」是只读的 ' + esc(HN(n.harness)) + ' 会话，答复只能在它自己的界面里发。点选项会复制答复文字。</div>' : '');
+  if (a.kind === 'approval' && kind === 'away') h += '<div class="warn">「' + esc(nm(n.id)) + '」是只读的 ' + esc(HN(n.harness)) + ' 会话，批准只能在它自己的界面里做。</div>';
+  if (need && kind === 'here') h += '<div class="confirm"><label for="cf-' + a.id + '">' + (a.kind === 'seat' ? '来源未核实：键入它要进的仓库名 <code>' + esc(need) + '</code>，表示你替这个请求担保' : '高风险命令：键入它要删的目标 <code>' + esc(need) + '</code> 才能批准') + '</label><input id="cf-' + a.id + '" data-need="' + esc(need) + '" autocomplete="off" spellcheck="false"></div>';
+  h += '</dl><div class="acts">';
+  var gated = need ? ' data-gated disabled' : '';
+  if (a.kind === 'approval' && kind === 'here') h += '<button type="button" class="btn go" data-act="approve"' + gated + '>批准</button><button type="button" class="btn no" data-act="reject">拒绝</button>';
+  if (a.kind === 'seat') h += '<button type="button" class="btn go" data-act="dispatch"' + gated + '>派出 Codex 会话</button><button type="button" class="btn no" data-act="reject">拒绝</button>';
+  h += '<button type="button" class="btn sm" data-act="drawer" data-node="' + n.id + '">看「' + esc(nm(n.id)) + '」</button>';
+  h += '<button type="button" class="btn sm only-narrow" data-act="toscore">在总谱里看</button>';
+  return h + '</div>';
+}
+function gate(i){
+  var ok = i.value.trim() === i.dataset.need; i.classList.toggle('ok', ok);
+  var box = i.closest('.qi,.hbx'); if (box) box.querySelectorAll('[data-gated]').forEach(function(b){ b.disabled = !ok; });
+}
+/* 重画时保住键入了一半的确认文字和焦点 */
+function keepInputs(el, fn){
+  var keep = {}, ae = document.activeElement, aeId = ae && el.contains(ae) && ae.id ? ae.id : null, sel = null;
+  el.querySelectorAll('input[data-need]').forEach(function(i){ if (i.id) keep[i.id] = i.value; });
+  if (aeId && typeof ae.selectionStart === 'number') sel = [ae.selectionStart, ae.selectionEnd];
+  fn();
+  Object.keys(keep).forEach(function(id){ var i = document.getElementById(id); if (i) { i.value = keep[id]; gate(i); } });
+  if (aeId) { var f = document.getElementById(aeId); if (f) { try { f.focus({preventScroll:true}); if (sel && f.setSelectionRange) f.setSelectionRange(sel[0], sel[1]); } catch (e) {} } }
+}
+function frozenSort(list){
+  if (!st.frozen) return list;
+  var order = st.frozen;
+  return list.slice().sort(function(a, b){ var ia = order.indexOf(a.id), ib = order.indexOf(b.id); return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib); });
+}
+function errItem(id){
+  var n = node(id), rel = [];
+  kidsOf(id).forEach(function(k){ if (k.state === 'running') rel.push('它派出的「' + short(k) + '」仍在跑'); });
+  if (n.parent !== 'you') kidsOf(n.parent).forEach(function(s){ if (s.id !== id && s.state === 'running') rel.push('兄弟「' + short(s) + '」仍在跑'); });
+  var ro = n.ownership !== 'owned' ? '<div class="rel ro">只读的 ' + esc(HN(n.harness)) + ' 会话：去 ' + esc(HN(n.harness)) + ' 里处理；要强停，在详情里用本机进程刹车（要键入确认）</div>' : '';
+  return '<li class="qi quiet' + (st.focus === id && !st.sel ? ' sel' : '') + '" data-node="' + id + '" tabindex="0"><div class="mark err">✕</div><div class="qb"><div class="qw"><b>' + esc(nm(id)) + '</b><span class="v">出错</span>' + (n.ownership !== 'owned' ? '<span class="tag ro">' + OWN[n.ownership] + '</span>' : '') + '</div><div class="qx">' + esc(n.stateDetail.error) + '</div>' + rel.map(function(r){ return '<div class="rel">' + esc(r) + '</div>'; }).join('') + ro + pathHTML(id) + '</div></li>';
+}
+function renderDesk(){
+  var el = document.getElementById('desk');
+  keepInputs(el, function(){
+    region('desk');
+    var g = attGroups(), here = frozenSort(g.here), away = frozenSort(g.away), inf = frozenSort(g.inf);
+    var h = '<header class="desk-h"><h2>等你 ' + cnt(here.length, '等你，能在这里处理的', here, 'att') + '</h2><p>按自动拒的先后排；鼠标在这里时不重排</p></header>';
+    var extra = [];
+    if (away.length) extra.push('另有 ' + cnt(away.length, '只能去它自己界面回的', away, 'att') + ' 件只能去它自己的界面回');
+    if (inf.length) extra.push('≈ 推测 ' + cnt(inf.length, '≈ 推测可能在等你', inf, 'att') + ' 件');
+    if (extra.length) h += '<p class="desk-sub">' + extra.join('，') + '</p>';
+    h += here.length ? '<ol class="q">' + here.map(qItem).join('') + '</ol>' : '<p class="note">现在没有能在这里处理的事。派一件新活按 N。</p>';
+    if (away.length) h += '<div class="tier">只能去它自己的界面回 <small>' + cnt(away.length, '只能去它自己界面回的', away, 'att') + ' 件，这里只能看、复制答复</small></div><ol class="q away">' + away.map(qItem).join('') + '</ol>';
+    if (inf.length) h += '<div class="tier faint">≈ 也许在等你 <small>' + cnt(inf.length, '≈ 推测可能在等你', inf, 'att') + ' 件，按输出推测，不是正式请求，没有截止</small></div><ol class="q faint">' + inf.map(qItem).join('') + '</ol>';
+    var P = problems();
+    if (P.errs.length + P.lost.length) {
+      var parts = [];
+      if (P.errs.length) parts.push('出错 ' + cnt(P.errs.length, '出错', P.errs, 'nodes', 'err'));
+      if (P.lost.length) parts.push('失联 ' + cnt(P.lost.length, '失联：会话文件停止更新', P.lost));
+      h += '<div class="tier">出了状况，不等你也能继续 <small>' + parts.join('，') + '</small></div><ol class="q">';
+      P.errs.forEach(function(id){ h += errItem(id); });
+      P.lost.forEach(function(id){
+        var n = node(id), sv = D.events.filter(function(e){ return e.type === 'stale' && e.node === id; })[0];
+        h += '<li class="qi quiet' + (st.focus === id && !st.sel ? ' sel' : '') + '" data-node="' + id + '" tabindex="0"><div class="mark unk">?</div><div class="qb"><div class="qw"><b>' + esc(nm(id)) + '</b><span class="v">失联' + (sv ? '，' + hm(T(sv.t)) + ' 起' : '') + '</span>' + (n.ownership !== 'owned' ? '<span class="tag ro">' + OWN[n.ownership] + '</span>' : '') + '</div><div class="qx">' + esc(n.stateDetail.why) + '</div>' + pathHTML(id) + '</div></li>';
+      });
+      h += '</ol>';
+    }
+    var toYou = [];
+    D.nodes.forEach(function(n){ if (n.report && n.report.to === 'you' && !n.accepted) toYou.push(n.id); });
+    if (toYou.length) {
+      h += '<div class="tier">回报给你的 <small>' + cnt(toYou.length, '回报给你的', toYou) + ' 条，验收由你来做</small></div><ol class="q">';
+      toYou.forEach(function(id){
+        var n = node(id), ds = n.report.daemon ? DAEMON[n.report.daemon] : null;
+        h += '<li class="qi quiet" data-node="' + id + '" data-open="1" tabindex="0"><div class="mark rep">▭</div><div class="qb"><div class="qw"><b>' + esc(nm(id)) + '</b><span class="v">' + hm(T(n.report.at)) + ' 回报</span><span class="tag">状态 ' + (ds || '未知') + '</span>' + (n.report.truncated ? '<span class="tag ro">已截断</span>' : '') + '</div><div class="qx quote">「' + esc(n.report.summary) + '」<cite>' + esc(nm(id)) + ' 自述</cite></div></div></li>';
+      });
+      h += '</ol>';
+    }
+    if (st.done.length) {
+      h += '<div class="tier">刚处理 <small>' + cnt(st.done.length, '刚处理', st.done.map(function(d){ return d.ev; }), 'events') + ' 条</small></div><ol class="done">' +
+        st.done.map(function(d){ return '<li>' + hm(T(d.ev.t)) + ' ' + esc(evText(d.ev)) + '</li>'; }).join('') + '</ol>';
+    }
+    var y = el.scrollTop; el.innerHTML = h; el.scrollTop = y;
+    el.querySelectorAll('.only-narrow').forEach(function(b){ if (window.innerWidth > 860) b.remove(); });
+  });
+}
+
+/* ---------- 渲染：总谱 ---------- */
+var KID_MAX = 6;
+function notable(n){
+  if (n.ownership === 'owned' || n.line || st.born === n.id) return true;
+  if (['running', 'waiting', 'error'].indexOf(n.state) >= 0) return true;
+  if (n.report && n.report.to === 'you' && !n.accepted) return true;
+  return subtree(n.id).some(function(k){ return attOf(k) || node(k).state === 'error'; });
+}
+function orderRoots(rs){
+  var ids = new Set(rs.map(function(n){ return n.id; })), out = [];
+  rs.forEach(function(n){ if (n.line && ids.has(n.line)) return; out.push(n); rs.forEach(function(k){ if (k.line === n.id) out.push(k); }); });
+  return out;
+}
+function projGroups(){
+  var gs = [];
+  S.projects.forEach(function(p){ var rs = roots().filter(function(n){ return n.project === p.id; }); if (rs.length) gs.push({p:p, rs:orderRoots(rs)}); });
+  var orphan = roots().filter(function(n){ return !projOf(n); });
+  if (orphan.length) gs.push({p:{id:'_', name:'没归项目的会话', repo:''}, rs:orderRoots(orphan)});
+  return gs;
+}
+/* 直接下属多于 6 个时：等你、推测、出错、在跑这几类里的零星个体照常成行，其余聚成一行 */
+function pushKids(rows, parentId, ids, key){
+  if (ids.length <= KID_MAX) { ids.forEach(function(id){ rows.push({kind:'thin', id:id}); }); return; }
+  var solo = [], rest = [];
+  buckets(ids).forEach(function(b){
+    var lone = ['wait', 'inf', 'err', 'run'].indexOf(b.key) >= 0 && b.ids.length <= 2, to = lone ? solo : rest;
+    b.ids.forEach(function(id){ to.push(id); });
+  });
+  solo.forEach(function(id){ rows.push({kind:'thin', id:id}); });
+  if (rest.length <= 2) { rest.forEach(function(id){ rows.push({kind:'thin', id:id}); }); return; }
+  var k = 'agg:' + key, open = st.openFolds.has(k) && rest.length <= 12;
+  rows.push({kind:'agg', key:k, ids:rest, parentId:parentId, open:open});
+  if (open) rest.forEach(function(id){ rows.push({kind:'thin', id:id}); });
+}
+function buildRows(){
+  var rows = [{kind:'you', id:'you'}];
+  if (!st.focus) {
+    projGroups().forEach(function(g){
+      rows.push({kind:'proj', p:g.p});
+      var quiet = g.rs.filter(function(n){ return !notable(n); });
+      if (quiet.length < 2) { g.rs.forEach(function(n){ rows.push({kind:'root', id:n.id}); }); return; }
+      g.rs.filter(notable).forEach(function(n){ rows.push({kind:'root', id:n.id}); });
+      var key = 'q:' + g.p.id, open = st.openFolds.has(key);
+      rows.push({kind:'qfold', key:key, ids:quiet.map(function(n){ return n.id; }), open:open});
+      if (open) quiet.forEach(function(n){ rows.push({kind:'root', id:n.id}); });
+    });
+    return rows;
+  }
+  var ch = chainOf(st.focus), r0 = node(ch[0]);
+  rows.push({kind:'proj', p:projOf(r0) || {name:'没归项目的会话', repo:''}});
+  ch.forEach(function(id, i){
+    rows.push({kind:'line', id:id, focus: id === st.focus});
+    var next = ch[i + 1];
+    if (next) {
+      var others = kidsOf(id).filter(function(k){ return k.id !== next; }).map(function(k){ return k.id; });
+      if (others.length) {
+        var key = 'f:' + id, open = st.openFolds.has(key);
+        rows.push({kind:'fold', id:id, ids:others, key:key, open:open});
+        if (open) pushKids(rows, id, others, key);
+      }
+    }
+  });
+  pushKids(rows, st.focus, kidsOf(st.focus).map(function(k){ return k.id; }), 'k:' + st.focus);
+  var rest = roots().filter(function(n){ return n.id !== r0.id; });
+  if (rest.length) {
+    rows.push({kind:'proj', p:{name:'其它工作线', repo:''}});
+    var quiet = rest.filter(function(n){ return !notable(n); });
+    if (quiet.length < 2) quiet = [];
+    rest.filter(function(n){ return quiet.indexOf(n) < 0; }).forEach(function(n){ rows.push({kind:'mini', id:n.id}); });
+    if (quiet.length) rows.push({kind:'mfold', key:'mq', ids:quiet.map(function(n){ return n.id; })});
+  }
+  return rows;
+}
+function dg(d){ var h = '<span class="dg" title="第 ' + d + ' 层">'; for (var i = 1; i <= Math.max(5, d); i++) h += '<i' + (i <= d ? ' class="f"' : '') + '></i>'; return h + '</span>'; }
+function ownCls(n){ return n.ownership === 'owned' ? 'own-ow' : n.ownership === 'foreign' ? 'own-fo' : 'own-ro'; }
+function byYou(n){ return D.events.filter(function(e){ return e.type === 'delegate' && e.from === 'you' && e.to === n.id && e.via !== 'message'; })[0]; }
+function metaHTML(n){
+  var m = ['<span>' + esc(HN(n.harness)) + '</span>', '<span>' + OWN[n.ownership] + '</span>'];
+  if (n.role && ROLE[n.role] && n.role !== 'unknown') m.push('<span>' + ROLE[n.role] + '</span>');
+  if (n.depth) m.push('<span>第 ' + n.depth + ' 层</span>');
+  var y = byYou(n); if (y && n.ownership === 'owned') m.push('<span>你派 ' + hm(T(y.t)) + '</span>');
+  if (n.line && node(n.line)) m.push('<span>同一工作线：' + esc(short(node(n.line))) + '</span>');
+  return '<div class="meta">' + m.join('') + '</div>';
+}
+function progHTML(all, name){
+  var s = teamStats(all);
+  if (!s.dl.length && !s.rp.length) return '';
+  return '<div class="prog">派出 ' + cnt(s.dl.length, name + '：派出', s.dl, 'events') + ' 次，交回 ' + cnt(s.rp.length, name + '：交回的回报', s.rp, 'events') + ' 次' +
+    (s.rp.length ? '；已验证 ' + (s.acc.length ? cnt(s.acc.length, name + '：你验收的', s.acc, 'events') + ' / 已回报 ' + s.rp.length : '<span class="unknown">未知</span>（没有复核数据）') : '') + '</div>';
+}
+function aggLife(ids){
+  var unk = ids.filter(function(id){ return node(id).state === 'unknown'; });
+  if (!unk.length) return '';
+  var t = Math.min.apply(null, unk.map(function(id){ return T(node(id).spawnedAt) || RN; }));
+  return seg('unk', t, RN);
+}
+function rowHTML(r, R){
+  var n = r.id && r.id !== 'you' ? node(r.id) : null, lit = st.litSet && st.litSet.has(r.id);
+  switch (r.kind) {
+    case 'you': {
+      var h = '', g = attGroups();
+      D.events.forEach(function(e){
+        var t = T(e.t);
+        if (e.type === 'delegate' && e.from === 'you' && !R.has(e.to)) h += glyph('dlg', e);
+        if (e.type === 'report' && e.to === 'you' && !R.has(e.from)) h += glyph('rep in' + (e.truncated ? ' cut' : ''), e);
+        if (e.resolved && e.resolved.by === 'you') h += glyph('apv' + (e.resolved.decision === 'approved' || e.resolved.decision === 'dispatched' ? '' : ' rej'), e);
+        if (e.resolved && e.resolved.by === 'timeout') h += glyph('apv tmo', e);
+        if (e.type === 'brake' && e.by === 'you') h += '<i class="cap brk' + mk(e) + '" style="' + at(t) + '" title="' + hm(t) + ' ' + esc(evText(e)) + '"></i>';
+      });
+      D.attention.forEach(function(a){ if (a.deadline) h += '<i class="g dl' + (st.sel === a.id ? ' mk' : '') + '" data-att="' + a.id + '" style="' + at(T(a.deadline)) + '" title="' + esc(nm(a.nodeId) + ' ' + verbOf(a) + '，' + hm(T(a.deadline)) + ' 自动拒') + '"></i>'; });
+      return '<div class="row you" data-row="you"><div class="lab"><span class="nm">你</span><div class="meta"><span>派出、批准、刹车只在这一页</span></div><div class="cs">等你 ' + cnt(g.here.length, '等你，能在这里处理的', g.here, 'att', 'hl') +
+        (g.away.length ? '　去别处回 ' + cnt(g.away.length, '只能去它自己界面回的', g.away, 'att') : '') + (g.inf.length ? '　≈ 推测 ' + cnt(g.inf.length, '≈ 推测可能在等你', g.inf, 'att') : '') + '</div></div><div class="trk">' + h + '</div></div>';
+    }
+    case 'proj':
+      return '<div class="row proj"><div class="lab"><b>' + esc(r.p.name) + '</b>' + esc(r.p.repo || '') + '</div><div class="trk"></div></div>';
+    case 'root': {
+      var sub = subtree(n.id), md = maxDepth(n.id);
+      return '<div class="row root ' + ownCls(n) + (st.born === n.id ? ' born' : '') + '" data-row="' + n.id + '"><div class="lab" data-focus="' + n.id + '"><span class="nm">' + esc(short(n)) + '</span><button type="button" class="det" data-act="drawer" data-node="' + n.id + '">详情</button>' +
+        '<div class="meta"><span>' + esc(HN(n.harness)) + '</span><span>' + OWN[n.ownership] + '</span><span>' + (sub.length ? '深到第 ' + md + ' 层' : '没有下属') + '</span>' + (n.line && node(n.line) ? '<span>同一工作线：' + esc(short(node(n.line))) + '</span>' : '') + '</div>' +
+        '<div class="wt">' + stateHTML(n) + '</div>' +
+        (sub.length ? '<div class="cs">下属 ' + cnt(sub.length, short(n) + ' 的全部下属', sub) + ' 个：' + bucketLine(sub, short(n) + ' 的下属：') + '</div>' : '') +
+        progHTML([n.id].concat(sub), short(n)) +
+        '</div><div class="trk">' + lifeHTML(n) + glyphsFor([n.id].concat(sub), R, {binned:true}) + '</div></div>';
+    }
+    case 'line':
+      return '<div class="row line ' + ownCls(n) + (r.focus ? ' focus' : '') + (lit ? ' lit' : '') + (st.born === n.id ? ' born' : '') + '" data-row="' + n.id + '"><div class="lab" data-focus="' + n.id + '">' + dg(n.depth) + '<span class="nm">' + esc(short(n)) + '</span><button type="button" class="det" data-act="drawer" data-node="' + n.id + '">详情</button>' + metaHTML(n) +
+        '<div class="wt' + (n.state === 'error' ? ' err' : '') + '">' + stateHTML(n) + '</div></div><div class="trk">' + lifeHTML(n) + glyphsFor([n.id], R, {}) + '</div></div>';
+    case 'fold':
+      return '<div class="row fold" data-row="' + r.key + '"><div class="lab" data-fold="' + r.key + '">' + (r.open ? '收起' : '展开') + '「' + esc(nm(r.id)) + '」的另 ' + cnt(r.ids.length, nm(r.id) + ' 的其它下属', r.ids) + ' 个下属：' + bucketLine(r.ids) + subClause(r.ids) + '</div><div class="trk">' + glyphsFor(r.ids.concat(deeperOf(r.ids)), R, {thin:true, binned:true}) + '</div></div>';
+    case 'qfold':
+      return '<div class="row fold" data-row="' + r.key + '"><div class="lab" data-fold="' + r.key + '">' + (r.open ? '收起' : '展开') + '另 ' + cnt(r.ids.length, '安静的工作线', r.ids) + ' 条安静的工作线：' + bucketLine(r.ids) + subClause(r.ids) + '</div><div class="trk">' + glyphsFor(r.ids.concat(deeperOf(r.ids)), R, {thin:true, binned:true}) + '</div></div>';
+    case 'mfold':
+      return '<div class="row mini" data-row="' + r.key + '"><div class="lab">另 ' + cnt(r.ids.length, '安静的工作线', r.ids) + ' 条安静的工作线：' + bucketLine(r.ids) + '</div><div class="trk">' + glyphsFor(r.ids.concat(deeperOf(r.ids)), new Map(), {thin:true, binned:true}) + '</div></div>';
+    case 'agg': {
+      var roles = new Set(r.ids.map(function(id){ return node(id).role; })), role1 = roles.size === 1 ? ROLE[Array.from(roles)[0]] : null;
+      var hint = r.ids.length > 12 ? '太多，不逐行画；点数字看列表' : (r.open ? '收起' : '展开成 ' + r.ids.length + ' 行');
+      return '<div class="row agg" data-row="' + r.key + '"><div class="lab" data-fold="' + r.key + '">' + dg(node(r.ids[0]).depth) + '<span class="x">×' + cnt(r.ids.length, '「' + nm(r.parentId) + '」的其余下属', r.ids) + '</span><span class="nm thin">' + (role1 ? esc(role1) : '其余下属') + '</span>　' + bucketLine(r.ids) +
+        '<div class="wt">' + hint + subClause(r.ids) + '</div></div><div class="trk">' + aggLife(r.ids) + glyphsFor(r.ids.concat(deeperOf(r.ids)), R, {thin:true, binned:true}) + '</div></div>';
+    }
+    case 'thin': {
+      var sub2 = subtree(n.id);
+      return '<div class="row thin ' + ownCls(n) + (st.born === n.id ? ' born' : '') + '" data-row="' + n.id + '"><div class="lab" data-focus="' + n.id + '">' + dg(n.depth) + '<span class="nm thin">' + esc(short(n)) + '</span>' +
+        '<div class="wt' + (n.state === 'error' ? ' err' : '') + '">' + stateHTML(n) + (sub2.length ? '；下属 ' + cnt(sub2.length, short(n) + ' 的下属', sub2) + ' 个' : '') + '</div></div><div class="trk">' + lifeHTML(n) + glyphsFor([n.id], R, {thin:true}) + '</div></div>';
+    }
+    case 'mini': {
+      var all = [n.id].concat(subtree(n.id)), ws = waitSplit(all), e = all.filter(function(id){ return node(id).state === 'error'; });
+      return '<div class="row mini" data-row="' + n.id + '"><div class="lab" data-focus="' + n.id + '">' + esc(short(n)) + (ws.w.length ? '　等你 ' + cnt(ws.w.length, short(n) + ' 里等你的', ws.w, 'nodes', 'hl') : '') + (ws.inf.length ? '　≈ ' + cnt(ws.inf.length, short(n) + ' 里 ≈ 推测在等你的', ws.inf) : '') + (e.length ? '　出错 ' + cnt(e.length, short(n) + ' 里出错的', e, 'nodes', 'err') : '') + '</div><div class="trk">' + glyphsFor(all, new Map(), {thin:true, binned:true}) + '</div></div>';
+    }
+  }
+  return '';
+}
+function axisHTML(){
+  var b = RN - RECENT, h = '<div class="axis"><div class="lab0">更早的按对数压缩，最近 15 分放大</div><div class="ax">';
+  for (var t = Math.ceil(T0 / 3600e3) * 3600e3; t < b - 4 * MIN; t += 3600e3) h += '<span class="tk" style="' + at(t) + '">' + hm(t) + '</span>';
+  h += '<span class="brk" style="' + at(b) + '" title="左边按对数压缩">≈</span>';
+  [5, 10].forEach(function(m){ h += '<span class="tk" style="' + at(b + m * MIN) + '">' + hm(b + m * MIN) + '</span>'; });
+  h += '<span class="tk now" style="' + at(RN) + '">' + hm(RN) + ' 现在</span>';
+  [10, 20].forEach(function(m){ h += '<span class="tk fut" style="' + at(RN + m * MIN) + '">+' + m + ' 分</span>'; });
+  return h + '</div></div>';
+}
+function layerLeft(pct){ return 'calc(var(--labw) + (100% - var(--labw)) * ' + (pct / 100).toFixed(4) + ')'; }
+var lastWires = [];
+function buildWires(rows, R){
+  var wires = [], wb = new Map(), hasDlg = new Set();
+  D.events.forEach(function(e){ if (e.type === 'delegate') hasDlg.add(e.to); });
+  function add(from, to, t, cls, title){
+    if (!from || !to || from === to) return;
+    var k = from + '|' + to + '|' + cls.split(' ')[0] + '|' + binKey(t), w = wb.get(k);
+    if (w) { w.n++; if (w.n <= 6) w.title += '\n' + title; if (/\bcut\b/.test(cls) && !/\bcut\b/.test(w.cls)) w.cls += ' cut'; if (/\bmk\b/.test(cls) && !/\bmk\b/.test(w.cls)) w.cls += ' mk'; return; }
+    w = {from:from, to:to, t:t, cls:cls, title:title, n:1}; wb.set(k, w); wires.push(w);
+  }
+  D.events.forEach(function(e){
+    if (e.type === 'delegate') add(R.get(e.from), R.get(e.to), T(e.t), 'dlg' + mk(e), hm(T(e.t)) + ' ' + evText(e));
+    if (e.type === 'report') add(R.get(e.from), R.get(e.to), T(e.t), 'rep' + (e.truncated ? ' cut' : '') + mk(e), hm(T(e.t)) + ' ' + evText(e));
+  });
+  rows.forEach(function(r){
+    if (r.kind === 'line' || r.kind === 'thin' || r.kind === 'root') {
+      var n = node(r.id);
+      if (n.parent !== 'you' && R.get(n.parent) && R.get(n.parent) !== r.id && !hasDlg.has(n.id))
+        wires.push({from:R.get(n.parent), to:r.id, t:T(n.spawnedAt) || firstEv(n.id) || RN, cls:'guess', title:'按文件位置挂在「' + nm(n.parent) + '」下，哪一次派活对不上'});
+      if (n.line && R.get(n.line) && R.get(n.line) !== r.id)
+        wires.push({from:R.get(n.line), to:r.id, t:T(n.spawnedAt) || RN, cls:'kin', title:'你替只读的「' + nm(n.line) + '」开的会话：同一工作线，不是它的下属'});
+    } else if (r.kind === 'agg') {
+      var un = r.ids.filter(function(id){ return !hasDlg.has(id); });
+      if (un.length && R.get(r.parentId)) wires.push({from:R.get(r.parentId), to:r.key, t:Math.min.apply(null, un.map(function(id){ return T(node(id).spawnedAt) || RN; })), cls:'guess', title:'其中 ' + un.length + ' 个按文件位置挂在「' + nm(r.parentId) + '」下，哪一次派活对不上'});
+    }
+  });
+  return wires;
+}
+function renderScore(){
+  RN = simNow();
+  region('score');
+  var rows = buildRows(), R = new Map();
+  rows.forEach(function(r){ if (r.kind === 'you' || r.kind === 'line' || r.kind === 'thin' || r.kind === 'root') R.set(r.id, r.id); });
+  rows.forEach(function(r){ if (r.kind === 'agg') r.ids.concat(deeperOf(r.ids)).forEach(function(id){ if (!R.has(id)) R.set(id, r.key); }); });
+  rows.forEach(function(r){ if (r.kind === 'fold' || r.kind === 'qfold') r.ids.concat(deeperOf(r.ids)).forEach(function(id){ if (!R.has(id)) R.set(id, r.key); }); });
+  st.litSet = null;
+  if (st.focus) {
+    var lit = new Set(chainOf(st.focus));
+    var a = st.sel ? D.attention.filter(function(x){ return x.id === st.sel; })[0] : null;
+    if (a) chainOf(a.nodeId).forEach(function(c){ lit.add(c); });
+    st.litSet = lit;
+  }
+  var wires = buildWires(rows, R);
+  if (st.sel) {
+    var a2 = D.attention.filter(function(x){ return x.id === st.sel; })[0];
+    if (a2 && R.get(a2.nodeId)) wires.push({from:R.get(a2.nodeId), to:'you', t:T(a2.openedAt), cls:'ask', title:'冒泡到你：' + a2.ask});
+  }
+  if (st.focus) wires.forEach(function(w){ if (w.cls.indexOf('ask') < 0 && !(st.litSet.has(w.from) || st.litSet.has(w.to) || w.from === 'you')) w.cls += ' dim'; });
+  lastWires = wires;
+
+  var head = '';
+  if (st.focus) {
+    var fn = node(st.focus);
+    head = '<button type="button" class="back" data-act="unfocus">全部工作线</button><h2>' + esc(short(fn)) + '<span class="note">　第 ' + fn.depth + ' 层，从你到它的整条链</span></h2>';
+  } else {
+    head = '<h2>工作线 ' + cnt(roots().length, '全部工作线', roots().map(function(n){ return n.id; })) + ' 条，会话 ' + cnt(D.nodes.size, '全部会话', Array.from(D.nodes.keys())) + ' 个</h2>';
+  }
+  head += '<div class="legend"><span><i class="lg"><i class="g dlg" style="left:50%;top:0;margin:0"></i></i>派活</span><span><i class="lg"><i class="g rep" style="left:50%;top:2px;margin:0"></i></i>回报</span><span><i class="lg"><i class="g rep cut" style="left:50%;top:2px;margin:0"></i></i>截断的回报</span><span><i class="lg" style="width:26px"><i class="wb" style="left:0;width:26px;height:10px;margin-top:-5px;--fuse:45%"></i></i>等你，到自动拒为止</span><span><i class="lg" style="width:22px"><i class="ll inf" style="left:0;width:22px"></i></i>≈ 推测</span><span><i class="lg" style="width:22px"><i class="ll unk" style="left:0;width:22px"></i></i>状态未知</span><span><i class="lg" style="width:14px"><i class="wire guess" style="left:6px;top:0;height:12px"></i></i>对不上派活的挂靠</span><span><i class="lg"><i class="g err" style="left:50%;top:0;margin:0">✕</i></i>出错</span></div>';
+  if (D.mode === 'poor') {
+    var subs = [], mains = [];
+    D.nodes.forEach(function(n){ if (n.depth >= 2) subs.push(n.id); if (n.depth === 1 && n.harness === 'claude' && n.ownership === 'observed') mains.push(n.id); });
+    var hasDlg = new Set(D.events.filter(function(e){ return e.type === 'delegate'; }).map(function(e){ return e.to; }));
+    var subUnk = subs.filter(function(id){ return node(id).state === 'unknown'; }), matched = subs.filter(function(id){ return hasDlg.has(id); });
+    var alive = mains.filter(function(id){ return node(id).state !== 'unknown'; });
+    head += '<div class="poorbar"><span>今天读进来的：Claude 主会话 ' + cnt(mains.length, 'Claude 主会话', mains) + ' 个（registry 里活着的 ' + cnt(alive.length, 'registry 里活着的主会话', alive) + ' 个），subagent ' + cnt(subs.length, '全部 subagent', subs) + ' 个，其中状态未知 ' + cnt(subUnk.length, '状态未知的 subagent', subUnk) + ' 个，能对上哪一次派活的 ' + cnt(matched.length, '能对上派活的 subagent', matched) + ' 个。</span>' +
+      '<span>另有 ' + cnt(D.trimmed.length, '因快照上限没画出的', D.trimmed, 'stubs') + ' 个因快照上限没画出。DSH：' + cnt(D.dshUnread.length, 'DSH 会话，因上限未读入', D.dshUnread, 'stubs') + ' 个，因上限未读入。</span></div>';
+  }
+  document.getElementById('scoreH').innerHTML = head;
+
+  var P = problems(), unkAll = P.unk.concat(P.nativeUnk);
+  var foot = unkAll.length ? '<p class="foot">状态未知 ' + cnt(unkAll.length, '状态未知的会话', unkAll) + ' 个：不代表在跑，也不代表空闲。' +
+    (P.nativeUnk.length ? '其中 ' + cnt(P.nativeUnk.length, '状态未知的原生 subagent', P.nativeUnk) + ' 个是原生 subagent，它们不登记状态' + (P.unk.length ? '；' : '。') : '') +
+    (P.unk.length ? cnt(P.unk.length, '来源不明或不在 registry 里的', P.unk) + ' 个来源不明或不在 registry 里。' : '') + '</p>' : '';
+
+  var b = document.getElementById('scoreB'), y = b.scrollTop;
+  var h = '<div class="sheet">' + axisHTML();
+  h += '<div class="layer away" style="left:' + layerLeft(xp(st.lastSeen)) + ';width:calc((100% - var(--labw)) * ' + ((xp(RN) - xp(st.lastSeen)) / 100).toFixed(4) + ')"><em>你上次看之后</em></div>';
+  h += '<div class="layer zoom" style="left:' + layerLeft(xp(RN - RECENT)) + '"></div>';
+  h += '<div class="layer future" style="left:' + layerLeft(xp(RN + 1)) + ';right:0"><em>之后：黄条停在自动拒那一刻</em></div>';
+  h += '<div class="layer nowline" style="left:' + layerLeft(xp(RN)) + '"></div>';
+  h += '<div class="rows">' + rows.map(function(r){ return rowHTML(r, R); }).join('') + '</div>' + foot + '<div class="wires" id="wires"></div></div>';
+  b.innerHTML = h; b.scrollTop = y;
+  drawWires();
+  st.born = null;
+}
+function drawWires(){
+  var b = document.getElementById('scoreB'), wl = document.getElementById('wires');
+  if (!b || !wl) return;
+  var sh = b.querySelector('.sheet'); if (!sh) return; var br = sh.getBoundingClientRect(), h = '';
+  lastWires.forEach(function(w){
+    var a = b.querySelector('[data-row="' + w.from + '"] .trk'), c = b.querySelector('[data-row="' + w.to + '"] .trk');
+    if (!a || !c) return;
+    var ar = a.getBoundingClientRect(), cr = c.getBoundingClientRect();
+    if (!ar.width) return;
+    var x = ar.left - br.left + xp(w.t) / 100 * ar.width;
+    var y1 = ar.top - br.top + ar.height / 2, y2 = cr.top - br.top + cr.height / 2;
+    h += '<i class="wire ' + w.cls + '" style="left:' + x.toFixed(1) + 'px;top:' + Math.min(y1, y2).toFixed(1) + 'px;height:' + Math.abs(y2 - y1).toFixed(1) + 'px" title="' + esc(w.title + (w.n > 6 ? '\n……共 ' + w.n + ' 件' : '')) + '"></i>';
+  });
+  wl.innerHTML = h;
+}
+
+/* ---------- 抽屉：一个会话 ---------- */
+function renderDrawer(){
+  var dr = document.getElementById('drawer');
+  if (!st.drawer || !node(st.drawer)) { dr.hidden = true; return; }
+  keepInputs(dr, function(){
+    region('drawer');
+    var n = node(st.drawer);
+    var dlg = D.events.filter(function(e){ return e.type === 'delegate' && e.to === n.id && e.via !== 'message'; })[0];
+    var h = '<button type="button" class="x" data-act="closeDrawer" aria-label="关闭">×</button><h3>' + esc(n.title) + '</h3>' + pathHTML(n.id);
+    h += '<section><div class="wt">' + stateHTML(n) + '</div></section>';
+    h += '<section><h4>交给它的活</h4>' + (n.task ? '<div>' + esc(n.task) + '</div>' : '<div class="unknown">未知</div>') +
+      '<div class="note">' + (dlg ? '由' + (dlg.from === 'you' ? '你' : '「' + esc(nm(dlg.from)) + '」') + '在 ' + hm(T(dlg.t)) + ' 派出' + (dlg.via && dlg.via.indexOf('seat') === 0 ? '，应 seat 请求' : '') : n.parent === 'you' ? '没有派活记录' : '≈ 按文件位置挂在「' + esc(nm(n.parent)) + '」下，哪一次派活对不上') +
+      (n.line && node(n.line) ? '；你替只读的「' + esc(nm(n.line)) + '」开的，算同一工作线，不是它的下属' : '') + '</div></section>';
+    if (n.report) {
+      var r = n.report, ds = r.daemon ? DAEMON[r.daemon] : null;
+      h += '<section><h4>它的回报</h4><div class="rpt' + (r.truncated ? ' cut' : '') + '"><dl class="kv"><dt>状态</dt><dd>' + (ds ? '<b>' + ds + '</b>' : '<span class="unknown">未知</span>') + '<div class="note">守护进程只填回合结束、到上限、被中断、出错四种' + (ds ? '' : '；这条没记') + '</div></dd><dt>交给</dt><dd>' + esc(nm(r.to)) + '，' + hm(T(r.at)) + '</dd></dl>' +
+        '<div class="quote" style="margin-top:8px">「' + (r.status ? esc(r.status) + '。' : '') + esc(r.summary) + '」<cite>' + esc(short(n)) + ' 自述</cite></div>' +
+        (r.truncated ? '<div class="cutnote">已截断：' + esc(r.truncatedNote || '原文没有随回报带回') + '</div>' : '') +
+        '<ul class="refs">' + (r.refs || []).map(function(x){ return '<li>' + esc(x) + '</li>'; }).join('') + '</ul></div>' +
+        '<div class="note" style="margin-top:4px">引号里是它自己说的，没经过复核。</div>' +
+        (r.to === 'you' && !n.accepted ? '<div class="acts"><button type="button" class="btn go" data-act="accept">验收</button><button type="button" class="btn no" data-act="bounce">打回</button></div>' : '') +
+        (n.accepted ? '<div class="note">你在 ' + hm(n.accepted) + ' 验收了这条回报。</div>' : '') + '</section>';
+    }
+    function unk(v, f){ return v == null ? '<span class="unknown">未知</span>' : f(v); }
+    h += '<section><h4>会话</h4><dl class="kv"><dt>来自</dt><dd>' + esc(HN(n.harness)) + (n.model ? '，' + esc(S.models[n.model] || n.model) : '') + '</dd><dt>归属</dt><dd>' + esc(S.ownership[n.ownership]) + '</dd>' +
+      '<dt>开始</dt><dd>' + unk(T(n.spawnedAt), hm) + '</dd><dt>最后动静</dt><dd>' + unk(T(n.lastActivity), hm) + '</dd>' +
+      '<dt>消息</dt><dd>' + unk(n.messages, function(v){ return v + ' 条'; }) + '</dd><dt>token</dt><dd>' + unk(n.tokens, function(v){ return v.toLocaleString('zh-CN'); }) + '</dd><dt>费用</dt><dd>' + unk(n.costUsd, function(v){ return '$' + v.toFixed(2); }) + '</dd></dl></section>';
+    var sub = subtree(n.id), live = ['ended', 'braked'].indexOf(n.state) < 0;
+    if (n.ownership === 'owned' && live) {
+      var armed = st.armed && st.armed.id === n.id && Date.now() - st.armed.at < 3000;
+      var ownSub = sub.filter(brakeable);
+      h += '<section><h4>操作</h4><div class="acts" style="margin-top:0"><button type="button" class="btn" data-act="convo">进入对话</button></div><div class="stops" style="margin-top:8px">' +
+        '<button type="button" class="btn" data-act="interrupt">中断这一回合　<span class="note">它停下当前这一步，会话还在</span></button>' +
+        '<button type="button" class="btn" data-act="endsess">结束会话　<span class="note">只结束它自己，下属不动</span></button>' +
+        '<button type="button" class="btn danger' + (armed ? ' armed' : '') + '" data-act="brake">' + (armed ? '3 秒内再点一次：刹车' : '刹车（停它整棵进程树）') + '</button></div>' +
+        '<div class="blast">会一起停下：它自己' + (ownSub.length ? '，加上还没停的下属 ' + cnt(ownSub.length, '刹车会波及', ownSub) + ' 个：' + bucketLine(ownSub) : '，它没有还在跑的下属') + (sub.length - ownSub.length ? '。已回报、已结束或只读的 ' + cnt(sub.length - ownSub.length, '刹车不会碰的下属', sub.filter(function(k){ return !brakeable(k); })) + ' 个不动' : '') + '。挂在它们身上的等你会一起撤下。刹车要在 3 秒内点两次。</div></section>';
+    } else if (n.ownership !== 'owned') {
+      h += '<section><h4>操作</h4><div class="warn" style="padding:8px 10px;border-left:3px solid var(--ink2);background:var(--sunk);font-size:12.5px">' + OWN[n.ownership] + '会话：这里只能看。要中断或回复，在 ' + esc(HN(n.harness)) + ' 自己的界面里处理。</div><div class="acts"><button type="button" class="btn" data-act="convo">查看对话（只读）</button></div>';
+      if (['running', 'waiting', 'error', 'unknown'].indexOf(n.state) >= 0) {
+        var liveSub = sub.filter(function(k){ return ['ended', 'braked'].indexOf(node(k).state) < 0; });
+        h += '<div class="hbx"><h4>本机进程刹车</h4><p class="note">它跑飞了又等不及去 ' + esc(HN(n.harness)) + ' 里处理时用：绕过 ' + esc(HN(n.harness)) + '，直接结束它在本机的进程树' + (liveSub.length ? '，连同还没停的下属 ' + cnt(liveSub.length, '本机刹车会波及', liveSub) + ' 个' : '') + '。' + esc(HN(n.harness)) + ' 只会看到它断了。宿主进程受保护，要键入确认。</p>' +
+          '<div class="confirm"><label for="hb-' + esc(n.id) + '">键入会话名 <code>' + esc(short(n)) + '</code></label><input id="hb-' + esc(n.id) + '" data-need="' + esc(short(n)) + '" autocomplete="off" spellcheck="false"></div>' +
+          '<div class="acts"><button type="button" class="btn danger" data-act="hostbrake" data-gated disabled>本机刹车</button></div></div>';
+      }
+      h += '</section>';
+    }
+    var evs = D.events.filter(function(e){ return evNode(e) === n.id || e.from === n.id || e.to === n.id || e.with === n.id; }).sort(function(a, b){ return T(b.t) - T(a.t); });
+    h += '<section><h4>它经手的事件 ' + cnt(evs.length, short(n) + ' 经手的事件', evs, 'events') + ' 条</h4><ol class="evl">' + evs.slice(0, 12).map(function(e){ return '<li><time>' + hm(T(e.t)) + '</time><span>' + esc(evText(e)) + '</span></li>'; }).join('') + '</ol>' + (evs.length > 12 ? '<div class="note">只列最近 12 条，点上面的数字看全部。</div>' : '') + '</section>';
+    dr.innerHTML = h; dr.hidden = false;
+  });
+}
+
+/* ---------- 派活台 ---------- */
+function renderDispatch(){
+  var sel = document.getElementById('dpTarget'), cur = sel.value;
+  var h = '<option value="new">新开一条工作线（挂在你下面）</option><optgroup label="派给工作线领头">';
+  roots().forEach(function(n){ if (n.ownership !== 'foreign' && !n.line && ['ended', 'braked'].indexOf(n.state) < 0) h += '<option value="' + n.id + '">' + esc(short(n)) + (n.ownership === 'owned' ? '（自有，发给它拆）' : '（只读，新会话归到这条线）') + '</option>'; });
+  h += '</optgroup>';
+  if (st.focus) {
+    var ch = chainOf(st.focus).slice(1);
+    if (ch.length) {
+      h += '<optgroup label="挂在焦点这条链上">';
+      ch.forEach(function(id){ var n = node(id); h += '<option value="' + id + '">' + esc(short(n)) + '（第 ' + n.depth + ' 层，' + OWN[n.ownership] + '）</option>'; });
+      h += '</optgroup>';
+    }
+  }
+  sel.innerHTML = h;
+  var keep = cur && st.dpFocus === st.focus && sel.querySelector('option[value="' + cur + '"]');
+  sel.value = keep ? cur : defaultTarget(); st.dpFocus = st.focus;
+  if (!sel.value) sel.value = 'new';
+  document.getElementById('dpDrafts').innerHTML = '<span>建议</span>' + S.dispatch.drafts.map(function(d){ return '<button type="button" class="chip" data-draft="' + d.id + '">' + esc(d.text) + '</button>'; }).join('');
+}
+function defaultTarget(){
+  if (st.focus) { var r0 = chainOf(st.focus)[0]; return node(r0).ownership === 'foreign' ? 'new' : r0; }
+  var lead = roots().filter(function(n){ return n.ownership === 'owned' && n.state === 'running'; })[0];
+  return lead ? lead.id : 'new';
+}
+function routesFor(tn, dr){
+  var out = [];
+  if (tn && tn.ownership === 'owned') out.push({kind:'msg', to:'发给「' + short(tn) + '」本人，由它拆分', reason:'不新开会话；它是 Orchestra 开的，收得到你的消息', harness:tn.harness, model:tn.model});
+  var news = dr ? dr.routes : [
+    {to:'Orchestra 新开 Claude 会话', harness:'claude', model:'sonnet', reason:'归 Orchestra 所有，能发消息、能刹车'},
+    {to:'Orchestra 新开 Codex 会话', harness:'codex', model:'codex-high', reason:'归 Orchestra 所有，适合改代码、跑命令'}];
+  news.forEach(function(r){
+    var x = {kind:'new'}; Object.keys(r).forEach(function(k){ x[k] = r[k]; });
+    if (r.harness == null) x.kind = 'self';
+    else if (r.harness === 'dsh') x.disabled = 'Orchestra 只能开 Claude 或 Codex 会话；这条要在 DeepSeek Harness 里自己派';
+    else { var pn = node(r.to.split('（')[0]); if (pn && pn.ownership !== 'owned' && r.to.indexOf('新') < 0) x.disabled = '「' + short(pn) + '」是只读会话，收不到这条'; }
+    out.push(x);
+  });
+  return out;
+}
+function openPreview(){
+  var text = document.getElementById('dpText').value.trim(), target = document.getElementById('dpTarget').value;
+  var pv = document.getElementById('dpPrev');
+  if (!text) { document.getElementById('dpText').focus(); toast('先写一句要做什么。'); return; }
+  var dr = st.draft && st.draft.text === text ? st.draft : null;
+  var tn = target === 'new' ? null : node(target), routes = routesFor(tn, dr);
+  var place = !tn ? '你下面，作为一条新工作线'
+    : tn.ownership === 'owned' ? esc(short(tn)) + pathHTML(tn.id) + '<div class="note">选第一项：不新开会话，在「' + esc(short(tn)) + '」那一行落一个你派的箭头。选新开：新会话挂在它下面，标「你派」。</div>'
+    : esc(short(tn)) + pathHTML(tn.id) + '<div class="note">「' + esc(short(tn)) + '」是只读会话，收不到这条。新会话由 Orchestra 开，挂在你下面，和「' + esc(nm(chainOf(tn.id)[0])) + '」标成同一条工作线（细灰线连着，不是父子关系）。</div>';
+  var first = routes.findIndex(function(r){ return !r.disabled; });
+  var h = '<h4>派出前看一眼</h4><dl class="kv"><dt>任务</dt><dd>' + esc(text) + '</dd><dt>挂在</dt><dd>' + place + '</dd>' +
+    '<dt>谁来做</dt><dd>' + routes.map(function(r, i){ return '<label class="route' + (r.disabled ? ' off' : '') + '"><input type="radio" name="route" value="' + i + '"' + (i === first ? ' checked' : '') + (r.disabled ? ' disabled' : '') + '><span>' + esc(r.to) + (r.model ? '，' + esc(S.models[r.model] || r.model) : '') + '<small>' + esc(r.disabled || r.reason) + (r.confidence != null && !r.disabled ? '（路由把握 ' + Math.round(r.confidence * 100) + '%）' : '') + '</small></span></label>'; }).join('') + '</dd>' +
+    '<dt>命中规则</dt><dd>' + (dr && dr.rulesHit.length ? '<ul class="rules">' + dr.rulesHit.map(function(r){ return '<li>' + esc(r.rule) + '：' + esc(r.effect) + '</li>'; }).join('') + '</ul>' : '没有命中规则') + '</dd></dl>' +
+    '<div class="acts"><button type="button" class="btn go" data-act="send"' + (first < 0 ? ' disabled' : '') + '>派出</button><button type="button" class="btn no" data-act="cancelSend">先不派</button><span class="note">派出后马上出现在总谱上。</span></div>';
+  pv.innerHTML = h; pv.hidden = false;
+  pv._ctx = {text:text, target:target, routes:routes, draft:dr};
+}
+function doSend(){
+  var pv = document.getElementById('dpPrev'), c = pv._ctx; if (!c) return;
+  var chk = pv.querySelector('input[name="route"]:checked'); if (!chk) { toast('这几条路都走不通，换一个挂靠位置。'); return; }
+  var r = c.routes[+chk.value], now = simNow();
+  if (r.disabled) { toast(r.disabled); return; }
+  if (r.kind === 'self') { pv.hidden = true; var stray = Array.from(D.nodes.values()).filter(function(n){ return n.ownership === 'foreign'; })[0]; if (stray) focusNode(stray.id); toast('没派 agent：已把总谱聚焦到那个会话，你自己看。'); return; }
+  var tn = c.target === 'new' ? null : node(c.target);
+  if (r.kind === 'msg') {
+    D.events.push({id:'loc-' + (++st.seq), t:iso(now), type:'delegate', from:'you', to:tn.id, task:c.text, via:'message'});
+    tn.lastActivity = iso(now);
+    if (['idle', 'reported'].indexOf(tn.state) >= 0) { tn.state = 'running'; tn.stateDetail = {kind:'fresh', why:'刚收到你派的活，还没有新输出'}; tn.since = iso(now); }
+    pv.hidden = true; document.getElementById('dpText').value = ''; st.draft = null;
+    st.born = tn.id; focusNode(tn.id, true);
+    toast('已发给「' + short(tn) + '」，由它拆分');
+    return;
+  }
+  var parent = tn && tn.ownership === 'owned' ? tn.id : 'you', pn = parent === 'you' ? null : tn;
+  var id = 'new-' + (++st.newSeq);
+  var proj = tn ? tn.project : (c.draft ? c.draft.project : (st.focus ? node(st.focus).project : S.projects[0].id));
+  D.nodes.set(id, {id:id, parent:parent, depth: pn ? pn.depth + 1 : 1, project:proj, harness:r.harness, ownership:'owned', role:null, model:r.model,
+    line: tn && tn.ownership !== 'owned' ? chainOf(tn.id)[0] : null,
+    title: c.text.length > 20 ? c.text.slice(0, 20) + '…' : c.text, task:c.text, state:'running', spawnedAt:iso(now), since:iso(now), lastActivity:iso(now),
+    tokens:0, costUsd:0, messages:0, children:[], stateDetail:{kind:'fresh', why:'刚派出，还没有第一条输出'}, report:null});
+  D.events.push({id:'loc-' + (++st.seq), t:iso(now), type:'delegate', from:'you', to:id, task:c.text, via:'orchestra'});
+  reindex();
+  pv.hidden = true; document.getElementById('dpText').value = ''; st.draft = null;
+  st.born = id;
+  if (tn && tn.ownership !== 'owned') { st.focus = null; st.sel = null; renderAll(); } else focusNode(id, true);
+  toast('已派出：' + c.text + (pn ? '，挂在「' + short(pn) + '」下' : tn ? '，和「' + nm(chainOf(tn.id)[0]) + '」同一工作线' : '，新工作线'));
+}
+
+/* ---------- 处理等你的事 ---------- */
+function closeAtt(a, decision){
+  var now = simNow();
+  D.attention = D.attention.filter(function(x){ return x.id !== a.id; });
+  st.qChanged = performance.now();
+  var ev = {id:'loc-' + (++st.seq), t:iso(now), type: a.kind === 'seat' ? 'seat_resolve' : a.kind === 'question' ? 'question' : 'approval', node:a.nodeId, ask:a.ask, risk:a.risk,
+    resolved:{by: decision === 'timeout' ? 'timeout' : 'you', decision: decision === 'timeout' ? 'rejected' : decision, at:iso(now)}};
+  D.events.push(ev); st.done.unshift({ev:ev});
+  if (st.sel === a.id) st.sel = null;
+  return ev;
+}
+function resolveAtt(a, decision, batch){
+  var now = simNow(), n = node(a.nodeId);
+  closeAtt(a, decision);
+  if (decision === 'approved') { n.state = 'running'; n.stateDetail = null; n.since = iso(now); n.lastActivity = iso(now); }
+  else if (decision === 'dispatched') {
+    var id = 'seat-new-' + (++st.newSeq), task = splitAsk(a)[1].replace(/^「|」$/g, '');
+    D.nodes.set(id, {id:id, parent:n.id, depth:n.depth + 1, project:n.project, harness:'codex', ownership:'owned', role:'test', model:'codex-high',
+      title:'Codex：' + (task.length > 14 ? task.slice(0, 14) + '…' : task), task:task, state:'running', spawnedAt:iso(now), since:iso(now), lastActivity:iso(now),
+      tokens:0, costUsd:0, messages:0, children:[], stateDetail:{kind:'fresh', why:'刚派出，还没有第一条输出'}, report:null});
+    D.events.push({id:'loc-' + (++st.seq), t:iso(now), type:'delegate', from:'you', to:id, task:'应 seat 请求：' + task, via:'seat'});
+    n.state = 'running'; n.stateDetail = null; n.since = iso(now);
+    reindex(); st.born = id;
+  } else { n.state = 'idle'; n.stateDetail = {kind:'idle', why:(decision === 'timeout' ? '审批超时被自动拒：' : '你拒绝了：') + a.ask}; n.since = iso(now); }
+  if (batch) return;
+  renderAll();
+  toast(decision === 'approved' ? '已批准：' + splitAsk(a)[1] : decision === 'dispatched' ? '已派出 Codex 会话，挂在「' + nm(n.id) + '」下' : decision === 'timeout' ? '超时自动拒：' + nm(n.id) + ' 的请求' : '已拒绝：' + nm(n.id) + ' 的请求');
+}
+function brakeTree(id, host){
+  var now = simNow(), ids = [id].concat(subtree(id)), hit = 0;
+  ids.forEach(function(k){
+    var n = node(k);
+    if (k !== id && (host ? ['ended', 'braked'].indexOf(n.state) >= 0 : !brakeable(k))) return;
+    n.state = 'braked'; n.stateDetail = {kind:'braked', by:'you', why:'你在 ' + hm(now) + (host ? ' 从本机进程层刹住了它' : ' 刹住了这棵进程树')}; n.since = iso(now); hit++;
+    D.attention.filter(function(x){ return x.nodeId === k; }).forEach(function(a){ closeAtt(a, 'braked'); });
+  });
+  D.events.push({id:'loc-' + (++st.seq), t:iso(now), type:'brake', node:id, by:'you', host:!!host});
+  st.qChanged = performance.now(); renderAll();
+  toast((host ? '已在本机刹住：' : '已刹车：') + nm(id) + (hit > 1 ? ' 和它的 ' + (hit - 1) + ' 个下属' : ''));
+}
+function sweep(){
+  var now = simNow(), late = D.attention.filter(function(a){ return a.deadline && T(a.deadline) <= now; });
+  if (!late.length) return false;
+  late.forEach(function(a){ resolveAtt(a, 'timeout', true); });
+  renderAll();
+  toast('超时自动拒：' + late.map(function(a){ return nm(a.nodeId); }).join('、'));
+  return true;
+}
+
+/* ---------- 交互 ---------- */
+function focusNode(id, keepSel){
+  st.focus = id;
+  if (!keepSel) st.sel = null;
+  var n = node(id); st.openFolds = new Set();
+  if (n && n.parent !== 'you') st.openFolds.add('f:' + n.parent);
+  renderAll();
+  var row = document.querySelector('#scoreB [data-row="' + id + '"]');
+  if (row && row.scrollIntoView) row.scrollIntoView({block:'nearest'});
+}
+function selectAtt(id){
+  if (st.sel === id) { st.sel = null; renderAll(); return; }
+  var a = D.attention.filter(function(x){ return x.id === id; })[0]; if (!a) return;
+  st.sel = id; focusNode(a.nodeId, true);
+}
+var toastTimer = null;
+function toast(msg){ var t = document.getElementById('toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(function(){ t.hidden = true; }, 3800); }
+function openList(key, anchor){
+  var L = LISTS.get(key); if (!L) return;
+  var pop = document.getElementById('pop'), rows;
+  if (L.kind === 'nodes') rows = L.list.map(function(id){ var n = node(id); return n ? '<li data-go="' + esc(id) + '"><span>' + esc(short(n)) + '</span><span>' + esc(bucketLabel(n)) + '，第 ' + n.depth + ' 层</span></li>' : ''; });
+  else if (L.kind === 'att') rows = L.list.map(function(a){ return '<li data-att="' + a.id + '"><span>' + esc(nm(a.nodeId)) + ' ' + esc(verbOf(a)) + '</span><span>' + (a.deadline ? hm(T(a.deadline)) + ' 自动拒' : '无期限') + '</span></li>'; });
+  else if (L.kind === 'stubs') rows = L.list.map(function(s){ return '<li class="stub"><span>' + esc(s.label) + '</span><span>' + esc(s.where) + '</span></li>'; });
+  else rows = L.list.map(function(e){ return '<li data-go="' + esc(evNode(e) === 'you' ? e.from : evNode(e)) + '"><span>' + esc(evText(e)) + '</span><span>' + hm(T(e.t)) + '</span></li>'; });
+  pop.innerHTML = '<h5>' + esc(L.title) + '：' + L.list.length + ' 项</h5><ol>' + rows.join('') + '</ol>';
+  pop.hidden = false;
+  var r = anchor.getBoundingClientRect();
+  var left = Math.min(r.left, window.innerWidth - 352), top = r.bottom + 6;
+  if (top + 260 > window.innerHeight) top = Math.max(8, r.top - Math.min(pop.offsetHeight, window.innerHeight * 0.6) - 6);
+  pop.style.left = Math.max(8, left) + 'px'; pop.style.top = top + 'px';
+  if (L.kind === 'events') { st.mark = new Set(L.list.map(function(e){ return e.id; })); renderSince(); renderScore(); }
+}
+function closePop(){ document.getElementById('pop').hidden = true; }
+function openConvo(id){
+  var n = node(id), c = document.getElementById('convo');
+  var ms = D.events.filter(function(e){ return e.type === 'message' && (e.node === id || e.with === id); });
+  c.innerHTML = '<header><button type="button" class="btn" data-act="closeConvo">回到总谱（Esc）</button><b>' + esc(n.title) + '</b>' + pathHTML(id) + '</header><div class="body">' +
+    '<p class="note">完整对话页：逐条消息、工具调用和它们的结果都在这里。这一页只摘出往来记录的段落。</p>' +
+    (ms.length ? ms.map(function(e){ return '<div class="msgblk"><div class="note">' + hm(T(e.t)) + '，与' + esc(nm(e.node === id ? e.with : e.node)) + '往来 ' + e.count + ' 条</div>「' + esc(e.last) + '」</div>'; }).join('') : '<p class="note">' + (n.messages == null ? '消息数未知：这个会话的记录没读进来。' : '这里没有和其它 agent 的往来记录。') + '</p>') +
+    '</div><footer>' + (n.ownership === 'owned' ? '<input placeholder="给' + esc(short(n)) + '发消息"><button type="button" class="btn go" data-act="say">发送</button>' : '<span class="note">' + OWN[n.ownership] + '会话：在 ' + esc(HN(n.harness)) + ' 自己的界面里回复。</span>') + '</footer>';
+  c.hidden = false;
+}
+function renderTabs(){
+  var tabs = document.getElementById('tabs');
+  tabs.innerHTML = '<button type="button" role="tab" data-tab="desk" aria-selected="' + (st.tab === 'desk') + '">等你 ' + attGroups().here.length + '</button><button type="button" role="tab" data-tab="score" aria-selected="' + (st.tab === 'score') + '">总谱</button>';
+  document.getElementById('main').dataset.tab = st.tab;
+}
+function renderClock(full){
+  var el = document.getElementById('clock'); if (!el) return;
+  if (full || !el.firstChild) {
+    el.innerHTML = '<span>演示时钟</span><b id="clkT">' + hms(simNow()) + '</b><button type="button" data-clock="run">' + (clock.run ? '停' : '走') + '</button><button type="button" data-clock="reset">重置</button><button type="button" data-clock="ff">快进到下一件自动拒</button>';
+  } else document.getElementById('clkT').textContent = hms(simNow());
+}
+function renderAll(){
+  renderSince(); renderDesk(); renderScore(); renderDrawer(); renderDispatch(); renderTabs(); renderClock(true);
+  var sb = document.getElementById('stressBtn'); if (sb) sb.textContent = st.stress ? '撤掉加压的 120 个 Explore' : '加压：给「购物车组件重写」再挂 120 个 Explore';
+}
+
+function bind(){
+  document.addEventListener('click', function(ev){
+    var t = ev.target;
+    var c = t.closest('.cnt'); if (c) { ev.stopPropagation(); openList(c.dataset.list, c); return; }
+    var pl = t.closest('#pop li');
+    if (pl) { if (pl.classList.contains('stub')) return; closePop(); if (pl.dataset.att) selectAtt(pl.dataset.att); else if (pl.dataset.go && node(pl.dataset.go)) focusNode(pl.dataset.go); return; }
+    if (!t.closest('#pop')) closePop();
+    var ck = t.closest('[data-clock]');
+    if (ck) {
+      var k = ck.dataset.clock;
+      if (k === 'run') { clockSet(simNow(), !clock.run); renderClock(true); }
+      else if (k === 'reset') { setMode(st.mode); toast('时钟回到 ' + hm(NOW0) + '，数据重新载入。'); }
+      else if (k === 'ff') {
+        var ds = D.attention.filter(function(a){ return a.deadline; }).map(function(a){ return T(a.deadline); });
+        if (!ds.length) { toast('现在没有会自动拒的事。'); return; }
+        clockSet(Math.min.apply(null, ds), clock.run);
+        if (!sweep()) renderAll();
+      }
+      return;
+    }
+    if (t.id === 'clrMark') { st.mark = null; renderSince(); renderScore(); return; }
+    var act = t.closest('[data-act]');
+    if (act) { ev.stopPropagation(); return doAct(act.dataset.act, act); }
+    var md = t.closest('[data-mode]'); if (md) { setMode(md.dataset.mode); return; }
+    var tb = t.closest('#tabs [data-tab]'); if (tb) { st.tab = tb.dataset.tab; renderTabs(); if (st.tab === 'score') renderScore(); return; }
+    var dft = t.closest('[data-draft]');
+    if (dft) {
+      var d = S.dispatch.drafts.filter(function(x){ return x.id === dft.dataset.draft; })[0]; st.draft = d;
+      document.getElementById('dpText').value = d.text;
+      var tg = document.getElementById('dpTarget');
+      if (d.suggestedParent && node(d.suggestedParent)) { if (!tg.querySelector('option[value="' + d.suggestedParent + '"]')) focusNode(d.suggestedParent); tg.value = d.suggestedParent; if (!tg.value) tg.value = 'new'; }
+      else tg.value = 'new';
+      openPreview(); return;
+    }
+    if (t.closest('input,select,textarea,label,.qd,.acts,.howto')) return;
+    var qi = t.closest('.qi[data-att]'); if (qi) { selectAtt(qi.dataset.att); return; }
+    var qn = t.closest('.qi[data-node]'); if (qn) { if (qn.dataset.open) st.drawer = qn.dataset.node; focusNode(qn.dataset.node); return; }
+    var wb = t.closest('#scoreB [data-att]'); if (wb) { selectAtt(wb.dataset.att); return; }
+    var fo = t.closest('[data-fold]'); if (fo) { var fk = fo.dataset.fold; if (st.openFolds.has(fk)) st.openFolds.delete(fk); else st.openFolds.add(fk); renderScore(); return; }
+    var lf = t.closest('[data-focus]');
+    if (lf) { var id = lf.dataset.focus; if (st.focus === id) { st.drawer = id; renderDrawer(); } else { var at0 = attOf(id); focusNode(id, !!(st.sel && at0 && at0.id === st.sel)); } return; }
+  });
+  document.addEventListener('input', function(ev){
+    var t = ev.target;
+    if (t.dataset && t.dataset.need != null) gate(t);
+    if (t.id === 'dpText' && st.draft && t.value !== st.draft.text) st.draft = null;
+  });
+  document.addEventListener('change', function(ev){
+    if (ev.target.id === 'seenSel') { st.lastSeen = +ev.target.value; st.mark = null; renderAll(); }
+  });
+  document.getElementById('dpText').addEventListener('keydown', function(ev){ if (ev.key === 'Enter') { ev.preventDefault(); var pv = document.getElementById('dpPrev'); if (!pv.hidden && pv._ctx && pv._ctx.text === this.value.trim()) doSend(); else openPreview(); } });
+  document.getElementById('dpGo').addEventListener('click', function(ev){ ev.stopPropagation(); openPreview(); });
+  document.addEventListener('keydown', function(ev){
+    var typing = /INPUT|SELECT|TEXTAREA/.test(document.activeElement.tagName);
+    if (ev.key === 'Escape') {
+      if (!document.getElementById('convo').hidden) { document.getElementById('convo').hidden = true; return; }
+      if (!document.getElementById('pop').hidden) { closePop(); return; }
+      if (!document.getElementById('dpPrev').hidden) { document.getElementById('dpPrev').hidden = true; return; }
+      var ht = document.getElementById('howto'); if (ht && ht.open) { ht.open = false; return; }
+      if (st.drawer) { st.drawer = null; renderDrawer(); return; }
+      if (st.focus || st.sel) { st.focus = null; st.sel = null; renderAll(); return; }
+    }
+    if (typing) return;
+    if (ev.key === 'n' || ev.key === 'N') { ev.preventDefault(); document.getElementById('dpText').focus(); }
+    if (ev.key === 'j' || ev.key === 'k') {
+      var g = attGroups(), list = g.here.concat(g.away, g.inf); if (!list.length) return;
+      var i = list.findIndex(function(a){ return a.id === st.sel; });
+      i = ev.key === 'j' ? Math.min(list.length - 1, i + 1) : Math.max(0, i - 1);
+      selectAtt(list[i].id);
+    }
+    if (ev.key === 'Enter' && document.activeElement.classList.contains('qi')) document.activeElement.click();
+  });
+  var desk = document.getElementById('desk');
+  desk.addEventListener('mouseenter', function(){ st.frozen = attSorted().map(function(a){ return a.id; }); });
+  desk.addEventListener('mouseleave', function(){ st.frozen = null; renderDesk(); });
+  document.getElementById('scoreB').addEventListener('scroll', closePop);
+  window.addEventListener('resize', function(){ drawWires(); });
+  document.getElementById('themeBtn').addEventListener('click', function(){
+    var r = document.documentElement, cur = r.dataset.theme || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    r.dataset.theme = cur === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('ens14-theme', r.dataset.theme); } catch (e) {}
+  });
+}
+function doAct(name, el){
+  var item = el.closest('.qi'), a = item && item.dataset.att ? D.attention.filter(function(x){ return x.id === item.dataset.att; })[0] : null;
+  if ((name === 'approve' || name === 'dispatch') && performance.now() - st.qChanged < 750) { item.classList.remove('guard'); void item.offsetWidth; item.classList.add('guard'); toast('列表刚变过，这一下没算数。看清是哪一条再点。'); return; }
+  switch (name) {
+    case 'approve': if (a) resolveAtt(a, 'approved'); break;
+    case 'dispatch': if (a) resolveAtt(a, 'dispatched'); break;
+    case 'reject': if (a) resolveAtt(a, 'rejected'); break;
+    case 'copy': try { navigator.clipboard.writeText(el.dataset.txt); } catch (e) {} toast('已复制答复「' + el.dataset.txt + '」，去它自己的界面里发。'); break;
+    case 'drawer': st.drawer = el.dataset.node; renderDrawer(); break;
+    case 'closeDrawer': st.drawer = null; renderDrawer(); break;
+    case 'unfocus': st.focus = null; st.sel = null; renderAll(); break;
+    case 'toscore': st.tab = 'score'; renderTabs(); renderScore(); break;
+    case 'convo': openConvo(st.drawer); break;
+    case 'closeConvo': document.getElementById('convo').hidden = true; break;
+    case 'say': toast('已发送。回复会出现在它的对话里。'); break;
+    case 'interrupt': toast('已中断「' + nm(st.drawer) + '」这一回合，会话还在。'); break;
+    case 'endsess': { var n0 = node(st.drawer); n0.state = 'ended'; n0.stateDetail = {kind:'ended', why:'你在 ' + hm(simNow()) + ' 结束了会话'}; n0.since = iso(simNow()); D.attention.filter(function(x){ return x.nodeId === n0.id; }).forEach(function(x){ closeAtt(x, 'braked'); }); renderAll(); toast('已结束会话：' + nm(n0.id)); break; }
+    case 'brake': {
+      var id = st.drawer;
+      if (st.armed && st.armed.id === id && Date.now() - st.armed.at < 3000) { st.armed = null; brakeTree(id, false); }
+      else { st.armed = {id:id, at:Date.now()}; renderDrawer(); setTimeout(function(){ if (st.armed && st.armed.id === id && Date.now() - st.armed.at >= 2900) { st.armed = null; renderDrawer(); } }, 3050); }
+      break;
+    }
+    case 'hostbrake': brakeTree(st.drawer, true); break;
+    case 'accept': case 'bounce': {
+      var nn = node(st.drawer), t = simNow();
+      if (name === 'accept') nn.accepted = t;
+      D.events.push({id:'loc-' + (++st.seq), t:iso(t), type:name, node:nn.id});
+      if (name === 'bounce') { nn.state = 'running'; nn.stateDetail = null; nn.since = iso(t); nn.report = null; }
+      renderAll(); toast(name === 'accept' ? '已验收：' + nm(nn.id) + ' 的回报' : '已打回给 ' + nm(nn.id)); break;
+    }
+    case 'send': doSend(); break;
+    case 'cancelSend': document.getElementById('dpPrev').hidden = true; break;
+    case 'stress': st.stress = !st.stress; setMode('rich'); toast(st.stress ? '已给「购物车组件重写」再挂 120 个 Explore：看首屏行数变没变。' : '已撤掉加压的 120 个 Explore。'); break;
+  }
+}
+function setMode(m){
+  st.mode = m; clockSet(NOW0, false); load(m);
+  document.querySelectorAll('[data-mode]').forEach(function(b){ b.setAttribute('aria-pressed', String(b.dataset.mode === m)); });
+  if (st.focus && !node(st.focus)) st.focus = null;
+  if (st.sel && !D.attention.some(function(a){ return a.id === st.sel; })) st.sel = null;
+  st.drawer = null; st.done = []; st.mark = null; st.openFolds = new Set(); st.armed = null;
+  document.getElementById('dpPrev').hidden = true;
+  renderAll();
+}
+function tick(){
+  renderClock(false);
+  if (!clock.run) return;
+  var now = simNow();
+  document.querySelectorAll('[data-dl]').forEach(function(el){ el.textContent = (el.dataset.pre || '') + mmss(+el.dataset.dl - now); });
+  document.querySelectorAll('[data-bar]').forEach(function(el){ var d = +el.dataset.bar, o = +el.dataset.open; el.style.width = (Math.max(0, Math.min(1, (d - now) / (d - o))) * 100).toFixed(1) + '%'; });
+  sweep();
+}
+function boot(){
+  try { var th = localStorage.getItem('ens14-theme'); if (th) document.documentElement.dataset.theme = th; } catch (e) {}
+  load('rich');
+  bind(); renderAll();
+  setInterval(tick, 1000);
+  setInterval(function(){ if (clock.run && document.getElementById('pop').hidden) renderScore(); }, 15000);
+}
+root.__ens14 = {load:load, getD:function(){ return D; }, buckets:buckets, chainOf:chainOf, subtree:subtree, attSorted:attSorted, attGroups:attGroups, problems:problems, sinceGroups:sinceGroups, buildRows:buildRows, rowHTML:rowHTML, stateHTML:stateHTML, qItem:qItem, glyphsFor:glyphsFor, evText:evText, xp:xp, needOf:needOf, st:st, LISTS:LISTS, NOW0:NOW0, renderAll:renderAll, setMode:setMode, resolveAtt:resolveAtt, brakeTree:brakeTree, sweep:sweep, clockSet:clockSet, doSend:doSend, routesFor:routesFor};
+if (typeof document !== 'undefined' && document.getElementById('desk')) boot();
+})();
+</script>
+</body>
+</html>

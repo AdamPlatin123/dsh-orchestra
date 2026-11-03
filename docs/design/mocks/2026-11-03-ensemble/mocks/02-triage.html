@@ -1,0 +1,1452 @@
+<!doctype html>
+<!--
+方案 02-triage：分诊台 + 交接板（第二版，按评审改）
+重押：
+  P3 冒泡带来路：一件等你的事一张大卡。卡顶「腕带」写层数和整条来路，卡右「从你到它」竖画这一条祖先链：
+     ▼ 派出（带原文）、▲ 回报、┅ 等回报（派出多久还没回）、┆ 关系未知。第 5 层的事不进塔就能处理。
+  P4/P5 合作靠「交接板」：每条工作线一行（行数随工作线增长，不随会话增长），从左到右是
+     最近一次交接 → 最近一次回报 → 球现在在谁手上；队列空了，交接板就是首屏。
+  P2 一个行动队列（右侧「等你」），P11 动词带后果：高风险先键入后果词再按住 1 秒；刹车先列波及的子树。
+  P7/T3：页面上每个数字都由 L() 从它链接的那张列表算出，点开行数等于数字。
+主动放弃：没有全局关系图；P6 只在「一件事」周围成立。全塔视图是按工作线的计数表，只多一列「最近交接」。
+最大的风险：交接板只给每条线的「最近一次」，长链里中间几次交接要点进病历才看得到；
+  分诊台回答「下一步做什么」很强，回答「整体往哪走」（J4）仍弱，因为剧本里没有复核数据可算「n/m 已验证」。
+数据：只读 ../scenario.js 的 window.SCENARIO。「今天的真实形状」按简报 7.4 的抽样轮廓（24 个主会话、111 个 subagent
+  其中 109 个状态未知、718 个被裁掉、DSH 92 个未读入、自有会话 ≤3）用场景里的名字现造，见 POOR 常量。
+颜色预算：红色只给倒计时和出错；批准是墨色。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>分诊台</title>
+<style>
+:root{
+  --sans:"Microsoft YaHei UI","PingFang SC","Segoe UI Variable Text","Segoe UI",system-ui,sans-serif;
+  --num:"Bahnschrift","DIN Alternate","Segoe UI Variable Display","Segoe UI",system-ui,sans-serif;
+  --mono:"Cascadia Mono",Consolas,"SFMono-Regular",monospace;
+  --bg:#E4EBE8; --paper:#F8FAF9; --paper2:#EEF3F1; --ink:#13201D; --ink2:#4B5B57; --ink3:#7A8985;
+  --rule:#C5D0CC; --rule2:#DCE4E1;
+  --red:#C3112E; --amber:#9A5206; --blue:#2D5B88; --neutral:#5E6E6A;
+  --t-red:#F6D9DD; --t-amber:#F4E2CB; --t-blue:#DBE5EE; --t-neutral:#E1E8E5;
+  --on-acu:#FFFFFF; --focus:#2D5B88;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0D1917; --paper:#14231F; --paper2:#101E1B; --ink:#E1EBE7; --ink2:#A2B3AE; --ink3:#71847E;
+    --rule:#2A3D38; --rule2:#203330;
+    --red:#FF5D6C; --amber:#F0A24E; --blue:#82B3E0; --neutral:#93A4A0;
+    --t-red:#3B1A20; --t-amber:#382915; --t-blue:#182A3A; --t-neutral:#1C2D29;
+    --on-acu:#0D1917; --focus:#82B3E0; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#0D1917; --paper:#14231F; --paper2:#101E1B; --ink:#E1EBE7; --ink2:#A2B3AE; --ink3:#71847E;
+  --rule:#2A3D38; --rule2:#203330;
+  --red:#FF5D6C; --amber:#F0A24E; --blue:#82B3E0; --neutral:#93A4A0;
+  --t-red:#3B1A20; --t-amber:#382915; --t-blue:#182A3A; --t-neutral:#1C2D29;
+  --on-acu:#0D1917; --focus:#82B3E0; color-scheme: dark;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.6 var(--sans);overflow-x:hidden}
+button,input,select,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+.num{font-family:var(--num);font-variant-numeric:tabular-nums}
+.mono{font-family:var(--mono);font-size:13px}
+a{color:inherit}
+[hidden]{display:none !important}
+
+/* 顶栏：派活固定在品牌名后面 */
+.top{display:flex;align-items:center;gap:10px 14px;flex-wrap:wrap;padding:10px 20px;background:var(--paper);border-bottom:1px solid var(--rule)}
+.brand{font-weight:700;font-size:16px;letter-spacing:.02em;display:flex;align-items:baseline;gap:8px}
+.brand small{font-weight:400;color:var(--ink3);font-size:12px}
+.clock{display:flex;align-items:center;gap:4px;color:var(--ink2);font-size:13px}
+.clock .num{font-size:15px;color:var(--ink);margin-right:4px}
+.seg{display:inline-flex;border:1px solid var(--rule);border-radius:7px;overflow:hidden}
+.seg button{border:0;background:transparent;padding:4px 11px;font-size:13px;color:var(--ink2)}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--paper)}
+.spacer{flex:1}
+.btn{border:1px solid var(--rule);background:var(--paper);border-radius:7px;padding:5px 12px;font-size:13px}
+.btn:hover{border-color:var(--ink3)}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.btn-ink{background:var(--ink);color:var(--paper);border-color:var(--ink);font-weight:700}
+.btn-heavy{border:2px solid var(--ink);font-weight:700}
+.btn-heavy.armed{background:var(--t-amber);border-color:var(--amber)}
+.btn-quiet{border-color:transparent;background:transparent;color:var(--ink2);text-decoration:underline;text-underline-offset:3px;padding:5px 6px}
+.dispatch{font-weight:700;padding:6px 16px;font-size:14px;display:inline-flex;gap:8px;align-items:center}
+.dispatch kbd{font-family:var(--mono);font-size:11px;border:1px solid currentColor;border-radius:4px;padding:0 5px;opacity:.7}
+.tag{font-size:11.5px;color:var(--ink3);display:flex;gap:10px;align-items:center}
+.tag .btn{font-size:11.5px;padding:2px 4px}
+
+/* 自你上次看 */
+.since{display:flex;align-items:center;gap:4px 14px;flex-wrap:wrap;padding:6px 20px;font-size:13px;color:var(--ink2);border-bottom:1px solid var(--rule2)}
+.since b{font-weight:400;color:var(--ink)}
+.cnt{border:0;background:transparent;padding:0 2px;color:var(--ink);border-bottom:1px dotted var(--ink3);border-radius:0;font-size:inherit}
+.cnt .num{font-weight:600}
+.cnt:hover{border-bottom-color:var(--ink)}
+.cnt[data-zero]{color:var(--ink3)}
+
+/* 布局 */
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;min-height:calc(100vh - 92px)}
+.board{padding:18px 26px 28px;min-width:0}
+.rail{background:var(--paper2);border-left:1px solid var(--rule);padding:16px 14px 28px;min-width:0}
+.boardhead{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:0 0 10px}
+.boardhead h1{font-size:18px;margin:0;font-weight:700}
+.boardhead .pos{color:var(--ink2);font-size:13px}
+
+/* 大卡 */
+.case{background:var(--paper);border:1px solid var(--rule);border-radius:12px;overflow:hidden;--acu:var(--neutral);--tint:var(--t-neutral)}
+.case.enter{animation:slidein .26s ease-out}
+@keyframes slidein{from{opacity:0;transform:translateX(28px)}to{opacity:1;transform:none}}
+.a-now{--acu:var(--red);--tint:var(--t-red)}
+.a-soon{--acu:var(--amber);--tint:var(--t-amber)}
+.a-timed{--acu:var(--ink2);--tint:var(--t-neutral)}
+.a-open{--acu:var(--blue);--tint:var(--t-blue)}
+.a-inf,.a-unk,.a-calm{--acu:var(--neutral);--tint:var(--t-neutral)}
+.a-err{--acu:var(--red);--tint:var(--t-neutral)}
+.wrist{display:flex;align-items:center;gap:10px;margin:12px 12px 0;padding:5px 10px 5px 5px;background:var(--tint);border-radius:999px;min-width:0}
+.acu{flex:none;background:var(--acu);color:var(--on-acu);border-radius:999px;padding:2px 13px;font-weight:700;font-size:13px}
+.a-inf .acu,.a-unk .acu,.a-calm .acu{background:transparent;color:var(--ink2);border:1px dashed var(--ink3)}
+.a-calm .acu{border-style:solid}
+.a-err .acu{background:transparent;color:var(--red);border:1.5px solid var(--red)}
+.crumbs{display:flex;align-items:center;gap:3px;min-width:0;flex:1;overflow:hidden;font-size:13px;color:var(--ink2)}
+.crumbs button{border:0;background:transparent;padding:0;max-width:10em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink2)}
+.crumbs button:hover{color:var(--ink);text-decoration:underline}
+.crumbs .sep{color:var(--ink3);flex:none;font-size:12px}
+.crumbs .here{color:var(--ink);font-weight:700}
+.layer{flex:none;font-size:12.5px;color:var(--ink2)}
+.twbtn{display:none;flex:none}
+.case-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(250px,330px);gap:28px;padding:16px 24px 20px}
+.timer{display:flex;align-items:flex-end;gap:14px;margin:0 0 6px}
+.big{font-family:var(--num);font-variant-numeric:tabular-nums;font-size:84px;line-height:.86;font-weight:600;font-stretch:condensed;color:var(--acu);letter-spacing:-.02em}
+.a-timed .big,.a-open .big,.a-inf .big,.a-unk .big,.a-calm .big{color:var(--ink)}
+.timer .cap{color:var(--ink2);font-size:13px;padding-bottom:4px;line-height:1.45}
+.ask{font-size:20px;line-height:1.45;margin:6px 0 6px;font-weight:700}
+.cmd{display:block;font-family:var(--mono);font-size:14px;background:var(--paper2);border:1px solid var(--rule2);border-left:3px solid var(--ink3);padding:9px 12px;border-radius:6px;white-space:pre-wrap;word-break:break-all;margin:6px 0 10px}
+.facts{display:grid;grid-template-columns:5.5em minmax(0,1fr);gap:3px 12px;margin:8px 0 0;font-size:13.5px}
+.facts dt{color:var(--ink3)}
+.facts dd{margin:0}
+.voice{color:var(--ink2)}
+.voice cite{font-style:normal;color:var(--ink3);font-size:12.5px}
+.unverified{color:var(--amber);font-weight:700}
+.ids{font-size:12.5px;color:var(--ink3);margin-top:6px}
+.ids summary{cursor:pointer}
+.ids dl{display:grid;grid-template-columns:7em minmax(0,1fr);gap:2px 10px;margin:4px 0 0}
+.ids dd{margin:0;font-family:var(--mono);font-size:12px;word-break:break-all}
+.blocks{margin:12px 0 0;padding:9px 12px;border-radius:8px;background:var(--paper2);font-size:13.5px;color:var(--ink2)}
+.blocks b{color:var(--ink);font-weight:700}
+.actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0 0;padding-top:14px;border-top:1px solid var(--rule2)}
+.confirm{display:flex;align-items:center;gap:8px;flex-wrap:wrap;width:100%;margin-bottom:4px;font-size:13px;color:var(--ink2)}
+.confirm input[type=text]{border:1px solid var(--rule);background:var(--paper);border-radius:6px;padding:5px 9px;font-size:13px;width:7em}
+.guard{font-size:12px;color:var(--amber);min-height:1em}
+.opts{display:flex;flex-wrap:wrap;gap:8px}
+.readonly-note{font-size:13px;color:var(--ink2);border:1px dashed var(--rule);border-radius:8px;padding:8px 12px;width:100%}
+/* 按住确认 */
+.hold{position:relative;overflow:hidden;min-width:9em}
+.hold::before{content:"";position:absolute;inset:0;background:var(--ink3);transform:scaleX(0);transform-origin:left center}
+.hold.holding::before{transform:scaleX(1);transition:transform 1s linear}
+.hold>span{position:relative}
+
+/* 从你到它：竖排单链局部塔 */
+.tower{font-size:13px;border-left:1px solid var(--rule2);padding-left:18px;min-width:0}
+.tower h3{font-size:13px;margin:0 0 6px;color:var(--ink2);font-weight:400;display:flex;gap:8px;align-items:baseline}
+.legend{font-size:11.5px;color:var(--ink3)}
+.t-row,.t-edge{position:relative;padding-left:14px;border-left:3px solid transparent}
+.t-row.onpath,.t-edge.onpath{border-left-color:var(--ink)}
+.t-row{padding-top:3px;padding-bottom:3px}
+.t-row .nm{display:flex;align-items:baseline;gap:6px;flex-wrap:wrap}
+.t-row .lv{font-family:var(--num);color:var(--ink3);font-size:12px;width:1.8em;flex:none}
+.t-row button.lnk{border:0;background:transparent;padding:0;text-align:left;font-weight:700;color:var(--ink)}
+.t-row button.lnk:hover{text-decoration:underline}
+.t-row.me{background:var(--tint);border-radius:0 6px 6px 0}
+.t-row .meta{color:var(--ink3);font-size:12px;padding-left:2.3em}
+.t-edge{font-size:12px;color:var(--ink3);padding:1px 0 1px 14px}
+.g{display:inline-block;width:1.8em;text-align:center;color:var(--ink2);flex:none}
+.t-edge.unknown .g{color:var(--ink3)}
+.t-edge.unknown span.l{border-bottom:1px dashed var(--ink3)}
+.t-ret{font-size:12px;color:var(--ink2);padding-left:.5em}
+.t-ret.up{color:var(--blue)}
+.t-ret.wait{color:var(--ink2)}
+.t-ret.wait .g{letter-spacing:-1px}
+.t-ret .cnt{font-size:12px}
+.sib{border:0;background:transparent;padding:0;color:var(--ink2);font-size:12px;border-bottom:1px dotted var(--ink3);margin-left:2.3em;text-align:left}
+.bubble{font-size:12px;color:var(--ink);font-weight:700;padding-left:2.3em}
+.more{border:0;background:transparent;padding:0 0 0 2px;color:var(--amber);font-size:11.5px;text-decoration:underline;text-underline-offset:2px}
+.cutmark{color:var(--amber);font-size:11.5px;font-family:var(--sans)}
+.yours{display:inline-block;font-size:11.5px;color:var(--ink);border:1px solid var(--ink);border-radius:4px;padding:0 5px}
+.just{animation:just 6s ease-out both}
+@keyframes just{0%,40%{background:var(--t-amber)}100%{background:transparent}}
+
+/* 状态标签：实 / ≈ 推测 / 未知 三种画法 */
+.st{display:inline-block;font-size:12px;line-height:1.5;border:1px solid var(--ink3);border-radius:4px;padding:0 6px;color:var(--ink2);white-space:nowrap}
+.st-running{border-color:var(--ink2);color:var(--ink)}
+.st-waiting{background:var(--ink);border-color:var(--ink);color:var(--paper);font-weight:700}
+.st-error{background:var(--red);border-color:var(--red);color:var(--on-acu);font-weight:700}
+.st-reported{border-color:var(--blue);color:var(--blue)}
+.st-braked,.st-ended{border-color:var(--rule);color:var(--ink3)}
+.st-idle{border-color:var(--ink3)}
+.st-inf{border-style:dashed;color:var(--ink2)}
+.st-unk{border-style:dotted;border-color:var(--ink3);color:var(--ink3);background:repeating-linear-gradient(135deg,transparent 0 4px,var(--rule2) 4px 5px)}
+
+/* 右侧：等你队列 */
+.rail h2{font-size:14px;margin:0 0 6px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.rail h2 .note{font-weight:400;font-size:12px;color:var(--ink3)}
+.rail section+section{margin-top:20px}
+.q{list-style:none;margin:0;padding:0}
+.q li+li{margin-top:4px}
+.qrow{display:grid;grid-template-columns:4px 4em minmax(0,1fr);gap:0 10px;width:100%;text-align:left;border:1px solid transparent;background:transparent;border-radius:8px;padding:6px 8px 6px 0;--acu:var(--neutral)}
+.qrow:hover{background:var(--paper)}
+.qrow[aria-current="true"]{background:var(--paper);border-color:var(--rule)}
+.qrow .bar{border-radius:0 3px 3px 0;background:var(--acu)}
+.qrow.a-inf .bar,.qrow.a-unk .bar{background:repeating-linear-gradient(180deg,var(--ink3) 0 3px,transparent 3px 6px)}
+.qrow .tm{font-family:var(--num);font-variant-numeric:tabular-nums;font-size:19px;line-height:1.15;font-weight:600;color:var(--acu)}
+.qrow.a-timed .tm,.qrow.a-open .tm,.qrow.a-inf .tm,.qrow.a-unk .tm{color:var(--ink2);font-size:15px}
+.qrow .tx{min-width:0}
+.qrow .l1,.qrow .l2,.qrow .l3{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.qrow .l1{font-size:13.5px}
+.qrow .l2{font-family:var(--mono);font-size:12px;color:var(--ink2)}
+.qrow .l3{font-size:12px;color:var(--ink3)}
+.risk{display:inline-block;font-size:11px;border:1px solid var(--ink3);border-radius:3px;padding:0 4px;margin-left:4px;color:var(--ink2)}
+.risk.high{border-color:var(--ink);color:var(--ink);font-weight:700}
+.frozen{font-size:11.5px;color:var(--ink3);min-height:1.2em}
+.empty{color:var(--ink2);font-size:13px;padding:6px 0}
+
+/* 交接板：每条工作线一行，最近交接 → 最近回报 → 球在谁手上 */
+.relay{margin-top:22px}
+.relay-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin:0 0 8px}
+.relay-head h2{font-size:16px;margin:0}
+.relay-head .pos{font-size:13px;color:var(--ink2)}
+.rl{list-style:none;margin:0;padding:0;background:var(--paper);border:1px solid var(--rule);border-radius:12px;overflow:hidden}
+.rl>li{display:grid;grid-template-columns:minmax(150px,1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1.2fr);border-top:1px solid var(--rule2)}
+.rl>li:first-child{border-top:0}
+.rl .wl{padding:10px 14px;min-width:0}
+.rl .wl>button{border:0;background:transparent;padding:0;font-weight:700;text-align:left;color:var(--ink)}
+.rl .wl>button:hover{text-decoration:underline}
+.rl .wl small{display:block;color:var(--ink3);font-size:12px}
+.stn{position:relative;padding:10px 14px 10px 0;min-width:0;font-size:13px;border:0;background:transparent;text-align:left;color:var(--ink)}
+.stn::before{content:"";position:absolute;left:0;right:0;top:21px;border-top:1px solid var(--rule)}
+.stn.last::before{right:auto;width:14px}
+.stn .gl{position:relative;display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;margin:0 8px 0 0;background:var(--paper);color:var(--ink2);font-size:13px;vertical-align:top}
+.stn .who{display:inline-block;max-width:calc(100% - 32px);vertical-align:top}
+.stn .t{font-family:var(--num);color:var(--ink3);font-size:12.5px;margin-right:4px}
+.stn .sub{display:block;color:var(--ink2);font-size:12.5px;padding-left:30px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.stn .none{color:var(--ink3)}
+button.stn:hover .who{text-decoration:underline}
+.stn.up .gl{color:var(--blue)}
+.ball{display:inline-block;width:14px;height:14px;border-radius:50%;border:2px solid var(--ink2)}
+.k-you .ball{background:var(--ink);border-color:var(--ink);width:16px;height:16px}
+.k-err .ball{background:var(--red);border-color:var(--red)}
+.k-run .ball{border-color:var(--ink2)}
+.k-pend .ball{border-style:dashed}
+.k-unk .ball{border-style:dotted;border-color:var(--ink3)}
+.k-back .ball{border-color:var(--blue);background:var(--t-blue)}
+.k-calm .ball{border-color:var(--rule)}
+.stn.ballc{padding-right:14px}
+.stn.ballc .who b{font-weight:700}
+.stn.ballc .when{font-family:var(--num);font-weight:600}
+.k-you .when.now{color:var(--red)}
+.holders{display:block;padding-left:30px;font-size:12.5px;color:var(--ink2)}
+.fold{padding:9px 14px;font-size:13px;color:var(--ink2);border-top:1px solid var(--rule2);display:flex;gap:6px 14px;flex-wrap:wrap;align-items:baseline}
+.quiet{margin-top:14px;display:flex;align-items:baseline;flex-wrap:wrap;gap:4px 14px;padding:10px 14px;border:1px solid var(--rule2);border-radius:10px;color:var(--ink2);font-size:13px}
+.quiet .lead{color:var(--ink)}
+.unread{color:var(--ink3);font-size:12.5px}
+
+/* 全塔（按工作线） */
+.ward{background:var(--paper);border:1px solid var(--rule);border-radius:12px;overflow:hidden}
+.ward table{width:100%;border-collapse:collapse;font-size:13px}
+.ward th{font-weight:400;color:var(--ink3);text-align:left;padding:8px 10px;border-bottom:1px solid var(--rule)}
+.ward td{padding:8px 10px;border-bottom:1px solid var(--rule2);vertical-align:middle}
+.ward tr:last-child td{border-bottom:0}
+.ward .wln{font-weight:700}
+.ward .wln small{display:block;font-weight:400;color:var(--ink3);font-size:12px}
+.cell{border:0;background:transparent;padding:2px 0;display:flex;gap:2px;align-items:flex-end;min-height:22px;flex-wrap:wrap;max-width:190px}
+.cell:hover .pip{outline:1px solid var(--ink3)}
+.pip{width:6px;border-radius:1px;background:var(--rule)}
+.pip.p-running{background:var(--ink2)}
+.pip.p-waiting{background:var(--ink)}
+.pip.p-error{background:var(--red)}
+.pip.p-unknown{background:transparent;border:1px dotted var(--ink3)}
+.pip.p-reported{background:var(--blue)}
+.pip.p-inf{background:transparent;border:1px dashed var(--ink2)}
+.cell .n{font-family:var(--num);font-size:12px;color:var(--ink2);margin-left:4px}
+.ward .na{color:var(--ink3)}
+.ward .unk{color:var(--ink3);background:repeating-linear-gradient(135deg,transparent 0 5px,var(--rule2) 5px 6px)}
+.ward .last{font-size:12.5px;color:var(--ink2)}
+.ward-scroll{overflow-x:auto}
+
+/* 抽屉 */
+.scrim{position:fixed;inset:0;background:rgba(10,20,18,.32);display:none;z-index:20}
+.scrim.on{display:block}
+.drawer{position:fixed;top:0;right:0;bottom:0;width:min(520px,100vw);background:var(--paper);border-left:1px solid var(--rule);z-index:21;transform:translateX(100%);transition:transform .2s ease-out;display:flex;flex-direction:column}
+.drawer.on{transform:none}
+.dhead{display:flex;align-items:center;gap:10px;padding:14px 18px;border-bottom:1px solid var(--rule)}
+.dhead h2{font-size:16px;margin:0;flex:1;min-width:0}
+.dbody{padding:16px 18px 28px;overflow:auto;flex:1}
+.dbody h3{font-size:13.5px;margin:18px 0 6px;color:var(--ink2);font-weight:700}
+.rows{list-style:none;margin:0;padding:0}
+.rows li{border-bottom:1px solid var(--rule2)}
+.rows li>button,.rows li>div{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 10px;width:100%;text-align:left;border:0;background:transparent;padding:8px 2px}
+.rows li>button:hover{background:var(--paper2)}
+.rows .s{font-size:12px;color:var(--ink3);grid-column:1/-1}
+.rows .t{font-family:var(--num);color:var(--ink3);font-size:12.5px}
+.chain{display:flex;flex-wrap:wrap;gap:2px 4px;font-size:13px;color:var(--ink2);margin:0 0 10px}
+.chain button{border:0;background:transparent;padding:0;color:var(--ink2);border-bottom:1px dotted var(--ink3)}
+.chain .here{color:var(--ink);font-weight:700}
+.kv{display:grid;grid-template-columns:5.5em minmax(0,1fr);gap:4px 12px;font-size:13.5px}
+.kv dt{color:var(--ink3)} .kv dd{margin:0}
+.report{border:1px solid var(--rule);border-radius:8px;padding:10px 12px;font-size:13.5px}
+.trunc{color:var(--amber);font-size:12.5px;margin-top:6px}
+.refs{margin:6px 0 0;padding-left:1.2em;font-family:var(--mono);font-size:12.5px}
+.notes table{border-collapse:collapse;font-size:13px;width:100%}
+.notes td{border-bottom:1px solid var(--rule2);padding:5px 6px;vertical-align:top}
+.notes td:first-child{color:var(--ink2);white-space:nowrap}
+.notes p,.notes li{font-size:13.5px}
+textarea{width:100%;min-height:84px;border:1px solid var(--rule);border-radius:8px;background:var(--paper);padding:8px 10px;resize:vertical}
+select{border:1px solid var(--rule);border-radius:6px;background:var(--paper);padding:5px 8px;max-width:100%;width:100%}
+.drafts{display:flex;flex-direction:column;gap:6px}
+.drafts button{text-align:left;border:1px solid var(--rule2);background:var(--paper2);border-radius:8px;padding:7px 10px;font-size:13px}
+.drafts button[aria-pressed="true"]{border-color:var(--ink)}
+.rules{font-size:12.5px;color:var(--ink2);margin:6px 0 0;padding-left:1.2em}
+.route{display:flex;gap:8px;align-items:flex-start;font-size:13px;padding:4px 0}
+.tpath{font-size:12.5px;color:var(--ink2);margin-top:6px}
+
+/* 对话页 */
+.convo{position:fixed;inset:0;background:var(--bg);z-index:30;display:none;flex-direction:column}
+.convo.on{display:flex}
+.convo .chead{display:flex;align-items:center;gap:12px;padding:10px 20px;background:var(--paper);border-bottom:1px solid var(--rule);flex-wrap:wrap}
+.convo .cbody{flex:1;overflow:auto;padding:20px;max-width:820px;width:100%;margin:0 auto}
+.msg{background:var(--paper);border:1px solid var(--rule2);border-radius:8px;padding:8px 12px;margin:0 0 8px;font-size:13.5px}
+.msg .who{font-size:12px;color:var(--ink3)}
+.dock{display:flex;gap:8px;padding:12px 20px;background:var(--paper);border-top:1px solid var(--rule);max-width:820px;width:100%;margin:0 auto}
+.dock input{flex:1;border:1px solid var(--rule);border-radius:8px;padding:7px 10px;background:var(--paper);min-width:0}
+
+/* toast：只报事实，不放任何批准按钮 */
+.toast{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);background:var(--ink);color:var(--paper);padding:8px 16px;border-radius:8px;font-size:13px;z-index:40;opacity:0;pointer-events:none;transition:opacity .2s;max-width:calc(100vw - 32px)}
+.toast.on{opacity:1;pointer-events:auto}
+.toast button{border:0;background:transparent;color:inherit;text-decoration:underline;margin-left:10px;padding:0}
+
+@media (prefers-reduced-motion: reduce){
+  .case.enter,.just{animation:none}
+  .drawer{transition:none}
+  .hold.holding::before{transition:none}
+}
+/* 1024–1100：塔收成腕带上的横向小链，按「塔」展开 */
+@media (max-width: 1180px){
+  .layout{grid-template-columns:minmax(0,1fr) 300px}
+  .case-grid{grid-template-columns:minmax(0,1fr)}
+  .tower{display:none;border-left:0;padding-left:0;border-top:1px solid var(--rule2);padding-top:12px}
+  .case.tw-open .tower{display:block}
+  .twbtn{display:inline-block}
+  .rl>li{grid-template-columns:minmax(130px,.9fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1.2fr)}
+}
+@media (max-width: 820px){
+  .layout{grid-template-columns:minmax(0,1fr)}
+  .rail{border-left:0;border-top:1px solid var(--rule)}
+  .top{padding:8px 16px;gap:8px 10px}
+  .since{padding:6px 16px}
+  .board{padding:14px 16px}
+  .big{font-size:60px}
+  .ask{font-size:17px}
+  .case-grid{padding:12px 16px 16px}
+  .wrist{margin:10px 8px 0;flex-wrap:wrap;border-radius:14px}
+  .crumbs{flex-basis:100%;flex-wrap:wrap}
+  .brand small,.clock .lbl{display:none}
+  .ward .hide-n{display:none}
+  .rl>li{grid-template-columns:minmax(0,1fr)}
+  .stn{padding:4px 14px 4px 14px}
+  .stn::before{display:none}
+  .stn.ballc{padding-bottom:10px}
+  .rl .wl{padding-bottom:2px}
+}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand">分诊台 <small>orchestrad</small></div>
+  <button class="btn btn-ink dispatch" id="dispatchBtn" title="派一件新活（n）">派活 <kbd>n</kbd></button>
+  <div class="seg" role="group" aria-label="数据">
+    <button data-mode="rich" aria-pressed="true">完整数据</button>
+    <button data-mode="poor" aria-pressed="false">今天的真实形状</button>
+  </div>
+  <div class="seg" role="group" aria-label="视图">
+    <button data-view="board" aria-pressed="true">分诊板</button>
+    <button data-view="ward" aria-pressed="false">全塔</button>
+  </div>
+  <span class="spacer"></span>
+  <div class="clock"><span class="lbl">现在</span><span class="num" id="clock">--:--:--</span>
+    <button class="btn btn-quiet" id="play" title="倒计时默认停着，点了才走">开始走时</button>
+    <button class="btn btn-quiet" id="speed" title="走时倍速">×1</button>
+    <button class="btn btn-quiet" id="reset" title="回到剧本开头，撤销你做过的所有处理">重置剧本</button></div>
+  <button class="btn" id="themeBtn" title="切换浅色 / 深色">深浅</button>
+  <div class="tag"><button class="btn btn-quiet" id="notesBtn">方案 02-triage：分诊台</button><a href="../index.html">返回画廊</a></div>
+</header>
+<div class="since" id="since"></div>
+<div class="layout">
+  <main class="board" id="board"></main>
+  <aside class="rail" id="rail"></aside>
+</div>
+<div class="scrim" id="scrim"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <div class="dhead"><h2 id="dtitle"></h2><button class="btn" id="dclose">关闭</button></div>
+  <div class="dbody" id="dbody"></div>
+</aside>
+<section class="convo" id="convo" aria-hidden="true"></section>
+<div class="toast" id="toast" role="status"></div>
+
+<script src="../scenario.js"></script>
+<script>
+(function(){
+'use strict';
+const S = window.SCENARIO;
+const NOW0 = Date.parse(S.meta.now);
+const TZ = 8*3600e3;
+const OWN = {owned:'自有', observed:'只读', foreign:'来源不明'};
+const STATE = {running:'在跑', waiting:'等你', idle:'空闲', reported:'已回报', error:'出错', unknown:'状态未知', braked:'被刹车', ended:'已结束', pending:'等它继续'};
+const clone = o => JSON.parse(JSON.stringify(o));
+
+/* 「今天的真实形状」的抽样轮廓：简报 7.4（来自 docs/research/2026-11-02-tower-panel.md 的真实抽样）。
+   场景数据里没有这些数，只在这里写一次；名字、任务、请求都取自 SCENARIO。 */
+const POOR = {mains:24, alive:13, running:3, inferredWaiting:1, knownLinks:2, cut:718, dshUnread:92,
+  split:[16,14,12,10,9,8,7,6,5,5,4,3,3,2,2,2,1,1,1,0,0,0,0,0]};
+
+function buildRich(){
+  const b = clone(S);
+  return {key:'rich', nodes:b.nodes, attention:b.attention, events:b.events, drafts:b.dispatch.drafts, cut:0, dshUnread:0,
+    lastSeen:Date.parse(S.meta.windowStart)};
+}
+function buildPoor(){
+  const b = clone(S);
+  const byId = id => b.nodes.find(n => n.id === id);
+  const iso = ms => new Date(ms).toISOString();
+  const ap = b.attention.find(a => a.kind === 'approval' && a.risk !== 'high' && byId(a.nodeId).harness === 'codex' && byId(a.nodeId).ownership === 'owned');
+  const apHost = byId(byId(ap.nodeId).parent);
+  const other = b.nodes.find(n => n.ownership === 'owned' && n.harness === 'codex' && n.depth === 2 && n.state === 'running' && n.id !== apHost.id);
+  const seat = b.attention.find(a => a.kind === 'seat');
+  const inf = b.attention.find(a => a.kind === 'inferred');
+  const nodes = [], events = [];
+  const mk = (src, over) => Object.assign({id:src.id, parent:'you', depth:1, project:src.project, harness:'claude', ownership:'observed', role:src.role,
+    model:null, title:src.title.replace(/ · 领头$/, ''), task:src.task, state:'idle', spawnedAt:src.spawnedAt, since:src.since,
+    lastActivity:src.lastActivity, tokens:src.tokens, costUsd:null, messages:src.messages, children:[], stateDetail:null, report:null}, over);
+  /* 自有：Orchestra 开的 Codex 会话，同时最多 3 个；这里 2 个 */
+  for (const src of [apHost, other]){
+    const ev = b.events.find(e => e.type === 'delegate' && e.to === src.id);
+    const isAp = src === apHost;
+    nodes.push(mk(src, {harness:'codex', ownership:'owned', costUsd:src.costUsd, state:isAp ? 'waiting' : 'running',
+      stateDetail:isAp ? {kind:'approval', approvalId:ap.id} : null}));
+    events.push({t:ev.t, type:'delegate', from:'you', to:src.id, task:src.task, via:'orchestra', id:'p-d-' + src.id});
+  }
+  ap.nodeId = apHost.id;
+  events.push({t:ap.openedAt, type:'approval', node:apHost.id, subkind:ap.subkind, risk:ap.risk, ask:ap.ask, deadline:ap.deadline, id:'p-ap'});
+  /* 能对上「哪一次派活」的 2 个 subagent 借用的名字 */
+  const linkSrc = [b.nodes.find(n => n.harness === 'claude' && n.depth >= 3 && n.state === 'running'),
+                   b.nodes.find(n => n.harness === 'claude' && n.report)];
+  /* 24 个 Claude 主会话（只读）：13 个在 registry 里活着，其中 3 个在跑、1 个推测在等你 */
+  const infSrc = byId(inf.nodeId);
+  const pool = b.nodes.filter(n => n.harness !== 'dsh' && n.ownership !== 'foreign' && n.id !== apHost.id && n.id !== other.id &&
+    n.parent !== apHost.id && !linkSrc.includes(n) && n !== infSrc);
+  pool.splice(POOR.running, 0, infSrc);   /* 推测在等你的那个主会话，沿用场景里那条推测的名字 */
+  const mains = pool.slice(0, POOR.mains).map((src, i) => {
+    let state = 'idle', sd;
+    if (i < POOR.running){ state = 'running'; sd = null; }
+    else if (i < POOR.running + POOR.inferredWaiting){ state = 'waiting'; sd = {kind:'inferred', label:'≈ 可能在等你', why:inf.why}; }
+    else if (i < POOR.alive) sd = {kind:'idle', why:'在 registry 里，活着；没有挂起的请求'};
+    else sd = {kind:'inferred', label:'≈ 可能已退出', why:'不在 registry 里，会话文件也不再更新；可能已退出，也可能是没登记的进程'};
+    return mk(src, {id:'cc.' + src.id, state, stateDetail:sd});
+  });
+  inf.nodeId = mains[POOR.running].id;
+  nodes.push(...mains);
+  /* 111 个 subagent：只有 2 个能对上「哪一次派活」，其余 109 个只知道挂在谁下面 */
+  mains.forEach((m, i) => {
+    for (let j = 0; j < POOR.split[i]; j++){
+      const id = m.id + '.s' + (j + 1);
+      const n = {id, parent:m.id, depth:2, project:m.project, harness:'claude', ownership:'observed', role:'unknown', model:null,
+        title:(j % 4 === 3 ? '通用分身 ' : 'Explore 分身 ') + (j + 1), task:null, state:'unknown', spawnedAt:null, since:null, lastActivity:null,
+        tokens:null, costUsd:null, messages:null, children:[], report:null,
+        stateDetail:{kind:'unknown', why:'只知道它挂在「' + m.title + '」下面（按文件位置）；不知道是哪次派活派出的，也不知道它在不在跑'}};
+      if (i === 0 && j < POOR.knownLinks){
+        const src = linkSrc[j], dv = b.events.find(e => e.type === 'delegate' && e.to === src.id);
+        Object.assign(n, {title:src.title, task:src.task, state:src.state, stateDetail:null, spawnedAt:src.spawnedAt, since:src.since, lastActivity:src.lastActivity});
+        events.push({t:dv.t, type:'delegate', from:m.id, to:id, task:dv.task, via:'native', id:'p-d-' + id});
+        if (src.report){
+          n.report = Object.assign({}, src.report, {to:m.id});
+          const rv = b.events.find(e => e.type === 'report' && e.from === src.id);
+          events.push(Object.assign({}, rv, {from:id, to:m.id, id:'p-r-' + id}));
+        }
+      }
+      nodes.push(n);
+    }
+  });
+  events.push({t:seat.openedAt, type:'seat_request', node:seat.nodeId, requesterClaimed:seat.requesterClaimed, verified:false, ask:seat.ask, deadline:seat.deadline, id:'p-seat'});
+  events.sort((x, y) => Date.parse(x.t) - Date.parse(y.t));
+  return {key:'poor', nodes, attention:[ap, seat, inf], events, drafts:b.dispatch.drafts, cut:POOR.cut, dshUnread:POOR.dshUnread,
+    lastSeen:Date.parse(S.meta.windowStart)};
+}
+
+let data = {rich:buildRich(), poor:buildPoor()};
+const st = {mode:'rich', view:'board', sim:0, paused:true, speed:1, lastReal:Date.now(),
+  current:null, order:[], freeze:false, lastChange:0, typed:{}, prevCard:null, brakeArm:null, seq:0, fresh:{}, towerOpen:false};
+
+const $ = s => document.querySelector(s);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const now = () => NOW0 + st.sim;
+const hm = ms => new Date(ms + TZ).toISOString().slice(11,16);
+const hms = ms => new Date(ms + TZ).toISOString().slice(11,19);
+const mmss = ms => { const s = Math.max(0, Math.round(ms/1000)); return Math.floor(s/60) + ':' + String(s%60).padStart(2,'0'); };
+const mins = ms => Math.max(0, Math.round(ms/60e3));
+const dur = ms => { const m = mins(ms); return m >= 60 ? Math.floor(m/60) + ' 时 ' + (m%60) + ' 分' : m + ' 分'; };
+const hshort = h => (S.harnesses[h] && S.harnesses[h].short) || '未知';
+const hlabel = h => (S.harnesses[h] && S.harnesses[h].label) || '未知来源';
+const DS = () => data[st.mode];
+const live = id => DS().nodes.find(n => n.id === id);
+const GHOST_TITLE = 'DSH 里的一个会话（未读入）';
+
+/* 计数按钮：数字永远是它链接的那张列表的长度（T3） */
+const REG = [];
+function L(list, pre, post, title, kind, cls){
+  const i = REG.push({list, title, kind:kind || 'nodes'}) - 1;
+  return '<button class="' + (cls || 'cnt') + '" data-l="' + i + '"' + (list.length ? '' : ' data-zero') + '>' + (pre || '') + '<span class="num">' + list.length + '</span>' + (post || '') + '</button>';
+}
+/* 截断要说明，并能展开 */
+function expandable(s, n){
+  s = String(s || '');
+  if (s.length <= n) return esc(s);
+  return '<span class="xs">' + esc(s.slice(0, n)) + '<button class="more" data-more="1">…已截断，展开</button></span><span class="xf" hidden>' + esc(s) + '</span>';
+}
+function cut(s, n){ s = String(s || ''); return s.length <= n ? esc(s) : esc(s.slice(0, n)) + '<span class="cutmark">…已截断</span>'; }
+
+/* ---------- 由当前数据算出视图 ---------- */
+function derive(){
+  const D = DS();
+  const dl = {}; for (const e of D.events) if (e.type === 'delegate') dl[e.to] = e;
+  const nodes = D.nodes.map(n => Object.assign({}, n, {kids:[]}));
+  const map = new Map(nodes.map(n => [n.id, n]));
+  for (const n of nodes){
+    if (n.parent !== 'you' && !map.has(n.parent)){ n.orphanOf = n.parent; n.parent = 'you'; }
+    n.deleg = dl[n.id] || null; n.linkKnown = !!n.deleg;
+  }
+  for (const n of nodes) if (n.parent !== 'you') map.get(n.parent).kids.push(n.id);
+  const depthOf = n => n.parent === 'you' ? 1 : 1 + depthOf(map.get(n.parent));
+  for (const n of nodes) n.d = depthOf(n);
+  const attention = D.attention.filter(a => !a.res && (map.has(a.nodeId) || a.kind === 'seat'));
+  const events = D.events.filter(e => Date.parse(e.t) <= now());
+  return {D, nodes, map, attention, events};
+}
+function nodeOrGhost(M, id){
+  return M.map.get(id) || {id, title:GHOST_TITLE, harness:'dsh', ownership:'observed', state:'unknown', d:null, kids:[], parent:null, ghost:true, linkKnown:false};
+}
+function chainOf(M, n){
+  if (n.ghost) return [n];
+  const out = [n]; let c = n;
+  while (c.parent && c.parent !== 'you'){ const p = M.map.get(c.parent); if (!p) break; out.unshift(p); c = p; }
+  return out;
+}
+function subtree(M, n){ const out = [n]; for (const k of (n.kids || [])) out.push(...subtree(M, M.map.get(k))); return out; }
+const titleOf = id => id === 'you' ? '你' : (M.map.get(id) || {title:GHOST_TITLE}).title;
+
+function isSoft(n){ return n.stateDetail && (n.stateDetail.kind === 'inferred' || n.stateDetail.kind === 'after'); }
+function stateTag(n){
+  if (isSoft(n)) return '<span class="st st-inf" title="' + (n.stateDetail.kind === 'after' ? '你处理过，还没读到它的下一步' : '推测：从输出或文件时间推出来的') + '">' + esc(n.stateDetail.label) + '</span>';
+  if (n.state === 'unknown') return '<span class="st st-unk" title="不知道，不是空闲">状态未知</span>';
+  return '<span class="st st-' + n.state + '">' + esc(STATE[n.state] || n.state) + '</span>';
+}
+function stateLabel(n){ return isSoft(n) ? n.stateDetail.label : (STATE[n.state] || n.state); }
+function breakdown(list){
+  const g = {}; for (const n of list){ const k = stateLabel(n); (g[k] = g[k] || []).push(n); }
+  return Object.keys(g).map(k => ({label:k, list:g[k]}));
+}
+function bdButtons(list, title){ return breakdown(list).map(x => L(x.list, esc(x.label) + ' ', '', title + '：' + x.label)).join('，'); }
+
+/* ---------- 分级与排序 ---------- */
+function acuity(a){
+  if (a.kind === 'inferred') return {k:'inf', label:'≈ 推测'};
+  if (!a.deadline) return {k:'open', label:'无期限'};
+  const rem = Date.parse(a.deadline) - now();
+  if (rem <= 5*60e3 || (a.risk === 'high' && rem <= 10*60e3)) return {k:'now', label:'立即'};
+  if (rem <= 15*60e3 || a.risk === 'high') return {k:'soon', label:'紧急'};
+  return {k:'timed', label:'限时'};
+}
+function queue(M){
+  const rank = a => a.kind === 'inferred' ? 2 : (a.deadline ? 0 : 1);
+  const items = M.attention.slice().sort((a,b) =>
+    rank(a) - rank(b) ||
+    (a.deadline && b.deadline ? Date.parse(a.deadline) - Date.parse(b.deadline) : Date.parse(a.openedAt) - Date.parse(b.openedAt)));
+  if (st.freeze && st.order.length){
+    const idx = id => { const i = st.order.indexOf(id); return i < 0 ? 999 : i; };
+    items.sort((a,b) => idx(a.id) - idx(b.id));
+  } else st.order = items.map(a => a.id);
+  return items;
+}
+function verbOf(a){
+  if (a.kind === 'seat') return '请求派 Codex';
+  if (a.kind === 'question') return '问你';
+  if (a.kind === 'inferred') return '≈ 可能在等你';
+  return a.subkind === 'write' ? '想写文件' : '想运行命令';
+}
+function payload(a){
+  if (a.kind === 'seat'){ const m = a.ask.match(/「(.+)」/); return m ? m[1] : a.ask; }
+  if (a.kind === 'inferred') return a.ask.replace(/^≈\s*/, '');
+  return a.ask.replace(/^运行命令：|^写文件：/, '');
+}
+const RISK = {high:'高', medium:'中', low:'低'};
+function irreversible(a){ return /不可撤销/.test(a.blast || '') || /\brm\s+-rf\b/.test(a.ask || ''); }
+function needsHold(a){ return a.risk === 'high' || (a.kind === 'seat' && a.verified === false); }
+function confirmWord(a){
+  if (a.kind === 'seat' && a.verified === false) return '未核实';
+  if (a.kind === 'approval' && a.risk === 'high' && irreversible(a)) return '删除';
+  return null;
+}
+function confirmHow(a){
+  const cw = confirmWord(a), yes = a.kind === 'seat' ? '派出' : '批准';
+  if (needsHold(a)) return (cw ? '键入「' + cw + '」，再' : '') + '按住 1 秒' + yes;
+  return '点一下' + yes + '（列表刚变过 750 毫秒内点无效）';
+}
+
+/* ---------- 渲染 ---------- */
+let M = derive();
+function renderAll(){
+  M = derive();
+  renderSince(); renderRail(); renderBoard();
+  document.querySelectorAll('[data-mode]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.mode === st.mode)));
+  document.querySelectorAll('[data-view]').forEach(b => { if (b.closest('.seg')) b.setAttribute('aria-pressed', String(b.dataset.view === st.view)); });
+}
+
+function visibleEvent(e){
+  const ok = id => !id || id === 'you' || M.map.has(id) || id === seatGhostId();
+  return ok(e.node) && ok(e.from) && ok(e.to);
+}
+function seatGhostId(){ const a = M.D.attention.find(x => x.kind === 'seat'); return a && !M.map.has(a.nodeId) ? a.nodeId : null; }
+function sinceEvents(){ return M.events.filter(e => Date.parse(e.t) > M.D.lastSeen && visibleEvent(e)); }
+function sinceGroups(){
+  const ev = sinceEvents();
+  return [
+    {label:'交接', list:ev.filter(e => e.type === 'delegate')},
+    {label:'回报到达', list:ev.filter(e => e.type === 'report')},
+    {label:'新的等你', list:ev.filter(e => e.type === 'approval' || e.type === 'question' || e.type === 'seat_request')},
+    {label:'新出错', list:ev.filter(e => e.type === 'error')},
+    {label:'复核与打回', list:ev.filter(e => e.type === 'review' || e.type === 'reject')},
+    {label:'刹车', list:ev.filter(e => e.type === 'brake')},
+  ];
+}
+function renderSince(){
+  const g = sinceGroups();
+  $('#since').innerHTML = '<span>自你 <b class="num">' + hm(M.D.lastSeen) + '</b> 上次看以来</span>' +
+    g.map(x => L(x.list, x.label + ' ', '', x.label + '（自 ' + hm(M.D.lastSeen) + '）', 'events')).join('') +
+    '<button class="btn btn-quiet" id="seenAll">都看过了</button>';
+}
+
+function railRow(a, cur){
+  const n = nodeOrGhost(M, a.nodeId), ac = acuity(a);
+  const tm = a.deadline ? '<span class="tm" data-rem="' + a.id + '">' + mmss(Date.parse(a.deadline) - now()) + '</span>'
+                        : '<span class="tm">等 <span data-wait="' + a.id + '">' + mins(now() - Date.parse(a.openedAt)) + '</span> 分</span>';
+  const root = n.ghost ? null : chainOf(M, n)[0];
+  return '<li><button class="qrow a-' + ac.k + '" data-acu="' + a.id + '" data-case="' + a.id + '" aria-current="' + String(!!cur) + '">' +
+    '<span class="bar"></span>' + tm +
+    '<span class="tx"><span class="l1"><b>' + esc(n.title) + '</b> ' + verbOf(a) + '</span>' +
+    '<span class="l2">' + cut(payload(a), 20) + '</span>' +
+    '<span class="l3">' + (n.d ? '第 ' + n.d + ' 层' : '层数未知') + '，' + esc(root ? root.title : '工作线未读入') +
+    (a.risk ? '<span class="risk ' + a.risk + '">风险 ' + RISK[a.risk] + '</span>' : '') + '</span></span></button></li>';
+}
+function watchSets(){
+  const qNodes = new Set(M.attention.map(a => a.nodeId));
+  const rest = M.nodes.filter(n => !qNodes.has(n.id));
+  const errors = rest.filter(n => n.state === 'error');
+  const foreign = rest.filter(n => n.state === 'unknown' && n.ownership === 'foreign');
+  const unknown = rest.filter(n => n.state === 'unknown' && n.ownership !== 'foreign');
+  const calm = rest.filter(n => n.state !== 'error' && n.state !== 'unknown');
+  return {qNodes, errors, foreign, unknown, calm};
+}
+function errorConsequence(n){
+  const p = n.parent !== 'you' ? M.map.get(n.parent) : null;
+  const sibs = p ? p.kids.filter(k => k !== n.id).map(k => M.map.get(k)) : [];
+  const kids = (n.kids || []).map(k => M.map.get(k));
+  const kidsRun = kids.filter(k => k.state === 'running');
+  const unk = kids.concat(sibs).filter(k => k.state === 'unknown');
+  const tail = unk.length ? '（另有 ' + unk.length + ' 个状态未知）' : '';
+  if (kidsRun.length) return '它派出的 ' + kidsRun.length + ' 个子会话登记在跑' + tail;
+  const sr = sibs.filter(s => s.state === 'running');
+  if (sr.length) return '同级 ' + sr.map(s => s.title).join('、') + ' 登记在跑' + tail;
+  return '没有登记在跑的牵连会话' + tail;
+}
+function renderRail(){
+  const q = queue(M), W = watchSets();
+  const cur = currentCase(q);
+  let h = '<section aria-label="等你"><h2>等你 ' + L(q.map(a => nodeOrGhost(M, a.nodeId)), '', '', '等你') + ' <span class="note">按剩余时间排，到点自动拒</span></h2>';
+  h += '<div class="frozen" id="frozen">' + (st.freeze ? '鼠标在列表上，排序已冻结' : '') + '</div>';
+  h += q.length ? '<ul class="q" id="qlist">' + q.map(a => railRow(a, cur && cur.type === 'a' && cur.a.id === a.id)).join('') + '</ul>'
+                : '<div class="empty">现在没有等你的事。</div>';
+  const watched = W.errors.concat(W.foreign, W.unknown);
+  h += '</section><section aria-label="盯着"><h2>盯着 ' + L(watched, '', '', '盯着') + ' <span class="note">不等你，但值得看一眼</span></h2><ul class="q">';
+  const isCur = n => String(!!(cur && cur.type === 'n' && cur.n.id === n.id));
+  for (const n of W.errors){
+    h += '<li><button class="qrow a-err" data-node="' + n.id + '" aria-current="' + isCur(n) + '"><span class="bar"></span><span class="tm" style="font-size:14px">出错</span>' +
+      '<span class="tx"><span class="l1"><b>' + esc(n.title) + '</b></span><span class="l3">' + esc(errorConsequence(n)) + '</span></span></button></li>';
+  }
+  for (const n of W.foreign){
+    h += '<li><button class="qrow a-unk" data-node="' + n.id + '" aria-current="' + isCur(n) + '"><span class="bar"></span><span class="tm">来源不明</span>' +
+      '<span class="tx"><span class="l1"><b>' + esc(n.title) + '</b></span><span class="l3">状态未知，只读</span></span></button></li>';
+  }
+  if (W.unknown.length){
+    const i = REG.push({list:W.unknown, title:'状态未知', kind:'nodes'}) - 1;
+    h += '<li><button class="qrow a-unk" data-l="' + i + '"><span class="bar"></span><span class="tm num">' + W.unknown.length + '</span>' +
+      '<span class="tx"><span class="l1">个会话状态未知</span><span class="l3">不知道它们在不在跑；不是空闲</span></span></button></li>';
+  }
+  if (!watched.length) h += '<li class="empty">没有出错或状态未知的会话。</li>';
+  h += '</ul></section>';
+  $('#rail').innerHTML = h;
+}
+
+function currentCase(q){
+  q = q || queue(M);
+  if (st.current && st.current.startsWith('n:')){
+    const n = M.map.get(st.current.slice(2)); if (n) return {type:'n', n};
+  }
+  const a = q.find(x => x.id === st.current) || q[0];
+  if (a){ st.current = a.id; return {type:'a', a}; }
+  st.current = null;
+  return null;
+}
+
+function freshBadge(c){
+  const at = st.fresh[c.id]; if (!at) return '';
+  return ' <span class="yours">你派，' + hm(Date.parse(c.spawnedAt)) + '</span>';
+}
+function justAttr(id){
+  const at = st.fresh[id]; if (!at) return '';
+  const age = Date.now() - at; if (age > 6000) return '';
+  return ' just" style="animation-delay:-' + age + 'ms';
+}
+
+function edgeHTML(c, onp){
+  if (c.ghost) return '<div class="t-edge unknown' + onp + '"><span class="g">┆</span><span class="l">只知道 seat 报来的请求方；它在 DSH 里，因上限未读入</span></div>';
+  if (c.deleg){
+    const e = c.deleg;
+    const who = e.from === 'you' ? (e.via === 'observed-start' ? '你在 ' + hlabel(c.harness) + ' 里开的' : e.via === 'seat' ? '你应 seat 请求派出' : '你派出')
+                                 : '「' + esc(titleOf(e.from)) + '」派出';
+    return '<div class="t-edge' + onp + '"><span class="g">▼</span>' + hm(Date.parse(e.t)) + ' ' + who + '：「' + expandable(e.task, 20) + '」' +
+      (c.orphanOf ? '<br><span class="g">┆</span><span title="' + esc(c.orphanOf) + '">它的上级在 DSH 里，没读入</span>' : '') + '</div>';
+  }
+  let txt;
+  if (c.parent === 'you' && c.ownership === 'foreign') txt = '不知道是谁开的：不是你派的，也没有派活记录';
+  else if (c.orphanOf) txt = '上级没读入，只知道它挂在一个没读入的会话下面';
+  else if (c.parent === 'you') txt = '本机发现的 ' + hlabel(c.harness) + ' 会话；不是经 Orchestra 派出的，没有派活记录';
+  else txt = '只知道它挂在「' + esc(titleOf(c.parent)) + '」下面（按文件位置），不知道是哪次派活';
+  return '<div class="t-edge unknown' + onp + '"><span class="g">┆</span><span class="l">' + txt + '</span></div>';
+}
+/* 祖先那一行下面：它派给链上下一个的那件事，回报了没有 */
+function returnLine(pid, child){
+  if (!child || child.ghost) return '';
+  const rep = M.events.filter(e => e.type === 'report' && e.from === child.id && e.to === pid).pop();
+  if (rep) return '<div class="t-ret up"><span class="g">▲</span>' + hm(Date.parse(rep.t)) + ' 「' + esc(child.title) + '」回报了：' + esc(rep.status) + '</div>';
+  if (child.state === 'ended' || child.state === 'braked') return '<div class="t-ret"><span class="g"> </span>「' + esc(child.title) + '」' + STATE[child.state] + '，没有回报</div>';
+  if (!child.deleg) return pid === 'you' ? '' : '<div class="t-ret"><span class="g">┆</span>不知道它在不在等「' + esc(child.title) + '」</div>';
+  return '<div class="t-ret wait"><span class="g">┅</span>等「' + esc(child.title) + '」回报：派出 ' + dur(now() - Date.parse(child.deleg.t)) + '，还没回</div>';
+}
+function towerHTML(n, bubble){
+  const chain = chainOf(M, n);
+  const onp = ' onpath';
+  let h = '<div class="tower"><h3>从你到它 <span class="legend">▼ 派出　▲ 回报　┅ 等回报　┆ 关系未知</span></h3>';
+  h += '<div class="t-row onpath"><div class="nm"><span class="lv">L0</span><b>你</b></div>' + returnLine('you', chain[0]) + '</div>';
+  chain.forEach((c, i) => {
+    h += edgeHTML(c, onp);
+    const me = i === chain.length - 1;
+    const par = c.parent && c.parent !== 'you' ? M.map.get(c.parent) : null;
+    const sibs = c.ghost ? [] : par ? par.kids.filter(k => k !== c.id).map(k => M.map.get(k)) : M.nodes.filter(x => x.parent === 'you' && x.id !== c.id);
+    h += '<div class="t-row' + onp + (me ? ' me' : '') + justAttr(c.id) + '"><div class="nm"><span class="lv">L' + (c.d || '?') + '</span>' +
+      (c.ghost ? '<b>' + esc(c.title) + '</b>' : '<button class="lnk" data-chart="' + esc(c.id) + '">' + esc(c.title) + '</button>') + stateTag(c) + freshBadge(c) + '</div>' +
+      '<div class="meta">' + hshort(c.harness) + '，' + (OWN[c.ownership] || '归属未知') + '</div>';
+    const ups = M.events.filter(e => e.type === 'report' && e.to === c.id);
+    if (ups.length) h += '<div class="t-ret up"><span class="g">▲</span>收到 ' + L(ups, '', ' 条回报', '「' + c.title + '」收到的回报', 'events') + '</div>';
+    if (!me) h += returnLine(c.id, chain[i + 1]);
+    if (sibs.length){
+      const i2 = REG.push({list:sibs, title:'「' + c.title + '」的同级', kind:'nodes'}) - 1;
+      h += '<button class="sib" data-l="' + i2 + '">' + (c.parent === 'you' ? '你另外还有 ' + sibs.length + ' 条工作线：' : '另有 ' + sibs.length + ' 个同级：') +
+        esc(breakdown(sibs).map(x => x.list.length + ' ' + x.label).join('，')) + '</button>';
+    }
+    if (me && bubble) h += '<div class="bubble">↑ ' + (c.d ? '从第 ' + c.d + ' 层' : '层数未知，') + '冒上来等你</div>';
+    h += '</div>';
+  });
+  const last = chain[chain.length - 1];
+  const kids = (last.kids || []).map(k => M.map.get(k));
+  if (kids.length){
+    const i3 = REG.push({list:kids, title:'「' + last.title + '」派出的', kind:'nodes'}) - 1;
+    h += '<div class="t-edge"><span class="g">▼</span>它派出了</div>';
+    h += '<div class="t-row"><button class="sib" data-l="' + i3 + '">' + kids.length + ' 个子会话：' + esc(breakdown(kids).map(x => x.list.length + ' ' + x.label).join('，')) + '</button></div>';
+  }
+  return h + '</div>';
+}
+
+function wrist(label, n, extra){
+  const chain = chainOf(M, n);
+  const crumbs = '<span class="crumbs">' + chain.map((c,i) => (i ? '<span class="sep" title="' + (c.linkKnown ? '有派活记录' : '派活关系未知') + '">' + (c.linkKnown ? '→' : '┄') + '</span>' : '') +
+    (c.ghost ? '<span class="here">' + esc(c.title) + '</span>' : '<button data-chart="' + esc(c.id) + '"' + (i === chain.length-1 ? ' class="here"' : '') + ' title="' + esc(c.title) + '">' + esc(c.title) + '</button>')).join('') + '</span>';
+  return '<div class="wrist"><span class="acu">' + label + '</span><span class="layer">' + (n.d ? '第 ' + n.d + ' 层' : '层数未知') + '</span>' + crumbs +
+    (extra || '') + '<button class="btn btn-quiet twbtn" data-tower="1" aria-expanded="' + String(st.towerOpen) + '">' + (st.towerOpen ? '收起塔' : '看塔') + '</button></div>';
+}
+
+function blocksLine(n){
+  if (n.ghost) return '<b>挡住了谁：</b>不知道。请求方所在的 DSH 会话没有读入，看不到它的上下游。';
+  const chain = chainOf(M, n), above = chain.slice(0, -1), root = chain[0];
+  const line = subtree(M, root);
+  if (!above.length) return '<b>挡住了谁：</b>它自己就是领头；这条工作线共 ' + L(line, '', ' 个会话', '工作线「' + root.title + '」') + '。';
+  const run = above.filter(c => c.state === 'running');
+  return '<b>挡住了谁：</b>上面 ' + L(above, '', ' 层', '「' + n.title + '」上面的会话') + '可能在等它（其中 ' + L(run, '', ' 个', '上面登记在跑的') + '登记在跑）。' +
+    '整条工作线「' + esc(root.title) + '」共 ' + L(line, '', ' 个会话', '工作线「' + root.title + '」') + '。';
+}
+
+function seatWho(a){
+  const claimedId = String(a.requesterClaimed || '').replace(/（自称）/, '');
+  const c = M.map.get(claimedId);
+  return c ? '「' + c.title + '」' : 'DSH 里的另一个会话（那边没读入）';
+}
+function attentionCard(a){
+  const n = nodeOrGhost(M, a.nodeId), ac = acuity(a), cw = confirmWord(a);
+  const ro = n.ownership !== 'owned' && a.kind !== 'seat';
+  let h = '<article class="case a-' + ac.k + (st.prevCard !== a.id ? ' enter' : '') + (st.towerOpen ? ' tw-open' : '') + '" data-acu="' + a.id + '">';
+  h += wrist(ac.label, n);
+  h += '<div class="case-grid"><div>';
+  if (a.deadline){
+    h += '<div class="timer"><span class="big" data-rem="' + a.id + '">' + mmss(Date.parse(a.deadline) - now()) + '</span><span class="cap">剩余<br>到点自动拒</span></div>';
+  } else {
+    h += '<div class="timer"><span class="big"><span data-wait="' + a.id + '">' + mins(now() - Date.parse(a.openedAt)) + '</span></span><span class="cap">分钟<br>已等，没有期限</span></div>';
+  }
+  if (a.kind === 'seat'){
+    h += '<div class="ask">' + esc(n.title) + ' 请求派 Codex</div><code class="cmd">' + esc(payload(a)) + '</code>';
+    h += '<dl class="facts"><dt>谁要</dt><dd><span class="unverified">自称来自 ' + esc(seatWho(a)) + '（未核实）</span></dd>' +
+      '<dt>能核实的</dt><dd>签名链只到请求方' + (n.ghost ? '，而请求方本身也没读入' : '「' + esc(n.title) + '」自己') + '；查不到到底是谁要的</dd>' +
+      '<dt>派出后</dt><dd>开一个 Orchestra 自有的 Codex 会话，挂在请求方下面；你随时能刹车</dd>' +
+      '<dt>确认方式</dt><dd>' + confirmHow(a) + '</dd></dl>' +
+      '<details class="ids"><summary>标识符</summary><dl><dt>经由</dt><dd>' + esc(a.via) + '</dd><dt>请求方</dt><dd>' + esc(a.nodeId) + '</dd>' +
+      '<dt>自称发起人</dt><dd>' + esc(a.requesterClaimed) + '</dd><dt>守护进程记录</dt><dd>' + esc(a.why) + '</dd></dl></details>';
+  } else if (a.kind === 'question'){
+    h += '<div class="ask">' + esc(n.title) + ' 问你</div><p style="font-size:16px;margin:4px 0 0">' + esc(a.ask) + '</p>';
+  } else if (a.kind === 'inferred'){
+    h += '<div class="ask">' + esc(n.title) + ' ≈ 可能在等你</div><p class="voice">' + esc(payload(a)) + '</p>' +
+      '<dl class="facts"><dt>依据</dt><dd>' + esc(a.why) + '</dd></dl>';
+  } else {
+    h += '<div class="ask">' + esc(n.title) + ' ' + verbOf(a) + '</div><code class="cmd">' + esc(payload(a)) + '</code>';
+    h += '<dl class="facts"><dt>它的理由</dt><dd class="voice">「' + esc(a.why) + '」<cite>——' + esc(n.title) + ' 自述</cite></dd>' +
+      '<dt>波及</dt><dd>' + esc(a.blast) + '</dd><dt>风险</dt><dd>' + (RISK[a.risk] || '未知') + '</dd>' +
+      '<dt>确认方式</dt><dd>' + confirmHow(a) + '</dd></dl>';
+  }
+  h += '<div class="blocks">' + blocksLine(n) + '</div>';
+  h += '<div class="actions">';
+  if (a.kind === 'inferred' || (ro && a.kind === 'question')){
+    h += '<div class="readonly-note">这是只读会话（' + hlabel(n.harness) + ' 自己开的）。在它自己的界面里处理；这里不能替它回答或批准。' +
+      (a.kind === 'question' ? '<br>它给的选项：' + a.options.map(esc).join('，') : '') + '</div>';
+    h += '<button class="btn" data-act="ack" data-id="' + a.id + '">我去那边处理了，移出等你</button>';
+  } else if (a.kind === 'question'){
+    h += '<div class="opts">' + a.options.map((o,i) => '<button class="btn" data-act="answer" data-id="' + a.id + '" data-opt="' + i + '">' + esc(o) + '</button>').join('') + '</div>';
+  } else {
+    const yes = a.kind === 'seat' ? '派出' : '批准';
+    if (needsHold(a)){
+      if (cw) h += '<label class="confirm">' + (a.kind === 'seat' ? '来源未核实。键入「' + cw + '」表示你知道这一点' : '这是不可撤销的删除。键入「' + cw + '」') +
+        '<input type="text" data-typed="' + a.id + '" autocomplete="off" spellcheck="false" value="' + esc(st.typed[a.id] || '') + '" aria-label="键入确认"></label>';
+      const dis = cw && (st.typed[a.id] || '').trim() !== cw ? ' disabled' : '';
+      h += '<button class="btn btn-ink hold" data-hold="1" data-id="' + a.id + '"' + dis + '><span>按住 1 秒' + yes + '</span></button>';
+    } else {
+      h += '<button class="btn btn-ink" data-act="yes" data-id="' + a.id + '">' + yes + '</button>';
+    }
+    h += '<button class="btn" data-act="no" data-id="' + a.id + '">拒绝</button>';
+  }
+  h += '<span class="spacer"></span>';
+  if (!n.ghost) h += '<button class="btn btn-quiet" data-chart="' + esc(n.id) + '">看病历</button><button class="btn btn-quiet" data-brake="' + esc(n.id) + '">刹车…</button>';
+  if (n.ownership === 'owned') h += '<button class="btn btn-quiet" data-convo="' + esc(n.id) + '">进入对话</button>';
+  h += '<div class="guard" id="guard" style="width:100%"></div></div></div>';
+  h += towerHTML(n, true) + '</div></article>';
+  return h;
+}
+
+function nodeKind(n){
+  if (n.state === 'error') return {k:'err', label:'出错'};
+  if (n.state === 'unknown') return {k:'unk', label:n.ownership === 'foreign' ? '来源不明' : '状态未知'};
+  if (isSoft(n)) return {k:'inf', label:n.stateDetail.label};
+  return {k:'calm', label:STATE[n.state] || n.state};
+}
+function nodeCard(n){
+  const ac = nodeKind(n), err = n.state === 'error';
+  let h = '<article class="case a-' + ac.k + (st.prevCard !== 'n:' + n.id ? ' enter' : '') + (st.towerOpen ? ' tw-open' : '') + '">';
+  h += wrist(esc(ac.label), n);
+  h += '<div class="case-grid"><div>';
+  let t, cap;
+  if (err){ const ev = M.events.filter(e => e.type === 'error' && e.node === n.id).pop(); t = Date.parse((ev && ev.t) || n.since); cap = '前出错'; }
+  else if (n.state === 'unknown'){ t = Date.parse(n.lastActivity || ''); cap = isNaN(t) ? '不知道多久没消息' : '没有可靠消息'; }
+  else if (st.fresh[n.id]){ t = Date.parse(n.spawnedAt); cap = '前你派出'; }
+  else if (n.state === 'running'){ t = Date.parse(n.lastActivity || ''); cap = '前最近一次动静'; }
+  else { t = Date.parse(n.since || ''); cap = '前进入这个状态'; }
+  h += '<div class="timer"><span class="big num">' + (isNaN(t) ? '?' : mins(now() - t)) + '</span><span class="cap">分钟<br>' + cap + '</span></div>';
+  h += '<div class="ask">' + esc(n.title) + '</div>';
+  if (err) h += '<code class="cmd">' + esc(n.stateDetail.error) + '</code>';
+  else if (n.stateDetail && n.stateDetail.why) h += '<p class="voice">' + esc(n.stateDetail.why) + '</p>';
+  h += '<dl class="facts"><dt>任务</dt><dd>' + esc(n.task || '未知') + '</dd><dt>归属</dt><dd>' + hlabel(n.harness) + '，' + (OWN[n.ownership] || '未知') + '</dd>' +
+    '<dt>在等谁</dt><dd>' + esc(waitingOn(n)) + '</dd>' +
+    (err || n.state === 'unknown' ? '<dt>牵连</dt><dd>' + esc(errorConsequence(n)) + '</dd>' : '') + '</dl>';
+  h += '<div class="blocks">' + (err ? '它不在等你，所以不在「等你」队列里。要不要派人修、要不要停掉它的子会话，由你决定。'
+                                     : '它不在等你，所以不在「等你」队列里。') + '</div>';
+  h += '<div class="actions">';
+  const draft = (err || n.ownership === 'foreign') ? (M.D.drafts.find(d => d.suggestedParent && d.suggestedParent === n.parent) ||
+                (n.ownership === 'foreign' ? M.D.drafts.find(d => !d.suggestedParent) : null)) : null;
+  if (draft) h += '<button class="btn btn-ink" data-draft="' + draft.id + '">' + (draft.suggestedParent ? '派人修' : '派人查') + '</button>';
+  if (n.ownership !== 'owned') h += '<div class="readonly-note" style="width:auto;flex:1">只读会话：发消息、中断回合要去 ' + hlabel(n.harness) + ' 里做。这里只能在本机进程层面刹车。</div>';
+  h += '<span class="spacer"></span><button class="btn btn-quiet" data-chart="' + esc(n.id) + '">看病历</button>';
+  if (n.state !== 'ended' && n.state !== 'braked') h += '<button class="btn btn-quiet" data-brake="' + esc(n.id) + '">刹车…</button>';
+  if (n.ownership === 'owned') h += '<button class="btn btn-quiet" data-convo="' + esc(n.id) + '">进入对话</button>';
+  h += '</div></div>' + towerHTML(n, false) + '</div></article>';
+  return h;
+}
+
+/* ---------- 交接板 ---------- */
+function lines(){ return M.nodes.filter(n => n.parent === 'you'); }
+function relayOf(r, qorder){
+  const sub = subtree(M, r), ids = new Set(sub.map(x => x.id));
+  const hand = M.events.filter(e => e.type === 'delegate' && ids.has(e.to));
+  const reps = M.events.filter(e => e.type === 'report' && ids.has(e.from));
+  const asks = qorder.filter(a => ids.has(a.nodeId));
+  const askNodes = new Set(asks.map(a => a.nodeId));
+  const busyKid = x => x.kids.some(k => { const c = M.map.get(k); return c.state === 'running' || c.state === 'waiting' || c.state === 'pending'; });
+  const cat = x => askNodes.has(x.id) ? '等你' : x.state === 'error' ? '出错' : x.state === 'pending' ? '等它继续' : (x.state === 'running' && !busyKid(x)) ? '在跑' : null;
+  const holders = [], cats = {};
+  for (const k of ['等你','出错','等它继续','在跑']) cats[k] = [];
+  for (const x of sub){ const c = cat(x); if (c){ holders.push(x); cats[c].push(x); } }
+  const unknown = sub.filter(x => x.state === 'unknown');
+  const lastSeen = M.D.lastSeen;
+  return {r, sub, hand, reps, asks, holders, cats, unknown,
+    lastH:hand[hand.length - 1], lastR:reps[reps.length - 1],
+    sinceH:hand.filter(e => Date.parse(e.t) > lastSeen), sinceR:reps.filter(e => Date.parse(e.t) > lastSeen)};
+}
+function ballHTML(R){
+  let k, who, act = '';
+  if (R.asks.length){
+    const a = R.asks[0], n = nodeOrGhost(M, a.nodeId), ac = acuity(a);
+    k = 'you';
+    who = '等你：<b>' + esc(n.title) + '</b> ' + verbOf(a) + (a.deadline ? '，剩 <span class="when' + (ac.k === 'now' ? ' now' : '') + '" data-rem="' + a.id + '">' + mmss(Date.parse(a.deadline) - now()) + '</span>' : '');
+    act = ' data-case="' + a.id + '"';
+  } else if (R.cats['出错'].length){ const n = R.cats['出错'][0]; k = 'err'; who = '出错：<b>' + esc(n.title) + '</b>'; act = ' data-node="' + n.id + '"'; }
+  else if (R.cats['等它继续'].length){ const n = R.cats['等它继续'][0]; k = 'pend'; who = esc(n.stateDetail.label) + '：<b>' + esc(n.title) + '</b>'; act = ' data-node="' + n.id + '"'; }
+  else if (R.cats['在跑'].length){
+    const n = R.cats['在跑'].slice().sort((x, y) => Date.parse(y.lastActivity || 0) - Date.parse(x.lastActivity || 0))[0];
+    k = 'run'; who = '在跑：<b>' + esc(n.title) + '</b>'; act = ' data-node="' + n.id + '"';
+  } else if (R.lastR && R.lastR.to === 'you'){ k = 'back'; who = hm(Date.parse(R.lastR.t)) + ' 回报给你了'; act = ' data-chart="' + R.r.id + '"'; }
+  else if (R.unknown.length === R.sub.length){ k = 'unk'; who = '状态未知'; act = ' data-chart="' + R.r.id + '"'; }
+  else { k = 'calm'; who = '没有登记在跑的会话；领头' + esc(stateLabel(R.r)); act = ' data-chart="' + R.r.id + '"'; }
+  const parts = Object.keys(R.cats).filter(c => R.cats[c].length).map(c => c + ' ' + R.cats[c].length).join('，');
+  return '<div class="stn ballc last k-' + k + '"><button class="cnt" style="border:0;text-align:left"' + act + '><span class="gl"><span class="ball"></span></span><span class="who">' + who + '</span></button>' +
+    '<span class="holders">' + (R.holders.length ? L(R.holders, '球在 ', ' 处', '「' + R.r.title + '」里持球的会话') + '（' + parts + '）' : '没有持球的会话') +
+    (R.unknown.length ? '；' + L(R.unknown, '另 ', ' 个状态未知', '「' + R.r.title + '」里状态未知的会话') : '') + '</span></div>';
+}
+function relayRow(R){
+  const r = R.r;
+  let h = '<li class="' + justAttr(R.lastH ? R.lastH.to : '').replace(/^ /, '') + '">';
+  h += '<div class="wl"><button data-chart="' + r.id + '">' + esc(r.title) + '</button>' +
+    '<small>' + hshort(r.harness) + '，' + (OWN[r.ownership] || '') + '，共 ' + L(R.sub, '', ' 个会话', '工作线「' + r.title + '」') + '</small>' +
+    '<small>自 ' + hm(M.D.lastSeen) + '：' + L(R.sinceH, '交接 ', '', '「' + r.title + '」的交接', 'events') + '，' + L(R.sinceR, '回报 ', '', '「' + r.title + '」的回报', 'events') + '</small></div>';
+  if (R.lastH){
+    const e = R.lastH;
+    h += '<button class="stn" data-chart="' + esc(e.to) + '"><span class="gl">▼</span><span class="who"><span class="t">' + hm(Date.parse(e.t)) + '</span>' +
+      esc(titleOf(e.from)) + ' → ' + esc(titleOf(e.to)) + '</span><span class="sub">「' + cut(e.task, 16) + '」</span></button>';
+  } else h += '<div class="stn"><span class="gl">┆</span><span class="who none">没有派活记录</span><span class="sub none">只知道这些会话挂在谁下面</span></div>';
+  if (R.lastR){
+    const e = R.lastR;
+    h += '<button class="stn up" data-chart="' + esc(e.from) + '"><span class="gl">▲</span><span class="who"><span class="t">' + hm(Date.parse(e.t)) + '</span>' +
+      esc(titleOf(e.from)) + ' → ' + esc(titleOf(e.to)) + '</span><span class="sub">' + esc(e.status) + (e.truncated ? '，摘要已截断' : '') + '</span></button>';
+  } else h += '<div class="stn"><span class="gl">▲</span><span class="who none">还没有回报</span></div>';
+  return h + ballHTML(R) + '</li>';
+}
+function relayHTML(emptyQueue){
+  const q = queue(M);
+  const rows = lines().map(r => relayOf(r, q));
+  const rank = R => R.asks.length ? q.indexOf(R.asks[0]) : R.cats['出错'].length ? 100 : R.cats['在跑'].length || R.cats['等它继续'].length ? 200 : 300;
+  const shown = rows.filter(R => R.holders.length || R.sinceH.length || R.sinceR.length);
+  const folded = rows.filter(R => !shown.includes(R));
+  const items = shown.map(R => ({rank:rank(R), html:relayRow(R)}));
+  /* 请求方没读入的 seat 请求：没有工作线可挂，单列一行，按它在队列里的位置排 */
+  for (const a of M.attention.filter(a => !M.map.has(a.nodeId))){
+    const ac = acuity(a);
+    items.push({rank:q.indexOf(a), html:'<li><div class="wl"><button data-case="' + a.id + '">DeepSeek Harness</button><small>' + (M.D.dshUnread ? M.D.dshUnread + ' 个会话，因上限未读入' : '请求方没读入') + '</small></div>' +
+      '<div class="stn"><span class="gl">┆</span><span class="who none">交接没读入</span></div><div class="stn"><span class="gl">▲</span><span class="who none">回报没读入</span></div>' +
+      '<div class="stn ballc last k-you"><button class="cnt" style="border:0;text-align:left" data-case="' + a.id + '"><span class="gl"><span class="ball"></span></span><span class="who">等你：<b>' + esc(GHOST_TITLE) + '</b> ' + verbOf(a) +
+      (a.deadline ? '，剩 <span class="when' + (ac.k === 'now' ? ' now' : '') + '" data-rem="' + a.id + '">' + mmss(Date.parse(a.deadline) - now()) + '</span>' : '') + '</span></button></div></li>'});
+  }
+  items.sort((a, b) => a.rank - b.rank);
+  let h = '<section class="relay" aria-label="交接板"><div class="relay-head"><h2>交接板</h2><span class="pos">' +
+    (emptyQueue ? '没有等你的事，球都在 agent 手上。' : '') + '每条工作线一行：最近一次交接，最近一次回报，球现在在谁手上。</span></div><ul class="rl">';
+  h += items.map(x => x.html).join('') + '</ul>';
+  if (folded.length){
+    const roots = folded.map(R => R.r);
+    h += '<div class="fold">另外 ' + L(roots, '', ' 条工作线', '没有持球、也没有新交接的工作线') + '没有持球的会话，也没有新交接。领头：' + bdButtons(roots, '这些工作线的领头') + '</div>';
+  }
+  return h + '</section>';
+}
+function quietHTML(){
+  const W = watchSets();
+  let h = '<div class="quiet"><span class="lead">另外 ' + L(W.calm, '', ' 个', '平稳的会话') + '平稳：</span>' + bdButtons(W.calm, '平稳的会话');
+  if (M.D.cut) h += '<span class="unread">另有 <span class="num">' + M.D.cut + '</span> 个会话因快照上限没画出来（只有数量，没有名单）</span>';
+  if (M.D.dshUnread) h += '<span class="unread">DeepSeek Harness 磁盘上 <span class="num">' + M.D.dshUnread + '</span> 个会话，因上限未读入（不是没有）</span>';
+  h += '<span class="spacer"></span><button class="btn btn-quiet" data-view="ward">按工作线看全塔</button></div>';
+  return h;
+}
+
+function wardHTML(){
+  const roots = lines(), q = queue(M);
+  const maxD = Math.max(2, ...M.nodes.map(n => n.d));
+  const deeperUnknown = M.D.cut > 0;
+  let h = '<div class="boardhead"><h1>全塔，按工作线</h1><span class="pos">一行一条工作线；每格是这一层的会话，一根竖条一个，点开是名单。</span></div>';
+  h += '<div class="ward"><div class="ward-scroll"><table><thead><tr><th>工作线</th>';
+  for (let d = 2; d <= maxD; d++) h += '<th' + (d > 3 ? ' class="hide-n"' : '') + '>第 ' + d + ' 层</th>';
+  if (deeperUnknown) h += '<th>第 ' + (maxD + 1) + ' 层及以下</th>';
+  h += '<th>等你</th><th>出错</th><th class="hide-n">最近交接</th></tr></thead><tbody>';
+  for (const r of roots){
+    const R = relayOf(r, q);
+    h += '<tr><td class="wln">' + esc(r.title) + '<small>' + hlabel(r.harness) + '，' + (OWN[r.ownership] || '') + '，共 ' + L(R.sub, '', ' 个会话', '工作线「' + r.title + '」') + '</small></td>';
+    for (let d = 2; d <= maxD; d++){
+      const at = R.sub.filter(x => x.d === d);
+      const i = REG.push({list:at, title:'「' + r.title + '」第 ' + d + ' 层', kind:'nodes'}) - 1;
+      h += '<td' + (d > 3 ? ' class="hide-n"' : '') + '>' + (at.length ?
+        '<button class="cell" data-l="' + i + '" title="' + esc(breakdown(at).map(x => x.list.length + ' ' + x.label).join('，')) + '">' +
+        at.map(x => '<span class="pip p-' + (isSoft(x) ? 'inf' : x.state) + '" style="height:' + (['running','waiting','error'].includes(x.state) ? 18 : 10) + 'px"></span>').join('') +
+        '<span class="n">' + at.length + '</span></button>' : '<span class="na">没有登记</span>') + '</td>';
+    }
+    if (deeperUnknown) h += '<td class="unk">未知</td>';
+    h += '<td>' + L(q.filter(a => R.sub.some(x => x.id === a.nodeId)).map(a => M.map.get(a.nodeId)), '', '', '「' + r.title + '」里等你的') + '</td>';
+    h += '<td>' + L(R.sub.filter(x => x.state === 'error'), '', '', '「' + r.title + '」里出错的') + '</td>';
+    h += '<td class="last hide-n">' + (R.lastH ? '<span class="num">' + hm(Date.parse(R.lastH.t)) + '</span> ' + esc(titleOf(R.lastH.from)) + ' → ' + esc(titleOf(R.lastH.to)) : '没有派活记录') + '</td></tr>';
+  }
+  if (M.D.dshUnread) h += '<tr><td class="wln">DeepSeek Harness<small>' + M.D.dshUnread + ' 个会话，因上限未读入</small></td><td colspan="' + (maxD + 2 + (deeperUnknown ? 1 : 0)) + '" class="unk">没读入，画不出层次。这不代表它们不存在。</td></tr>';
+  h += '</tbody></table></div></div>';
+  h += '<p class="unread" style="margin-top:8px">竖条高的是在跑、等你或出错；矮的是空闲、已回报、已结束、被刹车；虚线框是推测或状态未知。' +
+    (deeperUnknown ? '快照上限裁掉了 ' + M.D.cut + ' 个会话，所以更深的层写「未知」，不写「没有」。' : '') + '</p>';
+  return h;
+}
+
+function renderBoard(){
+  const q = queue(M);
+  const cur = currentCase(q);
+  if (st.view === 'ward'){ $('#board').innerHTML = wardHTML() + quietHTML(); return; }
+  let h = '';
+  if (cur && cur.type === 'a'){
+    const i = q.findIndex(x => x.id === cur.a.id);
+    h += '<div class="boardhead"><h1>现在处理</h1><span class="pos">等你的第 ' + (i + 1) + ' 件，共 ' + q.length + ' 件。处理完，下一件自动上来。</span></div>';
+    h += attentionCard(cur.a) + relayHTML(false);
+    st.prevCard = cur.a.id;
+  } else if (cur && cur.type === 'n'){
+    h += '<div class="boardhead"><h1>' + (st.fresh[cur.n.id] ? '你刚派出' : '盯着') + '</h1><span class="pos">' + (q.length ? '还有 ' + q.length + ' 件等你。<button class="btn btn-quiet" data-back="1">回到最急的一件</button>' : '没有等你的事。') + '</span></div>';
+    h += nodeCard(cur.n) + relayHTML(!q.length);
+    st.prevCard = 'n:' + cur.n.id;
+  } else {
+    h += '<div class="boardhead"><h1>没有等你的事</h1><span class="pos">出错和状态未知的在右边「盯着」。开新活用左上角「派活」，或按 n。</span></div>';
+    h += relayHTML(true);
+    st.prevCard = null;
+  }
+  $('#board').innerHTML = h + quietHTML();
+}
+
+/* ---------- 抽屉 ---------- */
+function openDrawer(title, html){
+  $('#dtitle').textContent = title; $('#dbody').innerHTML = html;
+  $('#drawer').classList.add('on'); $('#scrim').classList.add('on'); $('#drawer').setAttribute('aria-hidden','false');
+  $('#dclose').focus();
+}
+function closeDrawer(){ $('#drawer').classList.remove('on'); $('#scrim').classList.remove('on'); $('#drawer').setAttribute('aria-hidden','true'); st.brakeArm = null; }
+function nodeRows(list){
+  if (!list.length) return '<p class="empty">这张列表是空的。</p>';
+  return '<ul class="rows">' + list.map(n => '<li><button data-' + (n.ghost ? 'x' : 'chart') + '="' + esc(n.id) + '"><span>' + esc(n.title) + '</span>' + stateTag(n) +
+    '<span class="s">' + (n.d ? '第 ' + n.d + ' 层' : '层数未知') + '，' + hlabel(n.harness) + '，' + (OWN[n.ownership] || '归属未知') + (n.linkKnown ? '' : '，派活关系未知') + '</span></button></li>').join('') + '</ul>';
+}
+function openNodeList(title, list){ openDrawer(title + '（' + list.length + '）', nodeRows(list)); }
+function evText(e){
+  const t = id => esc(titleOf(id));
+  switch (e.type){
+    case 'delegate': return t(e.from) + ' 派出 ' + t(e.to) + '：「' + esc(e.task) + '」';
+    case 'report': return t(e.from) + ' 回报给 ' + t(e.to) + '，状态：' + esc(e.status) + (e.truncated ? '（摘要已截断）' : '');
+    case 'error': return t(e.node) + ' 出错：' + esc(e.msg);
+    case 'brake': return '你刹住了 ' + t(e.node);
+    case 'question': return t(e.node) + ' 问你：' + esc(e.ask);
+    case 'seat_request': return t(e.node) + ' 请求派会话（自称来自 ' + esc(String(e.requesterClaimed).replace(/（自称）/, '')) + '，未核实）';
+    case 'approval': return t(e.node) + ' 请你批准：' + esc(e.ask) + (e.resolved ? (e.resolved.by === 'timeout' ? '，已超时自动拒' : '，你已' + (e.resolved.decision === 'approved' ? '批准' : '拒绝')) : '');
+    default: return t(e.node) + '：' + esc(e.note || e.type);
+  }
+}
+function openEvents(title, list){
+  openDrawer(title + '（' + list.length + '）', list.length ? '<ul class="rows">' + list.map(e => {
+    const id = e.type === 'report' ? e.from : (e.type === 'delegate' ? e.to : e.node);
+    return '<li><button data-chart="' + esc(id) + '"><span>' + evText(e) + '</span><span class="t">' + hm(Date.parse(e.t)) + '</span></button></li>';
+  }).join('') + '</ul>' : '<p class="empty">这段时间里没有这类记录。' + (/复核/.test(title) ? '复核和打回只有经 Orchestra 派出的复核才会记下。' : '') + '</p>');
+}
+function waitingOn(n){
+  const a = M.attention.find(x => x.nodeId === n.id);
+  if (a) return a.kind === 'inferred' ? '≈ 可能在等你（推测，不是正式请求）' : '等你：' + verbOf(a);
+  if (isSoft(n) && n.stateDetail.kind === 'after') return n.stateDetail.label;
+  if (n.state === 'running'){
+    const open = n.kids.map(k => M.map.get(k)).filter(k => k.deleg && !M.events.some(e => e.type === 'report' && e.from === k.id) && k.state !== 'ended' && k.state !== 'braked');
+    return open.length ? '在跑；派出的 ' + open.length + ' 个还没回报（它是不是在等它们，不知道）' : '在跑，不在等谁';
+  }
+  if (n.state === 'reported') return '已回报给' + (n.report ? titleOf(n.report.to) : '上级') + '，还没有复核结论';
+  if (n.state === 'unknown') return '不知道';
+  if (n.state === 'error') return '出错了，没有在等谁';
+  return (n.stateDetail && n.stateDetail.why) || STATE[n.state];
+}
+function openChart(id){
+  const n = M.map.get(id);
+  if (!n){ openDrawer(GHOST_TITLE, '<p>这个会话在当前数据里没有读入，只知道 seat 报来的标识符：<code class="mono">' + esc(id) + '</code></p>'); return; }
+  const chain = chainOf(M, n);
+  let h = '<div class="chain"><span>你</span>' + chain.map(c => '<span>' + (c.linkKnown ? '→' : '┄') + '</span>' + (c.id === n.id ? '<span class="here">' + esc(c.title) + '</span>' : '<button data-chart="' + c.id + '">' + esc(c.title) + '</button>')).join('') + '</div>';
+  const ev = n.deleg;
+  h += '<dl class="kv"><dt>状态</dt><dd>' + stateTag(n) + '</dd><dt>在等谁</dt><dd>' + esc(waitingOn(n)) + '</dd>' +
+    '<dt>任务</dt><dd>' + esc(n.task || '未知') + '</dd>' +
+    '<dt>谁派的</dt><dd>' + (ev ? esc(titleOf(ev.from)) + '，' + hm(Date.parse(ev.t)) + (ev.via === 'observed-start' ? '（在 ' + hlabel(n.harness) + ' 里开的）' : '') : '不知道（只知道它挂在谁下面）') + '</dd>' +
+    '<dt>归属</dt><dd>' + hlabel(n.harness) + '，' + (OWN[n.ownership] || '未知') + '；第 ' + n.d + ' 层</dd>' +
+    '<dt>消息</dt><dd>' + (n.messages == null ? '未知' : '<span class="num">' + n.messages + '</span> 条') + '</dd>' +
+    '<dt>用量</dt><dd>' + (n.tokens == null ? 'token 未知' : '<span class="num">' + n.tokens.toLocaleString('en-US') + '</span> token') + '，' + (n.costUsd == null ? '费用未知' : '$' + n.costUsd) + '</dd>' +
+    '<dt>标识符</dt><dd class="mono">' + esc(n.id) + '</dd></dl>';
+  if (n.stateDetail && n.stateDetail.why) h += '<h3>状态依据</h3><p class="voice">' + esc(n.stateDetail.why) + '</p>';
+  if (n.stateDetail && n.stateDetail.error) h += '<h3>出错</h3><code class="cmd">' + esc(n.stateDetail.error) + '</code>';
+  if (n.report){
+    const r = n.report;
+    h += '<h3>它的回报</h3><div class="report"><div>回报给 ' + esc(titleOf(r.to)) + '，' + hm(Date.parse(r.at)) + '；回报状态：' + esc(r.status) + '</div>' +
+      '<p class="voice" style="margin:6px 0 0">「' + esc(r.summary) + '」<cite>——' + esc(n.title) + ' 自述</cite></p>' +
+      (r.truncated ? '<div class="trunc">已截断：' + esc(r.truncatedNote || '摘要只带回了一部分') + '</div>' : '') +
+      '<div style="margin-top:6px;color:var(--ink3);font-size:12.5px">引用 ' + r.refs.length + ' 条</div><ol class="refs">' + r.refs.map(x => '<li>' + esc(x) + '</li>').join('') + '</ol>' +
+      '<div style="margin-top:6px;font-size:12.5px;color:var(--ink2)">复核：还没有非作者的复核结论，所以只算「已回报」。</div></div>';
+  }
+  const kids = n.kids.map(k => M.map.get(k));
+  if (kids.length) h += '<h3>它派出的（' + kids.length + '）</h3>' + nodeRows(kids);
+  const msgs = M.events.filter(e => e.type === 'message' && e.node === n.id);
+  if (msgs.length) h += '<h3>最近一段对话</h3><p class="voice">「' + esc(msgs[msgs.length-1].last) + '」<cite>——' + esc(n.title) + '，' + hm(Date.parse(msgs[msgs.length-1].t)) + '</cite></p>';
+  h += '<div class="actions">';
+  if (n.ownership === 'owned') h += '<button class="btn btn-ink" data-convo="' + n.id + '">进入对话</button>';
+  else h += '<span class="readonly-note" style="width:auto">只读：去 ' + hlabel(n.harness) + ' 里和它说话</span>';
+  if (n.state !== 'ended' && n.state !== 'braked') h += '<button class="btn" data-brake="' + n.id + '">刹车…</button>';
+  h += '</div>';
+  openDrawer(n.title, h);
+}
+
+/* 刹车预览 */
+function openBrake(id){
+  const n = M.map.get(id); if (!n) return;
+  const tree = subtree(M, n).filter(x => x.state !== 'ended' && x.state !== 'braked');
+  const owned = n.ownership === 'owned';
+  let h = '<p>会波及 <b class="num">' + tree.length + '</b> 个还没停的会话：' + esc(breakdown(tree).map(x => x.list.length + ' ' + x.label).join('，')) + '。</p>' + nodeRows(tree);
+  if (owned){
+    h += '<h3>选一档</h3><div class="actions" style="border:0;padding:0;margin:6px 0 0">' +
+      '<button class="btn" data-stop="turn" data-id="' + id + '">中断这一回合</button>' +
+      '<button class="btn" data-stop="end" data-id="' + id + '">结束会话</button>' +
+      '<button class="btn btn-heavy" data-stop="tree" data-id="' + id + '">刹车（停它整棵进程树）</button></div>' +
+      '<p class="unread" id="armnote">中断和结束会撤掉它挂着的等你条目。刹车要在 3 秒内点两次。</p>';
+  } else {
+    h += '<h3>只读会话</h3><p class="voice">' + esc(n.title) + ' 不是 Orchestra 开的。中断回合、发消息请去 ' + hlabel(n.harness) + ' 里做。这里只能在本机进程层面停掉它整棵进程树。</p>' +
+      '<label class="confirm">键入「刹车」<input type="text" data-brake-typed="' + esc(id) + '" autocomplete="off" spellcheck="false" aria-label="键入确认"></label>' +
+      '<button class="btn btn-heavy" data-stop="proc" data-id="' + esc(id) + '" disabled>本机进程刹车</button>';
+  }
+  openDrawer('刹车：' + n.title, h);
+}
+function withdraw(ids, t, why){
+  for (const a of DS().attention) if (ids.includes(a.nodeId) && !a.res) a.res = {decision:'withdrawn', at:t, why};
+}
+function applyBrake(id, tier){
+  const n = M.map.get(id), t = now(), b = live(id);
+  if (tier === 'turn'){
+    withdraw([id], t, 'turn');
+    b.state = 'pending'; b.stateDetail = {kind:'after', label:'已中断这一回合', why:'你在 ' + hm(t) + ' 中断了它这一回合；它挂着的请求已撤掉，等它下一步'};
+    toast('已中断 ' + n.title + ' 这一回合，它挂着的请求一起撤掉');
+  } else if (tier === 'end'){
+    withdraw([id], t, 'end');
+    b.state = 'ended'; b.stateDetail = {kind:'ended', why:'你在 ' + hm(t) + ' 结束了它'};
+    toast('已结束 ' + n.title + '，它挂着的请求一起撤掉');
+  } else {
+    const ids = subtree(M, n).map(x => x.id);
+    for (const x of DS().nodes) if (ids.includes(x.id) && x.state !== 'ended'){ x.state = 'braked'; x.stateDetail = {kind:'braked', by:'you', why:'你在 ' + hm(t) + ' 刹住'}; }
+    withdraw(ids, t, 'brake');
+    DS().events.push({t:new Date(t).toISOString(), type:'brake', node:id, by:'you', id:'ev-u' + (++st.seq)});
+    toast('已刹住 ' + n.title + ' 和它下面 ' + (ids.length - 1) + ' 个会话');
+  }
+  if (st.current === 'n:' + id && tier !== 'turn') st.current = null;
+  st.lastChange = Date.now();
+  closeDrawer(); renderAll();
+}
+
+/* 派活：默认跟着当前这件事所在的工作线 */
+function currentLine(){
+  const cur = currentCase();
+  if (!cur) return null;
+  const n = cur.type === 'a' ? nodeOrGhost(M, cur.a.nodeId) : cur.n;
+  return n.ghost ? null : chainOf(M, n)[0];
+}
+const alive = n => n.state !== 'ended' && n.state !== 'braked';
+function openDispatch(draftId){
+  const d = M.D.drafts.find(x => x.id === draftId);
+  const sugg = d && d.suggestedParent && M.map.get(d.suggestedParent);
+  const line = currentLine();
+  let def;
+  if (sugg) def = sugg.ownership === 'owned' ? sugg.id : 'under:' + sugg.id;
+  else if (line) def = line.ownership === 'owned' && alive(line) ? line.id : 'under:' + line.id;
+  else { const o = lines().find(r => r.ownership === 'owned' && alive(r)); def = o ? o.id : 'new:claude'; }
+  let h = '<p class="voice" style="margin-top:0">写一句话交出去。默认交给你正在看的这条工作线；派出后它马上出现在塔上，标着「你派」和时间。</p>';
+  h += '<textarea id="dtext" placeholder="要做什么">' + esc(d ? d.text : '') + '</textarea>';
+  h += '<h3>交给谁</h3><select id="dto">';
+  for (const r of lines().filter(r => r.ownership !== 'foreign')){
+    const owned = subtree(M, r).filter(n => n.ownership === 'owned' && alive(n));
+    let opts = owned.map(n => '<option value="' + n.id + '">' + (n.id === r.id ? '交给领头' : chainOf(M, n).slice(1).map(c => c.title).join(' › ')) + '（第 ' + n.d + ' 层，' + hshort(n.harness) + '）</option>').join('');
+    if (!owned.some(n => n.id === r.id)) opts = '<option value="under:' + r.id + '">新开会话，记在这条工作线下（领头' + (r.ownership === 'owned' ? '已停' : '只读，收不到消息') + '）</option>' + opts;
+    if (sugg && sugg.ownership !== 'owned' && chainOf(M, sugg)[0].id === r.id && sugg.id !== r.id)
+      opts += '<option value="under:' + sugg.id + '">新开会话，挂在 ' + esc(chainOf(M, sugg).slice(1).map(c => c.title).join(' › ')) + ' 下（它只读）</option>';
+    h += '<optgroup label="' + esc(r.title) + '">' + opts + '</optgroup>';
+  }
+  h += '<optgroup label="新开一条工作线"><option value="new:claude">新开 Claude 会话，挂在你下面</option><option value="new:codex">新开 Codex 会话，挂在你下面</option></optgroup></select>';
+  h += '<div class="tpath" id="tpath"></div>';
+  if (d){
+    h += '<h3>Orchestra 看到的规则</h3><ul class="rules">' + d.rulesHit.map(r => '<li>' + esc(r.rule) + '：' + esc(r.effect) + '</li>').join('') + '</ul>';
+    h += '<h3>路由建议</h3>' + d.routes.map((r,i) => '<label class="route"><input type="radio" name="route" value="' + i + '"' + (i ? '' : ' checked') + '><span>' + esc(r.to) + (r.model ? '，' + esc(S.models[r.model] || r.model) : '') + '<br><span class="unread">' + esc(r.reason) + '（把握 ' + Math.round(r.confidence*100) + '%）</span></span></label>').join('');
+  }
+  h += '<h3>Orchestra 的草稿</h3><div class="drafts">' + M.D.drafts.map(x => '<button data-draft="' + x.id + '" aria-pressed="' + String(!!(d && d.id === x.id)) + '">' + esc(x.text) + '</button>').join('') + '</div>';
+  h += '<div class="actions"><button class="btn btn-ink" id="doDispatch">派出</button><span class="unread">派出由你来点；没有人点，就没有派出。</span></div>';
+  openDrawer('派活', h);
+  const sel = $('#dto'); sel.value = def; if (sel.selectedIndex < 0) sel.selectedIndex = 0;
+  showPath();
+  setTimeout(() => { const t = $('#dtext'); if (t) t.focus(); }, 30);
+}
+function showPath(){
+  const sel = $('#dto'), el = $('#tpath'); if (!sel || !el) return;
+  const v = sel.value;
+  if (v.startsWith('new:')){ el.textContent = '会挂在：你 → 新会话（第 1 层）'; return; }
+  const id = v.replace(/^under:/, ''), n = M.map.get(id);
+  if (!n) { el.textContent = ''; return; }
+  el.textContent = '会挂在：你 → ' + chainOf(M, n).map(c => c.title).join(' → ') + ' → 新会话（第 ' + (n.d + 1) + ' 层）';
+}
+function doDispatch(){
+  const text = ($('#dtext').value || '').trim();
+  if (!text){ toast('先写一句要做什么'); return; }
+  const to = $('#dto').value, t = now();
+  let parent = 'you', harness = 'claude';
+  if (to.startsWith('new:')) harness = to.slice(4);
+  else if (to.startsWith('under:')){ parent = to.slice(6); harness = 'claude'; }
+  else { parent = to; harness = (M.map.get(to) || {}).harness || 'claude'; }
+  const p = parent === 'you' ? null : live(parent);
+  const id = 'you.new' + (++st.seq), iso = new Date(t).toISOString();
+  DS().nodes.push({id, parent, depth:p ? p.depth + 1 : 1, project:p ? p.project : null, harness, ownership:'owned', role:'code', model:null,
+    title:text, task:text, state:'running', spawnedAt:iso, since:iso, lastActivity:iso, tokens:0, costUsd:0, messages:0, children:[], stateDetail:null, report:null});
+  if (p) p.children.push(id);
+  DS().events.push({t:iso, type:'delegate', from:'you', to:id, task:text, via:'orchestra', id:'ev-u' + st.seq});
+  st.fresh[id] = Date.now();
+  st.current = 'n:' + id; st.view = 'board'; st.lastChange = Date.now();
+  closeDrawer(); renderAll();
+  toast('已派出，挂在' + (p ? '「' + p.title + '」' : '你') + '下面');
+}
+
+/* 处理等你的事 */
+function resolve(a, decision, extra){
+  const t = now();
+  if (Date.now() - st.lastChange < 750){ const g = $('#guard'); if (g) g.textContent = '列表刚变过，稍等一下再点。'; return; }
+  a.res = {decision, at:t};
+  const b = live(a.nodeId);
+  if (b){
+    if (decision === 'approved') { b.state = 'pending'; b.stateDetail = {kind:'after', label:a.kind === 'seat' ? '请求已派出，等它接上' : '已批准，等它继续', why:'你在 ' + hm(t) + (a.kind === 'seat' ? ' 派出了它请求的会话' : ' 批准了；它下一步还没读到')}; }
+    else if (decision === 'answered'){ b.state = 'pending'; b.stateDetail = {kind:'after', label:'已回答，等它继续', why:'你在 ' + hm(t) + ' 回答了：' + extra}; }
+    else if (decision === 'rejected'){ b.state = 'unknown'; b.stateDetail = {kind:'unknown', why:'你在 ' + hm(t) + ' 拒绝了它的请求；它接下来做什么，等下一次读到'}; }
+    else if (decision === 'ack'){ b.state = 'unknown'; b.stateDetail = {kind:'unknown', why:'你说去它自己的界面处理了；它现在的状态等下一次读到'}; }
+  }
+  if (a.kind === 'seat' && decision === 'approved'){
+    const id = 'seat.codex' + (++st.seq), iso = new Date(t).toISOString();
+    DS().nodes.push({id, parent:a.nodeId, depth:(b ? b.depth : 2) + 1, project:b ? b.project : null, harness:'codex', ownership:'owned', role:'test', model:'codex-mid',
+      title:'v2 集成测试（应 seat 请求）', task:payload(a), state:'running', spawnedAt:iso, since:iso, lastActivity:iso, tokens:0, costUsd:0, messages:0, children:[], stateDetail:null, report:null});
+    if (b) b.children.push(id);
+    DS().events.push({t:iso, type:'delegate', from:'you', to:id, task:payload(a), via:'seat', id:'ev-u' + st.seq});
+    st.fresh[id] = Date.now();
+  }
+  st.current = null; st.lastChange = Date.now();
+  const n = nodeOrGhost(M, a.nodeId);
+  renderAll();
+  const word = {approved:a.kind === 'seat' ? '已派出' : '已批准', rejected:'已拒绝', answered:'已回答', ack:'已移出等你'}[decision];
+  toast(word + '：' + n.title + (extra ? '（' + extra + '）' : '') + '。还有 ' + M.attention.length + ' 件等你');
+}
+
+function toast(msg){
+  const el = $('#toast');
+  el.textContent = msg;
+  el.classList.add('on');
+  clearTimeout(toast.t); toast.t = setTimeout(() => el.classList.remove('on'), 4200);
+}
+
+/* 对话页（J8） */
+function openConvo(id){
+  const n = M.map.get(id); if (!n) return;
+  closeDrawer();
+  const msgs = M.events.filter(e => (e.type === 'message' && e.node === id) || (e.type === 'delegate' && (e.to === id || e.from === id)) || (e.type === 'report' && (e.to === id || e.from === id)));
+  const c = $('#convo');
+  c.innerHTML = '<div class="chead"><button class="btn" id="cback">回到分诊台</button><b>' + esc(n.title) + '</b>' + stateTag(n) + '<span class="unread">你 → ' + chainOf(M, n).map(x => esc(x.title)).join(' → ') + '</span><span class="spacer"></span>' +
+    '<button class="btn" data-brake="' + id + '">刹车…</button></div>' +
+    '<div class="cbody"><p class="unread">这里是它的完整对话页，共 ' + (n.messages == null ? '未知条数' : n.messages + ' 条') + '消息；下面只列出与它有关的交接和对话摘录（' + msgs.length + ' 条）。</p>' +
+    msgs.map(e => '<div class="msg"><div class="who">' + hm(Date.parse(e.t)) + (e.type === 'message' ? '，和 ' + esc(titleOf(e.with)) + ' 的 ' + e.count + ' 条消息里最后一条' : '') + '</div>' +
+      (e.type === 'message' ? esc(e.last) : evText(e)) + '</div>').join('') + '</div>' +
+    '<div class="dock"><input placeholder="给 ' + esc(n.title) + ' 发消息" aria-label="消息"><button class="btn btn-ink" id="csend">发送</button></div>';
+  c.classList.add('on'); c.setAttribute('aria-hidden','false');
+  $('#cback').onclick = closeConvo; $('#csend').onclick = () => toast('消息已交给 ' + n.title);
+}
+function closeConvo(){ const c = $('#convo'); c.classList.remove('on'); c.setAttribute('aria-hidden','true'); }
+
+function openNotes(){
+  openDrawer('方案 02-triage：分诊台', '<div class="notes">' +
+  '<p>急诊分诊台加一块交接班白板。上半是「现在处理」：一次一件等你的事，卡顶腕带写来路，卡右竖画从你到它的那条链。下半是交接板：每条工作线一行，看得到责任从你交出去、在层间传递、又回到你手上。</p>' +
+  '<h3>映射</h3><table>' +
+  '<tr><td>候诊</td><td>唯一的等你队列（审批、seat 派活请求、提问、推测在等你）</td></tr>' +
+  '<tr><td>分级</td><td>立即（≤5 分，或高风险 ≤10 分）、紧急、限时、无期限、≈ 推测</td></tr>' +
+  '<tr><td>腕带</td><td>层数 + 从工作线领头到它的完整路径；→ 有派活记录，┄ 关系未知</td></tr>' +
+  '<tr><td>从你到它</td><td>竖排祖先链：▼ 派出原文、▲ 回报、┅ 派出多久还没回、┆ 关系未知；同级折成可点开的计数</td></tr>' +
+  '<tr><td>交接板</td><td>交接班白板：每条工作线一行，最近交接 → 最近回报 → 球在谁手上</td></tr>' +
+  '<tr><td>病历</td><td>会话详情：在等谁、谁派的、回报与引用、复核</td></tr>' +
+  '<tr><td>盯着</td><td>出错、来源不明、状态未知；不等你，不进队列</td></tr>' +
+  '<tr><td>全塔</td><td>一行一条工作线、一列一层的计数表，加「最近交接」</td></tr></table>' +
+  '<h3>重押</h3><ul><li>P3 冒泡带来路：第 5 层的请求在首屏，腕带和竖链写全路径，就地处理。</li><li>P4/P5 交接和等待：竖链上有 ▼ ▲ ┅ ┆ 四种边，交接板每行说清球在谁手上。</li><li>P2 一个行动队列：卡、交接板、队列点的是同一个条目，处理后一起消失。</li><li>P11 动词带后果：高风险先键入后果词再按住 1 秒；刹车先列波及的子树。</li></ul>' +
+  '<h3>弱化</h3><p>没有全局关系图；交接板只给每条线的最近一次交接和回报，中间的要进病历看。P12 是一行按类型的计数，加交接板每行左侧按工作线的计数。</p>' +
+  '<h3>十对张力里站哪边</h3><table>' +
+  '<tr><td>合作可感 / 安静</td><td>居中：上半一件事很安静，下半交接板每条线一行，只在有新交接时闪一下</td></tr>' +
+  '<tr><td>空间 / 列表</td><td>偏列表：队列和交接板都是列表，竖链是唯一的空间元素</td></tr>' +
+  '<tr><td>全局 / 焦点</td><td>焦点在上，全局（按工作线）在下，同屏</td></tr>' +
+  '<tr><td>实时 / 稳定</td><td>走时默认停着；排序在鼠标停留时冻结，列表变后 750 毫秒内点批准无效</td></tr>' +
+  '<tr><td>丰富 / 贫瘠</td><td>两态同一布局；贫瘠时交接板大多写「没有派活记录」，未知收进一行</td></tr>' +
+  '<tr><td>诗意 / 说人话</td><td>说人话：只有「分诊台」「交接板」「盯着」带隐喻，按钮全是动词</td></tr>' +
+  '<tr><td>深度 / 宽度</td><td>竖着画链，5 层不吃宽度；窄屏收成腕带上的横向小链</td></tr>' +
+  '<tr><td>压缩 / 进入对话</td><td>每张卡和病历上都有「进入对话」，一步进去</td></tr>' +
+  '<tr><td>agent 主动 / 人权威</td><td>agent 的理由以署名引语出现，字色比事实浅；批准是墨色，不是红色</td></tr>' +
+  '<tr><td>只读 / 自有</td><td>只读会话的卡上只写「去原界面处理」，不出批准按钮</td></tr></table>' +
+  '<h3>最弱的一点</h3><p>「整体往哪走」（J4）还是弱：剧本里没有复核记录，算不出「n/m 已验证」；交接板只给最近一次，长链的中段要点进去看。</p></div>');
+}
+
+/* ---------- 按住确认 ---------- */
+let hold = null;
+function startHold(btn){
+  if (btn.disabled || hold) return;
+  const id = btn.dataset.id;
+  btn.classList.add('holding');
+  hold = {btn, timer:setTimeout(() => {
+    btn.classList.remove('holding'); hold = null;
+    const a = M.attention.find(x => x.id === id); if (a) resolve(a, 'approved');
+  }, 1000)};
+}
+function cancelHold(){ if (!hold) return; clearTimeout(hold.timer); hold.btn.classList.remove('holding'); hold = null; }
+document.addEventListener('pointerdown', e => { const b = e.target.closest && e.target.closest('[data-hold]'); if (b){ e.preventDefault(); startHold(b); } });
+document.addEventListener('pointerup', cancelHold);
+document.addEventListener('pointercancel', cancelHold);
+document.addEventListener('pointerout', e => { if (hold && e.target.closest && e.target.closest('[data-hold]') === hold.btn && !hold.btn.contains(e.relatedTarget)) cancelHold(); });
+document.addEventListener('keyup', e => { if ((e.key === ' ' || e.key === 'Enter') && hold) cancelHold(); });
+
+/* ---------- 事件 ---------- */
+document.addEventListener('click', e => {
+  const el = e.target.closest('button, a'); if (!el) return;
+  const d = el.dataset;
+  if (d.more){ const s = el.parentElement; s.hidden = true; if (s.nextElementSibling) s.nextElementSibling.hidden = false; return; }
+  if (d.hold) return;
+  if (d.mode){ st.mode = d.mode; st.current = null; st.order = []; st.lastChange = Date.now(); renderAll(); return; }
+  if (d.view){ st.view = d.view; renderAll(); return; }
+  if (d.l){ const r = REG[+d.l]; if (r.kind === 'events') openEvents(r.title, r.list); else openNodeList(r.title, r.list); return; }
+  if (d.case){ st.current = d.case; st.view = 'board'; closeDrawer(); renderAll(); return; }
+  if (d.node){ st.current = 'n:' + d.node; st.view = 'board'; closeDrawer(); renderAll(); return; }
+  if (d.back){ st.current = null; renderAll(); return; }
+  if (d.tower){ st.towerOpen = !st.towerOpen; renderBoard(); return; }
+  if (d.chart){ openChart(d.chart); return; }
+  if (d.convo){ openConvo(d.convo); return; }
+  if (d.brake){ closeConvo(); openBrake(d.brake); return; }
+  if (d.draft){ openDispatch(d.draft); return; }
+  if (d.act){
+    const a = M.attention.find(x => x.id === d.id); if (!a) return;
+    if (d.act === 'yes'){ if (needsHold(a)) return; resolve(a, 'approved'); }
+    else if (d.act === 'no') resolve(a, 'rejected');
+    else if (d.act === 'answer') resolve(a, 'answered', a.options[+d.opt]);
+    else if (d.act === 'ack') resolve(a, 'ack');
+    return;
+  }
+  if (d.stop){
+    if (d.stop === 'tree'){
+      if (st.brakeArm && st.brakeArm.id === d.id && Date.now() - st.brakeArm.t < 3000){ applyBrake(d.id, 'tree'); return; }
+      st.brakeArm = {id:d.id, t:Date.now()}; el.textContent = '再点一次确认刹车'; el.classList.add('armed');
+      const an = $('#armnote'); if (an) an.textContent = '3 秒内再点一次才会刹车。';
+      setTimeout(() => { if (st.brakeArm && st.brakeArm.id === d.id && el.isConnected){ el.textContent = '刹车（停它整棵进程树）'; el.classList.remove('armed'); st.brakeArm = null; } }, 3000);
+      return;
+    }
+    applyBrake(d.id, d.stop === 'proc' ? 'tree' : d.stop); return;
+  }
+  if (el.id === 'seenAll'){ M.D.lastSeen = now(); renderAll(); return; }
+  if (el.id === 'dispatchBtn'){ openDispatch(); return; }
+  if (el.id === 'doDispatch'){ doDispatch(); return; }
+  if (el.id === 'dclose'){ closeDrawer(); return; }
+  if (el.id === 'notesBtn'){ openNotes(); return; }
+  if (el.id === 'themeBtn'){
+    const r = document.documentElement, dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    r.dataset.theme = dark ? 'light' : 'dark'; try { localStorage.setItem('triage-theme', r.dataset.theme); } catch(_){}
+    return;
+  }
+  if (el.id === 'play'){ st.paused = !st.paused; st.lastReal = Date.now(); el.textContent = st.paused ? '开始走时' : '暂停'; return; }
+  if (el.id === 'speed'){ st.speed = st.speed === 1 ? 10 : st.speed === 10 ? 60 : 1; el.textContent = '×' + st.speed; return; }
+  if (el.id === 'reset'){
+    cancelHold();
+    data = {rich:buildRich(), poor:buildPoor()};
+    Object.assign(st, {sim:0, paused:true, current:null, order:[], typed:{}, prevCard:null, fresh:{}, lastChange:0, brakeArm:null});
+    $('#play').textContent = '开始走时'; closeDrawer(); closeConvo(); renderAll(); tick();
+    toast('剧本已回到 ' + hm(NOW0) + '，你做过的处理都撤销了');
+    return;
+  }
+});
+$('#scrim').addEventListener('click', closeDrawer);
+document.addEventListener('change', e => { if (e.target.id === 'dto') showPath(); });
+document.addEventListener('input', e => {
+  const t = e.target;
+  if (t.dataset.typed){
+    st.typed[t.dataset.typed] = t.value;
+    const a = M.attention.find(x => x.id === t.dataset.typed);
+    const btn = document.querySelector('[data-hold][data-id="' + t.dataset.typed + '"]');
+    if (a && btn) btn.disabled = t.value.trim() !== confirmWord(a);
+  }
+  if (t.dataset.brakeTyped){
+    const btn = document.querySelector('[data-stop="proc"][data-id="' + t.dataset.brakeTyped + '"]');
+    if (btn) btn.disabled = t.value.trim() !== '刹车';
+  }
+});
+$('#rail').addEventListener('mouseenter', () => { st.freeze = true; const f = $('#frozen'); if (f) f.textContent = '鼠标在列表上，排序已冻结'; });
+$('#rail').addEventListener('mouseleave', () => { st.freeze = false; const f = $('#frozen'); if (f) f.textContent = ''; });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape'){ if ($('#convo').classList.contains('on')) closeConvo(); else closeDrawer(); return; }
+  if ((e.key === ' ' || e.key === 'Enter') && e.target.dataset && e.target.dataset.hold){ e.preventDefault(); if (!e.repeat) startHold(e.target); return; }
+  if (/input|textarea|select/i.test(e.target.tagName)) return;
+  if ($('#drawer').classList.contains('on') || $('#convo').classList.contains('on')) return;
+  if (e.key === 'n'){ e.preventDefault(); openDispatch(); }
+  if (e.key === 'j' || e.key === 'k'){
+    const q = queue(M); if (!q.length) return;
+    const i = q.findIndex(x => x.id === st.current);
+    const next = i < 0 ? (e.key === 'j' ? 0 : q.length - 1) : (i + (e.key === 'j' ? 1 : q.length - 1)) % q.length;
+    st.current = q[next].id; renderAll();
+  }
+});
+
+/* ---------- 走时：只改数字，不重画（保护正在键入的确认和按住） ---------- */
+function tick(){
+  const r = Date.now(); if (!st.paused) st.sim += (r - st.lastReal) * st.speed; st.lastReal = r;
+  $('#clock').textContent = hms(now());
+  let expired = null;
+  for (const a of M.attention){
+    if (a.deadline && Date.parse(a.deadline) <= now()){
+      a.res = {decision:'rejected', by:'timeout', at:now()};
+      const b = live(a.nodeId);
+      if (b){ b.state = 'unknown'; b.stateDetail = {kind:'unknown', why:'请求在 ' + hm(Date.parse(a.deadline)) + ' 超时自动拒；它接下来做什么，等下一次读到'}; }
+      expired = a;
+    }
+  }
+  if (expired){ cancelHold(); st.lastChange = Date.now(); renderAll(); toast('超时，已自动拒：' + nodeOrGhost(M, expired.nodeId).title + ' ' + verbOf(expired)); return; }
+  document.querySelectorAll('[data-rem]').forEach(el => { const a = M.attention.find(x => x.id === el.dataset.rem); if (a) el.textContent = mmss(Date.parse(a.deadline) - now()); });
+  document.querySelectorAll('[data-wait]').forEach(el => { const a = M.attention.find(x => x.id === el.dataset.wait); if (a) el.textContent = mins(now() - Date.parse(a.openedAt)); });
+  document.querySelectorAll('[data-acu]').forEach(el => {
+    const a = M.attention.find(x => x.id === el.dataset.acu); if (!a) return;
+    const k = 'a-' + acuity(a).k;
+    if (!el.classList.contains(k)){ el.className = el.className.replace(/\ba-\w+/, k); const lab = el.querySelector('.acu'); if (lab) lab.textContent = acuity(a).label; }
+  });
+}
+
+try { const th = localStorage.getItem('triage-theme'); if (th) document.documentElement.dataset.theme = th; } catch(_){}
+renderAll();
+tick();
+setInterval(tick, 1000);
+window.__triage = {derive, st, tick, data:() => data, M:() => M};
+})();
+</script>
+</body>
+</html>
