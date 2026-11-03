@@ -183,6 +183,12 @@ export function requestModel(r) {
 /** Who asked, as the card says it: the requester's own id, or 未知 when it named none. */
 const reqWho = (r) => (typeof r.requester === 'string' && r.requester.startsWith('dsh:') ? r.requester.slice(4) : t('req.whoNone'));
 
+/** Where a request's session runs, as its card says it: in its cwd (inside a project root), else Orchestra's own work dir and why. */
+const reqWhere = (r) => (typeof r.runIn === 'string' ? t('req.cwdRoot', { cwd: r.cwd, run: r.runIn }) : t('req.cwd', { cwd: r.cwd, why: tk('cwdwhy', r.runInWhy ?? 'no-roots', 'cwdwhy.other') }));
+
+/** Where a session works, for its page: a project root or Orchestra's own dir; unknown from before a restart (T1); nothing from a list without the field. */
+export const cwdText = (o) => (o?.cwd === undefined ? '' : o.cwd === null ? t('own.cwdUnknown') : t(o.cwd.kind === 'project-root' ? 'own.cwdRoot' : 'own.cwdWork', { d: o.cwd.path }));
+
 /** What a request card names it by: its label, else its text's first line, at most 120 characters. */
 const reqWhat = (r) => {
   const s = (r.label ?? r.text.split('\n', 1)[0] ?? '').trim();
@@ -214,7 +220,7 @@ export function describeRequestPins(list, g) {
         what: { text: what },
         clock: { text: left > 0 ? t('req.left', { t: fmtLeft(left) }) : t('req.overdue') },
         pv: { text: r.text },
-        meta: { text: join([t('req.who', { who: reqWho(r) }), t('req.cwd', { cwd: r.cwd }), t('req.model', { m: m.model, src: t(m.src) })], 'sep.notes') },
+        meta: { text: join([t('req.who', { who: reqWho(r) }), reqWhere(r), t('req.model', { m: m.model, src: t(m.src) })], 'sep.notes') },
         acts: { kids: acts },
       },
     };
@@ -287,7 +293,7 @@ export function describeOwned(id, list, feed, g) {
     ownSt: {
       text: join([
         t('own.st', { model: o.model, state: tk('state', o.state, 'state.unknown') }), o.endReason === 'daemon-restart' && t('life.daemon-restart'),
-        o.queued > 0 && t('own.queued', { n: o.queued }), o.tokens !== null && t('own.tokens', { n: o.tokens.total }), requestOf(list, id),
+        o.queued > 0 && t('own.queued', { n: o.queued }), o.tokens !== null && t('own.tokens', { n: o.tokens.total }), cwdText(o), requestOf(list, id),
       ]),
     },
     cardsH: { data: { hide: mine.length > 0 ? '0' : '1' }, text: t('own.cards', { n: mine.length }) },
@@ -331,10 +337,19 @@ export function describeOwnedDock(to, list, g, held, armed, brakeArmed = false) 
   };
 }
 
-/** The dispatch dialog: a harness that cannot start is greyed, with why. */
-export function describeNew(list, harness, busy) {
+/**
+ * The dispatch dialog: a harness that cannot start is greyed, with why. The work dir is Orchestra's own by
+ * default; the other choices are the project roots the list names (--project-root), never a free path, and
+ * the note says what a session there may do (`root`: the select's value, '' for the default).
+ */
+export function describeNew(list, harness, busy, root = '') {
   const h = list?.harnesses ?? {};
+  const roots = Array.isArray(list?.roots) ? list.roots : [];
+  const picked = roots.includes(root) ? root : '';
   return {
+    cwdBox: { data: { hide: roots.length === 0 ? '1' : '0' } },
+    cwdSel: { kids: [{ key: 'cwd:', tpl: 'tpl-opt', text: t('new.cwdWork'), attr: { value: '' } }, ...roots.map((r) => ({ key: `cwd:${r}`, tpl: 'tpl-opt', text: r, attr: { value: r } }))] },
+    cwdNote: { text: picked === '' ? t(roots.length === 0 ? 'new.cwd' : 'new.cwdWorkNote') : t(harness === 'claude' ? 'new.cwdRootClaude' : 'new.cwdRootCodex', { d: picked }) },
     hCodex: { attr: { disabled: h.codex ? null : '' } }, hClaude: { attr: { disabled: h.claude ? null : '' } },
     why: { text: join([list === null ? t('new.noList') : !list.enabled && t('new.off', { why: whyText(list.disabledWhy ?? '') }), list !== null && !h.claude && t('new.claudeOff'), list !== null && !h.codex && list.enabled && t('new.codexOff')], 'sep.notes') },
     // The list follows the harness: keyed by harness too, so a switch replaces the options (and the default is the first).

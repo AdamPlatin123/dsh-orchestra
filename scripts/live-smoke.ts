@@ -1,7 +1,13 @@
 // The live end-to-end run of an owned session (orchestra app step 4): orchestrad in the test profile with
 // --owned, driven over HTTP exactly as the page drives it, against the real codex.exe or the Claude host
 // and the local magpie gateway (http://127.0.0.1:3425, no key). Not part of the test run.
-//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--outside | --brake | --daemon-stop] [--keep]
+//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--outside | --brake | --daemon-stop | --project-root] [--keep]
+//
+// --project-root (orchestra app plan 项目根): the run makes <test dir>\proj, starts orchestrad with
+// --project-root on it, checks GET /api/owned lists it, and dispatches the session with root set to it (as
+// the page's work dir select does). The file is looked for in that root, not in the session's work dir;
+// the report says whether the session's own work dir was made at all (it should not be) and what the list
+// said of the session's cwd.
 //
 // --daemon-stop (orchestra app: stdin-EOF shutdown): after the reply the session is not ended through the
 // page; orchestrad's stdin is closed instead, as when the program that started it goes away. The run
@@ -64,7 +70,7 @@ const outsideTask = (file: string) => `Run a shell command that prints the conte
 const BRAKE_TASK = 'Run exactly this one shell command, once, and then reply with the single word started: '
   + 'powershell -NoProfile -Command "Start-Process -WindowStyle Hidden -FilePath ping.exe -ArgumentList \'-t\',\'127.0.0.1\'"';
 
-function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean; outside: boolean; brake: boolean; daemonStop: boolean } {
+function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean; outside: boolean; brake: boolean; daemonStop: boolean; projectRoot: boolean } {
   const a = process.argv.slice(2);
   let harness: string | null = null;
   let model: string | null = null;
@@ -72,6 +78,7 @@ function args(): { harness: 'codex' | 'claude'; model: string | null; keep: bool
   let outside = false;
   let brake = false;
   let daemonStop = false;
+  let projectRoot = false;
   for (let i = 0; i < a.length; i++) {
     if (a[i] === '--harness') harness = a[++i] ?? null;
     else if (a[i] === '--model') model = a[++i] ?? null;
@@ -79,11 +86,12 @@ function args(): { harness: 'codex' | 'claude'; model: string | null; keep: bool
     else if (a[i] === '--outside') outside = true;
     else if (a[i] === '--brake') brake = true;
     else if (a[i] === '--daemon-stop') daemonStop = true;
+    else if (a[i] === '--project-root') projectRoot = true;
     else throw new Error(`live-smoke: unknown argument ${a[i]}`);
   }
   if (harness !== 'codex' && harness !== 'claude') throw new Error('live-smoke: --harness codex|claude');
-  if ([outside, brake, daemonStop].filter(Boolean).length > 1) throw new Error('live-smoke: one of --outside, --brake, --daemon-stop');
-  return { harness, model, keep, outside, brake, daemonStop };
+  if ([outside, brake, daemonStop, projectRoot].filter(Boolean).length > 1) throw new Error('live-smoke: one of --outside, --brake, --daemon-stop, --project-root');
+  return { harness, model, keep, outside, brake, daemonStop, projectRoot };
 }
 
 function freePort(): Promise<number> {
@@ -99,13 +107,16 @@ function freePort(): Promise<number> {
 
 
 async function main(): Promise<number> {
-  const { harness, model, keep, outside, brake, daemonStop } = args();
+  const { harness, model, keep, outside, brake, daemonStop, projectRoot } = args();
   const testDir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'orchestra-test-smoke-'));
   fs.mkdirSync(path.join(testDir, 'roots'));
+  // --project-root: a project root inside the test dir (the test profile takes roots only there).
+  const proj = path.join(testDir, 'proj');
+  if (projectRoot) fs.mkdirSync(proj);
   const port = await freePort();
   const host = `orchestra.localhost:${port}`;
   const origin = `http://${host}`;
-  const child = spawn(process.execPath, [path.join(REPO, 'src', 'boot.ts'), '--test-profile', '--test-dir', testDir, '--peek-port', String(port), '--owned'], {
+  const child = spawn(process.execPath, [path.join(REPO, 'src', 'boot.ts'), '--test-profile', '--test-dir', testDir, '--peek-port', String(port), '--owned', ...(projectRoot ? ['--project-root', proj] : [])], {
     cwd: REPO, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
   });
   const lines: string[] = [];
@@ -161,7 +172,14 @@ async function main(): Promise<number> {
 
     const probeFile = path.join(testDir, OUTSIDE_FILE);
     if (outside) fs.writeFileSync(probeFile, `${OUTSIDE_WORD}\n`);
-    const made = await post('/api/owned/new', { text: outside ? outsideTask(probeFile) : brake ? BRAKE_TASK : TASK, harness, ...(model === null ? {} : { model }) });
+    let root: string | null = null;
+    if (projectRoot) {
+      const roots: unknown = (await get('/api/owned')).json?.roots;
+      report.rootsListed = Array.isArray(roots) ? roots.map((r) => (typeof r === 'string' ? r.replace(testDir, '<testDir>') : '?')) : null;
+      root = Array.isArray(roots) && typeof roots[0] === 'string' ? roots[0] : null;
+      if (root === null) throw new Error('live-smoke: GET /api/owned lists no project root');
+    }
+    const made = await post('/api/owned/new', { text: outside ? outsideTask(probeFile) : brake ? BRAKE_TASK : TASK, harness, ...(model === null ? {} : { model }), ...(root === null ? {} : { root }) });
     if (made.status !== 200) throw new Error(`live-smoke: new answered ${made.status} ${made.body}`);
     const id = String(made.json.ownedId);
     ownedId = id;
@@ -205,8 +223,14 @@ async function main(): Promise<number> {
       if (replied && turnOver && me?.state === 'idle') break;
       await sleep(1000);
     }
-    const file = path.join(testDir, 'orchestra', 'work', id, FILE);
+    const file = path.join(projectRoot ? proj : path.join(testDir, 'orchestra', 'work', id), FILE);
     const written = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+    if (projectRoot) {
+      const cwd = (await get('/api/owned')).json?.owned?.find((o: { ownedId: string }) => o.ownedId === id)?.cwd ?? null;
+      report.listedCwd = cwd === null ? null : { kind: cwd.kind, path: String(cwd.path).replace(testDir, '<testDir>') };
+      report.workDirMade = fs.existsSync(path.join(testDir, 'orchestra', 'work', id));
+      report.fileInRoot = written !== null;
+    }
     const mentions = events.some((e) => e.kind === 'text' && (e.text ?? '').includes(outside ? OUTSIDE_WORD : WORD));
     // The session's Job (procguard on): what it holds now, by image name; its members by identity.
     const jobs = jobsOf(testDir);
@@ -267,7 +291,9 @@ async function main(): Promise<number> {
       ? (ds?.how === 'stdin-eof' && ds.code === 0 && dsRecord?.endReason === 'daemon-stop' && report.survivors === 0 && held.length > 0 ? 0 : 1)
       : brake
       ? (report.survivors === 0 && (report.brakeAnswer as { status: number }).status === 200 && last?.endReason === 'braked' && held.length > 0 ? 0 : 1)
-      : outside ? (replied ? 0 : 1) : replied && written !== null && written.trim() === WORD && noSurvivors ? 0 : 1;
+      : outside ? (replied ? 0 : 1)
+      : projectRoot ? (replied && written !== null && written.trim() === WORD && noSurvivors && report.workDirMade === false && (report.listedCwd as { kind?: string } | null)?.kind === 'project-root' ? 0 : 1)
+      : replied && written !== null && written.trim() === WORD && noSurvivors ? 0 : 1;
   } catch (e) {
     report.error = e instanceof Error ? e.message : String(e);
     report.orchestradSaid = lines.filter((l) => /owned|refus|failed|error/i.test(l) && !/code \d{8}/.test(l)).map((l) => l.replace(testDir, '<testDir>'));

@@ -1,0 +1,95 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { TOWER_TEXT } from '../../shared/strings.js';
+import { describeNew, describeOwned, describeRequestPins, type Guard } from '../../ui/owned.js';
+import { describeRows } from '../../ui/view.js';
+import { makeRequests } from '../../src/route/requests.ts';
+
+// Project roots on the page (orchestra app plan 项目根, --project-root): the dispatch dialog offers
+// Orchestra's own work dir (the default) and the roots the list names, never a free path, and says what a
+// session there may do; a request card says where its session runs and, if in the work dir, why; a session
+// page and an owned tower row name where it works. Without roots the dialog is as before. Synthetic data.
+
+const HTML = fs.readFileSync(fileURLToPath(new URL('../../ui/tower.html', import.meta.url)), 'utf8');
+const ROOT = 'D:\\work\\proj';
+const LIST = { v: 1, kind: 'owned-list', rev: 0, enabled: true, disabledWhy: null, harnesses: { codex: true, claude: true }, owned: [], approvals: [], limits: { maxOwned: 3, active: 0 } };
+const g: Guard = { unlocked: true, settle: '', hold: null, busy: false, nowWall: 0 };
+const fill = (key: string, args: Record<string, string>) => TOWER_TEXT[key]!.replace(/\{(\w+)\}/g, (_, k: string) => args[k] ?? '');
+
+test('the dispatch dialog: the work dir select lists the default first, then each root; hidden with no roots, where the note says how to add one', () => {
+  assert.match(HTML, /<select id="nw-cwd" class="dlg-in" data-slot="cwdSel"><\/select>/);
+  assert.ok(!HTML.includes('data-t="new.cwd"'), 'the fixed line gave way to the note slot');
+  const none = describeNew({ ...LIST, roots: [] }, 'codex', false);
+  assert.equal(none.cwdBox.data.hide, '1');
+  assert.equal(none.cwdNote.text, TOWER_TEXT['new.cwd']);
+  assert.ok(TOWER_TEXT['new.cwd']!.includes('--project-root'));
+  // A list from before roots existed (no field): the same as none.
+  assert.equal(describeNew(LIST, 'codex', false).cwdBox.data.hide, '1');
+  const two = describeNew({ ...LIST, roots: [ROOT, 'E:\\site'] }, 'codex', false);
+  assert.equal(two.cwdBox.data.hide, '0');
+  assert.deepEqual(two.cwdSel.kids.map((k: any) => [k.attr.value, k.text]), [['', TOWER_TEXT['new.cwdWork']], [ROOT, ROOT], ['E:\\site', 'E:\\site']]);
+  assert.equal(two.cwdNote.text, TOWER_TEXT['new.cwdWorkNote']);
+});
+
+test('the dispatch dialog: a picked root says the truth for the harness (Codex: its sandbox is read-only on Windows, so writes and commands still ask)', () => {
+  const list = { ...LIST, roots: [ROOT] };
+  const codex = describeNew(list, 'codex', false, ROOT).cwdNote.text;
+  assert.equal(codex, fill('new.cwdRootCodex', { d: ROOT }));
+  assert.ok(codex.includes('沙箱只读') && codex.includes('先来问你') && codex.includes(ROOT));
+  const claude = describeNew(list, 'claude', false, ROOT).cwdNote.text;
+  assert.equal(claude, fill('new.cwdRootClaude', { d: ROOT }));
+  assert.ok(claude.includes('读、查找这个目录里的文件不问你'));
+  // A value that is not one of the roots is the default (the page never sends a free path).
+  assert.equal(describeNew(list, 'codex', false, 'C:\\anything').cwdNote.text, TOWER_TEXT['new.cwdWorkNote']);
+});
+
+test('a request card says where its session runs: in its cwd inside a root, else the work dir and why (an unknown why says so, T1)', () => {
+  const r = {
+    requestId: '6'.repeat(20), harness: 'codex', label: null, text: 'x', cwd: `${ROOT}\\web`, requester: 'dsh:s1', state: 'pending', createdAt: 0, expiresAt: 60_000, ownedId: null, why: null,
+    fetched: false, suggestion: null, suggesting: 'no-desk',
+  };
+  const meta = (extra: Record<string, unknown>) => (describeRequestPins({ requests: [{ ...r, ...extra }] }, g) as any[])[0].slots.meta.text as string;
+  assert.ok(meta({ runIn: `${ROOT}\\web`, runInWhy: null }).includes(fill('req.cwdRoot', { cwd: `${ROOT}\\web`, run: `${ROOT}\\web` })));
+  assert.ok(meta({ runIn: null, runInWhy: 'outside-roots' }).includes(fill('req.cwd', { cwd: `${ROOT}\\web`, why: TOWER_TEXT['cwdwhy.outside-roots']! })));
+  assert.ok(meta({ runIn: null, runInWhy: 'no-roots' }).includes(TOWER_TEXT['cwdwhy.no-roots']!));
+  assert.ok(meta({ runIn: null, runInWhy: 'brand-new' }).includes('原因未知：brand-new'));
+});
+
+test('a session page names where it works: a project root, Orchestra\'s own dir, or unknown from before a restart', () => {
+  const o = { ownedId: 'a'.repeat(20), harness: 'codex', model: 'codex/gpt-6.1-sol', title: 't', state: 'idle', endReason: null, waiting: null, queued: 0, tokens: null, lastSeq: 0, createdAt: 0, brake: true };
+  const st = (cwd: unknown) => (describeOwned(o.ownedId, { ...LIST, roots: [ROOT], requests: [], requestedGone: [], owned: [{ ...o, cwd }] }, undefined, g) as any).ownSt.text as string;
+  assert.ok(st({ path: ROOT, kind: 'project-root' }).includes(fill('own.cwdRoot', { d: ROOT })));
+  assert.ok(st({ path: 'C:\\o\\work\\x', kind: 'work' }).includes(fill('own.cwdWork', { d: 'C:\\o\\work\\x' })));
+  assert.ok(st(null).includes(TOWER_TEXT['own.cwdUnknown']!));
+});
+
+test('an owned tower row names the folder it works in once the page can read the list; an observed row never', () => {
+  const node = (ownership: string) => ({
+    id: `n:${'a'.repeat(20)}`, session: null, harness: 'codex', ownership, layer: 'agent', parent: null, depth: 0, title: 't', activity: '在跑',
+    state: 'running', basis: ownership === 'owned' ? 'owned' : 'log', waiting: null, counts: { children: 0, errors: 0, waiting: 0 }, groups: [], ageMs: 0, agentType: null,
+  });
+  const row = (n: any) => ({ key: n.id, kind: 'node', level: 2, parentKey: null, expandable: false, expanded: false, match: false, setsize: 1, posinset: 1, project: { id: 'p', name: 'p', basis: 'owned', nodes: [n], groups: [] }, node: n, group: null, gone: false });
+  const ctx = { sel: null, peek: new Set<string>(), flash: new Map<string, string>(), cwdOf: () => `${ROOT}\\` };
+  const act = (n: any, c: any) => (describeRows([row(n)] as any, c)[0] as any).slots.act.text as string;
+  assert.equal(act(node('owned'), ctx), `在跑${TOWER_TEXT['sep.parts']}${fill('row.cwd', { d: 'proj' })}`);
+  assert.equal(act(node('owned'), { ...ctx, cwdOf: () => null }), '在跑', 'locked, or a list without it: the activity alone');
+  assert.equal(act(node('observed'), ctx), '在跑');
+});
+
+test('requests: runIn holds only for the cwd as shown; a cwd the redactor changed runs in the work dir (redacted); none named: no-roots', () => {
+  const mk = (redact: (s: string) => string) => makeRequests({
+    after: () => () => {}, nowMono: () => 0, nowWall: () => 0, redact: (text) => ({ text: redact(text), count: 0 }), observe: () => null, endOwned: () => false,
+  });
+  const ask = { harness: 'codex' as const, text: 'x', cwd: `${ROOT}\\web`, label: null, requester: { kind: 'dsh' as const, sessionId: 's' } };
+  const plain = mk((s) => s).create({ ...ask, runIn: `${ROOT}\\web`, runInWhy: null });
+  assert.ok(plain.ok);
+  if (plain.ok) assert.deepEqual([plain.request.runIn, plain.request.runInWhy], [`${ROOT}\\web`, null]);
+  const hidden = mk((s) => s.replace('proj', '[secret]')).create({ ...ask, runIn: `${ROOT}\\web`, runInWhy: null });
+  assert.ok(hidden.ok);
+  if (hidden.ok) assert.deepEqual([hidden.request.runIn, hidden.request.runInWhy], [null, 'redacted']);
+  const none = mk((s) => s).create(ask);
+  assert.ok(none.ok);
+  if (none.ok) assert.deepEqual([none.request.runIn, none.request.runInWhy], [null, 'no-roots']);
+});

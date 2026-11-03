@@ -1,6 +1,7 @@
 import * as crypto from 'node:crypto';
 import { frozen } from '../../shared/frozen.js';
 import type { After } from '../net/magpie.ts';
+import type { RunInWhy } from '../os/project-roots.ts';
 import type { FeedEvent } from '../owned/feed.ts';
 import type { Redact } from '../owned/text.ts';
 import { headUtf8, shown, utf8Length } from '../owned/text.ts';
@@ -111,8 +112,15 @@ export type AgentRequest = {
   /** Redacted, invisible characters written out, at most textBytes: the session's first message on a dispatch. */
   readonly text: string;
   readonly label: string | null;
-  /** Where the requester wants the work done, as it said (redacted): shown only, the session runs in ORCHESTRA_HOME\work\<id>. */
+  /** Where the requester wants the work done, as it said (redacted), as the card shows it. */
   readonly cwd: string;
+  /**
+   * Where a dispatched session runs (orchestra app plan 项目根): that cwd, resolved, when it lies in a project
+   * root the person named and passed the cwd table (src/os/project-roots.ts placeRunIn); null: in
+   * ORCHESTRA_HOME\work\<id>, and runInWhy says why (no-roots when no root was named).
+   */
+  readonly runIn: string | null;
+  readonly runInWhy: RunInWhy | null;
   readonly requester: Requester;
   readonly state: RequestState;
   readonly createdWall: number;
@@ -138,7 +146,8 @@ export type Observed = {
   readonly feed: { since(after: number): { clipped: boolean; events: readonly FeedEvent[] } };
 };
 
-export type NewRequest = { harness: RouteHarness; text: string; cwd: string; label: string | null; requester: Requester };
+/** runIn and runInWhy: the port's placeRunIn of the raw cwd; absent, the session runs in the work dir (no-roots). */
+export type NewRequest = { harness: RouteHarness; text: string; cwd: string; label: string | null; requester: Requester; runIn?: string | null; runInWhy?: RunInWhy | null };
 
 export type RequestRefusal = 'full' | 'rate' | 'stopped' | 'requester-full' | 'text-too-long' | 'cwd-too-long';
 export type ClaimRefusal = 'request-gone' | 'request-mismatch';
@@ -336,9 +345,13 @@ export function makeRequests(deps: RequestsDeps): Requests {
       const requestId = crypto.randomBytes(10).toString('hex');
       const key = crypto.randomBytes(16).toString('base64url');
       const label = req.label === null ? null : cleanLabel(deps.redact, req.label.split('\n', 1)[0] ?? '', REQUEST_LIMITS.labelBytes);
+      // The card shows the cwd as redacted; a run in a project root only when that is the very path (nothing hidden, nothing written out).
+      const placed: { runIn: string | null; runInWhy: RunInWhy | null } = typeof req.runIn === 'string'
+        ? (cwd.text === req.cwd ? { runIn: req.runIn, runInWhy: null } : { runIn: null, runInWhy: 'redacted' })
+        : { runIn: null, runInWhy: req.runInWhy ?? 'no-roots' };
       const m: Mut = {
         requestId, harness: req.harness, text: text.text, label: label === '' ? null : label,
-        cwd: cwd.text, requester: Object.freeze({ ...req.requester }), state: 'pending', createdWall: deps.nowWall(),
+        cwd: cwd.text, ...placed, requester: Object.freeze({ ...req.requester }), state: 'pending', createdWall: deps.nowWall(),
         expiresWall: deps.nowWall() + ttl, expiresMono: now + ttl, ownedId: null, output: null, truncated: false, cuts: [], fetched: false, why: null,
         suggestion: null, suggesting: deps.suggest === undefined ? 'no-desk' : 'asking',
         cancelExpiry: () => {}, withdrawKey: Buffer.from(key, 'ascii'),

@@ -20,6 +20,7 @@ import type { Desk } from '../route/desk.ts';
 import type { Requests } from '../route/requests.ts';
 import type { AgentPort } from '../server/agent-port.ts';
 import type { CwdPolicySpec } from '../os/cwd.ts';
+import type { RunIn } from '../os/project-roots.ts';
 import type { ProvenSystemRoot } from '../os/spawn.ts';
 import type { DbOpener, DbOpenerSpec } from '../store/db.ts';
 import type { ChainBreak } from '../store/journal.ts';
@@ -116,6 +117,12 @@ export type WorkingContext = {
    * without either it stays off and says why (an agent could only ask for what nobody can grant).
    */
   agentPort?: true;
+  /**
+   * --project-root (orchestra app plan 项目根; only with --owned): the directories, as named, an owned
+   * session may be started in besides ORCHESTRA_HOME\work. Each is checked before the lock (src/os/
+   * project-roots.ts); the first that fails refuses the start (project-root-refused). Absent: none.
+   */
+  projectRoots?: readonly string[];
 };
 
 /**
@@ -200,6 +207,8 @@ export type ProcguardStatus =
 
 export type WorkingOutcome =
   | { mode: 'lock-held'; code: typeof EXIT.lockHeld; pipe: string; holder: DaemonInfo | null }
+  /** A --project-root that is no place an owned session may work: which one and why (src/os/project-roots.ts). */
+  | { mode: 'project-root-refused'; code: typeof EXIT.badArgs; root: string; why: string; detail: string | null }
   | { mode: 'start-failed'; code: typeof EXIT.startFailed; stage: 'gates' | 'lock' | 'data-dir' | 'store'; detail: string }
   | {
     mode: 'journal-chain';
@@ -271,6 +280,19 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
     log.error('gates-failed', { error: e });
     ctx.console.err(`orchestrad: cannot set up the write fence and read gate: ${describe(e)}`);
     return { mode: 'start-failed', code: EXIT.startFailed, stage: 'gates', detail: describe(e) };
+  }
+  // --project-root, before the lock: a root that is no place an owned session may work refuses the start.
+  let projectRoots: readonly string[] = [];
+  if (ctx.owned === true && (ctx.projectRoots?.length ?? 0) > 0) {
+    const checked = await checkRoots(ctx, home);
+    if (!checked.ok) {
+      const { PROJECT_ROOT_WHY_TEXT } = await import('../os/project-roots.ts');
+      const why = Object.hasOwn(PROJECT_ROOT_WHY_TEXT, checked.why) ? PROJECT_ROOT_WHY_TEXT[checked.why as keyof typeof PROJECT_ROOT_WHY_TEXT] : checked.why;
+      log.error('project-root-refused', { root: checked.root, why: checked.why, detail: checked.detail });
+      ctx.console.err(`orchestrad: refusing to start: --project-root ${JSON.stringify(checked.root)} is refused: ${why}${checked.detail === null ? '' : ` (${checked.detail})`}`);
+      return { mode: 'project-root-refused', code: EXIT.badArgs, root: checked.root, why: checked.why, detail: checked.detail };
+    }
+    projectRoots = checked.roots;
   }
   const run = win.join(home, 'run');
   const daemonJson = win.join(run, 'daemon.json');
@@ -393,13 +415,20 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   let judgeOwned: PathJudge | null = null;
   /** The owned sessions' redactor (with its count), as an agent request's words go through it (seat). */
   let ownedRedact: Redact | null = null;
+  /** Where an agent request's cwd would run (a project root, or null and why); null while the owned part is off. */
+  let placeRun: ((cwd: string) => RunIn) | null = null;
   if (ctx.owned === true) {
     const { OWNED_POOL_MAX } = await import('../owned/codex-owned.ts');
     pool = Object.freeze({ max: OWNED_POOL_MAX, active: () => (codexOwned?.active() ?? 0) + (claudeOwned?.active() ?? 0) });
-    const shared = await setUpOwnedShared(ctx, fence, gate, home, pool);
+    const shared = await setUpOwnedShared(ctx, fence, gate, home, pool, projectRoots);
     if (shared.ok) {
       judgeOwned = shared.base.judge;
       ownedRedact = shared.base.redact;
+      placeRun = shared.base.placeRun;
+      if (projectRoots.length > 0) {
+        log.info('project-roots', { roots: projectRoots });
+        ctx.console.out(`orchestrad: project roots for owned sessions: ${projectRoots.join('; ')} (a session you start in one works there and may change its files once you allow it; an agent request whose cwd lies in one runs there)`);
+      }
     }
     const pg = shared.ok && ctx.procguard === true ? await setUpProcguard(ctx, fence, gate, shared.base, {
       // T1: a resident that went away is said at once, and the page says the brake can no longer report what it did.
@@ -523,6 +552,8 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
       }
       const deps = {
         codex: codexOwned, codexOff: ownedCodex.on ? 'on' : ownedCodex.why, claude: claudeOwned, desk, log, restored: restoredOff, requests,
+        // The roots the dispatch dialog offers (only when the owned part is on; none unless named).
+        projectRoots: placeRun === null ? [] : projectRoots,
         // Why a new session has no brake (null: each runs in a Job of its own), read at each list: a
         // resident procguard that went away since says so (the brake then cannot report what it did).
         brakeWhy: () => (!procguard.on ? procguard.why : resident !== null && !resident.up ? 'procguard-resident-gone' : null),
@@ -582,6 +613,8 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
             if (judge === null) return 'no-table';
             return judge(c.path).hit;
           },
+          // Inside a project root the session runs there; elsewhere in ORCHESTRA_HOME\work, as before (the card says which).
+          ...(placeRun === null ? {} : { placeCwd: placeRun }),
           log,
         });
         if (started.ok) {
@@ -673,6 +706,34 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
 }
 
 
+/**
+ * The named project roots held to what a cwd must be (src/os/project-roots.ts), before the lock: the cwd
+ * table a policy with no project roots builds (the data dir and every harness root protected, the test
+ * dir in the test profile), the realpath port, and a stat-only read gate on each root in turn.
+ */
+async function checkRoots(ctx: WorkingContext, home: string): Promise<{ ok: true; roots: readonly string[] } | { ok: false; root: string; why: string; detail: string | null }> {
+  const given = ctx.projectRoots ?? [];
+  try {
+    const { resolveSystemRoot } = await import('../os/spawn.ts');
+    const { CwdPolicy } = await import('../os/cwd.ts');
+    const { checkProjectRoots } = await import('../os/project-roots.ts');
+    const sys = resolveSystemRoot(ctx.env, ctx.realpath);
+    if (!sys.ok) return { ok: false, root: given[0] ?? '', why: 'system-root', detail: `SystemRoot ${sys.reason}` };
+    const probe = new CwdPolicy({
+      spec: { allowedRoots: [], protectedDirs: [home, ...ctx.roots.map((r) => r.path)], userHome: ctx.userHome, ...(ctx.profile.kind === 'test' ? { testDir: ctx.profile.testDir } : {}) },
+      env: ctx.env, systemRoot: sys.path, realpath: ctx.realpath,
+    });
+    const testDirs = ctx.profile.kind === 'test' ? { testDirs: testReadDirs(ctx.profile) } : {};
+    return checkProjectRoots(given, {
+      realpath: ctx.realpath,
+      rootHit: (p) => probe.rootHit(p),
+      isDirectory: (p) => ctx.makeReadGate({ roots: [], projectRoots: [p], ...testDirs }).stat(p).isDirectory(),
+    });
+  } catch (e) {
+    return { ok: false, root: given[0] ?? '', why: 'check-failed', detail: describe(e) };
+  }
+}
+
 /** What both harnesses' owned sessions share: the one approval queue, the registry, the work root and its cwd table. */
 type OwnedBase = {
   /** The running-session limit both managers count against. */
@@ -683,6 +744,8 @@ type OwnedBase = {
   workRoot: string;
   cwdSpec: CwdPolicySpec;
   judge: PathJudge;
+  /** Where a session for an agent request's cwd would run (src/os/project-roots.ts placeRunIn). */
+  placeRun(cwd: string): RunIn;
   redact: Redact;
   now(): number;
 };
@@ -693,7 +756,7 @@ type OwnedBase = {
  * (D8: what leaves it without a person is logged), the cwd table the gates and the approvals' paths are
  * judged by (r4 §5.3's protected dirs: the data dir and every harness root).
  */
-async function setUpOwnedShared(ctx: WorkingContext, fence: WriteFence, gate: ReadGate, home: string, pool: OwnedPool): Promise<{ ok: true; base: OwnedBase } | { ok: false; why: 'no-spawn-gate' | 'setup-failed'; detail: string | null }> {
+async function setUpOwnedShared(ctx: WorkingContext, fence: WriteFence, gate: ReadGate, home: string, pool: OwnedPool, projectRoots: readonly string[]): Promise<{ ok: true; base: OwnedBase } | { ok: false; why: 'no-spawn-gate' | 'setup-failed'; detail: string | null }> {
   if (ctx.makeSpawnGate === undefined) return { ok: false, why: 'no-spawn-gate', detail: null };
   try {
     const { resolveSystemRoot } = await import('../os/spawn.ts');
@@ -707,9 +770,24 @@ async function setUpOwnedShared(ctx: WorkingContext, fence: WriteFence, gate: Re
     fence.mkdirp(workRoot);
     const registryDir = win.join(home, REGISTRY_DIR);
     fence.mkdirp(registryDir);
-    const cwdSpec: CwdPolicySpec = { allowedRoots: [workRoot], protectedDirs: [home, ...ctx.roots.map((r) => r.path)], userHome: ctx.userHome, ownedWorkRoot: workRoot };
+    const { placeRunIn } = await import('../os/project-roots.ts');
+    // The project roots (none unless named) are allowed roots of the same table; in the test profile each lies in the test dir.
+    const cwdSpec: CwdPolicySpec = {
+      allowedRoots: [workRoot], protectedDirs: [home, ...ctx.roots.map((r) => r.path)], userHome: ctx.userHome, ownedWorkRoot: workRoot,
+      ...(projectRoots.length === 0 ? {} : { projectRoots, ...(ctx.profile.kind === 'test' ? { testDir: ctx.profile.testDir } : {}) }),
+    };
     // The same table the gates check a cwd against judges the paths an approval names (orchestra app plan §4).
     const places = new CwdPolicy({ spec: cwdSpec, env: ctx.env, systemRoot: sys.path, realpath: ctx.realpath });
+    // Stat only, in the project roots only: whether an agent request's cwd there is a directory.
+    const dirs = projectRoots.length === 0 ? null : ctx.makeReadGate({ roots: [], projectRoots, ...(ctx.profile.kind === 'test' ? { testDirs: testReadDirs(ctx.profile) } : {}) });
+    const placeRun = (cwd: string): RunIn => placeRunIn(cwd, {
+      roots: projectRoots,
+      check: (p) => places.check(p),
+      isDirectory: (p) => {
+        if (dirs === null) throw new Error('no project roots');
+        return dirs.stat(p).isDirectory();
+      },
+    });
     const redactor = makeRedactor({ env: ctx.env });
     const wall = ctx.clock.port(null);
     const approvals = new Queue({
@@ -727,7 +805,7 @@ async function setUpOwnedShared(ctx: WorkingContext, fence: WriteFence, gate: Re
     return {
       ok: true,
       base: {
-        pool, sys, approvals, registry, workRoot, cwdSpec, judge: (p) => places.place(p), now: () => wall.nowWall(),
+        pool, sys, approvals, registry, workRoot, cwdSpec, judge: (p) => places.place(p), placeRun, now: () => wall.nowWall(),
         redact: (text) => {
           const r = redactor.redact({ text });
           const v = r.verdict;
@@ -829,7 +907,7 @@ async function setUpProcguard(ctx: WorkingContext, fence: WriteFence, gate: Read
  * The owned Codex sessions' wiring (orchestra app plan §2), in both profiles: codex.exe at its pinned
  * path below %APPDATA% (not found: off, with the reason), the private CODEX_HOME's config.toml written
  * through the fence, and a spawn gate that allows only codex-app-server, with CODEX_HOME as its one
- * extra and the shared cwd table, whose only allowed root is the work root.
+ * extra and the shared cwd table, whose allowed roots are the work root and the project roots named (none unless named).
  */
 async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: string, base: OwnedBase, jobs: Jobs | null): Promise<{ status: OwnedCodexStatus; owned: CodexOwned | null }> {
   const off = (why: Extract<OwnedCodexStatus, { on: false }>['why'], detail: string | null = null) => ({ status: { on: false as const, why, detail }, owned: null });

@@ -16,7 +16,7 @@ import { indexOf, pathOf } from './tree.js';
  * @typedef {'claude' | 'dsh' | 'codex'} Harness
  * @typedef {{ session: { id: string }, events: { at: string | null, type: string, text: string }[], unparsed: number, note: string | null }} SessionDetail
  * @typedef {{ id: string, body: SessionDetail | { error: string } | null }} Detail
- * @typedef {{ sel: string | null, peek: ReadonlySet<string>, flash: ReadonlyMap<string, string>, detectsError?: boolean }} RowCtx
+ * @typedef {{ sel: string | null, peek: ReadonlySet<string>, flash: ReadonlyMap<string, string>, detectsError?: boolean, cwdOf?: (id: string) => string | null }} RowCtx
  */
 
 export const HARNESSES = Object.freeze(/** @type {const} */ (['claude', 'dsh', 'codex']));
@@ -252,6 +252,18 @@ function groupRow(r, attr, base) {
   };
 }
 
+/**
+ * A row's activity, and for an owned session the folder it works in (its last path part) once the page is
+ * unlocked: ctx.cwdOf reads the owned list, which the tower snapshot never carries. @param {Node} n @param {RowCtx} ctx
+ */
+function actWithCwd(n, ctx) {
+  const a = activityOf(n);
+  const cwd = n.ownership === 'owned' && typeof ctx.cwdOf === 'function' ? ctx.cwdOf(n.id) : null;
+  if (typeof cwd !== 'string' || cwd === '') return a;
+  const where = t('row.cwd', { d: cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd });
+  return a === '' ? where : `${a}${t('sep.parts')}${where}`;
+}
+
 /** @param {Row} r @param {Record<string, string | null>} attr @param {Record<string, string>} base @param {RowCtx} ctx @returns {Desc} */
 function nodeRow(r, attr, base, ctx) {
   const n = /** @type {Node} */ (r.node);
@@ -272,7 +284,7 @@ function nodeRow(r, attr, base, ctx) {
       name: { text: n.title },
       approx: { text: approx ? t('mark.inferred') : '' },
       srState: { text: approx ? `${state}${t('mark.inferredSr')}` : state },
-      act: { text: activityOf(n) },
+      act: { text: actWithCwd(n, ctx) },
       kids: { data: { has: c.children > 0 ? '1' : '0' }, attr: { title: c.children > 0 ? sr : null } },
       kc: { text: c.children > 0 ? String(c.children) : '' },
       ke: { text: c.errors > 0 ? t('kids.err', { n: c.errors }) : '' },

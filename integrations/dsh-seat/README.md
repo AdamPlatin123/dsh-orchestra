@@ -136,8 +136,11 @@ node --test "integrations/dsh-seat/test/*.test.mjs"
 
 - 提交请求的那一刻被取消，orchestrad 可能已经建了卡片但 bundle 拿不到它的 id，没法撤回。那张卡会在 orchestrad 的时限到后自己变成 `expired`（超时即拒）。
 - 请求只存在 orchestrad 内存里。orchestrad 重启后，DSH 再查会得到 `request-unknown`，结果是 `error`。
-- orchestrad 目前让会话在它自己的 `ORCHESTRA_HOME\work\<id>` 里跑，DSH 传的 `cwd` 只显示在卡片上。
-- 但这个 `cwd` 要先过 orchestrad 的工作目录拒绝表：在 `%USERPROFILE%\AppData` 下（包括 `%TEMP%`）、在 orchestra 仓库里、系统目录里，请求会被拒（`cwd-forbidden`，委派调用直接报错）。所以 DSH 要从普通项目目录启动。实验室冒烟里用的是 orchestrad 自己工作根下的一个子目录（拒绝表对它放行）。
+- 会话在哪里跑，看 orchestrad 启动时有没有放行项目根（`--project-root <绝对路径>`，可以给多次，只能和 `--owned` 一起用）：
+  - DSH 传的 `cwd` 落在某个放行的根里（根本身或它下面的子目录；规范化后比较，不分大小写），并且过了拒绝表、是目录、路径上没有链接或连接点、DSH 写的路径里没有 `..`：卡片写「这在你放行的项目根里，派出后在 <cwd> 里跑」，派出后会话就在那个目录里跑。
+  - 否则（没放行任何根、`cwd` 不在根里、有 `..`、有链接……）：会话照旧在 orchestrad 自己的 `ORCHESTRA_HOME\work\<id>` 里跑，卡片写「派出后仍在 Orchestra 自建的工作目录里跑」并写明原因。
+  - 不管哪种，派出都只有人在配对页上点（D8）；Codex 在 Windows 上的沙箱只读，会话每次写文件、跑命令仍会来问。
+- 这个 `cwd` 还要先过 orchestrad 的工作目录拒绝表：在 `%USERPROFILE%\AppData` 下（包括 `%TEMP%`）、在 orchestra 仓库里、系统目录里，请求会被拒（`cwd-forbidden`，委派调用直接报错）。所以 DSH 要从普通项目目录启动。实验室冒烟里用的是 orchestrad 自己工作根下的一个子目录（拒绝表对它放行）。测试 profile 下放行的项目根只能在测试目录里，在那里面拒绝表不按 AppData 那一行拒；真实 profile 没有这个例外。
 - 外部子级在 DSH 自己的界面里只显示为一次工具调用；进度看 Orchestra 配对页。DSH 的 `list_agents` 也看不到它（显示没有子级），模型因此可能以为第一次没成功、再调一次（2026-11-03 headless 实测出现过，配对页上多了一张一样的卡）。所以同一个 DSH 会话、同一工作目录、同一段任务文字的请求还没有结果时，bundle 直接拒绝第二次调用，诊断写明「不用重试，结果会以完成通知送回」（`[duplicate]`）。第一次还在提交、orchestrad 还没回话时，收没收下未知，诊断就不承诺结果，只说那次委派报错的话可以再提（`[duplicate-submitting]`）。只在同一个 DSH 进程里有效；第一个请求有了结果后，同样的请求可以再提。DSH 没给出会话 id 时（卡片上是「未知」），分不清是不是同一个会话提的，就不合并，只受 orchestrad 自己的限额约束。
 - 没有 pipe 对端进程校验（final.md §6.3 B 推迟到以后的 pipe-client-pid）。由此剩下的：
   - 同一用户的进程读到令牌文件就能提请求（但每条仍要人点派出）。自有 Codex 会话也在其中：Windows 上它的沙箱只限写、不限读，令牌文件放到哪个同用户可读的目录都一样，挪位置没用；要靠以后的对端 pid 校验或收紧文件 ACL。

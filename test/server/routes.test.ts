@@ -341,7 +341,10 @@ test('new and message: text up to the body cap as a shape, the 2 KB limit and th
   assert.equal(why(nu.body!, { actionId: ACT, text: 'x'.repeat(3000), harness: 'codex' }), 'ok', 'over 2 KB is text-too-long, never a 400');
   assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'codex', cwd: 'C:\\' }), 'extra-key $', 'no cwd from the browser');
   assert.equal(why(nu.body!, { actionId: ACT, text: 'hi\ud800', harness: 'codex' }), 'type $.text');
-  assert.deepEqual([...nu.own], ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command', 'request-gone', 'request-mismatch']);
+  assert.deepEqual([...nu.own], ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command', 'request-gone', 'request-mismatch', 'cwd-forbidden']);
+  // --project-root: a root the list names may come back as root (the handler holds it to that list: cwd-forbidden otherwise).
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'codex', root: 'D:\\proj' }), 'ok');
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'codex', root: 'x'.repeat(261) }), 'too-long $.root');
   // seat: an agent request's dispatch names it; only an id of its grammar.
   assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'codex', requestId: '0123456789abcdef0123' }), 'ok');
   assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'codex', requestId: 'x' }), 'grammar $.requestId');

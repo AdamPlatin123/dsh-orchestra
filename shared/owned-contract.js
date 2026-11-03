@@ -51,6 +51,14 @@ export const OWNED_ENUMS = frozen({
   requestSource: ['rule', 'model'],
   /** Where a pending card's suggestion stands (src/route/requests.ts SuggestState). */
   requestSuggesting: ['asking', 'no-desk', 'none', 'failed', 'ready'],
+  /** Where a session works (orchestra app plan 项目根): a project root named at startup (or a folder in one), or its own ORCHESTRA_HOME\work\<id>. */
+  cwdKind: ['project-root', 'work'],
+  /**
+   * Why an agent request's session would run in Orchestra's own work dir and not in its cwd (src/os/project-roots.ts
+   * RunInWhy): no project root named, not a plain absolute path, a `..` in it, outside every root, a protected
+   * place, a link on it, not there, not a directory, or hidden in part by the redactor.
+   */
+  runInWhy: ['no-roots', 'bad-path', 'dot-segments', 'outside-roots', 'protected', 'reparsed', 'not-found', 'not-a-directory', 'redacted'],
 });
 
 export const OWNED_BOUNDS = frozen({
@@ -68,6 +76,10 @@ export const OWNED_BOUNDS = frozen({
   requestTextBytes: 2048,
   requestLabelBytes: 120,
   requestCwdBytes: 520,
+  /** A session's cwd or a project root, in UTF-8 bytes (a Windows path of at most 260 UTF-16 units, each at most 3 bytes, is 780). */
+  cwdBytes: 780,
+  /** The project roots named at startup (src/runtime/test-profile.ts PROJECT_ROOTS_MAX). */
+  roots: 16,
   /** The router model's reason for a model, in UTF-8 bytes (routes.ts SUGGEST_REPLY's 200 code points, at most 4 bytes each). */
   reasonBytes: 800,
 });
@@ -114,16 +126,21 @@ export const REQUEST_ID_RE = frozen(/^[0-9a-f]{20}$/);
 export const REQUESTER_RE = frozen(/^dsh(?::[A-Za-z0-9][A-Za-z0-9_.:-]{0,127})?$/);
 /** A model of the owned list (src/owned/models.ts OWNED_MODEL_RE). */
 export const OWNED_MODEL_NAME_RE = frozen(/^(?:zcode|opencode-go|codex)\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
+/** A drive-letter absolute path (a cwd, a project root). */
+const ABS_PATH_RE = /^[A-Za-z]:\\/;
 // C0 and C1 controls but tab and newline, DEL, and the bidi embeddings, overrides and isolates.
 const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
 
 /**
  * @typedef {{
  *   v: 1, kind: 'owned-list', rev: number, enabled: boolean, disabledWhy: string | null, brakeWhy: string | null,
- *   harnesses: { codex: boolean, claude: boolean },
+ *   harnesses: { codex: boolean, claude: boolean }, roots: string[],
  *   owned: OwnedEntry[], approvals: ApprovalEntry[], limits: { maxOwned: number, active: number }, requests: RequestEntry[],
  *   requestedGone: string[],
  * }} OwnedList
+ *   roots: the project roots named at startup (--project-root, checked), in the order named; the dispatch
+ *   dialog offers them and owned-new's root must be one of them. Empty: none, every session works in
+ *   Orchestra's own work dir.
  *   requestedGone: ownedIds of sessions you dispatched for an agent request whose details orchestrad no longer
  *   holds (evicted from memory, or from before a restart, as the journal says); never one listed in requests.
  *   rev: the approval queue's revision; the page sends it back with an allow (stale-view otherwise).
@@ -135,11 +152,14 @@ const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
  * @typedef {{
  *   ownedId: string, harness: 'codex' | 'claude', model: string, title: string, state: string, endReason: string | null,
  *   waiting: string | null, queued: number, tokens: Tokens | null, lastSeq: number, createdAt: number, brake: boolean,
+ *   cwd: { path: string, kind: 'project-root' | 'work' } | null,
  * }} OwnedEntry
  *   title: the first line of its first message, shown (possibly empty); waiting: an approvalId.
+ *   cwd: where it works, a project root (or a folder in one) or its own work dir; null when not known (T1).
  * @typedef {{ input: number, cachedInput: number, output: number, total: number }} Tokens
  * @typedef {{
- *   requestId: string, harness: 'codex' | 'claude', label: string | null, text: string, cwd: string, requester: string, state: string,
+ *   requestId: string, harness: 'codex' | 'claude', label: string | null, text: string, cwd: string,
+ *   runIn: string | null, runInWhy: string | null, requester: string, state: string,
  *   createdAt: number, expiresAt: number, ownedId: string | null, why: string | null, fetched: boolean,
  *   suggestion: { routeId: string | null, router: string, models: { model: string, source: string, rule: string | null, reason: string | null }[], pick: number | null } | null,
  *   suggesting: 'asking' | 'no-desk' | 'none' | 'failed' | 'ready',
@@ -149,7 +169,8 @@ const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
  *   dsh:<id> or dsh when it named none: its own word, never checked (the page says 自称, 未核实, and 未知
  *   for none). fetched: a done reply went to the agent port's pipe (whether the requester read it, unknown);
  *   only a done request is ever fetched. suggesting: where the suggestion stands (ready exactly when the
- *   suggestion is there, for a request still pending when it came).
+ *   suggestion is there, for a request still pending when it came). runIn: where a dispatch runs its session
+ *   (its cwd, resolved, inside a project root); null: in Orchestra's own work dir, and runInWhy says why.
  * @typedef {{
  *   approvalId: string, ownedId: string, kind: string, title: string, preview: string, tooLong: boolean, redactions: number,
  *   digest: string, risk: string, high: boolean, rev: number, canAccept: boolean, canText: boolean, deadline: number,
@@ -251,7 +272,7 @@ function checkTokens(c, v, at) {
  */
 export function validateOwnedList(x) {
   const c = checker();
-  const s = c.obj(x, '$', ['v', 'kind', 'rev', 'enabled', 'disabledWhy', 'brakeWhy', 'harnesses', 'owned', 'approvals', 'limits', 'requests', 'requestedGone']);
+  const s = c.obj(x, '$', ['v', 'kind', 'rev', 'enabled', 'disabledWhy', 'brakeWhy', 'harnesses', 'roots', 'owned', 'approvals', 'limits', 'requests', 'requestedGone']);
   if (s === null) return { ok: false, errors: c.errors };
   if (s.v !== OWNED_V) c.bad('$.v', `${JSON.stringify(s.v)}, not ${OWNED_V}`);
   if (s.kind !== 'owned-list') c.bad('$.kind', `${JSON.stringify(s.kind)}, not owned-list`);
@@ -268,11 +289,22 @@ export function validateOwnedList(x) {
     if (s.enabled === false && OWNED_ENUMS.harness.some((k) => h[k] === true)) c.bad('$.enabled', 'false, but a harness can start a session');
   }
 
+  // The project roots (--project-root): absolute paths, each once; none unless named.
+  const roots = c.arr(s.roots, '$.roots');
+  if (roots.length > OWNED_BOUNDS.roots) c.bad('$.roots', `${roots.length}, at most ${OWNED_BOUNDS.roots}`);
+  const rootKeys = new Set();
+  roots.forEach((r, i) => {
+    c.text(r, `$.roots[${i}]`, OWNED_BOUNDS.cwdBytes);
+    if (typeof r === 'string' && !ABS_PATH_RE.test(r)) c.bad(`$.roots[${i}]`, 'not an absolute path');
+    if (typeof r === 'string' && rootKeys.has(r.toLowerCase())) c.bad(`$.roots[${i}]`, 'listed twice');
+    if (typeof r === 'string') rootKeys.add(r.toLowerCase());
+  });
+
   /** @type {Map<unknown, Record<string, unknown>>} */
   const sessions = new Map();
   c.arr(s.owned, '$.owned').forEach((e, i) => {
     const at = `$.owned[${i}]`;
-    const o = c.obj(e, at, ['ownedId', 'harness', 'model', 'title', 'state', 'endReason', 'waiting', 'queued', 'tokens', 'lastSeq', 'createdAt', 'brake']);
+    const o = c.obj(e, at, ['ownedId', 'harness', 'model', 'title', 'state', 'endReason', 'waiting', 'queued', 'tokens', 'lastSeq', 'createdAt', 'brake', 'cwd']);
     if (o === null) return;
     c.re(o.ownedId, `${at}.ownedId`, OWNED_ID_RE, 'owned id');
     if (sessions.has(o.ownedId)) c.bad(`${at}.ownedId`, `${String(o.ownedId)} listed twice`);
@@ -296,6 +328,16 @@ export function validateOwnedList(x) {
     // Nothing of a session an earlier orchestrad left runs here: there is no tree to brake. An ended or
     // failed one may still be stopping (its child not closed yet), and the brake still reaches it.
     if (o.state === 'unknown' && o.brake === true) c.bad(`${at}.brake`, 'a session an earlier orchestrad left has no tree to brake');
+    // Where it works; null when not known (a session an earlier orchestrad left: the registry keeps no path).
+    if (o.cwd !== null) {
+      const w = c.obj(o.cwd, `${at}.cwd`, ['path', 'kind']);
+      if (w !== null) {
+        c.text(w.path, `${at}.cwd.path`, OWNED_BOUNDS.cwdBytes);
+        if (typeof w.path === 'string' && !ABS_PATH_RE.test(w.path)) c.bad(`${at}.cwd.path`, 'not an absolute path');
+        c.en(w.kind, `${at}.cwd.kind`, OWNED_ENUMS.cwdKind);
+        if (w.kind === 'project-root' && roots.length === 0) c.bad(`${at}.cwd.kind`, 'project-root, but no project root is listed');
+      }
+    }
   });
 
   /** @type {Map<unknown, Record<string, unknown>[]>} */
@@ -372,7 +414,7 @@ function checkRequests(c, v) {
   const ids = new Set();
   c.arr(v, '$.requests').forEach((e, i) => {
     const at = `$.requests[${i}]`;
-    const r = c.obj(e, at, ['requestId', 'harness', 'label', 'text', 'cwd', 'requester', 'state', 'createdAt', 'expiresAt', 'ownedId', 'why', 'fetched', 'suggestion', 'suggesting']);
+    const r = c.obj(e, at, ['requestId', 'harness', 'label', 'text', 'cwd', 'runIn', 'runInWhy', 'requester', 'state', 'createdAt', 'expiresAt', 'ownedId', 'why', 'fetched', 'suggestion', 'suggesting']);
     if (r === null) return;
     c.re(r.requestId, `${at}.requestId`, REQUEST_ID_RE, 'request id');
     if (ids.has(r.requestId)) c.bad(`${at}.requestId`, `${String(r.requestId)} listed twice`);
@@ -381,6 +423,13 @@ function checkRequests(c, v) {
     if (r.label !== null) c.text(r.label, `${at}.label`, OWNED_BOUNDS.requestLabelBytes);
     c.text(r.text, `${at}.text`, OWNED_BOUNDS.requestTextBytes);
     c.text(r.cwd, `${at}.cwd`, OWNED_BOUNDS.requestCwdBytes);
+    // Where its session runs: runIn (a path in a project root) or the work dir with why, exactly one of the two.
+    if (r.runIn !== null) {
+      c.text(r.runIn, `${at}.runIn`, OWNED_BOUNDS.cwdBytes);
+      if (typeof r.runIn === 'string' && !ABS_PATH_RE.test(r.runIn)) c.bad(`${at}.runIn`, 'not an absolute path');
+    }
+    if (r.runInWhy !== null) c.en(r.runInWhy, `${at}.runInWhy`, OWNED_ENUMS.runInWhy);
+    if ((r.runIn === null) === (r.runInWhy === null)) c.bad(`${at}.runInWhy`, 'set exactly when runIn is null');
     c.re(r.requester, `${at}.requester`, REQUESTER_RE, 'requester');
     c.en(r.state, `${at}.state`, OWNED_ENUMS.requestState);
     c.int(r.createdAt, `${at}.createdAt`);

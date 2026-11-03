@@ -9,7 +9,7 @@ import { frozen, frozenClass } from '../../shared/frozen.js';
 const win = path.win32;
 
 export type Milestone = 'M0' | 'M1' | 'M2' | 'M3' | 'M4' | 'M5' | 'M6';
-export type GateRootKind = HarnessRootKind | 'orchestra-home' | 'version-file' | 'pinned-file';
+export type GateRootKind = HarnessRootKind | 'orchestra-home' | 'version-file' | 'pinned-file' | 'project-root';
 export type ReadOp = 'read' | 'tail' | 'stat' | 'readdir';
 
 export type AllowRule = {
@@ -94,7 +94,16 @@ export const ALLOW_RULES: Readonly<Record<GateRootKind, readonly AllowRule[]>> =
   // A file orchestrad holds to a pinned sha256 (the Claude host's files and its SDK entry,
   // src/owned/claude-pins.ts): its own root, read whole, never listed.
   'pinned-file': [{ id: 'pinned file', re: /^$/, since: 'M0' }],
+  // A project root the person named (--project-root, orchestra app plan 项目根): nothing in it is ever
+  // read or listed. Only stat is allowed (STAT_ONLY below): whether a path in it is a directory.
+  'project-root': [],
 });
+
+/**
+ * Root kinds whose paths may be stat'ed and nothing else (no read, no tail, no readdir): orchestrad only
+ * learns whether a path there is a directory (a project root, or a cwd an agent request names inside one).
+ */
+export const STAT_ONLY: readonly GateRootKind[] = frozen(['project-root'] as GateRootKind[]);
 
 /** From which milestone stat/readdir are allowed inside a root of this kind; null = never. */
 export const LISTABLE: Readonly<Record<GateRootKind, Milestone | null>> = frozen({
@@ -108,6 +117,7 @@ export const LISTABLE: Readonly<Record<GateRootKind, Milestone | null>> = frozen
   'orchestra-home': 'M0',
   'version-file': 'M0',
   'pinned-file': null,
+  'project-root': null,
 });
 
 const ORDER: readonly Milestone[] = ['M0', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6'];
@@ -193,10 +203,12 @@ export type ReadGateConfig = {
   milestone?: Milestone;
   /** Test mode: everything outside these directories is denied before any fs call. */
   testDirs?: readonly string[];
+  /** Project roots the person named (--project-root): each its own root, stat only (STAT_ONLY). */
+  projectRoots?: readonly string[];
   io: ReadIo;
 };
 
-const CONFIG_KEYS = ['roots', 'versionFiles', 'pinnedFiles', 'orchestraHome', 'milestone', 'testDirs', 'io'] as const;
+const CONFIG_KEYS = ['roots', 'versionFiles', 'pinnedFiles', 'orchestraHome', 'milestone', 'testDirs', 'projectRoots', 'io'] as const;
 
 type GateRoot = { kind: GateRootKind; forms: string[] };
 
@@ -285,6 +297,7 @@ export class ReadGate {
     this.#own = [
       ...(cfg.versionFiles ?? []).filter(inTest).map((f) => ({ kind: 'version-file' as const, forms: canon(f, 'version file') })),
       ...(cfg.pinnedFiles ?? []).filter(inTest).map((f) => ({ kind: 'pinned-file' as const, forms: canon(f, 'pinned file') })),
+      ...(cfg.projectRoots ?? []).filter(inTest).map((f) => ({ kind: 'project-root' as const, forms: canon(f, 'project root') })),
       ...(cfg.orchestraHome !== undefined && inTest(cfg.orchestraHome)
         ? [{ kind: 'orchestra-home' as const, forms: canon(cfg.orchestraHome, 'ORCHESTRA_HOME') }]
         : []),
@@ -332,7 +345,10 @@ export class ReadGate {
     if (realDeny !== undefined) return deny({ allow: false, op, path: p, reason: 'denied-name', rule: realDeny.id });
 
     let ruleId: string;
-    if (op === 'stat' || op === 'readdir') {
+    if (STAT_ONLY.includes(best.kind)) {
+      if (op !== 'stat') return deny({ allow: false, op, path: p, reason: op === 'readdir' ? 'not-listable' : 'not-whitelisted', kind: best.kind });
+      ruleId = `stat:${best.kind}`;
+    } else if (op === 'stat' || op === 'readdir') {
       const since = LISTABLE[best.kind];
       if (since === null || !reached(since, this.milestone)) return deny({ allow: false, op, path: p, reason: 'not-listable', kind: best.kind });
       ruleId = `list:${best.kind}`;

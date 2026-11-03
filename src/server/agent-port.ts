@@ -1,4 +1,5 @@
 import { createServer } from 'node:net';
+import type { RunIn } from '../os/project-roots.ts';
 import type { Server, Socket } from 'node:net';
 import { createServer as createHttpServer } from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
@@ -188,10 +189,15 @@ export type AgentPortDeps = {
   requests: Requests;
   /**
    * Whether the cwd a requester names may be shown on a card: null when it may, else a reason code. The
-   * spawn gate's own table judges it (src/os/cwd.ts place: no data dir, harness root, ~/.ssh ...); the
-   * session still runs in ORCHESTRA_HOME\work\<id> whatever it named.
+   * spawn gate's own table judges it (src/os/cwd.ts place: no data dir, harness root, ~/.ssh ...).
    */
   judgeCwd(cwd: string): string | null;
+  /**
+   * Where a dispatched session for this cwd would run (orchestra app plan 项目根): in it when it lies in a
+   * project root the person named and passes the table (src/os/project-roots.ts placeRunIn), else null and
+   * why. Absent (no project roots, or the owned part off): it runs in ORCHESTRA_HOME\work\<id> whatever it named.
+   */
+  placeCwd?(cwd: string): RunIn;
   log: Log;
 };
 
@@ -338,7 +344,8 @@ export async function startAgentPort(deps: AgentPortDeps): Promise<AgentPortStar
         log.info('agent-request-refused', { why: 'cwd-forbidden', detail: cwdWhy });
         return reply(422, { error: 'cwd-forbidden' });
       }
-      const made = requests.create({ harness: b.harness, text: b.text, cwd: b.cwd, label: b.label ?? null, requester: { kind: 'dsh', sessionId: b.requester.sessionId } });
+      const at: RunIn = deps.placeCwd?.(b.cwd) ?? { runIn: null, why: 'no-roots' };
+      const made = requests.create({ harness: b.harness, text: b.text, cwd: b.cwd, label: b.label ?? null, requester: { kind: 'dsh', sessionId: b.requester.sessionId }, runIn: at.runIn, runInWhy: at.why });
       if (!made.ok) {
         log.info('agent-request-refused', { why: made.why });
         const status = made.why === 'stopped' ? 503 : made.why === 'text-too-long' || made.why === 'cwd-too-long' ? 422 : 429;

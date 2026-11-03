@@ -124,7 +124,9 @@
   <p class="dlg-p" data-slot="why"></p>
   <label class="dlg-l" for="nw-model" data-t="new.model"></label>
   <select id="nw-model" class="dlg-in" data-slot="model"></select>
-  <p class="dlg-p" data-t="new.cwd"></p>
+  <div data-slot="cwdBox" data-hide="1"><label class="dlg-l" for="nw-cwd" data-t="new.cwdLabel"></label>
+  <select id="nw-cwd" class="dlg-in" data-slot="cwdSel"></select></div>
+  <p class="dlg-p" data-slot="cwdNote"></p>
   <p class="dlg-p" data-slot="note"></p>
   <p class="dlg-msg" data-slot="msg" role="status"></p>
   <p class="acts"><button type="button" class="btn" data-act="dispatch" data-slot="go"></button><button type="button" class="btn" data-act="close" data-t="dlg.cancel"></button></p>

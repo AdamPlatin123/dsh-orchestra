@@ -109,9 +109,11 @@ test('a pending request is a card in GET /api/owned, with the desk\'s suggestion
   assert.equal(list.json.requests.length, 1);
   const r = list.json.requests[0];
   assert.deepEqual({ ...r, createdAt: 0, expiresAt: 0, suggestion: null }, {
-    requestId: made.request.requestId, harness: 'codex', label: null, text: ASK.text, cwd: ASK.cwd, requester: 'dsh:sess-1', state: 'pending',
+    requestId: made.request.requestId, harness: 'codex', label: null, text: ASK.text, cwd: ASK.cwd, runIn: null, runInWhy: 'no-roots', requester: 'dsh:sess-1', state: 'pending',
     createdAt: 0, expiresAt: 0, ownedId: null, why: null, fetched: false, suggestion: null, suggesting: 'ready',
   });
+  // No --project-root: no root listed, and the request runs in the work dir (the card says why).
+  assert.deepEqual(list.json.roots, []);
   assert.deepEqual(list.json.requestedGone, []);
   // The contract holds the new fields to what they mean.
   const bad = (f: (l: any) => void, why: string) => {
@@ -121,6 +123,11 @@ test('a pending request is a card in GET /api/owned, with the desk\'s suggestion
     assert.ok(!v.ok && v.errors.some((e) => e.includes(why)), `${why}: ${v.errors.join(' | ')}`);
   };
   bad((l) => { l.requests[0].fetched = true; }, 'never handed back');
+  bad((l) => { l.requests[0].runInWhy = null; }, 'set exactly when runIn is null');
+  bad((l) => { l.requests[0].runIn = 'D:\\work\\shop'; }, 'set exactly when runIn is null');
+  bad((l) => { l.requests[0].runInWhy = 'maybe'; }, 'runInWhy');
+  bad((l) => { l.roots = ['relative\\dir']; }, 'not an absolute path');
+  bad((l) => { l.roots = ['D:\\a', 'd:\\A']; }, 'listed twice');
   bad((l) => { l.requests[0].suggesting = 'asking'; }, 'but a suggestion is there');
   bad((l) => { l.requests[0].suggesting = 'maybe'; }, 'suggesting');
   bad((l) => { l.requestedGone = ['x']; }, 'requestedGone[0]');

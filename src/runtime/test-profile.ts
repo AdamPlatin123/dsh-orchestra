@@ -58,13 +58,17 @@ export type ProfileRefusal =
   | { reason: 'roots-dir-bad-path'; path: string; detail: PathRejectReason }
   | { reason: 'roots-dir-outside-frozen'; path: string; frozen: string }
   | { reason: 'bad-peek-port'; value: string }
-  | { reason: 'agent-port-without-owned' };
+  | { reason: 'agent-port-without-owned' }
+  | { reason: 'project-root-without-owned' }
+  | { reason: 'duplicate-project-root'; path: string }
+  | { reason: 'too-many-project-roots'; max: number };
 
 /**
  * `peekPort` is there only when --peek-port was given (the thin slice's peek page, src/server/http.ts);
- * `owned` only when --owned was (owned Codex sessions, orchestra app plan §2).
+ * `owned` only when --owned was (owned Codex sessions, orchestra app plan §2); `projectRoots` only when
+ * --project-root was, as given (working.ts checks each against the cwd table before anything starts).
  */
-export type ProfileParse = { ok: true; profile: Profile; peekPort?: number; owned?: true; agentPort?: true } | { ok: false; refusal: ProfileRefusal };
+export type ProfileParse = { ok: true; profile: Profile; peekPort?: number; owned?: true; agentPort?: true; projectRoots?: readonly string[] } | { ok: false; refusal: ProfileRefusal };
 
 export type ProfileDeps = {
   env: Readonly<Record<string, string | undefined>>;
@@ -105,13 +109,23 @@ const OWNED_FLAG = '--owned';
  * the agent request pipe; without it no agent can reach orchestrad at all, even with --owned.
  */
 const AGENT_PORT_FLAG = '--agent-port';
+/**
+ * --project-root <absolute dir> (orchestra app plan 项目根): either profile, any number of times up to
+ * PROJECT_ROOTS_MAX, and only with --owned. Each names a directory an owned session may be started in
+ * (or in a folder inside it). Here only the flag's shape is checked; working.ts holds each root to the
+ * cwd table (exists, a directory, no link, no protected place) and refuses the start otherwise.
+ */
+export const PROJECT_ROOT_FLAG = '--project-root';
+export const PROJECT_ROOTS_MAX = 16;
 
 /**
  * Parses orchestrad's own arguments. Anything unrecognized, repeated or out of place refuses the
  * start: the real profile accepts none; the test profile exactly
  * `--test-profile --test-dir <dir> [--test-root-pid <pid>]... [--roots-dir <dir>]`, in any order.
  * Either profile may add `--peek-port <port>` (the thin slice's peek page) and `--owned` (owned Codex
- * sessions over codex app-server, orchestra app plan §2: off unless asked for, in either profile).
+ * sessions over codex app-server, orchestra app plan §2: off unless asked for, in either profile), and
+ * with --owned `--project-root <dir>`, repeatable (where an owned session may work besides Orchestra's own
+ * work dir; none unless named).
  * The real profile also refuses when either environment (the injected one or the process's own)
  * carries TEST_RUNNER_MARKER, whatever its value: a test that starts orchestrad without arguments, or
  * calls start() with an environment that lacks the marker, would otherwise run it against the real
@@ -130,8 +144,19 @@ export function parseProfileArgs(argv: readonly string[], givenDeps: ProfileDeps
   let peekPort: number | null = null;
   let owned = false;
   let agentPort = false;
+  const projectRoots: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
+    if (arg === PROJECT_ROOT_FLAG) {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith('--')) return refuse({ reason: 'missing-value', flag: arg });
+      i++;
+      // The same spelling twice is a slip; two spellings of one dir are found once each is resolved (working.ts).
+      if (projectRoots.some((r) => pathKey(r) === pathKey(value))) return refuse({ reason: 'duplicate-project-root', path: value });
+      if (projectRoots.length >= PROJECT_ROOTS_MAX) return refuse({ reason: 'too-many-project-roots', max: PROJECT_ROOTS_MAX });
+      projectRoots.push(value);
+      continue;
+    }
     if (arg === PEEK_PORT_FLAG) {
       if (peekPort !== null) return refuse({ reason: 'duplicate-flag', flag: arg });
       const value = argv[i + 1];
@@ -175,7 +200,11 @@ export function parseProfileArgs(argv: readonly string[], givenDeps: ProfileDeps
     }
   }
   if (agentPort && !owned) return refuse({ reason: 'agent-port-without-owned' });
-  const peek = { ...(peekPort !== null ? { peekPort } : {}), ...(owned ? { owned: true as const } : {}), ...(agentPort ? { agentPort: true as const } : {}) };
+  if (projectRoots.length > 0 && !owned) return refuse({ reason: 'project-root-without-owned' });
+  const peek = {
+    ...(peekPort !== null ? { peekPort } : {}), ...(owned ? { owned: true as const } : {}), ...(agentPort ? { agentPort: true as const } : {}),
+    ...(projectRoots.length > 0 ? { projectRoots: Object.freeze([...projectRoots]) } : {}),
+  };
   if (!testProfile) {
     if (seenTestFlags.length > 0) return refuse({ reason: 'test-flag-without-test-profile', flag: seenTestFlags[0]! });
     if (envGet(deps.env, TEST_RUNNER_MARKER) !== undefined || envGet(deps.processEnv, TEST_RUNNER_MARKER) !== undefined) {
@@ -328,6 +357,12 @@ export function describeRefusal(r: ProfileRefusal): string {
       return `--peek-port needs a port from 1024 to 65535, got ${JSON.stringify(r.value)}`;
     case 'agent-port-without-owned':
       return '--agent-port only works with --owned (an agent request is dispatched as an owned session)';
+    case 'project-root-without-owned':
+      return '--project-root only works with --owned (a project root is where an owned session may work)';
+    case 'duplicate-project-root':
+      return `--project-root ${JSON.stringify(r.path)} given twice`;
+    case 'too-many-project-roots':
+      return `--project-root given more than ${r.max} times`;
   }
 }
 

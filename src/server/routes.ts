@@ -254,8 +254,8 @@ const message = text(OWNED_BODY_MAX_BYTES, 'message');
 const accepted = (extra: Record<string, Shape> = {}): Shape => obj({ actionId: uuid, accepted: konst(true), jseq, replayed: konst(true), ...extra }, ['replayed']);
 const OWNED_CHECKS: readonly CheckStep[] = ['auth', 'ui-only', 'actionId', 'dedup', 'own', 'execute'];
 const OWNED_TARGET_CHECKS: readonly CheckStep[] = ['auth', 'ui-only', 'actionId', 'dedup', 'item', 'own', 'execute'];
-/** The body fields a route may leave out: a retry's confirmGone, a new session's model, the suggestion it came from and the agent request it answers. */
-const OPTIONAL_BODY = ['confirmGone', 'model', 'routeId', 'requestId'];
+/** The body fields a route may leave out: a retry's confirmGone, a new session's model, the suggestion it came from, the agent request it answers and the project root it runs in. */
+const OPTIONAL_BODY = ['confirmGone', 'model', 'routeId', 'requestId', 'root'];
 /** An owned-session human route: the cookie and the controller token, a uuid actionId, the human record; never an inbox item. */
 const owned = (verb: HumanVerb, target: Route['target'], body: Record<string, Shape>, reply: Shape, own: ErrorCode[] = [], failures: ErrorCode[] = []): Route => ({
   method: 'POST', path: HUMAN_VERB_ROUTES[verb], auth: 'unlocked', human: verb, item: null, target,
@@ -362,11 +362,15 @@ export const ROUTES: readonly Route[] = Object.freeze([
   // routeId: the suggestion the person dispatched from (its RouteDecision goes into the same batch).
   // requestId (seat): the agent request this dispatch answers; its text and harness must be the card's
   // (request-mismatch), and it must still wait (request-gone). Its `agent-request` record joins the batch.
+  // root (orchestra app plan 项目根): one of the project roots GET /api/owned lists (--project-root); the
+  // session runs there. Any other path, or a root with a requestId (a request runs where its card said), is
+  // cwd-forbidden: the page offers the list, never a free path.
   owned(
     'owned-new', null, {
       text: message, harness: en(OWNED_HARNESSES), model: re(OWNED_MODEL_RE, 'model'), routeId: re(ROUTE_ID_RE, 'routeId'), requestId: re(AGENT_REQUEST_ID_RE, 'requestId'),
+      root: text(260, 'root-path'),
     }, accepted({ ownedId: id }),
-    ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command', 'request-gone', 'request-mismatch'], NEW_FAILS,
+    ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command', 'request-gone', 'request-mismatch', 'cwd-forbidden'], NEW_FAILS,
   ),
   // via: what became of it at once: handed to codex (turn/start, turn/steer) or waiting here (queued).
   owned('owned-message', 'owned', { text: message }, accepted({ uuid, queued: count, via: en(MESSAGE_VIA) }), ['text-too-long', 'slash-command', 'owned-ended', 'queue-full']),

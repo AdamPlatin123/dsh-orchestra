@@ -17,7 +17,7 @@ import type { TestProfile } from '../../src/runtime/test-profile.ts';
 import type { Requests, RequestsDeps } from '../../src/route/requests.ts';
 import { REQUEST_LIMITS, makeRequests } from '../../src/route/requests.ts';
 import { AGENT_AUTH, AGENT_PORT_LIMITS, AGENT_ROUTES, AGENT_TOKEN_FILE, agentPipeName, agentReplyMac, agentRequestMac, matchAgentRoute, startAgentPort } from '../../src/server/agent-port.ts';
-import type { AgentPort } from '../../src/server/agent-port.ts';
+import type { AgentPort, AgentPortDeps } from '../../src/server/agent-port.ts';
 import { ROUTES } from '../../src/server/routes.ts';
 import { endOwnedFor } from '../../src/server/owned-handlers.ts';
 import { captureConsole, minimalEnv, runWorkingInProcess } from '../helpers/start.ts';
@@ -30,7 +30,7 @@ import { put, withTmp } from '../helpers/tmp.ts';
 
 type Fx = { port: AgentPort; token: string; tokenFile: string; requests: Requests; clock: VirtualClock; ended: string[]; judged: string[]; logged: string[] };
 
-async function fixture(t: TestContext, over: Partial<RequestsDeps> = {}): Promise<Fx> {
+async function fixture(t: TestContext, over: Partial<RequestsDeps> = {}, portOver: Partial<AgentPortDeps> = {}): Promise<Fx> {
   const dir = withTmp(t);
   const clock = new VirtualClock({ mono: 1000, wall: 1_800_000_000_000 });
   const p = clock.port(null);
@@ -47,6 +47,7 @@ async function fixture(t: TestContext, over: Partial<RequestsDeps> = {}): Promis
     pipe: agentPipeName('test', `ut-${crypto.randomBytes(6).toString('hex')}`), tokenFile,
     writeToken: (f, text) => fs.writeFileSync(f, text, { flag: 'wx' }), removeToken: (f) => fs.rmSync(f),
     requests, judgeCwd: (cwd) => { judged.push(cwd); return /\\\.ssh(?:\\|$)/i.test(cwd) ? 'profile-.ssh' : null; }, log: new Log({ clock: p, sink: (l) => logged.push(l) }),
+    ...portOver,
   });
   assert.ok(started.ok, JSON.stringify(started));
   if (!started.ok) throw new Error('no port');
@@ -406,4 +407,30 @@ test('the composition root: --owned --agent-port with the page opens the pipe an
   } finally {
     await b.o.stop();
   }
+});
+
+test('project roots: the port asks where the session would run (placeCwd) and the request keeps it; without placeCwd it runs in the work dir (no-roots)', async (t) => {
+  const placed: string[] = [];
+  const fx = await fixture(t, {}, {
+    placeCwd: (cwd) => {
+      placed.push(cwd);
+      return cwd === 'D:\\work\\shop' ? { runIn: 'D:\\work\\shop', why: null } : { runIn: null, why: 'outside-roots' };
+    },
+  });
+  const a = await submit(fx, ASK);
+  assert.equal(a.status, 200, JSON.stringify(a.json));
+  assert.deepEqual(Object.keys(a.json), ['requestId', 'state', 'expiresAt', 'withdrawKey'], 'the requester is told nothing more');
+  const ra = fx.requests.get(a.json.requestId)!;
+  assert.deepEqual([ra.runIn, ra.runInWhy], ['D:\\work\\shop', null]);
+  const b = await submit(fx, { ...ASK, cwd: 'D:\\elsewhere' });
+  const rb = fx.requests.get(b.json.requestId)!;
+  assert.deepEqual([rb.runIn, rb.runInWhy], [null, 'outside-roots']);
+  assert.deepEqual(placed, ['D:\\work\\shop', 'D:\\elsewhere']);
+  // A protected cwd is refused before anyone asks where it would run.
+  assert.deepEqual((await submit(fx, { ...ASK, cwd: 'C:\\Users\\x\\.ssh' })).json, { error: 'cwd-forbidden' });
+  assert.equal(placed.length, 2);
+  const plain = await fixture(t);
+  const c = await submit(plain, ASK);
+  const rc = plain.requests.get(c.json.requestId)!;
+  assert.deepEqual([rc.runIn, rc.runInWhy], [null, 'no-roots']);
 });

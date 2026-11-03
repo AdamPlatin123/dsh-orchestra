@@ -139,15 +139,19 @@ export class CodexOwned {
     return [...this.#sessions.values()].filter((s) => !isOver(s.state)).length;
   }
 
-  /** A new session; `text` (with the uuid of its human record) is its first message, `title` (the dispatch desk's) names it in place of that message's first line. The model is checked before anything is made. */
-  create(req: { model?: string; text?: string; uuid?: string; title?: string } = {}): NewOwned {
+  /**
+   * A new session; `text` (with the uuid of its human record) is its first message, `title` (the dispatch desk's) names it in place of that message's first line.
+   * `cwd`: a project root (or a folder in one) the composition root let through (--project-root); absent, the session gets its own ORCHESTRA_HOME\work\<id>.
+   * The spawn gate holds either to its cwd table again. The model is checked before anything is made.
+   */
+  create(req: { model?: string; text?: string; uuid?: string; title?: string; cwd?: string } = {}): NewOwned {
     const model = req.model ?? DEFAULT_CODEX_MODEL;
     if (!isOwnedModel(model)) return { ok: false, reason: 'model-refused', detail: String(model) };
     if (this.full()) return { ok: false, reason: 'owned-limit', detail: `${this.maxActive} running` };
     const ownedId = crypto.randomBytes(10).toString('hex');
     let cwd: string;
     try {
-      cwd = this.#opts.makeWorkDir(ownedId);
+      cwd = req.cwd ?? this.#opts.makeWorkDir(ownedId);
     } catch (e) {
       return { ok: false, reason: 'cwd-failed', detail: e instanceof Error ? e.message : String(e) };
     }

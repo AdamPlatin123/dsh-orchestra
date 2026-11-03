@@ -14,9 +14,9 @@ const win = path.win32;
 //     composition root names (r4 §5.3: the Orchestra data dir, every DSH_HOME, every CLAUDE_CONFIG_DIR).
 //     A cwd is refused when it lies inside a table entry or contains one, so a parent of a protected
 //     directory (C:\Users, the folder holding this repo) is refused too.
-//  2. an allow list of roots, handed in at construction. Which roots is an open decision (the design's
-//     "0.2 only <test dir>\work\" versus a wider real-profile scope), so the policy only takes the list;
-//     an empty list allows nothing.
+//  2. an allow list of roots, handed in at construction: the owned work root, and the project roots the
+//     person named at startup (--project-root, orchestra app plan 项目根; none unless named). An empty list
+//     allows nothing.
 // The cwd must exist and be its own realpath: no junction or link anywhere on it.
 //
 // One exemption (orchestra app plan §2): the owned sessions' work root, ORCHESTRA_HOME\work, which
@@ -26,6 +26,12 @@ const win = path.win32;
 // applies to it, and nowhere else is either row relaxed. The policy itself holds the exemption to that
 // one directory: the work root must be named `work` (src/owned/codex-home.ts OWNED_DIRS.work) and sit
 // directly in one of protectedDirs (the data dir), else the constructor throws.
+//
+// Project roots (--project-root): each is an allowed root, and the constructor holds each to the table
+// itself (rootHit): no row may hit it, or the policy is not made. In the test profile (spec.testDir) a
+// project root must lie strictly inside the test dir, and inside one the AppData row does not apply (the
+// test dir sits in %TEMP%, below %LOCALAPPDATA%, as the work root's exemption says); every other row still
+// does. The real profile has no such exemption: a project root in AppData (%TEMP% included) is refused.
 //
 // place() reads a path an owned session's approval names (a file it changes, a root it asks to write
 // under, a command's cwd) against the same table: what the gate would refuse as a cwd there, an owned
@@ -66,6 +72,10 @@ export type CwdPolicySpec = {
   repoRoots?: readonly string[];
   /** The owned sessions' work root (ORCHESTRA_HOME\work); one of allowedRoots. See the exemption above. */
   ownedWorkRoot?: string;
+  /** Project roots the person named (--project-root): allowed roots too, each held to the table (rootHit) at construction. */
+  projectRoots?: readonly string[];
+  /** The test profile's test dir: a project root must lie strictly inside it, and the AppData row does not apply there. */
+  testDir?: string;
 };
 
 /**
@@ -104,11 +114,15 @@ export class CwdPolicy {
   /** The work root in both forms, and its parent (the data dir) keyed in both forms; empty without one. */
   readonly #work: readonly string[];
   readonly #workParents: readonly string[];
+  /** The test dir in both forms (test profile), else empty; the project roots, canonical. */
+  readonly #testDir: readonly string[];
+  readonly #projects: readonly string[];
 
   constructor(input: CwdPolicyInput) {
     const { spec, env, systemRoot, realpath } = ownFields(input, ['spec', 'env', 'systemRoot', 'realpath'] as const);
     if (typeof realpath !== 'function') throw new Error('cwd policy: realpath is required, there is no default');
-    const s = ownFields(spec, ['allowedRoots', 'protectedDirs', 'userHome', 'repoRoots', 'ownedWorkRoot'] as const);
+    const s = ownFields(spec, ['allowedRoots', 'protectedDirs', 'userHome', 'repoRoots', 'ownedWorkRoot', 'projectRoots', 'testDir'] as const);
+    if (s.projectRoots !== undefined && !Array.isArray(s.projectRoots)) throw new Error('cwd policy: projectRoots must be a list');
     if (s.repoRoots !== undefined && !Array.isArray(s.repoRoots)) throw new Error('cwd policy: repoRoots must be a list');
     if (!Array.isArray(s.allowedRoots)) throw new Error('cwd policy: allowedRoots is required (an empty list allows nothing)');
     if (!Array.isArray(s.protectedDirs)) throw new Error('cwd policy: protectedDirs is required (r4 §5.3: data dir, DSH_HOME, CLAUDE_CONFIG_DIR)');
@@ -152,11 +166,31 @@ export class CwdPolicy {
     for (const r of s.repoRoots ?? []) add('tree', 'repo', mustPath(r, 'repo root'));
     for (const d of s.protectedDirs) add('tree', 'protected', mustPath(d, 'protected dir'));
     this.#table = Object.freeze(table.map((e) => Object.freeze(e)));
-    this.#allowed = Object.freeze(s.allowedRoots.map((r) => {
+    this.#realpath = realpath;
+    if (s.testDir !== undefined) {
+      const lexical = trimSep(mustPath(s.testDir, 'test dir'));
+      this.#testDir = Object.freeze([...new Set([lexical, trimSep(canonicalize(lexical, realpath))])]);
+    } else {
+      this.#testDir = Object.freeze([]);
+    }
+    // #hit reads #projects (and #work) below: set before any rootHit runs.
+    this.#projects = Object.freeze([]);
+    this.#work = Object.freeze([]);
+    this.#workParents = Object.freeze([]);
+    // A project root is its own realpath (no link on it) and no row hits it, or no policy is made.
+    const projects = (s.projectRoots ?? []).map((r) => {
+      const lexical = trimSep(mustPath(r, 'project root'));
+      const real = trimSep(canonicalize(lexical, realpath));
+      if (pathKey(real) !== pathKey(lexical)) throw new Error(`cwd policy: a project root is behind a link (${real}): ${lexical}`);
+      const hit = this.rootHit(lexical);
+      if (hit !== null) throw new Error(`cwd policy: a project root is refused (${hit}): ${lexical}`);
+      return lexical;
+    });
+    this.#projects = Object.freeze(projects);
+    this.#allowed = Object.freeze([...s.allowedRoots.map((r) => {
       const lexical = mustPath(r, 'allowed root');
       return trimSep(canonicalize(lexical, realpath));
-    }));
-    this.#realpath = realpath;
+    }), ...projects]);
     if (s.ownedWorkRoot !== undefined) {
       const lexical = trimSep(mustPath(s.ownedWorkRoot, 'owned work root'));
       if (lexical.length === 3) throw new Error(`cwd policy: the owned work root is a drive root: ${lexical}`);
@@ -178,6 +212,27 @@ export class CwdPolicy {
   /** The rejection table, label and path per entry (for tests and diagnostics). */
   table(): readonly { kind: 'tree' | 'self'; label: string; path: string }[] {
     return this.#table.map((e) => ({ ...e }));
+  }
+
+  /** The project roots this policy allows (canonical), in the order named. */
+  projectRoots(): readonly string[] {
+    return this.#projects;
+  }
+
+  /**
+   * Why `p` may not be a project root, as the table says (the row's label), or null: a drive root, a row
+   * that hits it or that it contains (the profile itself, AppData, the system dirs, the repository and
+   * its parents, the data dir, a harness root), and in the test profile anything not strictly inside the
+   * test dir (outside-test-dir). `p` must be a plain absolute path (bad-path otherwise); links are the
+   * caller's to refuse (its realpath must be itself). Inside the test dir the AppData row does not apply.
+   */
+  rootHit(p: string): string | null {
+    const c = checkPath(p);
+    if (!c.ok) return `bad-path:${c.reason}`;
+    const q = trimSep(c.path);
+    if (q.length === 3) return 'drive-root';
+    if (this.#testDir.length > 0 && !this.#testDir.some((d) => isWithin(q, d) && pathKey(q) !== pathKey(d))) return 'outside-test-dir';
+    return this.#hit(q, this.#testDir.length > 0);
   }
 
   check(cwd: string): CwdVerdict {
@@ -217,7 +272,8 @@ export class CwdPolicy {
     return { real, hit: this.#hit(c.path) ?? this.#hit(real) };
   }
 
-  #hit(p: string): string | null {
+  /** The row `p` hits, or null. `inProject`: p is (inside) a test-profile project root, where the AppData row does not apply. */
+  #hit(p: string, inProject: boolean = this.#testDir.length > 0 && this.#projects.some((r) => isWithin(p, r))): string | null {
     const top = p.slice(3).split('\\')[0]!;
     if (PROGRAM_FILES_TOP.test(top)) return 'program-files';
     const inWork = this.#work.some((w) => isWithin(p, w));
@@ -225,6 +281,7 @@ export class CwdPolicy {
       if (isWithin(e.path, p)) return e.label;
       if (e.kind === 'tree' && isWithin(p, e.path)) {
         if (inWork && this.#exempt(e)) continue;
+        if (inProject && e.label === 'user-profile\\AppData') continue;
         return e.label;
       }
     }

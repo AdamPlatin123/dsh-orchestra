@@ -151,6 +151,40 @@
   - `integrations/dsh-seat/README.md` 加了「装进你日常用的 DSH profile」一节，由用户本人决定和动手（D11、Q5a）。
   - `package.json` 删掉 `build:procguard`：它指向的 `scripts/build-procguard.ts` 从来不存在（M0 计划第 1218 行列过，没写）。procguard 没有单独的编译步骤，由 orchestrad 每次带 `--owned` 启动时自己编（`src/os/procguard.ts` 的 `ensureProcguard`，系统 csc，产物进数据目录），所以没有作用一致的东西可以指向。改了 `native/procguard/ProcGuard.cs` 之后要跑的是 `node scripts/pin-procguard.ts`（重写 `src/os/procguard-pins.ts` 里钉住的源码 sha256），它是钉校验值，不是编译，所以没把它改名顶替进去。
 
+### 项目根（--project-root）
+
+2026-11-03 加。以前自有会话（orchestrad 自己拉起并驱动的 Codex / Claude 会话）只能在 orchestrad 自建的 `ORCHESTRA_HOME\work\<id>` 里跑，碰不到主人真正的项目；DSH 经 seat（DSH 会话向 orchestrad 请求派一个自有会话的通道）传来的 `cwd` 只显示在卡片上。现在主人可以在启动时点名项目根，全部是 opt-in：不带这个参数，行为和以前一样（有反向断言的测试）。
+
+**依据的条文**（以 r4 `docs/specs/2026-10-27-dsh-orchestra-design-r4.md` 为准）：
+- r4 §5.3「数据目录」：私有 DSH home 和私有 `CODEX_HOME` 都在 `~/.orchestra` 下，并且必须在所有项目根目录之外；乐手的 cwd 如果位于任何 `DSH_HOME`、`CLAUDE_CONFIG_DIR` 或 `~/.orchestra` 之内，一律拒绝。→ 项目根先过 cwd 拒绝表（数据目录、每个 harness 根都是表里的「受保护」行；落在里面或把它们包在里面的根都拒）。
+- r4 §5.3「零写入是持续的不变量」和 §5.2 组件表「写围栏 / 读白名单」一行：所有写只经一个 fs 模块，默认只允许 `~/.orchestra`。→ orchestrad 自己不在项目根里建目录、不写文件；它只用一个只能 stat 的读闸（`project-root` 根类型：只回答「这个路径是不是目录」，不读、不列目录）。写项目文件的是会话子进程，每次写都要人批准。
+- r4 D4（每个自有子进程宿主在自己的嵌套 kill-on-close Job 里，由 procguard 拉起）：不变。项目根里的会话照样经 procguard 起在自己的 Job 里；live-smoke 实测会话结束后 Job 里 0 个进程存活。
+- r4 D8（审批、拍板、刹车只有人能做，超时即拒；人类动作只挂在需要配对 cookie 的 UI 上）：派出仍只有人在配对页上点。页面只能从启动时放行的根里选，不收任意路径；seat 请求的 `cwd` 只决定「人点派出后在哪里跑」，agent 不能自己派出，也不能指定根。
+- r4 §10.9：高风险工具类（shell、网络、受保护路径、cwd 之外的写入）要键入确认或长按确认。→ 会话的 cwd 换成项目根后，「cwd 之外」就是项目根之外；审批卡的高风险判断沿用现有代码（cwd 外的路径是 `protected` 风险，要按住或键入）。
+- r4 §5.3 渲染规则 2：cwd 路径一律用 `textContent` 渲染。→ 页面上的根、会话工作目录都走现有的 textContent 描述器。
+- r4 §11.7 新建乐手向导「项目 → harness → 权限预设 → 人设模板 → 目录或 worktree」：派活台多出的「工作目录」选择对应其中「目录」一步（只是类比：向导是 M1 的乐手模型，这里是派一个自有会话）。
+- r4 §6.1 Project 实体有 `roots[]`（cwd 前缀、worktree）。这次没做 Project 实体，只是启动参数。
+- spawn 闸（只经 `src/os/spawn.ts` 起子进程、cwd 由闸自己的 `CwdPolicy` 判）：r4 里没找到这条，出处是 `docs/plans/2026-11-02-alpha-0.2-slice-design.md` §2.1 和 `src/os/cwd.ts`、`src/os/spawn.ts` 的注释。项目根只是加进闸的允许根列表，闸在每次起子进程时照旧再判一次。
+
+**做了什么**：
+- 启动参数 `--project-root <绝对路径>`，可以给多次（最多 16 个），只能和 `--owned` 一起用（`src/runtime/test-profile.ts`）。每个根在拿锁之前检查（`src/os/project-roots.ts` `checkProjectRoots`，`src/runtime/working.ts`）：普通绝对路径、不是盘符根、过 cwd 拒绝表（用户目录本身、`AppData`、`.ssh` 等、系统目录、Program Files、orchestra 仓库及主检出和它们的上级、数据目录、harness 根）、存在、realpath 等于自己（路径上没有连接点、链接、8.3 短名）、是目录、换个写法也不重复。第一个不合格的根让 orchestrad 拒绝启动（退出码 24，和参数错误相同），控制台写明哪个根、为什么；什么都不建、不拿锁。合格的根打印一行「project roots for owned sessions: …」，并记进日志。
+- 测试 profile：拒绝表本来就把 `%TEMP%`（在 `%LOCALAPPDATA%` 下）当作 AppData 拒绝。做法照搬工作根的例外：测试 profile 下项目根必须严格位于测试目录里（测试目录本身装着数据目录，所以它本身也会被拒），并且只在项目根里面不按 AppData 那一行拒，其他行照旧。真实 profile 没有这个例外，`%TEMP%` 下的根会被拒。例外由 `CwdPolicy` 自己持有（`spec.testDir` + `spec.projectRoots`），构造时每个根再过一次表，不合格就不构造。
+- 派活台：多一个「工作目录」选择，默认「Orchestra 自建的工作目录」，其余选项是放行的根，没有自由输入。选了根时说明按 harness 写：Codex「经你批准它能改这个目录里的文件；Codex 在 Windows 上的沙箱只读（`codex-session.ts` 请求 `workspace-write`，Windows 上回成 `readOnly`，见上文「已实测」），所以它每次写文件、跑命令仍会先来问你」；Claude「读、查找这个目录里的文件不问你（host 对 cwd 内的 Read/Glob/Grep 走 CLI 默认），写文件、跑命令每次先来问你」。没放行任何根时选择框不显示，说明里告诉怎么用 `--project-root`。`POST /api/owned/new` 多一个可选的 `root`，必须正好是列表里的一个根（不分大小写），否则 `cwd-forbidden`；和 `requestId` 一起给也是 `cwd-forbidden`。
+- seat 请求：请求进来时（`src/server/agent-port.ts` `placeCwd`），`cwd` 落在某个根里（根本身或子目录，规范化后比较、不分大小写）、DSH 写的路径里没有 `..`、realpath 等于自己（防链接逃逸）、过拒绝表、是目录，就记下 `runIn`；卡片写「这在你放行的项目根里，派出后在 <cwd> 里跑」，派出时会话就在那里跑。否则 `runIn` 为空、`runInWhy` 写原因（没放行根、不在根里、有 `..`、有链接、不存在、不是目录、受保护、路径被脱敏器改过），会话照旧在自建目录里跑，卡片照实写原因。
+- 会话页写「工作目录 <路径>（你放行的项目根 / Orchestra 自建）」，重启前开的会话写「工作目录未知」。塔表里自有会话那一行在解锁后多一段「在 <文件夹名>」（数据来自解锁后的 owned 列表；塔表快照本身不带路径，解锁前看不到）。
+- 契约：`GET /api/owned` 加 `roots`，每个会话加 `cwd {path, kind}`（或 null），每个请求加 `runIn`、`runInWhy`；`shared/owned-contract.js` 的校验器管这些字段（`runIn` 和 `runInWhy` 恰好一个为空，根不重复、是绝对路径）。契约冻结测试同步更新。
+- journal：RouteDecision（`route`）结构没动，也没加新 kind。从派活台选的根在请求 body 里，`human` 记录的 `requestDigest` 已经覆盖；seat 请求的落点只在日志 `owned-started`（`projectRoot: true, cwd`）里。
+
+**实测**（2026-11-03，本机，测试 profile，一次）：`scripts/live-smoke.ts --harness codex --project-root`（脚本新加的参数：在测试目录下建 `proj` 当项目根，用 `--project-root` 启动，按列表里的根派出）。列表列出 `<testDir>\proj`；会话 starting → running → idle，命令审批 2 次（shell，都由脚本代人允许）；`smoke.txt` 写在项目根里、内容正确；会话自建工作目录没有建；列表里会话的 `cwd.kind` 是 `project-root`；结束后 Job 里 0 个进程存活，orchestrad 经 stdin-eof 停机、退出码 0，残留进程 0；测试目录已删。
+
+**没做、未验证的**：
+- 真实 profile 下带 `--project-root` 启动、配对和走查：未验证（代-2：真实 profile 只由用户在可见控制台里启动）。
+- Claude 会话在项目根里跑：未实测（只跑了 Codex）；Claude host 对 cwd 内读不问人，这在真实项目里意味着它能不经批准读整个项目，页面已写明。
+- r4 §7.4 列的项目内受保护路径（`.claude/**`、`.mcp.json`、`.git/hooks/**`、`package.json` 的 scripts 等，写入要键入确认）：现有代码没有这些行，项目根里写这些文件和写普通文件一样是一张要点的卡（Codex 每次写都问，仍需人点，D8 不变），没有额外的键入确认。
+- r4 §10.8 双写者告警：两个会话放在同一个根里可以同时改文件，没有告警。
+- 计划第 2 节原写「真实 profile 下允许用户在设置里登记的项目根」：这次是启动参数，没有设置页；改根要重启 orchestrad。
+- `orchestra.cmd` 没有参数说明，没改；`docs/quickstart.md` 留给另一个 agent 补。
+
 ### 5. 界面：塔表
 - 首页 `/`：顶栏（计数即筛选、刹车）、「等你」钉栏（按剩余时间）、跨项目树表（你 → agent → subagent，同一行格式，缩进表层级，子树小框 `子·错·等`）、右栏详情、底部「发给 → X」输入框和停止键。
 - agent 页 `/agent/<id>`：左这一枝、中对话、右选中的 subagent。

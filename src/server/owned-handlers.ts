@@ -12,6 +12,7 @@ import { requesterName } from '../route/requests.ts';
 import type { Rec } from '../store/journal.ts';
 import type { Log } from '../runtime/log.ts';
 import { canonicalDigest } from '../store/canonical-json.ts';
+import { isWithin, pathKey } from '../fs/paths.ts';
 import type { OwnedCall, OwnedHandlers, OwnedOutcome } from './owned.ts';
 import { OWNED_V } from '../../shared/owned-contract.js';
 import { makeOwnedHandlers } from './owned.ts';
@@ -24,8 +25,12 @@ import { makeOwnedHandlers } from './owned.ts';
 //
 //   POST /api/route/suggest             {text}: the dispatch desk's "Route to?" card (src/route/desk.ts):
 //                                       the rules, then the router model; it starts nothing, writes nothing.
-//   POST /api/owned/new                 {text, harness, model?, routeId?}: a new session on codex (app-server)
+//   POST /api/owned/new                 {text, harness, model?, routeId?, root?}: a new session on codex (app-server)
 //                                       or claude (the 0.2 host); a harness that is off is owned-disabled.
+//                                       root (orchestra app plan 项目根): one of the project roots named at
+//                                       startup (--project-root), exactly as GET /api/owned lists it; the session
+//                                       runs there instead of its own ORCHESTRA_HOME\work\<id>. Any other path,
+//                                       or a root with a requestId, is cwd-forbidden (no free path is taken).
 //                                       A RouteDecision (mode manual, r4 §9.5) joins the batch of the human
 //                                       records on every dispatch: with the routeId of a suggestion for this
 //                                       very sentence it names that suggestion's candidates (and the session
@@ -53,7 +58,9 @@ import { makeOwnedHandlers } from './owned.ts';
 //   POST /api/owned/new + requestId     seat: you dispatch an agent request: the text and harness must be the
 //                                       card's (request-mismatch) and it must still wait (request-gone); the
 //                                       session is bound to the request, and an `agent-request` record
-//                                       (dispatched, naming the RouteDecision) joins the batch.
+//                                       (dispatched, naming the RouteDecision) joins the batch. It runs where the
+//                                       card said: the request's runIn (its cwd, inside a project root), else
+//                                       its own ORCHESTRA_HOME\work\<id>; the spawn gate holds either to its table.
 //   GET  /api/owned                     OwnedList (shared/owned-contract.js).
 //   GET  /api/owned/:id/feed?after=     OwnedFeed.
 // POST /api/owned/:id/retry and the import routes keep no handler (501): an owned Codex session is not
@@ -74,6 +81,8 @@ export type OwnedRoutesDeps = {
   requests?: Requests | null;
   /** The limit of running sessions both harnesses share (codex-owned.ts OWNED_POOL_MAX); absent: each manager's own, summed. */
   maxOwned?: number;
+  /** The project roots named at startup (--project-root, checked), canonical; absent or empty: none, every session runs in the work dir. */
+  projectRoots?: readonly string[];
   /**
    * Why a new session's tree runs without a Job of its own, so it has no brake, or why the brake cannot
    * report what it did (procguard-resident-gone), or null when every session's brake works (working.ts:
@@ -113,7 +122,7 @@ function feedEntry(e: FeedEvent) {
 export function requestEntry(r: AgentRequest) {
   const g = r.suggestion;
   return {
-    requestId: r.requestId, harness: r.harness, label: r.label, text: r.text, cwd: r.cwd, requester: requesterName(r.requester), state: r.state,
+    requestId: r.requestId, harness: r.harness, label: r.label, text: r.text, cwd: r.cwd, runIn: r.runIn, runInWhy: r.runInWhy, requester: requesterName(r.requester), state: r.state,
     createdAt: r.createdWall, expiresAt: r.expiresWall, ownedId: r.ownedId, why: r.why, fetched: r.fetched,
     suggestion: g === null ? null : { routeId: g.routeId, router: g.router, models: g.models.map((m) => ({ ...m })), pick: g.pick },
     suggesting: r.suggesting,
@@ -144,8 +153,15 @@ export function endOwnedFor(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude'>, own
 }
 
 /** GET /api/owned's reply: every session the manager keeps, the open approvals in queue order, the limits, the agent requests. */
-export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'codexOff' | 'restored' | 'maxOwned' | 'brakeWhy' | 'requests'>) {
+/** Where a session works, as the list says it: a project root (or a folder in one) or its own work dir; null when not known (from before a restart). */
+export function cwdEntry(cwd: string, roots: readonly string[]): { path: string; kind: 'project-root' | 'work' } | null {
+  if (cwd === '') return null;
+  return { path: cwd, kind: roots.some((r) => isWithin(cwd, r)) ? 'project-root' : 'work' };
+}
+
+export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'codexOff' | 'restored' | 'maxOwned' | 'brakeWhy' | 'requests' | 'projectRoots'>) {
   const { codex, claude } = deps;
+  const roots = deps.projectRoots ?? [];
   const queue = queueOf(deps);
   const approvals = queue === null ? [] : queue.list();
   const sessions: { s: AnySession; harness: 'codex' | 'claude'; meta: { title: string; createdAt: number } | null }[] = [
@@ -161,7 +177,7 @@ export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'code
       ownedId: s.ownedId, harness, model: s.model, title: meta?.title ?? '', state: s.state, endReason: s.endReason,
       waiting: first === null ? null : first.approvalId, queued: FINAL(s) ? 0 : s.queued, tokens: s.tokens === null ? null : { ...s.tokens },
       // An ending session whose child has not closed yet can still be braked (its stop order may hang).
-      lastSeq: s.feed.lastSeq, createdAt: meta?.createdAt ?? 0, brake: s.state !== 'unknown' && s.jobbed,
+      lastSeq: s.feed.lastSeq, createdAt: meta?.createdAt ?? 0, brake: s.state !== 'unknown' && s.jobbed, cwd: cwdEntry(s.cwd, roots),
     };
   });
   const enabled = ownedEnabled(deps);
@@ -169,6 +185,7 @@ export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'code
     v: OWNED_V, kind: 'owned-list', rev: queue === null ? 0 : queue.rev, enabled, disabledWhy: enabled ? null : deps.codexOff,
     brakeWhy: deps.brakeWhy === undefined ? 'not-asked' : typeof deps.brakeWhy === 'function' ? deps.brakeWhy() : deps.brakeWhy,
     harnesses: { codex: codex !== null, claude: claude !== null },
+    roots: [...roots],
     owned, approvals: approvals.map(approvalEntry),
     limits: { maxOwned: deps.maxOwned ?? (codex === null ? 0 : codex.maxActive) + (claude === null ? 0 : claude.maxActive), active: sessions.filter(({ s }) => !FINAL(s)).length },
     requests: (deps.requests?.list() ?? []).map(requestEntry),
@@ -226,6 +243,15 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
       if (!c.ok) return refuse(c.why);
       asked = c.request;
     }
+    // Where it runs: a project root the dialog offered (exactly one of the list), the agent request's runIn, or its own work dir.
+    let cwd: string | undefined;
+    if (typeof body.root === 'string') {
+      const root = (deps.projectRoots ?? []).find((r) => pathKey(r) === pathKey(body.root as string));
+      if (root === undefined || asked !== null) return refuse('cwd-forbidden');
+      cwd = root;
+    } else if (asked !== null && asked.runIn !== null) {
+      cwd = asked.runIn;
+    }
     const routeId = typeof body.routeId === 'string' ? body.routeId : null;
     const kept = routeId === null || desk === null ? null : desk.take(routeId, text);
     // A suggestion that aged out, or was made for another sentence: the session starts all the same, its decision a manual one.
@@ -233,7 +259,7 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     // The router model's title names the session only when the person took the candidate it chose; else the sentence's first line does.
     const title = kept === null || desk === null || typeof body.model !== 'string' ? null : desk.titleFor(kept, harness, body.model);
     const made = manager.create({
-      text, uuid: call.actionId!, ...(typeof body.model === 'string' ? { model: body.model } : {}), ...(title === null ? {} : { title }),
+      text, uuid: call.actionId!, ...(typeof body.model === 'string' ? { model: body.model } : {}), ...(title === null ? {} : { title }), ...(cwd === undefined ? {} : { cwd }),
     });
     if (!made.ok) {
       if (made.reason === 'owned-limit') return refuse('owned-limit');
@@ -242,7 +268,7 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
       // (model-refused: owned-disabled for that harness and model). What is left is the child or its dirs.
       return refuse(made.reason === 'model-refused' ? 'owned-disabled' : 'spawn-failed');
     }
-    log.info('owned-started', { harness, ownedId: made.ownedId, model: made.session.model });
+    log.info('owned-started', { harness, ownedId: made.ownedId, model: made.session.model, ...(cwd === undefined ? {} : { projectRoot: true, cwd }) });
     // The session runs the request from now on (bound in the same turn as the claim: no second dispatch gets it).
     if (asked !== null) {
       requests!.bind(asked.requestId, made.ownedId);

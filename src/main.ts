@@ -266,5 +266,7 @@ export async function start(f: Features, fence: FenceStatus, given: BootPorts, o
     ...(parsed.owned === true ? { owned: true as const, procguard: true as const } : {}),
     // seat: the agent request pipe, only when asked for (and only with --owned: test-profile.ts refuses it alone).
     ...(parsed.agentPort === true ? { agentPort: true as const } : {}),
+    // --project-root (only with --owned: test-profile.ts refuses it alone); working.ts checks each before the lock.
+    ...(parsed.projectRoots !== undefined ? { projectRoots: parsed.projectRoots } : {}),
   });
 }

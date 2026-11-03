@@ -150,7 +150,7 @@ function render() {
     text: val('nw-text'), harness: val('nw-harness') || 'codex', model: val('nw-model'), asking: state.asking,
     enabled: state.owned?.enabled !== false, maxOwned: state.owned?.limits?.maxOwned,
   };
-  dom.paintId('new-dlg', { slots: { ...describeNew(state.owned, nowDesk.harness, state.busy), ...describeDesk(state.desk, nowDesk) } });
+  dom.paintId('new-dlg', { slots: { ...describeNew(state.owned, nowDesk.harness, state.busy, val('nw-cwd')), ...describeDesk(state.desk, nowDesk) } });
   if (snap === null) return;
   paintTitle(snap);
 
@@ -190,6 +190,8 @@ function render() {
   dom.paintId('pins', withRequests(describePins(snap, { sel: state.sel, nowWall: wall, bar: pinBar, extra: (e) => pinExtra(e, state.owned, g) }), reqCards, pinBar));
   dom.paintId('tower', describeTower(rows, {
     filter: state.filter, pending, sel: state.sel, peek: state.peek, flash, detectsError: detectsError(snap), clipped: clippedSessions(snap), dispatch: snap.router.dispatch, nowWall: nowWall(),
+    // An owned row names the folder it works in, once unlocked (the list carries it; the tower never does).
+    cwdOf: (/** @type {string} */ id) => state.owned?.owned?.find((/** @type {any} */ o) => `n:${o.ownedId}` === id)?.cwd?.path ?? null,
   }));
   const detail = describeDetail(snap, state.sel, rows, detailFor(snap), { nowWall: wall, fmtIso });
   const mine = selTo();
@@ -489,7 +491,9 @@ async function dispatch() {
   const why = msgError(text);
   const harness = val('nw-harness') || 'codex';
   const routeId = state.desk !== null && state.desk.text === text ? state.desk.reply.routeId : null;
-  const body = { text, harness, model: val('nw-model') || modelsOf(harness)[0], ...(routeId === null ? {} : { routeId }) };
+  // A project root only as the list names it (--project-root); '' is Orchestra's own work dir.
+  const root = val('nw-cwd');
+  const body = { text, harness, model: val('nw-model') || modelsOf(harness)[0], ...(routeId === null ? {} : { routeId }), ...(root !== '' && (state.owned?.roots ?? []).includes(root) ? { root } : {}) };
   const a = why === null ? await op('owned/new', body) : null;
   if (a?.ok !== true) return a === null && why === null ? undefined : dlgSay('new-dlg', why ?? errText(a.code));
   state.desk = null;
@@ -864,9 +868,10 @@ document.addEventListener('keydown', (e) => {
 // Typing holds the recipient (research §1.5).
 // The dispatch dialog's model list follows its harness at once.
 document.addEventListener('change', (e) => {
-  if (!(e.target instanceof Element) || (e.target.id !== 'nw-harness' && e.target.id !== 'nw-model')) return;
+  if (!(e.target instanceof Element) || (e.target.id !== 'nw-harness' && e.target.id !== 'nw-model' && e.target.id !== 'nw-cwd')) return;
   // A new harness redraws its model list first, so the card reads the model the select really shows (as pick() does).
-  if (e.target.id === 'nw-harness') render();
+  // A new work dir redraws its note at once (what a session there may do).
+  if (e.target.id === 'nw-harness' || e.target.id === 'nw-cwd') render();
   schedule();
 });
 // A closed dispatch dialog drops the suggestion still out (its reply would change nothing on screen).
