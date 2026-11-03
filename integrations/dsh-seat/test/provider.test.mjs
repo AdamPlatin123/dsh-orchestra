@@ -91,6 +91,39 @@ test('completed: pending -> dispatched -> done maps to completed: a seat note, t
   assert.match(port.calls[1].pathname, /^\/agent\/v1\/requests\/a1b2c3d4e5f60718293a\?wait=\d+$/);
 });
 
+test('the same ask from the same DSH session while the first is open is refused before a second card; it may be asked again once the first is over', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let n = 0;
+  const port = fakePort((method) => {
+    if (method === 'POST') return submitted({ requestId: `${RID.slice(0, 19)}${n++}` });
+    return async () => { await gate; return ok({ state: 'rejected' }); };
+  });
+  const p = makeSeatProvider({ providerName: 'orchestra-codex', harness: 'codex', port });
+  const first = await p.start(req());
+  await assert.rejects(p.start(req()), (e) => e.message.includes(DIAG.duplicate(first.id)) && /list_agents/.test(e.message));
+  assert.equal(port.calls.filter((c) => c.method === 'POST').length, 1, 'no second submit');
+  const other = await p.start(req({ parent: { id: 'sess-456' } }));
+  assert.notEqual(other.id, first.id, 'another session asks for itself');
+  const changed = await p.start(req({ prompt: [{ type: 'text', text: 'something else' }] }));
+  assert.notEqual(changed.id, first.id, 'another text is another ask');
+  release();
+  assert.equal((await first.result).stopReason, 'refusal');
+  await Promise.all([other.result, changed.result]);
+  const again = await p.start(req());
+  assert.notEqual(again.id, first.id, 'once over, the same ask goes through');
+  await again.result;
+});
+
+test('a refused submit does not hold the ask: the same ask may be tried again', async () => {
+  let n = 0;
+  const port = fakePort((method) => (method === 'POST' ? (n++ === 0 ? { status: 429, json: { error: 'rate' } } : submitted()) : ok({ state: 'rejected' })));
+  const p = makeSeatProvider({ providerName: 'orchestra-codex', harness: 'codex', port });
+  await assert.rejects(p.start(req()), /HTTP 429 rate/);
+  const run = await p.start(req());
+  assert.equal((await run.result).stopReason, 'refusal');
+});
+
 test('completed: a cut output is marked outside the boundary, with why it was cut', async () => {
   const port = fakePort((m) => (m === 'POST' ? submitted() : ok({ state: 'done', ownedId: OWN, output: 'x'.repeat(10), truncated: true, cuts: ['cap'] })));
   const run = await makeSeatProvider({ providerName: 'orchestra-claude', harness: 'claude', port }).start(req());

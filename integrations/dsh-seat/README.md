@@ -91,7 +91,7 @@ node --test "integrations/dsh-seat/test/*.test.mjs"
 - 请求只存在 orchestrad 内存里。orchestrad 重启后，DSH 再查会得到 `request-unknown`，结果是 `error`。
 - orchestrad 目前让会话在它自己的 `ORCHESTRA_HOME\work\<id>` 里跑，DSH 传的 `cwd` 只显示在卡片上。
 - 但这个 `cwd` 要先过 orchestrad 的工作目录拒绝表：在 `%USERPROFILE%\AppData` 下（包括 `%TEMP%`）、在 orchestra 仓库里、系统目录里，请求会被拒（`cwd-forbidden`，委派调用直接报错）。所以 DSH 要从普通项目目录启动。实验室冒烟里用的是 orchestrad 自己工作根下的一个子目录（拒绝表对它放行）。
-- 外部子级在 DSH 自己的界面里只显示为一次工具调用；进度看 Orchestra 配对页。
+- 外部子级在 DSH 自己的界面里只显示为一次工具调用；进度看 Orchestra 配对页。DSH 的 `list_agents` 也看不到它（显示没有子级），模型因此可能以为第一次没成功、再调一次（2026-11-03 headless 实测出现过，配对页上多了一张一样的卡）。所以同一个 DSH 会话、同一工作目录、同一段任务文字的请求还没有结果时，bundle 直接拒绝第二次调用，诊断写明「不用重试，结果会以完成通知送回」（`[duplicate]`）。只在同一个 DSH 进程里有效；第一个请求有了结果后，同样的请求可以再提。
 - 没有 pipe 对端进程校验（final.md §6.3 B 推迟到以后的 pipe-client-pid）。由此剩下的：
   - 同一用户的进程读到令牌文件就能提请求（但每条仍要人点派出）。自有 Codex 会话也在其中：Windows 上它的沙箱只限写、不限读，令牌文件放到哪个同用户可读的目录都一样，挪位置没用；要靠以后的对端 pid 校验或收紧文件 ACL。
   - 卡片上的「请求方」是请求方自己报的（DSH 会话 id，取不到就是「未知」），页面写成「自称来自 DSH 会话 …（未核实）」，不能当身份看。每个请求方同时最多 4 条在等，但换 id 的进程只受全局限额（16 条、每分钟 6 条）约束。

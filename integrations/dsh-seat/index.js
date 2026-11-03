@@ -291,6 +291,7 @@ export const DIAG = Object.freeze({
   token: 'orchestrad 不认这次的令牌（它可能重启过，令牌每次启动都换）。[not-authorized]',
   status: (st, code) => `orchestrad 请求口回了 HTTP ${st}${code ? ` ${code}` : ''}。[port-status]`,
   unreachable: (code) => `连不上 orchestrad 请求口（${code}）。[unreachable]`,
+  duplicate: (runId) => `没有再提一次：这个 DSH 会话刚提过一模一样的请求 ${runId}，它还没有结果（在配对页上等人处理，或已派出在跑）。外部子级在 list_agents 里看不到；它的结果会以完成通知送回，不用重试。[duplicate]`,
 });
 
 /** Why orchestrad would not take a request (POST /agent/v1/requests), by its code; start() rejects with it. */
@@ -323,6 +324,11 @@ export function makeSeatProvider({ providerName, harness, port, requestTimeoutMs
     }
   };
 
+  // The requests of this provider still open, by requester, cwd and text. DSH's list_agents does not show an
+  // external child, so a model that looks there may ask again; the same ask while the first is open is refused
+  // here, before orchestrad makes a second card (null: the first submit is still on its way).
+  const open = new Map();
+
   async function start(request) {
     const signal = request.signal;
     signal?.throwIfAborted?.();
@@ -335,23 +341,35 @@ export function makeSeatProvider({ providerName, harness, port, requestTimeoutMs
     if (typeof cwd.isWellFormed === 'function' && !cwd.isWellFormed()) throw new Error('orchestra-seat: the working directory holds a broken character (a lone surrogate)');
     const label = labelOf(request.label);
     const body = { harness, text, cwd, ...(label === null ? {} : { label }), requester: { kind: 'dsh', sessionId: requesterId(request.parent) } };
+    const same = JSON.stringify([body.requester.sessionId, cwd, text]);
+    if (open.has(same)) {
+      const first = open.get(same);
+      throw new Error(`orchestra-seat: ${DIAG.duplicate(first === null ? '（还在提交）' : `orchestra-${first}`)}`);
+    }
+    open.set(same, null);
 
     // Submit. Failing here rejects start(): nothing was published, so nothing needs undoing (an abort that
     // lands after orchestrad made the card leaves one pending card, which expires on its own: timeout = deny).
     let sub;
     try {
-      sub = await port.call('POST', '/agent/v1/requests', body, { signal, timeoutMs: SEAT_LIMITS.submitMs });
+      try {
+        sub = await port.call('POST', '/agent/v1/requests', body, { signal, timeoutMs: SEAT_LIMITS.submitMs });
+      } catch (e) {
+        if (signal?.aborted) throw signal.reason ?? e;
+        throw new Error(`orchestra-seat: ${DIAG.unreachable(errorCode(e))}`);
+      }
+      if (sub.status === 401) throw new Error(`orchestra-seat: ${DIAG.token}`);
+      if (sub.status !== 200 || !REQUEST_ID_RE.test(String(sub.json?.requestId ?? ''))) {
+        const code = codeOf(sub.json);
+        const known = code !== null && Object.hasOwn(SUBMIT_REFUSED, code) ? `${SUBMIT_REFUSED[code]} ` : '';
+        throw new Error(`orchestra-seat: ${known}${DIAG.status(sub.status, code)}`);
+      }
     } catch (e) {
-      if (signal?.aborted) throw signal.reason ?? e;
-      throw new Error(`orchestra-seat: ${DIAG.unreachable(errorCode(e))}`);
-    }
-    if (sub.status === 401) throw new Error(`orchestra-seat: ${DIAG.token}`);
-    if (sub.status !== 200 || !REQUEST_ID_RE.test(String(sub.json?.requestId ?? ''))) {
-      const code = codeOf(sub.json);
-      const known = code !== null && Object.hasOwn(SUBMIT_REFUSED, code) ? `${SUBMIT_REFUSED[code]} ` : '';
-      throw new Error(`orchestra-seat: ${known}${DIAG.status(sub.status, code)}`);
+      open.delete(same);
+      throw e;
     }
     const requestId = sub.json.requestId;
+    open.set(same, requestId);
     // The key that alone withdraws this request: kept in this closure, never logged.
     const withdrawKey = WITHDRAW_KEY_RE.test(String(sub.json.withdrawKey ?? '')) ? sub.json.withdrawKey : null;
     log('info', `orchestra-seat: request ${requestId} (${harness}) waits for a person on the paired page`);
@@ -463,6 +481,7 @@ export function makeSeatProvider({ providerName, harness, port, requestTimeoutMs
         return signal?.aborted || disposed ? aborted() : error(`orchestra-seat: ${errorCode(e)}`);
       } finally {
         signal?.removeEventListener('abort', onAbort);
+        open.delete(same);
       }
     })();
 
