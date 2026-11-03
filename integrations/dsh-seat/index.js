@@ -192,6 +192,16 @@ export const DIAG = Object.freeze({
   unreachable: (code) => `连不上 orchestrad 请求口（${code}）。[unreachable]`,
 });
 
+/** Why orchestrad would not take a request (POST /agent/v1/requests), by its code; start() rejects with it. */
+export const SUBMIT_REFUSED = Object.freeze({
+  'cwd-forbidden': 'orchestrad 不收这个工作目录：它在受保护的位置（例如 %USERPROFILE%\\AppData 下、orchestra 仓库里、系统目录）。请在普通项目目录里运行 DSH，或给委派传一个这样的 cwd。',
+  'text-too-long': 'orchestrad 不收：任务文字超过 2048 字节。',
+  'slash-command': 'orchestrad 不收以 / 开头的任务文字。',
+  rate: 'orchestrad 不收：一分钟内的请求太多了（限速 6 条），稍后再试。',
+  full: 'orchestrad 不收：等你处理的请求已满（最多 16 条）。',
+  stopped: 'orchestrad 正在停机，不收新请求。',
+});
+
 const codeOf = (json) => (json && typeof json.error === 'string' && /^[a-z0-9-]{1,40}$/.test(json.error) ? json.error : null);
 const safeWhy = (why) => (typeof why === 'string' && /^[A-Za-z0-9_.:-]{1,80}$/.test(why) ? why : '未知');
 
@@ -228,7 +238,11 @@ export function makeSeatProvider({ providerName, harness, port, requestTimeoutMs
       throw new Error(`orchestra-seat: ${DIAG.unreachable(errorCode(e))}`);
     }
     if (sub.status === 401) throw new Error(`orchestra-seat: ${DIAG.token}`);
-    if (sub.status !== 200 || !REQUEST_ID_RE.test(String(sub.json?.requestId ?? ''))) throw new Error(`orchestra-seat: ${DIAG.status(sub.status, codeOf(sub.json))}`);
+    if (sub.status !== 200 || !REQUEST_ID_RE.test(String(sub.json?.requestId ?? ''))) {
+      const code = codeOf(sub.json);
+      const known = code !== null && Object.hasOwn(SUBMIT_REFUSED, code) ? `${SUBMIT_REFUSED[code]} ` : '';
+      throw new Error(`orchestra-seat: ${known}${DIAG.status(sub.status, code)}`);
+    }
     const requestId = sub.json.requestId;
     log('info', `orchestra-seat: request ${requestId} (${harness}) waits for a person on the paired page`);
 

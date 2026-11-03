@@ -88,5 +88,6 @@ node --test "integrations/dsh-seat/test/*.test.mjs"
 - 提交请求的那一刻被取消，orchestrad 可能已经建了卡片但 bundle 拿不到它的 id，没法撤回。那张卡会在 orchestrad 的时限到后自己变成 `expired`（超时即拒）。
 - 请求只存在 orchestrad 内存里。orchestrad 重启后，DSH 再查会得到 `request-unknown`，结果是 `error`。
 - orchestrad 目前让会话在它自己的 `ORCHESTRA_HOME\work\<id>` 里跑，DSH 传的 `cwd` 只显示在卡片上。
+- 但这个 `cwd` 要先过 orchestrad 的工作目录拒绝表：在 `%USERPROFILE%\AppData` 下（包括 `%TEMP%`）、在 orchestra 仓库里、系统目录里，请求会被拒（`cwd-forbidden`，委派调用直接报错）。所以 DSH 要从普通项目目录启动。实验室冒烟里用的是 orchestrad 自己工作根下的一个子目录（拒绝表对它放行）。
 - 外部子级在 DSH 自己的界面里只显示为一次工具调用；进度看 Orchestra 配对页。
 - 没有 pipe 对端进程校验：同一用户的进程读到令牌文件就能提请求（但每条仍要人点派出）。

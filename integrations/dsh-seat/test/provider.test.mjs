@@ -150,7 +150,9 @@ test('error: an unknown request (orchestrad restarted) and a 401 are errors; a f
 
 test('error: a failing submit rejects start() (nothing published); diagnostics never carry a token', async () => {
   const refused = fakePort(() => ({ status: 429, json: { error: 'rate' } }));
-  await assert.rejects(makeSeatProvider({ providerName: 'orchestra-codex', harness: 'codex', port: refused }).start(req()), /HTTP 429 rate/);
+  await assert.rejects(makeSeatProvider({ providerName: 'orchestra-codex', harness: 'codex', port: refused }).start(req()), /限速.*HTTP 429 rate/);
+  const cwd = fakePort(() => ({ status: 422, json: { error: 'cwd-forbidden' } }));
+  await assert.rejects(makeSeatProvider({ providerName: 'orchestra-codex', harness: 'codex', port: cwd }).start(req()), (e) => /受保护的位置/.test(e.message) && e.message.includes('%USERPROFILE%\\AppData') && /HTTP 422 cwd-forbidden/.test(e.message));
   const down = fakePort(() => () => Promise.reject(Object.assign(new Error('x'), { code: 'token-missing' })));
   await assert.rejects(makeSeatProvider({ providerName: 'orchestra-codex', harness: 'codex', port: down }).start(req()), /token-missing/);
   const empty = fakePort(() => ok({}));
