@@ -2,115 +2,91 @@
 
 ## Facts
 - Owner: AdamPlatin123
-- When: 2026-11-03（seat 复核修正之后；本机 shell 报的时区是 GMT）
+- When: 2026-11-03（项目根、日常使用文档之后；本机 shell 报的时区是 GMT）
 - Machine: 550W备份1号机
 - Branch: claude/orchestra-app（从 `claude/alpha-0.2-interactive` 的 76807ec 切出）
-- Commit: 4d7387e（标签页标题计入待处理的 agent 请求；之前依次是 b84c0b4 交接、93f282d seat 复核修正、e959aa1、1a70a91 seat bundle、64154bc 请求口、ccbe1d1、a023506）
-- Pushed: no（这一轮的编排要求不 push；远端还没有这条分支。本分支 76807ec 之后的提交只在这台机器上）
-- Uncommitted on that machine: `.claude/launch.json`（未跟踪，指向某次会话临时目录里的预览脚本，别的机器上没用，不要提交）。主检出目录里 r4 规格有用户本人的未提交改动，见 Do not touch。
+- Commit: a3cf458（代码和文档的最后一个提交；本交接文件随后单独提交）。上一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
+- Pushed: no（远端还没有这条分支。76807ec 之后的提交只在这台机器上）
+- Uncommitted on that machine: `.claude/launch.json`（未跟踪，本机某次会话的预览配置，不要提交）。主检出目录里 r4 规格有用户本人的未提交改动，见 Do not touch。
 
 ## Goal
-用户 2026-11-02 的目标：把 Orchestra 做到「应用整体可用」。一个守护进程 orchestrad，首页是塔表（你 → agent → subagent 的跨项目树），能只读观察 Claude、DSH、Codex 三家的会话；能经本机模型网关 magpie（`http://127.0.0.1:3425`，不要密钥）开 Orchestra 自己拥有的 Codex 和 Claude 会话（下称「自有会话」），在页面上对话、审批、停下；有一个派活台，先跑规则、再问路由模型，给出「派给谁」的建议卡片，由人点「派出」。总计划见 `docs/plans/2026-11-02-orchestra-app-plan.md`，给主人看的上手指南见 `docs/quickstart.md`。
+用户 2026-11-02 的目标：把 Orchestra 做到「应用整体可用」。一个守护进程 orchestrad，首页是塔表（你 → agent → subagent 的跨项目树），能只读观察 Claude、DSH、Codex 三家的会话；能经本机模型网关 magpie（`http://127.0.0.1:3425`，不要密钥）开 Orchestra 自己拥有的 Codex 和 Claude 会话（下称「自有会话」），在页面上对话、审批、停下；有一个派活台，先跑规则、再问路由模型，给出「派给谁」的建议卡片，由人点「派出」；DSH 会话可以经 seat 请求派自有会话，由人在配对页派出或拒绝。总计划见 `docs/plans/2026-11-02-orchestra-app-plan.md`，给主人看的上手指南见 `docs/quickstart.md`，启动脚本 `start-orchestra.cmd`。
 
 ## Done（已完成且已验证）
-- seat 真实浏览器联调（4d7387e 之前的 b84c0b4 上跑，再加 4d7387e 的标题修正）— 测试 profile `--owned --agent-port`，隔离 DSH_HOME 的 DSH web（seat-dev，3199），内置浏览器手点：
-  - 派出路径：DSH web 里调 `subagent_codex_governed`，没有弹 DSH 自己的审批（之前记为未知，现已确认）；配对页未解锁时是占位卡「以 DSH 名义请求派 Codex：任务内容和请求方解锁后可见 · 剩 9:45 自动拒」；解锁后是完整卡（任务原文、「自称来自 DSH 会话 …（未核实）」、模型 codex/gpt-6.1-sol）；点「派出」→ Codex 一次 shell 审批（高风险，按住 1 秒允许）→ hello.txt 写进 `work\<ownedId>`；会话页写「请求现在第一回合已返回，结果已从请求口发给请求方（对方是否读到：未知；不是对工作的判定）」；DSH 回答里原样引用了 Codex 的输出。
-  - 拒绝路径：第二个请求点「拒绝」，DSH 收到「没有派出：人在 Orchestra 配对页上点了『拒绝』…（r4 D8…）」，模型照转、没重试。
-  - 发现并修了一处：请求在等人时标签页标题不带「(n)」。4d7387e 让标题把 `router.asks` 也算进去；顶栏「等你」按钮仍只数树里的节点（它是筛选，T3）。新断言不带修复时失败（(5) ≠ (6)）。全量 1480 条，1477 过，0 失败。
-  - 收尾：DSH 和 orchestrad 都停了；`%TEMP%\orchestra-test-seat` 已删；`~/.dsh` 109387 行，0 差异。orchestrad 是被强停的（不是 stdin EOF），所以令牌文件当时没删，随测试目录一起删了。
-- seat 复核修正（93f282d，本会话）— 验证：
-  - 全量单元测试 `node --test "test/**/*.test.ts"`：1480 条，1477 过，0 失败，1 跳过（目录链接 EPERM，同下），2 todo。
-  - seat 单元测试 `node --test integrations/dsh-seat/test/provider.test.mjs`：21 条全过；仓库侧 `test/integrations/dsh-seat.test.ts` 再加 2 条（bundle 重述的 HMAC 与 orchestrad 一致；bundle 的管道客户端对真请求口提交、超时撤回）全过。
-  - 实验室冒烟（不进仓库的 seat-smoke.ts，模式 complete、expiry、withdraw，各一次，测试 profile + 隔离 DSH_HOME + 全局 DSH CLI 0.2.1-rc.2）：退出码 0。complete：派出 200，请求 done，hello.txt 内容 hi，DSH 退出码 0、回答里有 hi；expiry：请求 withdrawn / requester-withdrew；withdraw：会话 ended / requester-withdrew，Job 0 进程。orchestrad stdin-eof 停机退出码 0，令牌文件已删，残留 0。`~/.dsh` 前后快照（文件名、大小、修改时间）一致。
+全部在本 worktree 根目录跑，node 用主检出目录的 `.tools/node24/node.exe`，只用测试 profile（代-2）。
 
-下面的验证都在本 worktree 根目录跑，node 用主检出目录的 `.tools/node24/node.exe`。前四条是 4465924 上跑的（上一轮交接原样保留），后面的是 6b6af32、1691129 上跑的。
+- 全量单元测试（a3cf458）— `node --test "test/**/*.test.ts"`：1519 条，1516 过，0 失败，1 跳过（建目录链接报 EPERM，要开发者模式或管理员），2 todo（M0 留下的两条），约 33 秒。
+- 项目根 `--project-root`（75e2942、e850a20）— `node scripts/live-smoke.ts --harness codex --project-root` 在 a3cf458 上跑，退出码 0：页面列出 `<testDir>\proj`；会话 cwd.kind 为 project-root；文件写进项目根、内容对；没有建自建工作目录；2 次 shell 审批都允许；ended/you-ended、tree-ended；Job 0 幸存；orchestrad 经 stdin EOF 停机，退出码 0；leftover 0；测试目录已删。复核的 11 条修正（Unicode 大小写折叠逃逸、项目根里 Codex 只收 readOnly 沙箱、落在项目根的 seat→Claude 会话按 tainted 处理、r4 §7.4 受保护路径算高风险卡、journal 新 kind `owned-cwd`、`stat-refused` 等）都有单元测试，见计划「项目根（--project-root）」一节的「复核后改」。
+- seat 在 e850a20 上复验（实验室 seat-smoke.ts，不进仓库，模式 complete、expiry、withdraw）— 退出码 0：complete 请求 done、会话 idle 后结束；不带 `--project-root` 时卡片写「派出后仍在 Orchestra 自建的工作目录里跑」；`~/.dsh` 快照与基线 109387 行，0 差异。
+- seat 去重（461ac11、73bad96）— 同一 DSH 会话、同一 cwd、同一任务原文在上一次还没结果时被拒，诊断 `[duplicate]` / `[duplicate-submitting]`；请求方 sessionId 为空时不去重。起因：headless DSH 模型在 list_agents 里看不到外部子级，会重复调用。seat 单元测试全过。
+- 2026-11-03 测试 profile 联调（之前的会话在 4d7387e–73bad96 之间跑的，细节在计划「2026-11-03 已验证」一条）：
+  - seat Claude 后端（`subagent_claude_governed`）派出到 done；
+  - orchestrad 自己的 10 分钟到期（expired）实跑；
+  - 标签页标题「(1) Orchestra · 塔」在 DSH 请求等人时出现；
+  - opencode-go 模型：Codex、Claude 两家 live-smoke 用 glm-5.3 各过一次；页面上用 kimi-k3 开过 Claude 会话；
+  - `scripts/live-route.ts --dispatch` 过（RouteDecision 记录、塔表顶上「你」那一行）；
+  - 内置浏览器走查：派活台建议、审批拒绝和允许、中断、刹车、结束、亮暗主题、375px 窄屏。发现并修了两处：宽屏「等你」栏为空时底栏被挤成 0 px（8bc1bd9）；窄屏把详情里的自有会话框也藏了（e483824）。两条新断言不带修复时失败。
+  - 后台标签页的标题刷新（73bad96）：在页面里模拟 `document.hidden` 为真，审批出现约 12 秒后标题变成「(1) …」。
+  - 观察到：中断（interrupt）不会杀掉 Codex 已经起的命令，刹车会；页面对这条命令显示「在跑」，和实际一致。
+- 日常使用文档（7f71981、a3cf458）— `docs/quickstart.md` 写了 `--agent-port`、DSH 请求卡、`--project-root`（1.3 节）；`start-orchestra.cmd` 只用 `/dry-run` 跑过（找到主检出目录的 node.exe，退出码 0）；`integrations/dsh-seat/README.md` 新增「装进你日常用的 DSH profile」一节；`package.json` 删掉了指向不存在文件的 `build:procguard`。
 
-- 全量单元测试（1691129）— 验证：`node --test "test/**/*.test.ts"`：1415 条，1412 过，0 失败，1 跳过，2 todo，约 38 秒。跳过的一条是「不能经目录链接写进 harness 根」，原因是本机建目录链接报 EPERM（要开发者模式或管理员）。两条 todo 是 M0 留下的（非 TTY 真实 profile 的配对路由、`--test-root-pid` 经 procguard 解析）。其中 `test/os/procguard-real.test.ts` 的两条真机用例（csc 实编 procguard，假 agent 起的 `ping -t` 在刹车和普通结束后都 0 个幸存）这次跑了，没有跳过。
-- 自有 Codex 会话端到端（4465924）— 验证：`node scripts/live-smoke.ts --harness codex`，退出码 0。状态 starting → running → idle，结束为 ended/you-ended，审批 2 次（命令，shell 风险）都允许，文件内容对，残留进程 0。
-- 自有 Claude 会话端到端（4465924）— 验证：`node scripts/live-smoke.ts --harness claude`，退出码 0。经 0.2 的 host 和 Claude Agent SDK 0.3.287，默认模型 `zcode/GLM-5.3`。审批 1 次（写文件）允许，文件内容对，残留进程 0。
-- 派活台的路由建议（4465924）— 验证：`node scripts/live-route.ts`（不带 `--dispatch`），退出码 0。三句合成的话路由模型都回答了；只要建议不派出时自有会话数是 0；残留进程 0。
-- 自有会话进 procguard 的 Job、刹车（6b6af32，上一个实现会话跑的，记在计划「procguard 实测」）— 验证：`live-smoke.ts --harness codex`、`--harness claude`、`--harness codex --brake`、`--harness claude --brake` 各一次，退出码都是 0；刹车两次都回 killed 5、left 0，会话以 braked 结束；按 pid + 创建时间查，0 个幸存。本会话没有重跑这四次，只重跑了下面三次。
-- stdin 读到 EOF 就停机（1691129）— 验证：
-  - `test/runtime/stdin-end.test.ts` 6 条全过：判断 stdin 类型；监视函数只触发一次、读出错也触发、撤销后不触发；进程内调用时日志记 stop-asked、控制台写原因、只跑一次停止；子进程用管道启动后关 stdin，退出码 0，日志有 stopped；stdin 为 ignore 时 1.5 s 后仍在跑；detached 的子进程在父进程被杀后自己停机。
-  - `node scripts/live-smoke.ts --harness codex --daemon-stop`，退出码 0：会话空闲时关 orchestrad 的 stdin，orchestrad 以退出码 0 自己停机，会话记录的结束原因是 daemon-stop；Job 里的 codex.exe、codex-code-mode-host.exe、conhost.exe 按 pid + 创建时间查 0 个幸存，leftovers 0。
-  - `node scripts/live-smoke.ts --harness claude --daemon-stop`，退出码 0：同上，Job 里是 node.exe（host）、claude.exe、conhost.exe，0 个幸存，leftovers 0。
-  - `node scripts/live-smoke.ts --harness codex`（普通结束），退出码 0：ended/you-ended，tree-ended，之后 orchestrad 经关 stdin 停机（退出码 0），0 个幸存，leftovers 0。
-  - 三次的测试目录都已删除。
-- 第 4 阶段复核修正（3324659）— 验证：
-  - 全量单元测试：1421 条，1418 过，0 失败，1 跳过（同上，目录链接 EPERM），2 todo，约 40 秒。procguard-real 三条真机用例（含新增「常驻的刚收到 kill-job 就被关 stdin，仍结束 Job 并回答」）跑了，没有跳过。
-  - `live-smoke.ts --harness codex`、`--harness claude` 各一次，退出码 0：ended/you-ended，tree-ended，0 个幸存；新的 leftovers 按 Job 名字查，leftover 0、unverified 0、unchecked 0；脚本自己的 procguard 先比对 orchestrad 日志里的 sha256 才启动（probe 为 null，即比对通过）。
-  - `live-smoke.ts --harness codex --daemon-stop --keep` 一次，退出码 0：日志里 owned-tree 在 stopped 之前（found false，Job 已随包装进程关闭），说明停机时的核对这次真的做了。测试目录事后已删。
-  - `--brake` 两种、`claude --daemon-stop` 这次没有重跑。
+更早的验证（自有会话端到端、procguard Job 和刹车、stdin EOF 停机、第 4 阶段复核、seat 复核修正 93f282d）见 git 历史里 99deb75 版本的本文件，这次没有重跑的项不再列。
 
 ## Unverified（做了但没验证，或验证没过）
-- seat：Claude 后端（`subagent_claude_governed`）没联调；浏览器后台时的请求通知没在真实浏览器里看过；orchestrad 自己的 10 分钟到期（expired）没实跑；4d7387e 的标题计数只有假 DOM 测试（浏览器联调时跑的是改动前启动的 orchestrad）。
-- seat：抢管道的冒名实例（复核者用 .NET 复现过）在新的 HMAC 下会被 seat 识破（proof-bad），这一点只有单元测试（假服务器不带证明或用别的令牌），没有用真的第二个管道实例复现。读到令牌文件又抢到管道的进程仍能冒充 orchestrad，属已记残余。
-- seat：Codex 沙箱里的进程能不能连上请求口管道，没验证（复核者也没验证）。
-- seat：冒烟各模式只跑了一次（最终核查又跑了一次 complete、expiry、withdraw，都过）。
-
-- **真实 profile 下的启动检查没做**：编排要求让实现会话在真实 profile 下用 `orchestra.cmd --owned` 启动、经 API 配对、开一个自有 Codex 会话。没做，原因有两条：M0 计划 §2 的「agent 只能起测试 profile」和代-2（真实 profile 只由用户在可见控制台里启动、由用户配对）；代码的守卫 `decidePairingOutput` 在 stdin 和 stdout 不都是控制台时不打印配对码，脚本启动拿不到码。没有绕过。只查了：本会话 shell 是 Medium 完整性级别（不是管理员）；本会话环境里没设 `ORCHESTRA_HOME`，按 `src/runtime/env.ts` 真实数据目录是用户目录下的 `.orchestra`。真实 profile 能不能启动、塔表有多少项目和节点、自有会话在真实 profile 下能不能起停，全部未知。
-- 被 Node 写的启动器直接启动、没有 detached 时：父进程被杀后 orchestrad 也没了，但日志里没有 stop-asked 和 stopped，说明是被父进程的 libuv Job 一起强行结束的（实测一次），自己的停止顺序没跑。这时自有会话的 Job 按 S4 用例 a 的机制应该也跟着关，但没有在会话还在跑时实测过。
-- 会话还在跑时强杀 orchestrad：没有实测（上一轮就记着，本轮没变）。
-- main.ts 给 stdout、stderr 加的空 error 监听是预防性的：唯一一次实测里，父进程死后写状态行没有报错，所以没有证据说明它是必须的。
-- 页面没在真实浏览器里走过：塔表、解锁、派活台、审批卡（按住 / 键入「放行」）、三档停止键、亮暗主题、375px 窄屏，都只有假 DOM 测试。
-- 派出（带建议的 routeId）后的 RouteDecision 记录、塔表顶上「你」那一行：没跑过 `live-route.ts --dispatch`，只有单元测试。
-- 工作目录外的只读命令会不会先来问：只在 2026-11-02 早些时候用 `live-smoke.ts --outside` 各测过一次，算未知。
-- 花费：Claude 对话流里的 cost 是 Claude CLI 按自己的价目表估的，走 magpie 的模型不在表里，真实花费未知。
-- 自有会话跨重启：重启后没结束的会话显示状态未知，对话内容看不到。这是设计如此，但没有在真实重启下跑过。
-- node.exe 只查存在和不是链接，没有哈希，也不复查大小和 mtime。
-- Job 挡不住同一用户的进程（能复制出 Job 句柄改掉限制）；env-allowlist 文件被改不会被发现（只会少给变量）。
-- 和 `claude/alpha-0.2-interactive` 的合并：那个 worktree 现在有没有更新的未提交改动，没去看，未知。
-- 没做的：计划阶段 7（DSH 只读插件）；0.2 设计的导入（导入 Claude 会话、DSH 快照，`ImportStager` 没有调用方）；r4 §9.2 的 router-core（硬过滤、Wilson 证据门、滞回、影子模式）；M0 的全局刹车 `/api/brake/plan`、`/api/brake/execute` 仍没有处理函数；`package.json` 的 `build:procguard` 指向的 `scripts/build-procguard.ts` 不存在。
+- **真实 profile 一次都没跑过**（代-2：只能由用户在可见控制台里启动）。塔表在真实数据上有多少项目和节点、真实 profile 下自有会话能不能起停、`start-orchestra.cmd` 实际启动（等 5 秒开浏览器、Ctrl+C 只停 orchestrad、退出后停在「按任意键」）、带 `--project-root` 的真实启动，全部未知。
+- 项目根：Claude 会话在项目根里没有实测（只跑了 Codex）；r4 §8.5 要求 seat 派给 Codex 时用 untrusted 审批策略，没做（app-server 对这个参数的回复没实测），Codex 读项目文件会不会先问人，未知；受保护路径的卡是「按住或键入」确认，不是 §7.4 说的「必须键入」；`package.json` 整个文件算受保护；`.git/config` 不在清单里；r4 §10.8 双写者告警没做；根只能用启动参数给，改根要重启（原计划写「在设置里登记」，已记分歧）。
+- seat 装进日常 DSH profile 的步骤（README 新一节）没在真 DSH 上走过；卸载命令写的是「未知」。
+- seat：抢管道的冒名实例只有单元测试，没有用真的第二个管道实例复现；读到令牌文件又抢到管道的进程仍能冒充 orchestrad（已记残余）。Codex 沙箱里的进程能不能连上请求口管道，没验证。
+- 真正的系统级「标签页隐藏」在内置浏览器里模拟不出来（后台标签页 `document.hidden` 仍为 false，只是 requestAnimationFrame 停了），后台标题只在模拟 hidden 时看过。
+- 会话还在跑时强杀 orchestrad：没有实测。被 Node 启动器直接启动、父进程被杀时 orchestrad 的停止顺序不跑（实测一次），这时自有会话的 Job 跟着关没有在会话跑着时实测。
+- 花费：走 magpie 的模型不在 Claude CLI 的价目表里，真实花费未知。
+- 自有会话跨重启：重启后没结束的会话显示状态未知、对话内容看不到，还在等的 seat 请求丢失。设计如此，没在真实重启下跑过。
+- Job 挡不住同一用户的进程；node.exe 只查存在和不是链接，没有哈希。
+- 没做的：计划阶段 7（DSH 只读插件）；0.2 设计的导入（`ImportStager` 没有调用方）；r4 §9.2 的 router-core；M0 的全局刹车 `/api/brake/plan`、`/api/brake/execute` 仍没有处理函数；没有设置页（Q5a 要求的 Tuning 页也没有）。
 
 ## Next（按优先级，每条可独立执行）
-1. seat 冒烟复跑（可选）— `%TEMP%\orchestra-test-seat` 现在不存在。按实验室 HOW-TO-RUN 的第 3 节（实验室目录和 seat-smoke.ts 只在这台机器的会话临时目录里，不在仓库；别的机器上要先按 `integrations/dsh-seat/README.md` 搭隔离的 DSH_HOME）跑 `seat-smoke.ts complete expiry withdraw`。验收：报告 exit 0，complete 的 requestAfter.state 为 done，withdraw 的 sessionAfter.endReason 为 requester-withdrew，leftovers.leftover 为 0。
-2. seat 的 Claude 后端 — 在 seat-smoke.ts 加一个模式，任务改用 `subagent_claude_governed`，其余同 complete。验收：请求 done、DSH 退出码 0、残留 0；结果写进计划「seat 复核修正」一条。
-3. 标题计数实看 — 用 4d7387e 起测试 profile 和 DSH web（HOW-TO-RUN 第 1、2 节），DSH 发一个请求、先不派出。验收：标签页标题是「(1) Orchestra · 塔」，派出或拒绝后计数消失或变成审批数。
-4. 真实 profile 启动检查（只能由用户本人做）— 按 `docs/quickstart.md` 第 6 节：在普通（非管理员）cmd / PowerShell / Windows Terminal 里，在仓库根目录运行 `orchestra.cmd --owned --peek-port 7470`（worktree 里先设 `ORCHESTRA_NODE` 指向主检出目录的 `.tools\node24\node.exe`）。验收：控制台打印配对码、`procguard on`、两家 `owned … sessions on`，最后一行 `working (real profile …)`；页面配对后塔表有数据，顶栏数字等于点开后的行数；派一个 Codex 会话（「只回复 ok，不用工具」）到空闲，结束会话后对话里有 tree-ended 一类说明；Ctrl+C 后任务管理器里没有 codex.exe、procguard.exe。结果记进本文件 Done 或 Unverified。
-5. 真实浏览器走一遍（测试 profile）— 在 `%TEMP%` 下建 `orchestra-test-ui-<随机>` 和它下面的 `roots\`，运行 `node src/boot.ts --test-profile --test-dir <该目录> --peek-port <空闲端口> --owned`，浏览器开 `http://orchestra.localhost:<端口>`，配对、解锁，派一个 Codex、一个 Claude 会话，各处理一次审批（一次允许、一次拒绝），中断、结束、刹车各试一次；亮色、暗色、375px 宽各看一遍。验收：每一步页面状态和 `GET /api/owned` 一致，没有控制台报错。
-6. `scripts/live-route.ts --dispatch` — 跑一次。验收：`dispatch.status` 为 200，`dispatchEnded.settled` 为 ended，`routerRow` 不为 null 且 `linked` 为 true，`leftovers.leftover` 为 0，`orchestradStopped.how` 为 stdin-eof。
-7. `scripts/live-smoke.ts --harness codex --outside` 和 `--harness claude --outside` — 各重跑一次。验收：`approvalsAllowed` 里有命令卡，`ranUnasked` 为 0；结果追加到计划「第 3 阶段复核后补记」，仍写「未知」直到有更多次。
-8. 会话在跑时强杀 orchestrad — 给 `scripts/live-smoke.ts` 加一个模式：会话空闲时用 `child.kill()`（不先关 stdin），之后用脚本自己的 procguard 探针按 pid + 创建时间查 Job 里的进程。验收：0 个幸存；把结果写进计划「进程树的 Job 回收」一条的残余 ②。
-9. `package.json` 的 `build:procguard` — 要么删掉这条脚本，要么加 `scripts/build-procguard.ts`（经 `src/os/procguard.ts` 的 ensureProcguard 编到测试目录）。验收：全量测试 0 失败，`npm run` 列出的脚本都指向存在的文件。
+1. 真实 profile 启动检查（只能由用户本人做）— 在普通（非管理员）cmd 里双击或运行仓库根的 `start-orchestra.cmd`（worktree 里先设 `ORCHESTRA_NODE` 指向主检出目录的 `.tools\node24\node.exe`）。验收：控制台打印配对码、`procguard on`、两家 `owned … sessions on`、`working (real profile …)`；浏览器自动打开 `http://orchestra.localhost:7470/`；配对后塔表有数据、顶栏数字等于点开后的行数；派一个 Codex 会话「只回复 ok，不用工具」到空闲后结束；Ctrl+C 后任务管理器里没有 codex.exe、procguard.exe。结果记进本文件。
+2. 决定 push / 合并（只能由用户本人做）— 本分支只在这台机器上；`hosts/claude/node_modules` 也只在这个 worktree。要推远端或合进主线，由用户定目标分支。
+3. 项目根里跑 Claude — `node scripts/live-smoke.ts --harness claude --project-root`。验收：退出码 0、`listedCwd.kind` 为 project-root、文件在根里、leftover 0。结果写进计划「项目根」一节。
+4. seat→Codex 的 untrusted 审批策略（r4 §8.5）— 在 `src/owned/codex-session.ts` 里，seat 请求派出的会话 `thread/start` 改用 untrusted 审批策略；先用一个测试 profile 会话实测 app-server 的回复。验收：live-smoke 过、读项目文件时出审批卡。
+5. 会话在跑时强杀 orchestrad — 给 `scripts/live-smoke.ts` 加一个模式：会话空闲时 `child.kill()`（不先关 stdin），再用脚本自己的 procguard 探针按 pid + 创建时间查 Job。验收：0 个幸存；写进计划「进程树的 Job 回收」的残余 ②。
+6. `scripts/live-smoke.ts --harness codex --outside` 和 `--harness claude --outside` 各重跑一次。验收：`approvalsAllowed` 里有命令卡，`ranUnasked` 为 0。
 
 ## Do not touch
 - 主检出目录里 `docs/specs/2026-10-27-dsh-orchestra-design-r4.md` 的未提交改动：用户本人的第七批改动。本分支只读引用它，不改、不提交、不覆盖。
 - `.claude/launch.json`（未跟踪）：本机某次会话的预览配置，不提交。
+- 真实 `~/.dsh`、`%APPDATA%\npm`、真实 `~/.orchestra`：agent 不动。
 
 ## Open questions
-- 真实 profile 下开不开自有会话：0.2 设计第 528 行原本要求真实 profile 下 owned-disabled，被本计划 §2 取代成两种 profile 都开（带 `--owned` 且找到 codex.exe 才开）。要恢复限制，在 `setUpOwnedCodex` 开头对真实 profile 返回 off('not-asked')。由用户定。
-- 实现会话能不能在真实 profile 下联调：现行约定（M0 计划代-2）是不能。这一轮的编排要求过，被拒了。要放开，需要用户本人改约定，并决定配对码怎么交给 agent（现在只打印在交互式控制台）。
-- 什么时候 push、推到哪：本分支没 push，远端没有它。
-- 本机 `%TEMP%` 下有不是本会话留的 `orchestra-test-*` 目录（上一轮数过 26 个），要不要清由用户决定。本会话的测试目录都已删。
-- 0.2 交接文件（`docs/handoff/claude--alpha-0.2-interactive.md`）里列的设计 §8 待定项（SDK 许可证、配置目录、单条消息上限、M0 动作是否接操控令牌等）仍没有逐条问过用户。
+- 哪个 DSH profile 是日常用的、要不要把 seat 装进去：由用户定（D11 / Q5a：先在隔离 DSH_HOME 验过同一版本，再由主人自己装）。Q5a 和 seat 对不上的三处（没有 Tuning 页；seat 加的是能提请求的工具，不是只读；DS-Bot 已换桌面版要重核）记在计划分歧一节。
+- 真实 profile 下开不开自有会话：0.2 设计第 528 行原本要求 owned-disabled，被本计划 §2 取代成两种 profile 都开。要恢复限制，在 `setUpOwnedCodex` 开头对真实 profile 返回 off('not-asked')。
+- 实现会话能不能在真实 profile 下联调：现行约定（代-2）是不能。
+- 本机 `%TEMP%` 下有 40 多个不是本会话留的 `orchestra-test-*` 目录（最早的 2026-11-02），要不要清由用户决定。本会话的测试目录都已删。
+- 0.2 交接文件（`docs/handoff/claude--alpha-0.2-interactive.md`）里列的设计 §8 待定项仍没有逐条问过用户。
 
 ## Divergence（接手者填写：交接与现实的差异）
-- 2026-11-03 AdamPlatin123（seat 复核修正）：上一份交接写在 3324659，之后 a023506、ccbe1d1、64154bc、1a70a91、e959aa1 没有更新交接；本次一并补上。复核 28 条里没照做的三条（令牌文件挪位置、日志 requestId 改摘要、seat 共用长轮询）和理由记在计划「seat 复核修正」一条。
-- 2026-11-03 AdamPlatin123（第 4 阶段复核）：procguard 没开时自有会话改为整个关闭（以前不经 Job 照开，和 r4 D4 冲突）；procguard.exe 每次启动重新编译、校验值只在内存里。细节和残余见计划「分歧和残余风险」里「进程树的 Job 回收」一条。
-- 2026-11-02 AdamPlatin123：本分支第一次写交接。和 r4、0.2 设计的出入都记在 `docs/plans/2026-11-02-orchestra-app-plan.md` 的「分歧和残余风险」一节，这里不重复。
-- 2026-11-03 AdamPlatin123：上一份交接写在 4465924，之后的 6b6af32（procguard 的 Job 和刹车）没有更新交接，那份的「进程树回收」「刹车」两条 Unverified 和 Next 第 5、6 条已过时。本次改写：那两条移进 Done，Next 重排。编排要求的真实 profile 检查和 M0 计划的「agent 只能起测试 profile」冲突，没做，记在 Unverified 和 Open questions。
+- 2026-11-03 AdamPlatin123（项目根之后）：上一份交接写在 99deb75（Commit 4d7387e），之后 461ac11、8bc1bd9、e483824、73bad96、7f71981、75e2942、e850a20、a3cf458 没有更新交接；本次一并补上，旧的 Unverified（Claude 后端、10 分钟到期、标题计数、浏览器走查、`--dispatch`、`build:procguard`）移进 Done 或删除，Next 重排。项目根是启动参数而不是原计划的「在设置里登记」，记在计划里。
+- 2026-11-03 AdamPlatin123（seat 复核修正）：复核 28 条里没照做的三条和理由记在计划「seat 复核修正」一条。
+- 2026-11-03 AdamPlatin123（第 4 阶段复核）：procguard 没开时自有会话整个关闭（以前不经 Job 照开，和 r4 D4 冲突）。细节见计划「进程树的 Job 回收」。
+- 2026-11-02 AdamPlatin123：本分支第一次写交接。和 r4、0.2 设计的出入都记在计划的「分歧和残余风险」一节。
 
 ## 代号速查
 | 代号 | 内容（一句话） | 出处 |
 |---|---|---|
-| D4 | 三类所有权（observed 只看 / owned 自有 / foreign 别人的）；每个自有子进程各在一个随关闭即杀的 Job 里，由 procguard 拉起 | r4 §4 |
-| D8 | 只有一个审批队列，超时即拒；批准、拒绝、拍板、刹车只挂在要配对 cookie 的页面上，不经 agent、不自动放行 | r4 §4 |
-| D9 | AutoRoute：先确定性规则，再 router-core，只有模糊时才用 LLM；先影子后上线 | r4 §4 |
-| 代-2 | 真实 profile 只由用户在可见控制台里启动和配对；配对码只在 stdin、stdout 都是 TTY 时打印；agent 只许起测试 profile | `docs/plans/2026-10-31-m0-implementation-plan.md` |
-| r4 §9.2 | 路由的十步流水线；拿不准时出「Route to?」卡，绝不默认派给谁 | r4 §9.2 |
-| r4 §9.5 | M1 起每次派活都记一条 mode=manual 的 RouteDecision | r4 §9.5 |
-| r4 §10.9 | 审批：超时即拒（默认 30 min）、批准绑定请求摘要、列表变化后 750 ms 内无效、高风险要键入或长按确认 | r4 §10.9 |
-| RouteDecision | 每次派活写进 journal 的一条 `route` 记录：候选、人选了哪个、理由、路由模型和它为什么没用上 | 计划 §3、`src/route/` |
-| T1 / T2 / T3 | 诚实规则：不知道写「未知」不写「没有」 / 不写「完成」 / 计数等于它链接的列表长度 | `shared/tower-contract.js` 注释、计划 §1 |
-| M0 / M1 | r4 的里程碑：只读注意力层 / 自有会话互发消息 | r4 §4 D1 |
-| S4 用例 a | procguard 实验里的一例：Node 父进程把子进程放进自己的 libuv Job，父进程一死子进程跟着死 | `spikes/s4-procguard/REPORT.md` |
-| 0.2 设计 | alpha 0.2 交互薄切片的设计稿（Claude host、审批、POST 检查链） | `docs/plans/2026-11-02-alpha-0.2-slice-design.md` |
-| 测试 profile | `--test-profile --test-dir <dir>`：数据全在那个测试目录里，不碰真实数据 | `src/boot.ts` |
-| magpie | 本机模型网关，`http://127.0.0.1:3425`，不要密钥 | 计划「已实测」 |
-| procguard / Job | 本仓库的 C# 进程看守程序；Job 是 Windows 的进程组，可整组结束 | `native/procguard/ProcGuard.cs` |
-| daemon-stop | 自有会话的结束原因：orchestrad 停机时结束了它 | `shared/strings.js` life.daemon-stop |
-| seat | 把 Orchestra 注册成 DSH 受治理子代理后端的方案：DSH 只能经请求口提请求，人在配对页派出 | `integrations/dsh-seat/README.md`、计划「seat 第 1/2 步」 |
-| A16 | 薄完成：只交状态、有界摘要和引用，截断要标明 | r4 |
-| A17 | agent 只能请求新乐手，产生一条由人批准的条目 | r4 |
-| D19 | 任何 agent 都不能宣布完成 | r4 |
-| final.md §6.3 B | seat 方案里推迟的 pipe 对端进程（pid）校验 | 本轮 seat 调研 final.md（不在仓库） |
+| D4 | 每个自有子进程各在一个随关闭即杀的 Job 里，由 procguard 拉起 | r4 §4 |
+| D8 | 只有一个审批队列，超时即拒；派出、批准、刹车只由人在配对页上做 | r4 §4 |
+| D11 | 只对接不魔改上游；日常 DSH profile 默认不放 Orchestra 代码，主人可自己选择装 | r4 §4 |
+| Q5a | 以后可以 opt-in，但同一版本要先在隔离 DSH_HOME 里验过 | r4 |
+| 代-2 | 真实 profile 只由用户在可见控制台里启动和配对；agent 只许起测试 profile | `docs/plans/2026-10-31-m0-implementation-plan.md` |
+| r4 §7.4 | 自有会话工作目录里的受保护路径（`.claude/**`、`.git/hooks/**`、`package.json` 等），写入要键入确认 | r4 §7.4 |
+| r4 §8.5 | 来源链里有不可信发送者时按 tainted 处理：Claude 一律询问，Codex 用 untrusted 审批策略 | r4 §8.5 |
+| r4 §10.8 | 同一根目录两个会话改同一路径时告警 | r4 §10.8 |
+| r4 §9.2 | 路由十步流水线（router-core） | r4 §9.2 |
+| RouteDecision | 每次派活写进 journal 的 `route` 记录 | 计划 §3、`src/route/` |
+| T1 / T2 / T3 | 不知道写「未知」/ 不写「完成」/ 计数等于它链接的列表长度 | `shared/tower-contract.js` 注释 |
+| seat | 把 Orchestra 注册成 DSH 受治理子代理后端：DSH 只能经请求口提请求，人在配对页派出 | `integrations/dsh-seat/README.md` |
+| `--project-root` | 启动时放行的项目目录；自有会话和落在根里的 seat 请求可以在里面干活 | `src/os/project-roots.ts`、quickstart 1.3 |
+| tainted | 会话来源不可信，每次调用工具都问人 | r4 §8.5、`src/owned/claude-session.ts` |
+| 测试 profile | `--test-profile --test-dir <dir>`：数据全在那个测试目录里 | `src/boot.ts` |
+| magpie | 本机模型网关 `http://127.0.0.1:3425` | 计划「已实测」 |
+| procguard / Job | 本仓库的 C# 进程看守程序；Job 是 Windows 进程组，可整组结束 | `native/procguard/ProcGuard.cs` |
