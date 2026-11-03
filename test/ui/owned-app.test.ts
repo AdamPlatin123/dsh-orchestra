@@ -200,6 +200,9 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     assert.deepEqual(posts('/api/owned/unlock-code').map((r) => r.body), [undefined]);
     const dlg = doc.getElementById('unlock-dlg')!;
     assert.equal(dlg.open, true);
+    // Each code replaces the last: more clicks (a held Enter) while the dialog is open ask for no new one.
+    for (let i = 0; i < 3; i++) await click(bar.querySelector('[data-act=unlock]'));
+    assert.equal(posts('/api/owned/unlock-code').length, 1, 'one code per dialog: the printed code stays the one to type');
     (doc.getElementById('ul-code') as any).value = '00000000';
     await click(dlg.querySelector('[data-act=unlockGo]'));
     assert.equal(dlg.querySelector('[data-slot=msg]')!.textContent, TOWER_TEXT['unlock.wrong']);

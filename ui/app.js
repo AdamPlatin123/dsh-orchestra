@@ -87,6 +87,8 @@ const state = {
   justHeld: null,
   apprFocus: null,
   busy: false,
+  // An unlock code is being asked for (one at a time: each replaces the last).
+  unlockAsking: false,
   note: null,
   noteOff: null,
   to: null,
@@ -404,7 +406,12 @@ const dlgSay = (id, text) => dom.paintId(id, { slots: { msg: { text } } });
 /** The daemon prints a code on its console (204: never in a reply). */
 async function unlockStart() {
   if (state.csrf !== null) return say(t('unlock.ok'));
-  const a = await post(null, 'owned/unlock-code', null);
+  // Each code replaces the last (src/server/owned.ts issue): a held Enter or quick clicks once asked 7 times
+  // in 60 ms on the real profile (2026-11-03), and only the last printed code worked. One ask at a time; an
+  // open dialog keeps its code.
+  if (state.unlockAsking || /** @type {any} */ (dom.byId('unlock-dlg')).open) return openDlg('unlock-dlg', 'ul-code');
+  state.unlockAsking = true;
+  const a = await post(null, 'owned/unlock-code', null).finally(() => { state.unlockAsking = false; });
   if (!a.ok) return say(a.code === 'http-503' ? t('unlock.off') : a.code === 'unpaired' ? t('unlock.closed') : errText(a.code));
   dlgSay('unlock-dlg', '');
   openDlg('unlock-dlg', 'ul-code');
