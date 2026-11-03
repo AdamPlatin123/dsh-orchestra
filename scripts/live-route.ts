@@ -14,8 +14,9 @@
 // The router model's title and reason are its words about a synthetic sentence; only their lengths are
 // printed. Never a code, a token or a path outside the test dir. The test dir is removed unless --keep.
 //
-// A dispatched session is ended through orchestrad and the stop order waited out before orchestrad is
-// killed; the children it recorded are looked for afterwards (scripts/live-common.ts).
+// A dispatched session is ended through orchestrad and the stop order waited out; orchestrad is then
+// stopped by closing its stdin (killed only when it has not exited 15 s later); the children it recorded
+// are looked for afterwards (scripts/live-common.ts).
 //
 // Listed in EXEMPT_SCRIPTS (test/helpers/scan-rules.ts), as live-smoke.ts: it spawns orchestrad, speaks
 // HTTP to it on 127.0.0.1 and waits on timers; it touches no harness root.
@@ -26,7 +27,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { endAndWait, leftovers, request, sleep } from './live-common.ts';
+import { endAndWait, leftovers, request, sleep, stopDaemon } from './live-common.ts';
 
 const REPO = fileURLToPath(new URL('../', import.meta.url));
 const SENTENCES = ['把 README 翻成英文', '用 codex 修一个测试', '解释一下这段代码'];
@@ -134,8 +135,7 @@ async function main(): Promise<number> {
     report.error = e instanceof Error ? e.message : String(e);
     report.orchestradSaid = lines.filter((l) => /owned|refus|failed|error/i.test(l) && !/code \d{8}/.test(l)).map((l) => l.replace(testDir, '<testDir>'));
   } finally {
-    child.kill();
-    await Promise.race([exited, sleep(5000)]);
+    report.orchestradStopped = await stopDaemon(child, exited);
     report.leftovers = leftovers(testDir);
     if (!keep) {
       for (let i = 0; i < 10; i++) {

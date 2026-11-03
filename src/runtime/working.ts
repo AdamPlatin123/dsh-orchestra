@@ -27,6 +27,7 @@ import type { DataDirInput } from './data-dir.ts';
 import type { DaemonInfo, HeldLock } from './lock.ts';
 import type { ConsolePort, Log } from './log.ts';
 import type { StartupNote } from './startup.ts';
+import type { StdinEndWhy, StdinKind } from './stdin-end.ts';
 import type { PairingOutput, Profile } from './test-profile.ts';
 import { rootDenyList } from '../fs/harness-roots.ts';
 import { pathKey } from '../fs/paths.ts';
@@ -51,10 +52,18 @@ const win = path.win32;
 // journal-chain carries the ui-only exit code (22), main.ts prints why and the process ends with the
 // lock, never released by hand while the process lives on (step 2b; D-17 either way).
 
+/** What asked a working orchestrad to stop: a signal (Ctrl+C and friends), or its stdin pipe ending (src/runtime/stdin-end.ts). */
+export type StopWhy = 'signal' | StdinEndWhy;
+
 /** How a working orchestrad stops. */
 export type StopPort = {
-  /** Arranges for `stop` to run on Ctrl+C and friends; returns the undo. */
-  onSignal(stop: () => void): () => void;
+  /**
+   * Arranges for `stop` to run on Ctrl+C and friends, and, when stdin is a pipe, on its end (the program
+   * that started orchestrad is gone or closed it); returns the undo. Each way runs the same stop.
+   */
+  onSignal(stop: (why?: StopWhy, detail?: string | null) => void): () => void;
+  /** What stdin is (main.ts: process.stdin); absent: not known, said as nothing. Only 'pipe' ends orchestrad when it ends. */
+  stdin?(): StdinKind;
   /**
    * Ends this orchestrad: the only way its lock is given up, so no process keeps running without
    * it while a second instance takes over. stop() calls it last, after the log and pid sinks are
@@ -505,9 +514,15 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
     await ctx.stopping.end(lock);
     resolveStopped();
   })());
-  uninstall = ctx.stopping.onSignal(() => {
+  uninstall = ctx.stopping.onSignal((why = 'signal', detail = null) => {
+    log.info('stop-asked', { why, detail });
+    if (why !== 'signal') ctx.console.out(`orchestrad: stdin ${why === 'stdin-eof' ? 'closed' : `failed (${detail ?? 'unknown'})`}: the program that started orchestrad is gone or let go of it; stopping as on Ctrl+C`);
     void stop();
   });
+  if (ctx.stopping.stdin?.() === 'pipe') {
+    log.info('stdin-watch', { kind: 'pipe' });
+    ctx.console.out('orchestrad: stdin is a pipe: when it closes, orchestrad stops as on Ctrl+C (owned sessions end, then the process exits)');
+  }
 
   log.info('working', { profile: ctx.profile.kind, pipe, bootId });
   // Last line of the startup: everything above is on disk and on the console before it.

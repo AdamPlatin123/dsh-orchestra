@@ -1,7 +1,12 @@
 // The live end-to-end run of an owned session (orchestra app step 4): orchestrad in the test profile with
 // --owned, driven over HTTP exactly as the page drives it, against the real codex.exe or the Claude host
 // and the local magpie gateway (http://127.0.0.1:3425, no key). Not part of the test run.
-//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--outside | --brake] [--keep]
+//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--outside | --brake | --daemon-stop] [--keep]
+//
+// --daemon-stop (orchestra app: stdin-EOF shutdown): after the reply the session is not ended through the
+// page; orchestrad's stdin is closed instead, as when the program that started it goes away. The run
+// checks that orchestrad exited by itself (not killed), that the session's record on disk ended with
+// daemon-stop, and by pid + creation time that nothing of the session's Job survived.
 //
 // --brake (orchestra app: owned sessions in procguard Jobs): the task is instead to start a ping that
 // keeps running (Start-Process, so it outlives the command that started it), the run waits until that
@@ -30,8 +35,9 @@
 //
 // Leaving nothing behind: every request has a 30 s deadline, and the loop checks the time limit after each
 // one; whatever happens, a session that was dispatched is ended through orchestrad (POST /end, then the
-// stop order is waited out) before orchestrad is killed, and the children orchestrad recorded are looked
-// for afterwards (and ended, with their trees, when still there).
+// stop order is waited out; with --daemon-stop through orchestrad's own stop instead), orchestrad is
+// stopped by closing its stdin (killed only if it has not exited 15 s later), and the children orchestrad
+// recorded are looked for afterwards (and ended, with their trees, when still there).
 //
 // Listed in EXEMPT_SCRIPTS (test/helpers/scan-rules.ts): it spawns orchestrad, speaks HTTP to it on
 // 127.0.0.1, waits on timers and reads the one file the session wrote in its test dir; it touches no
@@ -43,7 +49,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { endAndWait, jobsOf, leftovers, probe, request, sleep } from './live-common.ts';
+import { endAndWait, endReasonOnDisk, jobsOf, leftovers, probe, request, sleep, stopDaemon } from './live-common.ts';
 
 const REPO = fileURLToPath(new URL('../', import.meta.url));
 const FILE = 'smoke.txt';
@@ -57,24 +63,26 @@ const outsideTask = (file: string) => `Run a shell command that prints the conte
 const BRAKE_TASK = 'Run exactly this one shell command, once, and then reply with the single word started: '
   + 'powershell -NoProfile -Command "Start-Process -WindowStyle Hidden -FilePath ping.exe -ArgumentList \'-t\',\'127.0.0.1\'"';
 
-function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean; outside: boolean; brake: boolean } {
+function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean; outside: boolean; brake: boolean; daemonStop: boolean } {
   const a = process.argv.slice(2);
   let harness: string | null = null;
   let model: string | null = null;
   let keep = false;
   let outside = false;
   let brake = false;
+  let daemonStop = false;
   for (let i = 0; i < a.length; i++) {
     if (a[i] === '--harness') harness = a[++i] ?? null;
     else if (a[i] === '--model') model = a[++i] ?? null;
     else if (a[i] === '--keep') keep = true;
     else if (a[i] === '--outside') outside = true;
     else if (a[i] === '--brake') brake = true;
+    else if (a[i] === '--daemon-stop') daemonStop = true;
     else throw new Error(`live-smoke: unknown argument ${a[i]}`);
   }
   if (harness !== 'codex' && harness !== 'claude') throw new Error('live-smoke: --harness codex|claude');
-  if (outside && brake) throw new Error('live-smoke: --outside or --brake, not both');
-  return { harness, model, keep, outside, brake };
+  if ([outside, brake, daemonStop].filter(Boolean).length > 1) throw new Error('live-smoke: one of --outside, --brake, --daemon-stop');
+  return { harness, model, keep, outside, brake, daemonStop };
 }
 
 function freePort(): Promise<number> {
@@ -90,7 +98,7 @@ function freePort(): Promise<number> {
 
 
 async function main(): Promise<number> {
-  const { harness, model, keep, outside, brake } = args();
+  const { harness, model, keep, outside, brake, daemonStop } = args();
   const testDir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'orchestra-test-smoke-'));
   fs.mkdirSync(path.join(testDir, 'roots'));
   const port = await freePort();
@@ -220,7 +228,13 @@ async function main(): Promise<number> {
     } else {
       report.jobBeforeEnd = null;
     }
-    if (brake) {
+    if (daemonStop) {
+      // As when the program that started orchestrad goes away: its stdin closes, and its own stop runs.
+      endIt = null;
+      report.daemonStop = await stopDaemon(child, exited);
+      report.orchestradStopped = report.daemonStop;
+      report.daemonStopRecord = endReasonOnDisk(testDir, id);
+    } else if (brake) {
       const b = await post(`/api/owned/${id}/brake`, {});
       report.brakeAnswer = { status: b.status, killed: b.json?.killed ?? null, left: b.json?.left ?? null, error: b.json?.error ?? null };
       await sleep(500);
@@ -230,21 +244,25 @@ async function main(): Promise<number> {
       endIt = null;
     }
     if (pg !== null) report.survivors = held.length === 0 ? null : (await pg.alive(held)).length;
-    const last = (await get('/api/owned')).json.owned.find((o: { ownedId: string }) => o.ownedId === id);
+    const last = daemonStop ? null : (await get('/api/owned')).json.owned.find((o: { ownedId: string }) => o.ownedId === id);
     const count: Record<string, number> = {};
     for (const e of events) {
       const k = `${e.kind}${e.state === null ? '' : `:${e.state}`}`;
       count[k] = (count[k] ?? 0) + 1;
     }
     Object.assign(report, {
-      states, endState: last === undefined ? null : `${last.state}/${last.endReason}`,
+      states, endState: last === undefined || last === null ? null : `${last.state}/${last.endReason}`,
       approvalsAllowed: allowed, approvalRefusals: refusals, feedEvents: count, replyInFeed: replied, replyNamesTheWord: mentions,
       fileWritten: written !== null, fileContentAsAsked: written !== null && written.trim() === WORD,
     });
     if (outside) report.ranUnasked = events.filter((e) => e.kind === 'note' && e.state === 'ran-unasked').length;
-    report.treeNotes = ((await get(`/api/owned/${id}/feed`)).json?.events ?? []).filter((e: { kind: string; state: string }) => e.kind === 'note' && /^tree-|children-may-remain|host-killed/.test(e.state)).map((e: { state: string; text: string | null }) => `${e.state}${e.text === null ? '' : `=${e.text}`}`);
+    if (!daemonStop) report.treeNotes = ((await get(`/api/owned/${id}/feed`)).json?.events ?? []).filter((e: { kind: string; state: string }) => e.kind === 'note' && /^tree-|children-may-remain|host-killed/.test(e.state)).map((e: { state: string; text: string | null }) => `${e.state}${e.text === null ? '' : `=${e.text}`}`);
     const noSurvivors = pg === null || report.survivors === 0;
-    code = brake
+    const ds = report.daemonStop as { how: string; code: number | null } | undefined;
+    const dsRecord = report.daemonStopRecord as { endReason: string | null } | null | undefined;
+    code = daemonStop
+      ? (ds?.how === 'stdin-eof' && ds.code === 0 && dsRecord?.endReason === 'daemon-stop' && report.survivors === 0 && held.length > 0 ? 0 : 1)
+      : brake
       ? (report.survivors === 0 && (report.brakeAnswer as { status: number }).status === 200 && last?.endReason === 'braked' && held.length > 0 ? 0 : 1)
       : outside ? (replied ? 0 : 1) : replied && written !== null && written.trim() === WORD && noSurvivors ? 0 : 1;
   } catch (e) {
@@ -253,9 +271,9 @@ async function main(): Promise<number> {
   } finally {
     // A session the run did not get to end (an error on the way) is ended through orchestrad first.
     if (ownedId !== null && endIt !== null) await endIt().catch(() => {});
-    child.kill();
-    await Promise.race([exited, sleep(5000)]);
-    // After orchestrad itself is gone (killed: no stop order of its own ran), nothing of the Job may remain.
+    // orchestrad stops through its stdin (its own stop runs); killed only when that does not end it in time.
+    report.orchestradStopped ??= await stopDaemon(child, exited);
+    // After orchestrad itself is gone, nothing of the Job may remain.
     if (pg !== null) {
       if (held.length > 0) report.survivorsAfterDaemon = (await pg.alive(held)).length;
       pg.close();

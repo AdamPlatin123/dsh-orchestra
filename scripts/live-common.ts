@@ -1,8 +1,9 @@
 // What the live runs (scripts/live-smoke.ts, scripts/live-route.ts) share for talking to orchestrad and
 // for leaving nothing behind (orchestra app plan, phase 3 review): an HTTP request with a deadline, so a
 // reply that never comes cannot hang a run (and keep orchestrad, a host, claude.exe or codex.exe alive);
-// the end of an owned session waited out through the stop order before orchestrad is killed (a kill on
-// Windows is TerminateProcess: orchestrad's own stop never runs); and a look at the children orchestrad
+// the end of an owned session waited out through the stop order; orchestrad itself stopped by closing its
+// stdin (stopDaemon: it then runs its own stop, as on Ctrl+C), and killed only when that does not end it in
+// time (a kill on Windows is TerminateProcess: orchestrad's own stop never runs); and a look at the children orchestrad
 // recorded (run/pids.jsonl of the test dir) once it is gone, ending only those still there whose image is
 // the one the rule started (node.exe for claude-host, codex.exe for codex-app-server, procguard.exe for
 // the wrapped rules and the resident), with their trees. With procguard on, a session's whole tree is in
@@ -70,6 +71,38 @@ export async function endAndWait(end: () => Promise<Reply>, state: () => Promise
   }
   await sleep(STOP_ORDER_MS);
   return { endAnswer, settled };
+}
+
+/**
+ * How long orchestrad may take to stop once its stdin closed: its own wait for the Claude hosts' stop order
+ * (src/runtime/working.ts OWNED_STOP_WAIT_MS, 6 s), the store and the console, and a margin.
+ */
+export const DAEMON_STOP_MS = 15_000;
+
+/**
+ * Stops orchestrad the way a parent that goes away does: its stdin (a pipe) is closed, and orchestrad runs
+ * the same stop as Ctrl+C (src/runtime/stdin-end.ts): owned sessions end with daemon-stop, their Jobs close,
+ * the store closes, it exits 0. Only when it has not exited within `ms` is it killed (a kill on Windows is
+ * TerminateProcess: no stop of its own runs). Says which of the two it took and the exit code.
+ */
+export async function stopDaemon(child: { stdin: { end(): unknown } | null; kill(): boolean }, exited: Promise<number | null>, ms = DAEMON_STOP_MS): Promise<{ how: 'stdin-eof' | 'killed'; code: number | null }> {
+  child.stdin?.end();
+  const timeout = Symbol('timeout');
+  const first = await Promise.race([exited, sleep(ms).then(() => timeout)]);
+  if (first !== timeout) return { how: 'stdin-eof', code: first as number | null };
+  child.kill();
+  const code = await Promise.race([exited, sleep(5000).then(() => null)]);
+  return { how: 'killed', code };
+}
+
+/** The end reason orchestrad wrote for an owned session (ORCHESTRA_HOME\owned\<id>.json in the test dir), or null when there is none. */
+export function endReasonOnDisk(testDir: string, ownedId: string): { state: string | null; endReason: string | null } | null {
+  try {
+    const o = JSON.parse(fs.readFileSync(path.join(testDir, 'orchestra', 'owned', `${ownedId}.json`), 'utf8')) as { state?: unknown; endReason?: unknown };
+    return { state: typeof o.state === 'string' ? o.state : null, endReason: typeof o.endReason === 'string' ? o.endReason : null };
+  } catch {
+    return null;
+  }
 }
 
 const IMAGE: Readonly<Record<string, string>> = {

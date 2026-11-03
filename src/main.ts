@@ -16,7 +16,8 @@ import type { Integrity } from './runtime/integrity.ts';
 import type { ConsolePort } from './runtime/log.ts';
 import type { StartupPlan } from './runtime/startup.ts';
 import type { InTestRealProfile, Profile, ProfileRefusal } from './runtime/test-profile.ts';
-import type { StopPort, WorkingOutcome } from './runtime/working.ts';
+import type { StopPort, StopWhy, WorkingOutcome } from './runtime/working.ts';
+import type { StdinKind } from './runtime/stdin-end.ts';
 import { computeHarnessRoots, launcherRootFs } from './fs/harness-roots.ts';
 import { PidLog, resolveSystemRoot } from './os/spawn.ts';
 import { checkDataDir } from './runtime/data-dir.ts';
@@ -25,6 +26,7 @@ import { describeIntegrity, probeIntegrity } from './runtime/integrity.ts';
 import { Log } from './runtime/log.ts';
 import { envGet, ownFields } from './runtime/own.ts';
 import { EXIT, describeNote, planExit, planMessage, planStartup } from './runtime/startup.ts';
+import { stdinKind, watchStdinEnd } from './runtime/stdin-end.ts';
 import { describeRefusal, parseProfileArgs, testProfileRoots } from './runtime/test-profile.ts';
 
 // start(): arguments (the real profile refuses under the test runner, read from this process's own
@@ -70,8 +72,8 @@ export type StartOutcome =
 
 const STOP_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGBREAK'] as const;
 
-function installStopSignals(stop: () => void): () => void {
-  const handler = () => stop();
+function installStopSignals(stop: (why: StopWhy) => void): () => void {
+  const handler = () => stop('signal');
   for (const s of STOP_SIGNALS) process.on(s, handler);
   return () => {
     for (const s of STOP_SIGNALS) process.off(s, handler);
@@ -86,8 +88,21 @@ function installStopSignals(stop: () => void): () => void {
  * listener or a stalled console write would make of it.
  */
 function processStopping(endProcess: (code: number) => void): StopPort {
+  // Asked only once working: process.stdin is made on first read, and a refused start never reads it.
+  let kind: StdinKind | null = null;
+  const stdin = (): StdinKind => (kind ??= stdinKind(process.stdin));
   return {
-    onSignal: installStopSignals,
+    stdin,
+    // A pipe for stdin (a launcher or a script started orchestrad): its end stops orchestrad the way
+    // Ctrl+C does (src/runtime/stdin-end.ts). A console or NUL (stdio 'ignore', a detached start) never.
+    onSignal: (stop) => {
+      const signals = installStopSignals(stop);
+      const pipe = stdin() === 'pipe' ? watchStdinEnd(process.stdin, (why, detail) => stop(why, detail)) : () => {};
+      return () => {
+        signals();
+        pipe();
+      };
+    },
     end: () => new Promise<void>(() => {
       endProcess(EXIT.ok);
     }),
@@ -106,6 +121,22 @@ function ownPorts(given: BootPorts): Pick<BootPorts, (typeof PORT_KEYS)[number]>
   return Object.freeze(p) as Pick<BootPorts, (typeof PORT_KEYS)[number]>;
 }
 
+let consoleGuarded = false;
+
+/**
+ * stdout and stderr may be pipes whose reader is gone: the program that started orchestrad died, which is
+ * the case the stdin watch stops for. A write then fails (EPIPE) and the stream emits 'error', which with
+ * no listener would crash orchestrad in the middle of its stop, before the owned sessions end. A precaution:
+ * in the one run measured (Node 24, a detached orchestrad whose parent was killed) the status line after
+ * the parent's death raised no error. A console nobody reads has nobody to tell: the error is dropped;
+ * run/orchestrad.log still gets every entry.
+ */
+function guardConsole(): void {
+  if (consoleGuarded) return;
+  consoleGuarded = true;
+  for (const s of [process.stdout, process.stderr]) s.on('error', () => {});
+}
+
 export function defaultStartDeps(ports: Pick<BootPorts, (typeof PORT_KEYS)[number]>): StartDeps {
   return {
     argv: process.argv.slice(2),
@@ -115,9 +146,11 @@ export function defaultStartDeps(ports: Pick<BootPorts, (typeof PORT_KEYS)[numbe
     tty: () => ({ stdin: process.stdin.isTTY === true, stdout: process.stdout.isTTY === true }),
     console: {
       out: (line) => {
+        guardConsole();
         process.stdout.write(`${line}\n`);
       },
       err: (line) => {
+        guardConsole();
         process.stderr.write(`${line}\n`);
       },
     },

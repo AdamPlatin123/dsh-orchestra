@@ -133,7 +133,7 @@ export const PROCESS_POWERS: readonly Power[] = frozen([
   keep('hasUncaughtExceptionCaptureCallback', 'function', 'a yes/no question'),
   keep('stdout', 'accessor', 'the console; a residual (zen note 7.1): net.Socket is reachable through its prototype chain'),
   keep('stderr', 'accessor', 'the console, the same'),
-  keep('stdin', 'accessor', 'the console input; nothing in orchestrad reads it'),
+  keep('stdin', 'accessor', 'the console input; main.ts reads a pipe only to its end, dropping what it reads (src/runtime/stdin-end.ts)'),
   keep('openStdin', 'function', 'the same input'),
   keep('_rawDebug', 'function', 'writes to stderr only'),
   keep('emitWarning', 'function', 'writes a warning to stderr'),
