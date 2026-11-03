@@ -502,7 +502,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
       if (ctx.agentPort === true && ctx.owned === true) {
         if ((codexOwned === null && claudeOwned === null) || ownedRedact === null) agentStatus = { on: false, why: 'owned-off', detail: null };
         else {
-          const { makeRequests } = await import('../route/requests.ts');
+          const { makeRequests, requestedOwnedIn } = await import('../route/requests.ts');
           const { endOwnedFor } = await import('../server/owned-handlers.ts');
           const redactOwned = ownedRedact!;
           requests = makeRequests({
@@ -516,6 +516,8 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
             ...(desk === null ? {} : { suggest: (text: string, harness: 'codex' | 'claude') => desk!.suggest(text, harness) }),
             ttlMs: AGENT_REQUEST_TTL_MS,
             onMove: (r, from) => log.info('agent-request', { requestId: r.requestId, from, to: r.state, why: r.why, harness: r.harness, ownedId: r.ownedId }),
+            // A session page still says it was asked for after this restart forgot the request itself.
+            seeded: requestedOwnedIn(store.db),
           });
         }
       }
@@ -547,7 +549,14 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
           enabled: ownedEnabled(deps),
           handlers: registerOwnedHandlers(deps),
         },
-        ...(owners.length === 0 ? {} : { ownedSeats: { seats: () => owners.flatMap((o) => o.towerSeats()), nowWall: () => wall.nowWall(), dispatch: lastDispatch } }),
+        ...(owners.length === 0 ? {} : {
+          ownedSeats: {
+            seats: () => owners.flatMap((o) => o.towerSeats()), nowWall: () => wall.nowWall(), dispatch: lastDispatch,
+            // seat: the pending agent requests as a paired page sees them before it is unlocked (harness and
+            // deadline only, never the text): it knows something waits and that it is refused at the deadline.
+            asks: () => (requests?.list() ?? []).filter((r) => r.state === 'pending').map((r) => ({ harness: r.harness, deadline: r.expiresWall })),
+          },
+        }),
       });
       peek = server;
       ctx.console.out(`orchestrad: peek page at ${server.url} (read-only; pair with the code above)`);
@@ -556,6 +565,9 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
         const testName = ctx.profile.kind === 'test' ? win.basename(ctx.profile.testDir).slice(TEST_DIR_PREFIX.length) : null;
         const judge = judgeOwned;
         const started = await startAgentPort({
+          after: oneShot(ctx.clock, 'agent-port'),
+          nowMono: () => wall.nowMono(),
+          nowWall: () => wall.nowWall(),
           pipe: agentPipeName(ctx.profile.kind, testName),
           tokenFile: win.join(home, AGENT_TOKEN_FILE),
           writeToken: (file, text) => fence.writeAtomic(file, text),
@@ -603,8 +615,9 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   let ending: Promise<void> | null = null;
   const stop = (): Promise<void> => (ending ??= (async () => {
     uninstall();
-    // The agent side first: open requests are over (failed, daemon-stop), their long polls answered, then
-    // the pipe closes and its token file goes. Nothing can ask for work while the sessions are ending.
+    // The agent side first: open requests are over (failed, daemon-stop), then the port lets its long polls
+    // hand that reply to the pipe (agent-port close(): closeWaitMs at most) before the pipe closes and its
+    // token file goes. Nothing can ask for work while the sessions are ending.
     requests?.close();
     if (agentPort !== null) await agentPort.close();
     // The owned sessions first: their open approvals are declined while the children can still read it.

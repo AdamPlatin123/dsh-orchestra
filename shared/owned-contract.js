@@ -49,6 +49,8 @@ export const OWNED_ENUMS = frozen({
    */
   requestState: ['pending', 'dispatched', 'running', 'done', 'rejected', 'expired', 'withdrawn', 'failed'],
   requestSource: ['rule', 'model'],
+  /** Where a pending card's suggestion stands (src/route/requests.ts SuggestState). */
+  requestSuggesting: ['asking', 'no-desk', 'none', 'failed', 'ready'],
 });
 
 export const OWNED_BOUNDS = frozen({
@@ -108,7 +110,8 @@ export const OWNED_CODE_RE = frozen(/^[a-z][a-z0-9.-]{0,63}$/);
 /** An agent request's id (src/route/requests.ts REQUEST_ID_RE). */
 export const REQUEST_ID_RE = frozen(/^[0-9a-f]{20}$/);
 /** Who asked, as the card names it: dsh:<its session id> (an id, never free text). */
-export const REQUESTER_RE = frozen(/^dsh:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/);
+/** A requester as the list names it: dsh:<its session id>, or dsh when it named none. */
+export const REQUESTER_RE = frozen(/^dsh(?::[A-Za-z0-9][A-Za-z0-9_.:-]{0,127})?$/);
 /** A model of the owned list (src/owned/models.ts OWNED_MODEL_RE). */
 export const OWNED_MODEL_NAME_RE = frozen(/^(?:zcode|opencode-go|codex)\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
 // C0 and C1 controls but tab and newline, DEL, and the bidi embeddings, overrides and isolates.
@@ -119,7 +122,10 @@ const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
  *   v: 1, kind: 'owned-list', rev: number, enabled: boolean, disabledWhy: string | null, brakeWhy: string | null,
  *   harnesses: { codex: boolean, claude: boolean },
  *   owned: OwnedEntry[], approvals: ApprovalEntry[], limits: { maxOwned: number, active: number }, requests: RequestEntry[],
+ *   requestedGone: string[],
  * }} OwnedList
+ *   requestedGone: ownedIds of sessions you dispatched for an agent request whose details orchestrad no longer
+ *   holds (evicted from memory, or from before a restart, as the journal says); never one listed in requests.
  *   rev: the approval queue's revision; the page sends it back with an allow (stale-view otherwise).
  *   enabled: whether any harness can start a session now; disabledWhy says why not (null when enabled).
  *   brakeWhy: why a new session's tree runs without a procguard Job of its own, so it has no brake, or why
@@ -134,11 +140,16 @@ const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
  * @typedef {{ input: number, cachedInput: number, output: number, total: number }} Tokens
  * @typedef {{
  *   requestId: string, harness: 'codex' | 'claude', label: string | null, text: string, cwd: string, requester: string, state: string,
- *   createdAt: number, expiresAt: number, ownedId: string | null, why: string | null,
+ *   createdAt: number, expiresAt: number, ownedId: string | null, why: string | null, fetched: boolean,
  *   suggestion: { routeId: string | null, router: string, models: { model: string, source: string, rule: string | null, reason: string | null }[], pick: number | null } | null,
+ *   suggesting: 'asking' | 'no-desk' | 'none' | 'failed' | 'ready',
  * }} RequestEntry
  *   An agent request (seat): text, label and cwd are the requester's words, redacted and shown; expiresAt the wall
- *   time a pending one is refused at by itself (D8); ownedId the session you dispatched for it.
+ *   time a pending one is refused at by itself (D8); ownedId the session you dispatched for it. requester is
+ *   dsh:<id> or dsh when it named none: its own word, never checked (the page says 自称, 未核实, and 未知
+ *   for none). fetched: a done reply went to the agent port's pipe (whether the requester read it, unknown);
+ *   only a done request is ever fetched. suggesting: where the suggestion stands (ready exactly when the
+ *   suggestion is there, for a request still pending when it came).
  * @typedef {{
  *   approvalId: string, ownedId: string, kind: string, title: string, preview: string, tooLong: boolean, redactions: number,
  *   digest: string, risk: string, high: boolean, rev: number, canAccept: boolean, canText: boolean, deadline: number,
@@ -240,7 +251,7 @@ function checkTokens(c, v, at) {
  */
 export function validateOwnedList(x) {
   const c = checker();
-  const s = c.obj(x, '$', ['v', 'kind', 'rev', 'enabled', 'disabledWhy', 'brakeWhy', 'harnesses', 'owned', 'approvals', 'limits', 'requests']);
+  const s = c.obj(x, '$', ['v', 'kind', 'rev', 'enabled', 'disabledWhy', 'brakeWhy', 'harnesses', 'owned', 'approvals', 'limits', 'requests', 'requestedGone']);
   if (s === null) return { ok: false, errors: c.errors };
   if (s.v !== OWNED_V) c.bad('$.v', `${JSON.stringify(s.v)}, not ${OWNED_V}`);
   if (s.kind !== 'owned-list') c.bad('$.kind', `${JSON.stringify(s.kind)}, not owned-list`);
@@ -333,6 +344,11 @@ export function validateOwnedList(x) {
   }
 
   checkRequests(c, s.requests);
+  const listed = new Set(c.arr(s.requests, '$.requests').map((r) => (r !== null && typeof r === 'object' ? /** @type {any} */ (r).ownedId : null)));
+  c.arr(s.requestedGone, '$.requestedGone').forEach((id, i) => {
+    c.re(id, `$.requestedGone[${i}]`, OWNED_ID_RE, 'owned id');
+    if (listed.has(id)) c.bad(`$.requestedGone[${i}]`, `${String(id)} is a listed request's session`);
+  });
 
   const limits = c.obj(s.limits, '$.limits', ['maxOwned', 'active']);
   if (limits !== null) {
@@ -356,7 +372,7 @@ function checkRequests(c, v) {
   const ids = new Set();
   c.arr(v, '$.requests').forEach((e, i) => {
     const at = `$.requests[${i}]`;
-    const r = c.obj(e, at, ['requestId', 'harness', 'label', 'text', 'cwd', 'requester', 'state', 'createdAt', 'expiresAt', 'ownedId', 'why', 'suggestion']);
+    const r = c.obj(e, at, ['requestId', 'harness', 'label', 'text', 'cwd', 'requester', 'state', 'createdAt', 'expiresAt', 'ownedId', 'why', 'fetched', 'suggestion', 'suggesting']);
     if (r === null) return;
     c.re(r.requestId, `${at}.requestId`, REQUEST_ID_RE, 'request id');
     if (ids.has(r.requestId)) c.bad(`${at}.requestId`, `${String(r.requestId)} listed twice`);
@@ -375,6 +391,10 @@ function checkRequests(c, v) {
     if (bound && r.ownedId === null) c.bad(`${at}.ownedId`, `a ${String(r.state)} request names its session`);
     if (unbound && r.ownedId !== null) c.bad(`${at}.ownedId`, `a ${String(r.state)} request names no session`);
     if (r.why !== null) c.re(r.why, `${at}.why`, OWNED_CODE_RE, 'code');
+    c.bool(r.fetched, `${at}.fetched`);
+    if (r.fetched === true && r.state !== 'done') c.bad(`${at}.fetched`, `a ${String(r.state)} request was never handed back`);
+    c.en(r.suggesting, `${at}.suggesting`, OWNED_ENUMS.requestSuggesting);
+    if (r.suggestion !== null && r.suggesting !== 'ready') c.bad(`${at}.suggesting`, `${String(r.suggesting)}, but a suggestion is there`);
     if (r.suggestion === null) return;
     const g = c.obj(r.suggestion, `${at}.suggestion`, ['routeId', 'router', 'models', 'pick']);
     if (g === null) return;

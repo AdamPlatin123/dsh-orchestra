@@ -184,8 +184,12 @@ test('the router row ("你"): the last dispatch\'s title and time, linked to its
   const stage = busyStage();
   const d = { ownedId: 'abcdefabcdefabcdefab', harness: 'codex' as const, model: 'codex/gpt-6.1-sol', at: 1_761_868_800_000, title: '修登录测试' };
   const none = towerFromStage(stage, { seats: [], nowWall: 1_761_868_900_000, dispatch: d });
-  assert.deepEqual(none.router, { kind: 'human', dispatch: { title: '修登录测试', at: 1_761_868_800_000, harness: 'codex', model: 'codex/gpt-6.1-sol', node: null } });
+  assert.deepEqual(none.router, { kind: 'human', dispatch: { title: '修登录测试', at: 1_761_868_800_000, harness: 'codex', model: 'codex/gpt-6.1-sol', node: null }, asks: [] });
   assert.equal(validateTower(none).ok, true, validateTower(none).errors.join(' | '));
+  // seat: the pending agent requests, soonest first, harness and deadline only.
+  const asked = towerFromStage(stage, { seats: [], nowWall: 1_761_868_900_000, asks: [{ harness: 'claude', deadline: 9 }, { harness: 'codex', deadline: 3 }] });
+  assert.deepEqual(asked.router.asks, [{ harness: 'codex', deadline: 3 }, { harness: 'claude', deadline: 9 }]);
+  assert.equal(validateTower(asked).ok, true, validateTower(asked).errors.join(' | '));
   const seat = { ownedId: d.ownedId, harness: 'codex' as const, title: '修登录测试', state: 'running' as const, endReason: null, waiting: null, lastAt: null };
   const linked = towerFromStage(stage, { seats: [seat], nowWall: 1_761_868_900_000, dispatch: d });
   assert.equal(linked.router.dispatch?.node, `n:${d.ownedId}`);

@@ -165,8 +165,16 @@ test('tree: references stay in the project, depth and harness follow the parent,
   broken(golden, (s) => { s.router.dispatch = { ...dispatch, harness: 'dsh' }; }, '$.router.dispatch.harness');
   broken(golden, (s) => { s.router.dispatch = { ...dispatch, node: 'n:00000000000000000000' }; }, 'is not a node of this snapshot');
   broken(golden, (s) => { s.router.dispatch = { ...dispatch, node: s.projects[0].nodes[0].id }; }, 'not an owned node');
-  assert.equal(validateTower({ ...golden(), router: { kind: 'human', dispatch } }).ok, true, 'a dispatch with no node is fine');
+  assert.equal(validateTower({ ...golden(), router: { kind: 'human', dispatch, asks: [] } }).ok, true, 'a dispatch with no node is fine');
   broken(golden, (s) => { s.router.kind = 'maestro'; }, '$.router.kind');
+  // seat: the pending agent requests a locked page sees: harness and deadline only, soonest first, at most 16.
+  const asks = [{ harness: 'codex', deadline: 2 }, { harness: 'claude', deadline: 5 }];
+  assert.equal(validateTower({ ...golden(), router: { kind: 'human', dispatch: null, asks } }).ok, true);
+  broken(golden, (s) => { delete s.router.asks; }, '$.router: missing asks');
+  broken(golden, (s) => { s.router.asks = [...asks].reverse(); }, 'not soonest first');
+  broken(golden, (s) => { s.router.asks = [{ ...asks[0], text: 'the task' }]; }, 'unknown key text');
+  broken(golden, (s) => { s.router.asks = [{ harness: 'dsh', deadline: 1 }]; }, '$.router.asks[0].harness');
+  broken(golden, (s) => { s.router.asks = Array.from({ length: 17 }, (_, i) => ({ harness: 'codex', deadline: i })); }, 'at most 16');
 });
 
 test('folding: never-fold rows stay out, each group holds what it says, and nothing foldable is left loose', () => {

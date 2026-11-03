@@ -6,7 +6,7 @@ import type { TestContext } from 'node:test';
 import { ReadGate } from '../../src/fs/read-gate.ts';
 import type { LoopbackPost } from '../../src/net/magpie.ts';
 import { makeDesk } from '../../src/route/desk.ts';
-import { makeRequests } from '../../src/route/requests.ts';
+import { makeRequests, requestedOwnedIn } from '../../src/route/requests.ts';
 import type { Requests } from '../../src/route/requests.ts';
 import { Log } from '../../src/runtime/log.ts';
 import { oneShot } from '../../src/runtime/clock.ts';
@@ -110,8 +110,24 @@ test('a pending request is a card in GET /api/owned, with the desk\'s suggestion
   const r = list.json.requests[0];
   assert.deepEqual({ ...r, createdAt: 0, expiresAt: 0, suggestion: null }, {
     requestId: made.request.requestId, harness: 'codex', label: null, text: ASK.text, cwd: ASK.cwd, requester: 'dsh:sess-1', state: 'pending',
-    createdAt: 0, expiresAt: 0, ownedId: null, why: null, suggestion: null,
+    createdAt: 0, expiresAt: 0, ownedId: null, why: null, fetched: false, suggestion: null, suggesting: 'ready',
   });
+  assert.deepEqual(list.json.requestedGone, []);
+  // The contract holds the new fields to what they mean.
+  const bad = (f: (l: any) => void, why: string) => {
+    const l = structuredClone(list.json);
+    f(l);
+    const v = validateOwnedList(l);
+    assert.ok(!v.ok && v.errors.some((e) => e.includes(why)), `${why}: ${v.errors.join(' | ')}`);
+  };
+  bad((l) => { l.requests[0].fetched = true; }, 'never handed back');
+  bad((l) => { l.requests[0].suggesting = 'asking'; }, 'but a suggestion is there');
+  bad((l) => { l.requests[0].suggesting = 'maybe'; }, 'suggesting');
+  bad((l) => { l.requestedGone = ['x']; }, 'requestedGone[0]');
+  bad((l) => { l.requests[0].requester = 'dsh:'; }, 'requester');
+  const anon = structuredClone(list.json);
+  anon.requests[0].requester = 'dsh';
+  assert.equal(validateOwnedList(anon).ok, true, 'a requester that named none is dsh');
   assert.equal(r.suggestion.router, 'answered');
   assert.ok(r.suggestion.models.every((m: any) => /^(?:codex|zcode|opencode-go)\//.test(m.model)));
   assert.equal(r.suggestion.models[r.suggestion.pick].model, 'codex/gpt-6.1-terra', 'the router model\'s pick, for this harness');
@@ -155,6 +171,8 @@ test('派出: owned-new with the requestId takes the card\'s words, binds the se
   assert.deepEqual([again.status, again.json], [409, { error: 'request-gone' }]);
   assert.equal(fx.made.length, 1);
   assert.equal(rows(fx).length, 4);
+  // After a restart the journal still says this session was dispatched for an agent request.
+  assert.deepEqual(requestedOwnedIn(fx.store.db), [r.json.ownedId]);
   // The list says which session the request is running as.
   const list = await request(fx, 'GET', '/api/owned', h);
   assert.equal(validateOwnedList(list.json).ok, true, validateOwnedList(list.json).errors.join(' | '));

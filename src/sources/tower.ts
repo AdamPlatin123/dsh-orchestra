@@ -80,6 +80,13 @@ export type OwnedSeat = {
 export type RouterDispatch = { title: string; at: number; harness: 'codex' | 'claude'; model: string; node: string | null };
 /** What the composition root hands the tower for the router row: the last dispatch and its session's title. */
 export type LastDispatch = { ownedId: string; harness: 'codex' | 'claude'; model: string; at: number; title: string };
+/**
+ * A pending agent request (seat) as every paired page sees it, unlocked or not: its harness and the wall
+ * time it is refused at (D8: timeout = deny). Never its text, cwd or requester: those wait for the unlock.
+ */
+export type RouterAsk = { harness: 'codex' | 'claude'; deadline: number };
+/** The most asks the router row lists (src/route/requests.ts REQUEST_LIMITS.kept). */
+export const ROUTER_ASKS_MAX = 16;
 
 /** The owned sessions' project: a fixed id, so the page keeps its fold state across snapshots. */
 export const OWNED_PROJECT_ID = createHash('sha256').update('orchestra:owned-project').digest('hex').slice(0, 20);
@@ -94,7 +101,7 @@ export type TowerSnapshot = {
     clipped: { projects: number; nodes: number; sessions: Record<Harness, number> };
     rules: { id: string; hits: number; n: number; status: 'untested' | 'keys-mismatch' }[];
   };
-  router: { kind: 'human'; dispatch: RouterDispatch | null };
+  router: { kind: 'human'; dispatch: RouterDispatch | null; asks: RouterAsk[] };
   projects: Project[];
   waitingBar: WaitingEntry[];
   tally: Record<TowerState, number>;
@@ -295,7 +302,7 @@ function revOf(body: unknown): string {
  * The tower of one stage snapshot, the owned sessions' project first when there are any. Pure: reads
  * `stage` and `owned`, shares no object with them.
  */
-export function towerFromStage(stage: StageSnapshot, owned: { seats: readonly OwnedSeat[]; nowWall: number; dispatch?: LastDispatch | null } | null = null): TowerSnapshot {
+export function towerFromStage(stage: StageSnapshot, owned: { seats: readonly OwnedSeat[]; nowWall: number; dispatch?: LastDispatch | null; asks?: readonly RouterAsk[] } | null = null): TowerSnapshot {
   const mine = owned === null ? null : ownedProject(owned.seats, owned.nowWall);
   const projects = [...(mine === null ? [] : [mine]), ...stage.lanes.map(projectOf)];
   const all = projects.flatMap((p) => p.nodes);
@@ -328,7 +335,10 @@ export function towerFromStage(stage: StageSnapshot, owned: { seats: readonly Ow
       // The stage's rules as they are, for the page's about view (T4: untested however often they fired).
       rules: stage.rules.map((r) => ({ id: r.id, hits: r.hits, n: r.n, status: r.status })),
     },
-    router: { kind: 'human' as const, dispatch: routerDispatch(owned?.dispatch ?? null, all) },
+    router: {
+      kind: 'human' as const, dispatch: routerDispatch(owned?.dispatch ?? null, all),
+      asks: [...(owned?.asks ?? [])].sort((a, b) => a.deadline - b.deadline).slice(0, ROUTER_ASKS_MAX).map((a) => ({ harness: a.harness, deadline: a.deadline })),
+    },
     projects, waitingBar, tally,
   };
   body.meta.rev = revOf(body);
@@ -343,8 +353,8 @@ function routerDispatch(d: LastDispatch | null, nodes: readonly TowerNode[]): Ro
   return { title: clipCp(title, TOWER_BOUNDS.titleCp), at: d.at, harness: d.harness, model: d.model, node: nodes.some((n) => n.id === id) ? id : null };
 }
 
-/** Where the tower reads the owned sessions from: the driver's seats, the wall clock their ages are taken against, and the desk's last dispatch. */
-export type OwnedSeats = { seats(): readonly OwnedSeat[]; nowWall(): number; dispatch?(): LastDispatch | null };
+/** Where the tower reads the owned sessions from: the driver's seats, the wall clock their ages are taken against, the desk's last dispatch, the pending agent requests. */
+export type OwnedSeats = { seats(): readonly OwnedSeat[]; nowWall(): number; dispatch?(): LastDispatch | null; asks?(): readonly RouterAsk[] };
 
 /**
  * The tower builder the peek server holds, over its stage builder: the stage's throttle and memo
@@ -359,7 +369,8 @@ export function makeTowerBuilder(stage: { snapshot(): StageSnapshot }, owned: Ow
       const s = stage.snapshot();
       const seats = owned === null ? [] : owned.seats();
       const dispatch = owned?.dispatch?.() ?? null;
-      if (seats.length > 0 || dispatch !== null) return towerFromStage(s, { seats, nowWall: owned!.nowWall(), dispatch });
+      const asks = owned?.asks?.() ?? [];
+      if (seats.length > 0 || dispatch !== null || asks.length > 0) return towerFromStage(s, { seats, nowWall: owned!.nowWall(), dispatch, asks });
       if (last === null || last.from !== s) last = { from: s, tower: towerFromStage(s) };
       return last.tower;
     },

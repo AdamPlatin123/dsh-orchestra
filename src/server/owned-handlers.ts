@@ -8,6 +8,7 @@ import type { FeedEvent } from '../owned/feed.ts';
 import type { RestoredOwned } from '../owned/restored.ts';
 import type { Desk } from '../route/desk.ts';
 import type { AgentRequest, Requests } from '../route/requests.ts';
+import { requesterName } from '../route/requests.ts';
 import type { Rec } from '../store/journal.ts';
 import type { Log } from '../runtime/log.ts';
 import { canonicalDigest } from '../store/canonical-json.ts';
@@ -112,9 +113,10 @@ function feedEntry(e: FeedEvent) {
 export function requestEntry(r: AgentRequest) {
   const g = r.suggestion;
   return {
-    requestId: r.requestId, harness: r.harness, label: r.label, text: r.text, cwd: r.cwd, requester: `${r.requester.kind}:${r.requester.sessionId}`, state: r.state,
-    createdAt: r.createdWall, expiresAt: r.expiresWall, ownedId: r.ownedId, why: r.why,
+    requestId: r.requestId, harness: r.harness, label: r.label, text: r.text, cwd: r.cwd, requester: requesterName(r.requester), state: r.state,
+    createdAt: r.createdWall, expiresAt: r.expiresWall, ownedId: r.ownedId, why: r.why, fetched: r.fetched,
     suggestion: g === null ? null : { routeId: g.routeId, router: g.router, models: g.models.map((m) => ({ ...m })), pick: g.pick },
+    suggesting: r.suggesting,
   };
 }
 
@@ -124,7 +126,7 @@ export function agentRequestRec(r: AgentRequest, d: { actionId: string; verdict:
     kind: 'agent-request',
     body: {
       requestId: r.requestId, actionId: d.actionId, verdict: d.verdict, harness: r.harness, requesterKind: r.requester.kind,
-      requesterDigest: canonicalDigest(`${r.requester.kind}:${r.requester.sessionId}`), ownedId: d.ownedId, decisionId: d.decisionId,
+      requesterDigest: canonicalDigest(requesterName(r.requester)), ownedId: d.ownedId, decisionId: d.decisionId,
     },
   };
 }
@@ -170,6 +172,7 @@ export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'code
     owned, approvals: approvals.map(approvalEntry),
     limits: { maxOwned: deps.maxOwned ?? (codex === null ? 0 : codex.maxActive) + (claude === null ? 0 : claude.maxActive), active: sessions.filter(({ s }) => !FINAL(s)).length },
     requests: (deps.requests?.list() ?? []).map(requestEntry),
+    requestedGone: deps.requests?.requestedGone() ?? [],
   };
 }
 

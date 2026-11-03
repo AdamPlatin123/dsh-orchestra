@@ -164,7 +164,8 @@
   },
   "router": {
     "kind": "human",
-    "dispatch": null
+    "dispatch": null,
+    "asks": []
   },
   "projects": [
     {

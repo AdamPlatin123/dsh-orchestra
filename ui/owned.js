@@ -167,13 +167,21 @@ export function pinExtra(e, list, g) {
 
 // --- seat: agent requests in 「等你」 (src/route/requests.ts; r4 A17, D8) ---------------------------------
 
-/** The model a request's 派出 sends: the router model's pick for its harness, else the first suggested, else the harness's default. */
+/**
+ * The model a request's 派出 sends: the router model's pick for its harness, else the first suggested, else
+ * the harness's default; src says which, and for the default why there is no suggestion (still asked, no
+ * desk, none given, failed: never one word for all four, T1).
+ */
 export function requestModel(r) {
   const g = r.suggestion;
-  const m = g === null ? undefined : g.models[g.pick ?? 0];
+  const m = g == null ? undefined : g.models[g.pick ?? 0];
   if (m !== undefined && modelsOf(r.harness).includes(m.model)) return { model: m.model, src: m.source === 'model' ? 'req.src.model' : 'req.src.rule' };
-  return { model: modelsOf(r.harness)[0], src: 'req.src.default' };
+  const why = Object.hasOwn(TOWER_TEXT, `req.src.${r.suggesting}`) ? r.suggesting : g == null ? 'asking' : 'ready';
+  return { model: modelsOf(r.harness)[0], src: `req.src.${why}` };
 }
+
+/** Who asked, as the card says it: the requester's own id, or 未知 when it named none. */
+const reqWho = (r) => (typeof r.requester === 'string' && r.requester.startsWith('dsh:') ? r.requester.slice(4) : t('req.whoNone'));
 
 /** What a request card names it by: its label, else its text's first line, at most 120 characters. */
 const reqWhat = (r) => {
@@ -182,9 +190,11 @@ const reqWhat = (r) => {
 };
 
 /**
- * The pending agent requests as cards for 「等你」, the one expiring first on top: who asked, what, where it
- * wanted to work, the model a dispatch would take, the time left (then it is a refusal, D8), and 派出 /
- * 拒绝. 派出 is void for SETTLE_MS after the bar moved (r4 §10.9, as an allow). Locked: the unlock button.
+ * The pending agent requests as cards for 「等你」, the one expiring first on top: who asked (its own word),
+ * what, where it wanted to work, the model a dispatch would take, the time left (then it is a refusal, D8),
+ * and 派出 / 拒绝. 派出 is void for SETTLE_MS after the bar moved (r4 §10.9, as an allow). The list only
+ * comes once unlocked; before that the page shows describeAskPins (the tower's router.asks). data.due is
+ * the deadline withRequests sorts by.
  */
 export function describeRequestPins(list, g) {
   if (list === null || !Array.isArray(list.requests)) return [];
@@ -198,31 +208,67 @@ export function describeRequestPins(list, g) {
       btn('go', t('req.go'), { act: 'req-go', req: r.requestId, model: m.model, settle: g.settle }, { 'aria-disabled': g.settle !== '' ? 'true' : busy(g), 'aria-label': t('req.goLabel', { what }) }),
     ];
     return {
-      key: `req:${r.requestId}`, tpl: 'tpl-req', data: { req: r.requestId, harness: r.harness },
+      key: `req:${r.requestId}`, tpl: 'tpl-req', data: { req: r.requestId, harness: r.harness, due: String(r.expiresAt) },
       slots: {
         kind: { text: t('req.kind', { h: t(`harness.${r.harness}`) }) },
         what: { text: what },
         clock: { text: left > 0 ? t('req.left', { t: fmtLeft(left) }) : t('req.overdue') },
         pv: { text: r.text },
-        meta: { text: join([t('req.who', { who: r.requester }), t('req.cwd', { cwd: r.cwd }), t('req.model', { m: m.model, src: t(m.src) })], 'sep.notes') },
+        meta: { text: join([t('req.who', { who: reqWho(r) }), t('req.cwd', { cwd: r.cwd }), t('req.model', { m: m.model, src: t(m.src) })], 'sep.notes') },
         acts: { kids: acts },
       },
     };
   });
 }
 
-/** 「等你」 with the request cards first (each has a deadline); its count is the list's length (T3). */
-export function withRequests(pins, reqs) {
+/**
+ * Before the unlock (or while the list loads): the pending requests as the tower's router.asks gives them
+ * to every paired page, harness and deadline only, so a locked page still sees that something waits and
+ * when it is refused (D8). The text and who asked come with the unlock; the button is the unlock.
+ */
+export function describeAskPins(asks, g) {
+  if (!Array.isArray(asks)) return [];
+  return asks.map((a, i) => {
+    const left = a.deadline - g.nowWall;
+    return {
+      key: `ask:${i}`, tpl: 'tpl-req', data: { req: '', harness: a.harness, due: String(a.deadline) },
+      slots: {
+        kind: { text: t('req.kind', { h: t(`harness.${a.harness}`) }) },
+        what: { text: t('req.lockedWhat') },
+        clock: { text: left > 0 ? t('req.left', { t: fmtLeft(left) }) : t('req.overdue') },
+        pv: { text: '' }, meta: { text: '' },
+        acts: { kids: g.unlocked ? [] : [lockBtn()] },
+      },
+    };
+  });
+}
+
+/**
+ * 「等你」 with the request cards merged in: everything with a deadline by the time left, soonest first (the
+ * request cards by data.due, the bar's own by `bar`'s deadlines), then the rest in the bar's order; its
+ * count is the list's length (T3).
+ */
+export function withRequests(pins, reqs, bar = []) {
   if (reqs.length === 0) return pins;
-  const kids = [...reqs, ...pins.slots.list.kids];
+  const due = new Map(bar.map((e) => [e.node, e.deadline]));
+  const all = [...reqs.map((k) => ({ k, d: Number(k.data.due) })), ...pins.slots.list.kids.map((k) => ({ k, d: due.get(k.key) ?? null }))];
+  const kids = all.map((x, i) => ({ ...x, i })).sort((a, b) => (a.d === null ? (b.d === null ? a.i - b.i : 1) : b.d === null ? -1 : a.d - b.d || a.i - b.i)).map((x) => x.k);
   return { ...pins, data: { ...pins.data, hide: '0' }, slots: { ...pins.slots, n: { text: t('pin.n', { n: kids.length }) }, note: { text: t('pin.order') }, list: { kids } } };
 }
 
-/** What a session page says of the agent request it was dispatched for (seat), or '' for a session you started yourself. */
+/** A notification of a new pending request; never a dispatch in it (r4 §10.9). */
+export const notifyRequestText = (r, nowWall) => t('notify.reqBody', { h: t(`harness.${r.harness}`), t: fmtLeft(Math.max(0, r.expiresAt - nowWall)) });
+
+/**
+ * What a session page says of the agent request it was dispatched for (seat): you dispatched it at that
+ * request, which names itself; once orchestrad no longer holds the request (evicted, a restart), that it
+ * was one; '' for a session you started yourself.
+ */
 export function requestOf(list, ownedId) {
   const r = list?.requests?.find((x) => x.ownedId === ownedId);
-  if (r === undefined) return '';
-  return t('req.of', { who: r.requester, st: tk('reqst', r.state, 'reqst.other', { why: r.why ?? t('dash') }) });
+  if (r === undefined) return Array.isArray(list?.requestedGone) && list.requestedGone.includes(ownedId) ? t('req.ofGone') : '';
+  const st = r.state === 'done' && r.fetched === true ? t('reqst.fetched') : tk('reqst', r.state, 'reqst.other', { why: r.why ?? t('dash') });
+  return t('req.of', { who: reqWho(r), st });
 }
 
 /** Never an allow in a notification (r4 §10.9). */

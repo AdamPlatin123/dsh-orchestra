@@ -63,7 +63,7 @@ test('all three harnesses are in the fixture tower, as agents with their subagen
     assert.ok(all.some((n) => n.harness === h && n.layer === 'subagent' && n.parent !== null), `${h} subagent`);
     assert.equal(tower.meta.sources[h].state, 'ok');
   }
-  assert.deepEqual(tower.router, { kind: 'human', dispatch: null });
+  assert.deepEqual(tower.router, { kind: 'human', dispatch: null, asks: [] });
   assert.ok(all.every((n) => n.ownership === 'observed'), 'M0 observes only');
   // The Claude lead waits on a permission prompt (registry: native); the Codex lead's escalated
   // command is a guess off its rollout (inferred), and its tool is not named in the activity line.

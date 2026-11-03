@@ -114,8 +114,12 @@ export const TOWER_BOUNDS = frozen({
  * @typedef {{ state: 'ok' | 'empty' | 'error', total: number, shown: number, registry: number | null, error: string | null }} Src
  *   total: every session file the source holds, before any cut; shown: how many of them are in this
  *   snapshot. empty only when total is 0 (T1: a source the limits pushed out is clipped, not empty).
- * @typedef {{ kind: 'human', dispatch: Dispatch | null }} Router
+ * @typedef {{ kind: 'human', dispatch: Dispatch | null, asks: Ask[] }} Router
  *   Layer 0: you. dispatch is the dispatch desk's last dispatch (orchestra app plan §3), null before any.
+ *   asks: the pending agent requests (seat), soonest deadline first, at most 16: what a paired page shows
+ *   before it is unlocked (the request itself, its text and who asked, only after the unlock).
+ * @typedef {{ harness: 'codex' | 'claude', deadline: number }} Ask
+ *   deadline: epoch ms the request is refused at if nobody dispatched it (D8: timeout = deny).
  * @typedef {{ title: string, at: number, harness: 'codex' | 'claude', model: string, node: NodeId | null }} Dispatch
  *   title: its session's title; at: epoch ms of the dispatch; node: that session's node when this
  *   snapshot holds it, else null (a link never points at a node that is not there).
@@ -495,7 +499,7 @@ export function validateTower(x) {
     });
   }
 
-  const router = c.obj(s.router, '$.router', ['kind', 'dispatch']);
+  const router = c.obj(s.router, '$.router', ['kind', 'dispatch', 'asks']);
   /** @type {Record<string, unknown> | null} */
   let dispatch = null;
   if (router !== null) {
@@ -511,6 +515,18 @@ export function validateTower(x) {
         if (dispatch.node !== null) c.re(dispatch.node, '$.router.dispatch.node', NODE_ID_RE, 'NodeId');
       }
     }
+    // The pending agent requests: harness and deadline only, soonest first, at most 16.
+    const asks = c.arr(router.asks, '$.router.asks');
+    if (asks.length > 16) c.bad('$.router.asks', `${asks.length}, at most 16`);
+    let prev = -Infinity;
+    asks.forEach((a, i) => {
+      const o = c.obj(a, `$.router.asks[${i}]`, ['harness', 'deadline']);
+      if (o === null) return;
+      c.en(o.harness, `$.router.asks[${i}].harness`, ['codex', 'claude']);
+      c.int(o.deadline, `$.router.asks[${i}].deadline`);
+      if (typeof o.deadline === 'number' && o.deadline < prev) c.bad(`$.router.asks[${i}].deadline`, 'not soonest first');
+      if (typeof o.deadline === 'number') prev = o.deadline;
+    });
   }
 
   /** @type {Map<unknown, Record<string, unknown>>} */

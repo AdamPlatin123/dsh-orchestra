@@ -7,7 +7,7 @@ import { TOWER_TEXT } from '../../shared/strings.js';
 import { towerFromStage, type OwnedSeat } from '../../src/sources/tower.ts';
 import { busyStage } from '../helpers/tower-fixture.ts';
 import {
-  apprActs, atBottom, chatNews, describeChat, describeNew, describeOwned, describeOwnedDock, describeRequestPins, errText, mergeFeed, msgError, notifyText, pinExtra, requestOf, type Approval, type Guard,
+  apprActs, atBottom, chatNews, describeAskPins, describeChat, describeNew, describeOwned, describeOwnedDock, describeRequestPins, errText, mergeFeed, msgError, notifyText, pinExtra, requestModel, requestOf, withRequests, type Approval, type Guard,
 } from '../../ui/owned.js';
 
 // Orchestra's own sessions on the tower page (orchestra app plan §2-§5): ui/app.js booted against the
@@ -89,7 +89,9 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     ],
   };
   let dispatched: { ownedId: string; harness: 'codex' | 'claude'; model: string; at: number; title: string } | null = null;
-  const tower = () => towerFromStage(busyStage(), { seats, nowWall: OBSERVED, dispatch: dispatched });
+  // seat: the pending agent requests every paired page sees before the unlock (harness and deadline only).
+  let asks: { harness: 'codex' | 'claude'; deadline: number }[] = [{ harness: 'codex', deadline: OBSERVED + 7 * MIN }];
+  const tower = () => towerFromStage(busyStage(), { seats, nowWall: OBSERVED, dispatch: dispatched, asks });
   const SUGGESTION = {
     routeId: 'e'.repeat(20), title: '写发布说明', titleSource: 'model', taskClass: 'general', rules: ['fallback'],
     router: { model: 'zcode/GLM-5.3', state: 'answered', why: null, pick: 0 },
@@ -174,9 +176,20 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     // native or inferred wait has no button at all. No owned route is read without the token.
     const bar = doc.getElementById('bar')!;
     assert.equal(bar.querySelector('[data-act=unlock]')!.textContent, TOWER_TEXT['bar.unlock']);
-    assert.equal(pins().length, 5);
+    // seat: a pending agent request shows before the unlock too (the tower's router.asks): its harness, the
+    // time left before it is refused (D8), the unlock button; its text and who asked only after the unlock.
+    // It is sorted in by its deadline (7 min, before the approvals' 10, 20 and 25).
+    assert.equal(pins().length, 6);
+    const ask = pins()[0]!;
+    assert.ok(ask.classList.contains('req'));
+    assert.equal(ask.querySelector('[data-slot=kind]')!.textContent, '以 DSH 名义请求派 Codex：');
+    assert.equal(ask.querySelector('[data-slot=what]')!.textContent, TOWER_TEXT['req.lockedWhat']);
+    assert.equal(ask.querySelector('[data-slot=clock]')!.textContent, '剩 7:00 自动拒');
+    assert.deepEqual(btns(ask).map((b) => b.textContent), [TOWER_TEXT['op.lock']]);
+    assert.equal(doc.getElementById('pins')!.querySelector('[data-slot=n]')!.textContent, '6 件', 'T3: the count is the list');
+    asks = [];
     for (const id of [ID.a, ID.b, ID.c]) assert.deepEqual(btns(pinOf(id)).map((b) => b.textContent), [TOWER_TEXT['op.lock']]);
-    const foreign = pins().filter((p) => p.getAttribute('data-src') !== 'orchestra');
+    const foreign = pins().filter((p) => p.getAttribute('data-src') !== 'orchestra' && !p.classList.contains('req'));
     assert.deepEqual(foreign.map((p) => p.getAttribute('data-src')).sort(), ['inferred', 'native']);
     for (const p of foreign) assert.equal(btns(p).length, 0);
     assert.ok(!requests.some((r) => r.url.startsWith('/api/owned') || r.url.startsWith('/api/approvals')));
@@ -466,22 +479,25 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     const REQ = { a: '5'.repeat(20), b: '6'.repeat(20) };
     const req = (requestId: string, over: Record<string, unknown> = {}) => ({
       requestId, harness: 'codex', label: null, text: '修一下登录页的样式\n第二行', cwd: 'D:\\work\\shop', requester: 'dsh:sess-1', state: 'pending', createdAt: OBSERVED,
-      expiresAt: OBSERVED + 9 * MIN, ownedId: null, why: null,
-      suggestion: { routeId: 'f'.repeat(20), router: 'answered', models: [{ model: 'codex/gpt-6.1-terra', source: 'model', rule: null, reason: '改样式' }], pick: 0 }, ...over,
+      expiresAt: OBSERVED + 9 * MIN, ownedId: null, why: null, fetched: false,
+      suggestion: { routeId: 'f'.repeat(20), router: 'answered', models: [{ model: 'codex/gpt-6.1-terra', source: 'model', rule: null, reason: '改样式' }], pick: 0 }, suggesting: 'ready', ...over,
     });
-    list = { ...list, requests: [req(REQ.a), req(REQ.b, { suggestion: null, label: '跑测试', expiresAt: OBSERVED + 2 * MIN }), req('7'.repeat(20), { state: 'rejected', why: 'you-rejected' })] };
+    list = { ...list, requests: [req(REQ.a), req(REQ.b, { suggestion: null, suggesting: 'asking', label: '跑测试', expiresAt: OBSERVED + 2 * MIN }), req('7'.repeat(20), { state: 'rejected', why: 'you-rejected' })] };
     intervals.find((i) => i.ms === 2000)!.fn();
     await flush();
     const reqs = () => pins().filter((p) => p.classList.contains('req'));
     assert.deepEqual(reqs().map((p) => p.getAttribute('data-req')), [REQ.b, REQ.a], 'pending only, the one expiring first on top');
     const cardA = reqs()[1]!;
-    assert.equal(cardA.querySelector('[data-slot=kind]')!.textContent, 'DSH 请求派 Codex：');
+    assert.equal(cardA.querySelector('[data-slot=kind]')!.textContent, '以 DSH 名义请求派 Codex：');
     assert.equal(cardA.querySelector('[data-slot=what]')!.textContent, '修一下登录页的样式');
     assert.equal(cardA.querySelector('[data-slot=clock]')!.textContent, '剩 9:00 自动拒');
-    assert.ok(cardA.querySelector('[data-slot=meta]')!.textContent.includes('请求方 dsh:sess-1'));
+    assert.ok(cardA.querySelector('[data-slot=meta]')!.textContent.includes('自称来自 DSH 会话 sess-1（未核实）'), 'who asked is its own word, never a checked identity');
     assert.ok(cardA.querySelector('[data-slot=meta]')!.textContent.includes('模型 codex/gpt-6.1-terra（路由模型建议）'));
     assert.equal(reqs()[0]!.querySelector('[data-slot=what]')!.textContent, '跑测试', 'a label names it');
-    assert.ok(reqs()[0]!.querySelector('[data-slot=meta]')!.textContent.includes('模型 codex/gpt-6.1-sol（默认，还没有建议）'));
+    assert.ok(reqs()[0]!.querySelector('[data-slot=meta]')!.textContent.includes('模型 codex/gpt-6.1-sol（默认；路由建议还在问）'));
+    // The request cards sort in by deadline with the approvals (2 min and 9 min; the approvals now 5, 10, 25 min).
+    const order2 = pins().map((p) => p.getAttribute('data-req') || p.getAttribute('data-node'));
+    assert.deepEqual(order2.slice(0, 4), [REQ.b, `n:${ID.a}`, REQ.a, `n:${ID.b}`], order2.join());
     assert.deepEqual(btns(cardA).map((b) => b.textContent), [TOWER_TEXT['req.no'], TOWER_TEXT['req.go']]);
     assert.equal(doc.getElementById('pins')!.querySelector('[data-slot=n]')!.textContent, `${pins().length} 件`, 'T3: the count is the list, requests included');
     // 派出 is void for 750 ms after the bar moved (as an allow); then it is owned-new with the requestId and the card's words.
@@ -510,6 +526,17 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     assert.equal(notes.length, 1);
     assert.equal(notes[0]!.title, TOWER_TEXT['notify.title']);
     assert.ok(notes[0]!.body.startsWith('run tests'));
+    // A new agent request while hidden is notified too (its time is short, D8), never with a dispatch in it.
+    list = { ...list, requests: [req('8'.repeat(20), { expiresAt: OBSERVED + 10 * MIN })] };
+    intervals.at(-1)!.fn();
+    await flush();
+    assert.equal(notes.length, 2);
+    assert.equal(notes[1]!.title, TOWER_TEXT['notify.reqTitle']);
+    assert.ok(notes[1]!.body.includes('Codex') && notes[1]!.body.includes('自动拒'), notes[1]!.body);
+    intervals.at(-1)!.fn();
+    await flush();
+    assert.equal(notes.length, 2, 'once per request');
+    for (const n of notes) assert.ok(!n.body.includes(TOWER_TEXT['req.go']) && !n.title.includes(TOWER_TEXT['req.go']));
     for (const n of notes) assert.ok(!n.title.includes(ALLOW) && !n.body.includes(ALLOW));
     assert.ok(!doc.title.includes(ALLOW));
   } finally {
@@ -665,19 +692,43 @@ test('the chat (live run fixes): a command told again moves below its approval; 
   assert.notEqual(cl.model.kids[0]!.key, describeNew(both, 'codex', false).model.kids[3]!.key, 'keyed by harness: a switch replaces the options');
 });
 
-test('seat: a request card locked offers only the unlock; a session page names the request it came from, never as done (T2)', () => {
-  const g: Guard = { unlocked: false, settle: '', hold: null, busy: false, nowWall: 0 };
+test('seat: request cards say who asked as its own word, why there is no suggestion, and a session page names the request it came from, never as done (T2)', () => {
+  const g: Guard = { unlocked: true, settle: '', hold: null, busy: false, nowWall: 0 };
   const r = {
-    requestId: '5'.repeat(20), harness: 'claude', label: null, text: 'x', cwd: 'D:\w', requester: 'dsh:s1', state: 'pending', createdAt: 0, expiresAt: -1, ownedId: null, why: null, suggestion: null,
+    requestId: '5'.repeat(20), harness: 'claude', label: null, text: 'x', cwd: 'D:\w', requester: 'dsh:s1', state: 'pending', createdAt: 0, expiresAt: -1, ownedId: null, why: null,
+    fetched: false, suggestion: null, suggesting: 'no-desk',
   };
   const list = { requests: [r] };
   const [card] = describeRequestPins(list, g) as any[];
-  assert.deepEqual(card.slots.acts.kids.map((b: any) => b.text), [TOWER_TEXT['op.lock']]);
   assert.equal(card.slots.clock.text, TOWER_TEXT['req.overdue'], 'past its time it says the refusal is coming, never a negative count');
-  assert.ok(card.slots.meta.text.includes('模型 zcode/GLM-5.3（默认，还没有建议）'), 'the harness default when no suggestion came');
-  const own = { requests: [{ ...r, state: 'done', ownedId: 'a'.repeat(20) }, { ...r, requestId: '6'.repeat(20), state: 'failed', ownedId: 'b'.repeat(20), why: 'turn-failed' }] };
-  assert.equal(requestOf(own, 'a'.repeat(20)), `这个会话由 DSH 请求派出：dsh:s1 · 请求现在${TOWER_TEXT['reqst.done']}`);
-  assert.equal(requestOf(own, 'b'.repeat(20)), '这个会话由 DSH 请求派出：dsh:s1 · 请求现在没有返回结果（turn-failed）');
+  // Why the default: never one word for asking, no desk, none given and failed (T1).
+  for (const [st, words] of [['no-desk', '默认；没有路由台'], ['asking', '默认；路由建议还在问'], ['none', '默认；路由台没给建议'], ['failed', '默认；路由建议没拿到（原因未知）']] as const) {
+    const [c] = describeRequestPins({ requests: [{ ...r, suggesting: st }] }, g) as any[];
+    assert.ok(c.slots.meta.text.includes(`模型 zcode/GLM-5.3（${words}）`), `${st}: ${c.slots.meta.text}`);
+  }
+  // A requester that named none is 未知 on the card, never an English placeholder.
+  const [anon] = describeRequestPins({ requests: [{ ...r, requester: 'dsh' }] }, g) as any[];
+  assert.ok(anon.slots.meta.text.startsWith('自称来自 DSH 会话 未知（未核实）'), anon.slots.meta.text);
+  // Locked (the app shows these from the tower's router.asks, before the list can be read): the unlock only.
+  const locked = describeAskPins([{ harness: 'codex', deadline: 90_000 }], { ...g, unlocked: false, nowWall: 30_000 }) as any[];
+  assert.deepEqual(locked.map((c) => [c.slots.clock.text, c.slots.what.text, c.slots.acts.kids.map((b: any) => b.text)]), [['剩 1:00 自动拒', TOWER_TEXT['req.lockedWhat'], [TOWER_TEXT['op.lock']]]]);
+  // A suggestion that arrives changes the model 派出 would send (app.js puts it in the settle signature).
+  const sug = { ...r, suggesting: 'ready', suggestion: { routeId: 'f'.repeat(20), router: 'answered', models: [{ model: 'zcode/GLM-5.2', source: 'model', rule: null, reason: null }], pick: 0 } };
+  assert.notEqual(requestModel(sug).model, requestModel(r).model);
+  // withRequests: deadlines first, soonest first, the bar's entries by the bar's deadlines; T3 count.
+  const pins = { data: { hide: '0' }, slots: { n: { text: '' }, note: { text: '' }, list: { kids: [{ key: 'n:a' }, { key: 'n:b' }, { key: 'n:c' }] } } };
+  const merged = withRequests(pins, [{ key: 'req:x', data: { due: '150' } }, { key: 'req:y', data: { due: '50' } }], [{ node: 'n:a', deadline: 100 }, { node: 'n:b', deadline: null }, { node: 'n:c', deadline: 200 }]) as any;
+  assert.deepEqual(merged.slots.list.kids.map((k: any) => k.key), ['req:y', 'n:a', 'req:x', 'n:c', 'n:b']);
+  assert.equal(merged.slots.n.text, '5 件');
+  const own = {
+    requests: [{ ...r, state: 'done', ownedId: 'a'.repeat(20) }, { ...r, requestId: '6'.repeat(20), state: 'failed', ownedId: 'b'.repeat(20), why: 'turn-failed' }, { ...r, requestId: '7'.repeat(20), state: 'done', fetched: true, ownedId: 'd'.repeat(20) }],
+    requestedGone: ['e'.repeat(20)],
+  };
+  assert.equal(requestOf(own, 'a'.repeat(20)), `你应 DSH 请求派出的会话（请求方自称 s1，未核实）· 请求现在${TOWER_TEXT['reqst.done']}`);
+  assert.ok(TOWER_TEXT['reqst.done'].includes('未知'), 'done says nobody knows whether the requester took it (T1)');
+  assert.equal(requestOf(own, 'd'.repeat(20)), `你应 DSH 请求派出的会话（请求方自称 s1，未核实）· 请求现在${TOWER_TEXT['reqst.fetched']}`);
+  assert.equal(requestOf(own, 'b'.repeat(20)), '你应 DSH 请求派出的会话（请求方自称 s1，未核实）· 请求现在没有返回结果（turn-failed）');
+  assert.equal(requestOf(own, 'e'.repeat(20)), TOWER_TEXT['req.ofGone'], 'a request evicted or from before a restart is still named');
   assert.equal(requestOf(own, 'c'.repeat(20)), '', 'a session you started yourself names none');
   for (const [k, v] of Object.entries(TOWER_TEXT)) if (k.startsWith('req') ) assert.ok(!v.includes('完成'), k);
 });

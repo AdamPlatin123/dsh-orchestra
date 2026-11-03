@@ -9,7 +9,7 @@ import { makePatcher } from './dom.js';
 import { getCsrf, getTheme, setCsrf, setTheme } from './prefs.js';
 import {
   HOLD_MS, SETTLE_MS, brakeWhyText, modelsOf, atBottom, chatNews, describeDesk, describeNew, describeOwned, describeOwnedDock, describeRequestPins, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError,
-  notifyText, ownedIdOf, pinExtra, pinWhole, whyText, withRequests,
+  describeAskPins, notifyRequestText, notifyText, ownedIdOf, pinExtra, pinWhole, requestModel, whyText, withRequests,
 } from './owned.js';
 import { go, openFull, parse } from './route.js';
 import { FILTERS, buildRows, freeze, groupKey, indexOf, navigate, projectKey, towerFrame } from './tree.js';
@@ -166,7 +166,8 @@ function render() {
   const pinBar = holdPins(snap);
   // The bar or queue moved: allows are void for SETTLE_MS (r4 §10.9), a hold lets go.
   // seat: a new or gone agent request moves the bar too (派出 is void for SETTLE_MS, as an allow).
-  const reqIds = (state.owned?.requests ?? []).filter((/** @type {any} */ r) => r.state === 'pending').map((/** @type {any} */ r) => r.requestId).join();
+  // The model 派出 would send is in it too: a suggestion that comes later changes the button, so it waits again.
+  const reqIds = (state.owned?.requests ?? []).filter((/** @type {any} */ r) => r.state === 'pending').map((/** @type {any} */ r) => `${r.requestId}:${requestModel(r).model}`).join();
   const sig = `${pinBar.map((e) => e.node).join()}|${state.owned?.rev ?? ''}|${reqIds}`;
   if (sig !== state.pinSig) {
     state.pinSig = sig;
@@ -177,7 +178,9 @@ function render() {
     after(SETTLE_MS + 20, schedule);
   }
   const g = guard();
-  dom.paintId('pins', withRequests(describePins(snap, { sel: state.sel, nowWall: wall, bar: pinBar, extra: (e) => pinExtra(e, state.owned, g) }), describeRequestPins(state.owned, g)));
+  // The request cards: the list once unlocked; before that (or while it loads) the tower's router.asks.
+  const reqCards = state.owned === null ? describeAskPins(snap.router.asks ?? [], g) : describeRequestPins(state.owned, g);
+  dom.paintId('pins', withRequests(describePins(snap, { sel: state.sel, nowWall: wall, bar: pinBar, extra: (e) => pinExtra(e, state.owned, g) }), reqCards, pinBar));
   dom.paintId('tower', describeTower(rows, {
     filter: state.filter, pending, sel: state.sel, peek: state.peek, flash, detectsError: detectsError(snap), clipped: clippedSessions(snap), dispatch: snap.router.dispatch, nowWall: nowWall(),
   }));
@@ -335,15 +338,25 @@ async function pollFeed() {
   schedule();
 }
 
-/** Notifies approvals that came while hidden; never an allow (r4 §10.9). @param {any} list @param {boolean} first */
+/** Notifies approvals and agent requests that came while hidden; never an allow or a dispatch (r4 §10.9). @param {any} list @param {boolean} first */
 function tell(list, first) {
+  const can = () => !first && document.hidden && globalThis.Notification?.permission === 'granted';
   for (const a of list.approvals) {
-    if (!state.told.has(a.approvalId) && !first && document.hidden && globalThis.Notification?.permission === 'granted') {
+    if (!state.told.has(a.approvalId) && can()) {
       try {
         new Notification(t('notify.title'), { body: notifyText(a, list.owned.find((/** @type {any} */ o) => o.ownedId === a.ownedId)?.title || t('bar.brand')), tag: a.approvalId });
       } catch {} // refused (a phone): the title still counts
     }
     state.told.add(a.approvalId);
+  }
+  for (const r of list.requests ?? []) {
+    if (r.state !== 'pending') continue;
+    if (!state.told.has(r.requestId) && can()) {
+      try {
+        new Notification(t('notify.reqTitle'), { body: notifyRequestText(r, nowWall()), tag: r.requestId });
+      } catch {} // as above
+    }
+    state.told.add(r.requestId);
   }
 }
 
