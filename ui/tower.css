@@ -92,7 +92,7 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
 .pin[data-src=inferred] { border-left-style: dashed; }
 /* r4 §8.5: a tainted session's pin, like its card: red bar, source line in the hint. */
 .pin[data-tainted="1"] { border-left-color: var(--taint); }
-.pin[data-tainted="1"] .pin-hint { color: var(--taint); font-weight: 600; }
+.pin[data-tainted="1"] .pin-hint { color: var(--taint); font-weight: 600; white-space: normal; overflow-wrap: anywhere; }
 .pin + .pin { border-top: 1px solid var(--rule); }
 .pin-go:hover { background: var(--hover); }
 .pin[data-sel="1"] .pin-go { background: var(--sel); }
@@ -229,6 +229,7 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
 /* r4 §8.5: a tainted session's card has a red bar (--taint, not the errors' vermilion), its source line first in the head. */
 .card[data-waiting][data-tainted="1"] { border-left: 5px solid var(--taint); }
 .card[data-tainted="1"] .card-h { color: var(--taint); font-weight: 600; }
+.card-h > [data-slot=kind] { min-width: 0; overflow-wrap: anywhere; }
 .card-h { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--ink2); }
 .card-t { margin: 4px 0; font-weight: 600; overflow-wrap: anywhere; }
 .pv { margin: 0 0 8px; padding: 6px 8px; max-height: 40vh; overflow: auto; border: 1px solid var(--rule); background: var(--panel); }

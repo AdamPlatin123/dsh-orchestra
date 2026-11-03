@@ -59,6 +59,8 @@ export const OWNED_ENUMS = frozen({
    * place, a link on it, not there, not a directory, not known to be a directory (stat-refused: the read gate
    * would not look, or the lookup failed otherwise; T1, not "not there"), or hidden in part by the redactor.
    */
+  /** Where an approval's turns came from (r4 §8.5 source chain): a seat request, the one kind in this slice. */
+  originKind: ['agent-request'],
   runInWhy: ['no-roots', 'bad-path', 'dot-segments', 'outside-roots', 'protected', 'reparsed', 'not-found', 'not-a-directory', 'stat-refused', 'redacted'],
 });
 
@@ -125,6 +127,8 @@ export const REQUEST_ID_RE = frozen(/^[0-9a-f]{20}$/);
 /** Who asked, as the card names it: dsh:<its session id> (an id, never free text). */
 /** A requester as the list names it: dsh:<its session id>, or dsh when it named none. */
 export const REQUESTER_RE = frozen(/^dsh(?::[A-Za-z0-9][A-Za-z0-9_.:-]{0,127})?$/);
+/** The DSH session id a request named itself by, bare (src/route/requests.ts REQUESTER_ID_RE): an approval's origin.requester. */
+export const REQUESTER_SESSION_RE = frozen(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/);
 /** A model of the owned list (src/owned/models.ts OWNED_MODEL_RE). */
 export const OWNED_MODEL_NAME_RE = frozen(/^(?:zcode|opencode-go|codex)\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
 /** A drive-letter absolute path (a cwd, a project root). */
@@ -178,13 +182,20 @@ export function holdsControl(s) {
  *   (its cwd, resolved, inside a project root); null: in Orchestra's own work dir, and runInWhy says why.
  * @typedef {{
  *   approvalId: string, ownedId: string, kind: string, title: string, preview: string, tooLong: boolean, redactions: number,
- *   digest: string, risk: string, high: boolean, tainted: boolean, rev: number, canAccept: boolean, canText: boolean, deadline: number,
+ *   digest: string, risk: string, high: boolean, tainted: boolean, origin: ApprovalOrigin | null, rev: number, canAccept: boolean, canText: boolean, deadline: number,
  * }} ApprovalEntry
  *   high: r4 §10.9's high risk (a shell, the network, a protected path or a write outside the work dir,
  *   a grant, a hidden secret): the page asks to hold or type before it sends an allow.
  *   tainted: r4 §8.5, the session runs a seat request (an unbound sender): the card has a red bar and says
  *   where the request came from, and a high-risk allow takes the typed word only (no hold).
+ *   origin: r4 §8.5's source chain, which the card and the pin write at the top: the seat request the session
+ *   runs (null: a person's own sentence). Display only (outside the digest; nothing allows by it); only a
+ *   tainted entry has one.
  *   deadline: the wall time (epoch ms) the queue declines it at (D8: a timeout is a refusal).
+ * @typedef {{ kind: 'agent-request', requestId: string, requester: string | null, label: string | null }} ApprovalOrigin
+ *   requester: the DSH session id the request named itself by, its own word (the page says 自称, 未核实), or
+ *   null when it named none (the page says 未知, T1). label: the request's label as its card showed it (one
+ *   line, a cut ends in '…'), or null.
  * @typedef {{
  *   v: 1, kind: 'owned-feed', ownedId: string, from: number, to: number, clipped: boolean, events: FeedEntry[],
  * }} OwnedFeed
@@ -352,7 +363,7 @@ export function validateOwnedList(x) {
   const ids = new Set();
   c.arr(s.approvals, '$.approvals').forEach((e, i) => {
     const at = `$.approvals[${i}]`;
-    const a = c.obj(e, at, ['approvalId', 'ownedId', 'kind', 'title', 'preview', 'tooLong', 'redactions', 'digest', 'risk', 'high', 'tainted', 'rev', 'canAccept', 'canText', 'deadline']);
+    const a = c.obj(e, at, ['approvalId', 'ownedId', 'kind', 'title', 'preview', 'tooLong', 'redactions', 'digest', 'risk', 'high', 'tainted', 'origin', 'rev', 'canAccept', 'canText', 'deadline']);
     if (a === null) return;
     c.re(a.approvalId, `${at}.approvalId`, APPROVAL_ID_RE, 'approval id');
     if (ids.has(a.approvalId)) c.bad(`${at}.approvalId`, `${String(a.approvalId)} listed twice`);
@@ -371,6 +382,9 @@ export function validateOwnedList(x) {
     c.en(a.risk, `${at}.risk`, OWNED_ENUMS.risk);
     c.bool(a.high, `${at}.high`);
     c.bool(a.tainted, `${at}.tainted`);
+    checkOrigin(c, a.origin, `${at}.origin`);
+    // A source chain from an agent request is an unbound sender's: its session is tainted (r4 §8.5).
+    if (a.origin !== null && a.tainted !== true) c.bad(`${at}.origin`, 'a source chain from an agent request on an entry that is not tainted');
     c.int(a.rev, `${at}.rev`, 1);
     if (typeof a.rev === 'number' && typeof s.rev === 'number' && a.rev > s.rev) c.bad(`${at}.rev`, `${a.rev}, after the list's own ${s.rev}`);
     c.bool(a.canAccept, `${at}.canAccept`);
@@ -409,6 +423,24 @@ export function validateOwnedList(x) {
     if (limits.active !== k) c.bad('$.limits.active', `${String(limits.active)}, but ${k} listed sessions still run`);
   }
   return { ok: c.errors.length === 0, errors: c.errors };
+}
+
+/**
+ * An approval's source chain (r4 §8.5): null, or the seat request its session runs, with the requester's own
+ * id (an id, never free text) or null, and its label as shown (one line, no control or bidi character).
+ * @param {Checker} c @param {unknown} v @param {string} at
+ */
+function checkOrigin(c, v, at) {
+  if (v === null) return;
+  const o = c.obj(v, at, ['kind', 'requestId', 'requester', 'label']);
+  if (o === null) return;
+  c.en(o.kind, `${at}.kind`, OWNED_ENUMS.originKind);
+  c.re(o.requestId, `${at}.requestId`, REQUEST_ID_RE, 'request id');
+  if (o.requester !== null) c.re(o.requester, `${at}.requester`, REQUESTER_SESSION_RE, 'requester session id');
+  if (o.label !== null) {
+    c.text(o.label, `${at}.label`, OWNED_BOUNDS.requestLabelBytes);
+    if (typeof o.label === 'string' && /[\r\n]/.test(o.label)) c.bad(`${at}.label`, 'more than one line');
+  }
 }
 
 /**

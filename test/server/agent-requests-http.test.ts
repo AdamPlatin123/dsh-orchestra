@@ -161,7 +161,11 @@ test('派出: owned-new with the requestId takes the card\'s words, binds the se
   const r = await request(fx, 'POST', '/api/owned/new', h, JSON.stringify({ actionId, text: ASK.text, harness: 'codex', model: 'codex/gpt-6.1-terra', requestId: id, routeId: card.suggestion!.routeId }));
   assert.equal(r.status, 200, r.body);
   // tainted (r4 §8.5): the request came from an unbound sender, so the Codex session starts with the untrusted approval policy.
-  assert.deepEqual(fx.made, [{ text: ASK.text, uuid: actionId, model: 'codex/gpt-6.1-terra', title: '登录页样式', tainted: true }]);
+  // Its source chain (r4 §8.5, display only) goes with it: the requestId, the id the request named itself by (its own word), its label.
+  assert.deepEqual(fx.made, [{
+    text: ASK.text, uuid: actionId, model: 'codex/gpt-6.1-terra', title: '登录页样式', tainted: true,
+    origin: { kind: 'agent-request', requestId: id, requester: 'sess-1', label: null },
+  }]);
   assert.deepEqual([fx.requests.get(id)!.state, fx.requests.get(id)!.ownedId], ['dispatched', r.json.ownedId]);
   const got = rows(fx);
   assert.deepEqual(got.map((x) => x.kind), ['human', 'human.result', 'route', 'agent-request']);

@@ -64,6 +64,9 @@ import { makeOwnedHandlers } from './owned.ts';
 //                                       Its session is tainted wherever it runs (r4 §8.5: the request came from an
 //                                       unbound sender): Claude asks for every tool call, reads in cwd too; Codex
 //                                       starts with the untrusted approval policy, echoed or policy-mismatch.
+//                                       Its approvals carry the source chain (origin: the requestId, the DSH
+//                                       session id the request named itself by or null, its label), which the
+//                                       page writes at the top of the card and the pin; display only.
 //   owned-new in a project root         (the dialog's root or a request's runIn) adds an `owned-cwd` record to the
 //                                       batch: the sha256 of the cwd and its root, and the requestId if any.
 //   GET  /api/owned                     OwnedList (shared/owned-contract.js).
@@ -112,7 +115,7 @@ export const ownedEnabled = (deps: Pick<OwnedRoutesDeps, 'codex' | 'claude'>): b
 function approvalEntry(a: ApprovalView) {
   return {
     approvalId: a.approvalId, ownedId: a.ownedId, kind: a.kind, title: a.title, preview: a.preview, tooLong: a.tooLong, redactions: a.redactions,
-    digest: a.digest, risk: a.risk, high: a.high, tainted: a.tainted, rev: a.rev, canAccept: a.canAccept, canText: a.canText, deadline: a.deadlineWall,
+    digest: a.digest, risk: a.risk, high: a.high, tainted: a.tainted, origin: a.origin === null ? null : { ...a.origin }, rev: a.rev, canAccept: a.canAccept, canText: a.canText, deadline: a.deadlineWall,
   };
 }
 
@@ -281,9 +284,11 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     // session asks for every tool call, reads in cwd too (host-core.mjs judge); a Codex one starts its thread
     // with the untrusted approval policy and ends as policy-mismatch unless thread/start echoes it.
     const tainted = asked !== null;
+    // r4 §8.5: the source chain its cards show at the top (display only; the requester's id is its own word, null when it named none).
+    const origin = asked === null ? null : { kind: 'agent-request' as const, requestId: asked.requestId, requester: asked.requester.sessionId, label: asked.label };
     const made = manager.create({
       text, uuid: call.actionId!, ...(typeof body.model === 'string' ? { model: body.model } : {}), ...(title === null ? {} : { title }), ...(cwd === undefined ? {} : { cwd }),
-      ...(tainted ? { tainted: true } : {}),
+      ...(tainted ? { tainted: true } : {}), ...(origin === null ? {} : { origin }),
     });
     if (!made.ok) {
       if (made.reason === 'owned-limit') return refuse('owned-limit');

@@ -36,6 +36,21 @@ export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
 export const APPROVAL_RISKS = frozen(['shell', 'write', 'net', 'protected', 'other'] as const);
 export type ApprovalRisk = (typeof APPROVAL_RISKS)[number];
 
+/**
+ * r4 §8.5: where an agent-triggered session's turns came from, as far as Orchestra knows it, for the top of
+ * its cards (display only: nothing reads it to allow or decline, and the digest does not cover it). One
+ * kind in this slice: a seat request (an unbound sender). requester is the DSH session id the request named
+ * itself by (its own word, never checked: the page says 自称, 未核实) or null when it named none (the page
+ * says 未知, T1); label is the request's label as its card showed it (redacted, cut ending in '…') or null.
+ * The chain stops at the requester: what it read or where its own words came from, Orchestra does not know.
+ */
+export type ApprovalOrigin = {
+  readonly kind: 'agent-request';
+  readonly requestId: string;
+  readonly requester: string | null;
+  readonly label: string | null;
+};
+
 export type Answer = { readonly decision: 'accept' } | { readonly decision: 'decline' } | { readonly decision: 'text'; readonly text: string };
 
 /**
@@ -59,6 +74,8 @@ export type ApprovalInput = {
   canText: boolean;
   /** r4 §8.5: the session's turns come from an unbound sender (a seat request); absent: false. */
   tainted?: boolean;
+  /** r4 §8.5: where the session's turns came from (a seat request); absent: null (a person's own sentence). Display only. */
+  origin?: ApprovalOrigin | null;
   /** Writes the answer to the child; called once. */
   answer(a: Answer, cause: AnswerCause): void;
 };
@@ -81,6 +98,8 @@ export type ApprovalView = {
    * allow from a typed one (as for any high-risk card): this is the page's half.
    */
   readonly tainted: boolean;
+  /** r4 §8.5: the source chain the card shows at its top (a seat request), or null. Display only, outside the digest. */
+  readonly origin: ApprovalOrigin | null;
   /** The list revision this entry came in with (the list's own rev moves on with every later change). */
   readonly rev: number;
   readonly canAccept: boolean;
@@ -147,7 +166,7 @@ export class Approvals {
     const view: ApprovalView = Object.freeze({
       approvalId, ownedId: input.ownedId, kind: input.kind, title, preview, tooLong: !whole, redactions: input.redactions,
       digest: canonicalDigest({ approvalId, kind: input.kind, title, preview }),
-      risk, high, tainted: input.tainted === true, rev: this.#rev + 1, canAccept: whole && input.canAccept, canText: whole && input.canText,
+      risk, high, tainted: input.tainted === true, origin: input.origin == null ? null : Object.freeze({ ...input.origin }), rev: this.#rev + 1, canAccept: whole && input.canAccept, canText: whole && input.canText,
       deadlineMono, deadlineWall: this.#clock.nowWall() + this.#timeoutMs,
     });
     const timerId = `deadline:${approvalId}:0`;

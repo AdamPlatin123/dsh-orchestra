@@ -134,6 +134,35 @@ export const pinWhole = (a) => !a.tooLong && a.preview.length <= 280 && a.previe
  */
 export const allowHow = (a) => (!a.high ? '0' : a.tainted === true ? '2' : '1');
 
+/** The pin's source chain cuts the requester's id and the label at this many characters each (the card shows them whole). */
+export const PIN_ORIGIN_CHARS = 16;
+// What the contract refuses in shown text (control and bidi characters; tab and newline too, the chain is one
+// line), written out as \u{..} should one ever arrive: never drawn as itself (r4 §5.3 rendering rule 2).
+const CTRL = /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g;
+const plain = (s) => String(s).replace(CTRL, (ch) => `\\u{${ch.codePointAt(0).toString(16)}}`);
+/** At most n characters (code points), a cut ending in '…'. */
+const cutTo = (s, n) => {
+  const cps = [...s];
+  return cps.length > n ? { text: `${cps.slice(0, Math.max(1, n - 1)).join('')}…`, cut: true } : { text: s, cut: false };
+};
+
+/**
+ * r4 §8.5: the source chain at the top of a card (and a pin): who asked (the DSH session id the request named
+ * itself by, its own word: 自称, 未核实; 未知 when it named none, T1), which request, and this session. ''
+ * when the approval has no origin and its session is not tainted (a person's own sentence); a tainted one
+ * without an origin says only that a DSH session asked. max: the pin's cut of the id and the label, which
+ * the line then says (A16: never silently short).
+ */
+export function originLine(a, max = Infinity) {
+  const o = a.origin;
+  if (o == null || o.kind !== 'agent-request') return a.tainted === true ? t('appr.tainted') : '';
+  const id = o.requester === null ? null : cutTo(plain(o.requester), max);
+  const label = o.label === null ? null : cutTo(plain(o.label), max);
+  const who = id === null ? t('appr.originWhoNone') : t('appr.originWho', { id: id.text });
+  const line = label === null ? t('appr.originNoLabel', { who, req: plain(o.requestId) }) : t('appr.origin', { who, label: label.text });
+  return id?.cut === true || label?.cut === true ? line + t('appr.originCut') : line;
+}
+
 /** Deny first; allow only where the request shows whole (high risk: held or typed, tainted: typed; void within SETTLE_MS of a change), else 去看. */
 export function apprActs(a, g, where) {
   if (!g.unlocked) return [lockBtn()];
@@ -156,8 +185,8 @@ export function describeCard(a, g) {
   return {
     key: a.approvalId, tpl: 'tpl-card', data: { high: a.high ? '1' : '0', tainted: a.tainted === true ? '1' : '0' },
     slots: {
-      // r4 §8.5: a tainted session's card says first where its turns came from (a red bar, tower.css).
-      kind: { text: join([a.tainted === true && t('appr.tainted'), tk('kind', a.kind, 'kind.command'), tk('risk', a.risk, 'risk.other'), a.high && t('appr.high')]) },
+      // r4 §8.5: an agent-triggered session's card says first where its turns came from, the source chain whole (a red bar, tower.css).
+      kind: { text: join([originLine(a), tk('kind', a.kind, 'kind.command'), tk('risk', a.risk, 'risk.other'), a.high && t('appr.high')]) },
       left: { text: left > 0 ? t('wait.left', { t: fmtLeft(left) }) : t('wait.overdue') },
       title: { text: a.title },
       pv: { text: a.preview },
@@ -171,9 +200,10 @@ export function describeCard(a, g) {
 export function pinExtra(e, list, g) {
   const a = list?.approvals.find((x) => x.approvalId === entry(list, e.node.slice(2))?.waiting);
   const mine = e.source === 'orchestra';
-  // r4 §8.5: a tainted session's pin says where its turns came from, with the same red bar as its card.
-  const taint = mine && a !== undefined && a.tainted === true;
-  return { ...(taint ? { data: { tainted: '1' }, hint: { text: t('appr.tainted') } } : {}), acts:{ kids: !mine ? [] : !g.unlocked ? [lockBtn()] : a === undefined ? [] : apprActs(a, g, 'pin') }, pv: { text: mine && g.unlocked && a !== undefined && pinWhole(a) ? a.preview : '' } };
+  // r4 §8.5: a tainted session's pin says where its turns came from (the source chain, its id and label cut
+  // at PIN_ORIGIN_CHARS, the cut said), with the same red bar as its card.
+  const taint = mine && a !== undefined && (a.tainted === true || a.origin != null);
+  return { ...(taint ? { data: { tainted: '1' }, hint: { text: originLine(a, PIN_ORIGIN_CHARS) } } : {}), acts:{ kids: !mine ? [] : !g.unlocked ? [lockBtn()] : a === undefined ? [] : apprActs(a, g, 'pin') }, pv: { text: mine && g.unlocked && a !== undefined && pinWhole(a) ? a.preview : '' } };
 }
 
 // --- seat: agent requests in 「等你」 (src/route/requests.ts; r4 A17, D8) ---------------------------------

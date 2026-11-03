@@ -238,6 +238,9 @@ async function main(): Promise<number> {
     const states: string[] = [];
     const allowed: Record<string, number> = {};
     const refusals: Record<string, number> = {};
+    // r4 §8.5: each card's source chain as GET /api/owned listed it (a session a person opened has none: null).
+    const origins: Record<string, number> = {};
+    const seenAppr = new Set<string>();
     let after = 0;
     const events: { kind: string; state: string | null; text: string | null }[] = [];
     let replied = false;
@@ -249,6 +252,11 @@ async function main(): Promise<number> {
       const me = list.owned.find((o: { ownedId: string }) => o.ownedId === id);
       if (me !== undefined && states.at(-1) !== me.state) states.push(me.state);
       for (const a of list.approvals.filter((x: { ownedId: string }) => x.ownedId === id)) {
+        if (!seenAppr.has(a.approvalId)) {
+          seenAppr.add(a.approvalId);
+          const k = a.origin === undefined ? 'absent' : a.origin === null ? 'null' : 'set';
+          origins[k] = (origins[k] ?? 0) + 1;
+        }
         if (!a.canAccept) {
           await post(`/api/approvals/${a.approvalId}/deny`, {});
           continue;
@@ -392,7 +400,7 @@ async function main(): Promise<number> {
     }
     Object.assign(report, {
       states, endState: last === undefined || last === null ? null : `${last.state}/${last.endReason}`,
-      approvalsAllowed: allowed, approvalRefusals: refusals, feedEvents: count, replyInFeed: replied, replyNamesTheWord: mentions,
+      approvalsAllowed: allowed, approvalRefusals: refusals, approvalOrigins: origins, feedEvents: count, replyInFeed: replied, replyNamesTheWord: mentions,
       fileWritten: written !== null, fileContentAsAsked: written !== null && written.trim() === WORD,
     });
     if (outside) report.ranUnasked = events.filter((e) => e.kind === 'note' && e.state === 'ran-unasked').length;

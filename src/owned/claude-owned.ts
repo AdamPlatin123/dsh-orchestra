@@ -2,7 +2,7 @@ import * as crypto from 'node:crypto';
 import type { HostPipe } from '../os/owned-proc.ts';
 import type { ClockHub } from '../runtime/clock.ts';
 import type { OwnedSeat } from '../sources/tower.ts';
-import type { Approvals } from './approvals.ts';
+import type { ApprovalOrigin, Approvals } from './approvals.ts';
 import type { ClaudeEndReason, ClaudeSession, ClaudeSessionState } from './claude-session.ts';
 import type { PathJudge } from './codex-session.ts';
 import type { OwnedRecord, OwnedRegistry } from './registry.ts';
@@ -135,7 +135,7 @@ export class ClaudeOwned {
    * The spawn gate holds either to its cwd table again. The model is checked before anything is made.
    * `tainted` (r4 §8.5): the first message comes from an unbound sender (a seat request, in a project root or its own work dir): the host asks for every tool call, reads in cwd too.
    */
-  create(req: { model?: string; text?: string; uuid?: string; title?: string; cwd?: string; tainted?: boolean } = {}): NewClaude {
+  create(req: { model?: string; text?: string; uuid?: string; title?: string; cwd?: string; tainted?: boolean; origin?: ApprovalOrigin | null } = {}): NewClaude {
     const model = req.model ?? DEFAULT_CLAUDE_MODEL;
     if (!isClaudeModel(model)) return { ok: false, reason: 'model-refused', detail: String(model) };
     if (this.full()) return { ok: false, reason: 'owned-limit', detail: `${this.maxActive} running` };
@@ -170,6 +170,7 @@ export class ClaudeOwned {
       },
       ...(o.judge !== undefined ? { judge: o.judge } : {}),
       ...(req.tainted === true ? { tainted: true } : {}),
+      ...(req.origin != null ? { origin: req.origin } : {}),
     }, req.text === undefined ? null : { text: req.text, uuid: req.uuid ?? '' });
     if (!started.ok) return started;
     mine = started.session;

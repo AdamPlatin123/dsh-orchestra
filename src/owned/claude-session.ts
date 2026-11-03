@@ -1,7 +1,7 @@
 import * as path from 'node:path';
 import type { After, HostPipe } from '../os/owned-proc.ts';
 import type { ClockHub, Fired } from '../runtime/clock.ts';
-import type { Answer, AnswerCause, ApprovalKind, ApprovalRisk, Approvals } from './approvals.ts';
+import type { Answer, AnswerCause, ApprovalKind, ApprovalOrigin, ApprovalRisk, Approvals } from './approvals.ts';
 import type { PathJudge } from './codex-session.ts';
 import type { FeedInput, FeedTokens } from './feed.ts';
 import type { JobOutcome } from '../os/procguard.ts';
@@ -106,6 +106,8 @@ export type ClaudeSessionOptions = {
    * too (host-core.mjs judge). Absent: false, as before (a person's own sentence).
    */
   tainted?: boolean;
+  /** r4 §8.5: where its turns came from (a seat request), shown at the top of its cards; display only. */
+  origin?: ApprovalOrigin | null;
 };
 
 export type ClaudeSendResult = { ok: true; via: 'turn/start' | 'queued' } | { ok: false; reason: 'ended' | 'queue-full' };
@@ -465,7 +467,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     let approvalId = '';
     const view = approvals.add({
       ownedId, kind: kindOf(a.toolName), title: t.text, preview: p.text, redactions: t.redactions + p.redactions + (typeof f.redactions === 'number' ? f.redactions : 0),
-      risk: a.risk, canAccept: !a.tooLong, canText: false, tainted: opts.tainted === true,
+      risk: a.risk, canAccept: !a.tooLong, canText: false, tainted: opts.tainted === true, origin: opts.origin ?? null,
       answer: (ans: Answer, cause: AnswerCause) => {
         asked.delete(reqId);
         perm(ans.decision === 'accept');

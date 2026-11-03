@@ -2,7 +2,7 @@ import * as path from 'node:path';
 import type { ChildPipe } from '../os/child-pipe.ts';
 import type { JobOutcome } from '../os/procguard.ts';
 import type { ClockHub } from '../runtime/clock.ts';
-import type { Answer, AnswerCause, ApprovalKind, ApprovalRisk, Approvals } from './approvals.ts';
+import type { Answer, AnswerCause, ApprovalKind, ApprovalOrigin, ApprovalRisk, Approvals } from './approvals.ts';
 import type { RpcClient, RpcExit, RpcId, RpcStats } from './codex-rpc.ts';
 import type { FeedInput, FeedTokens } from './feed.ts';
 import type { Redact } from './text.ts';
@@ -175,6 +175,8 @@ export type CodexSessionOptions = {
    * overrides "this turn and subsequent turns" only when given). Absent: on-request, as before.
    */
   tainted?: boolean;
+  /** r4 §8.5: where its turns came from (a seat request), shown at the top of its cards; display only. */
+  origin?: ApprovalOrigin | null;
 };
 
 /** The approval policy thread/start asks for, and its reply must echo (codex-cli 0.165.0 AskForApproval: untrusted | on-request | never | {granular}). */
@@ -735,7 +737,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     let approvalId = '';
     const view = approvals.add({
       ownedId, kind: ask.kind, title: t.text, preview: p.text, redactions: t.redactions + p.redactions, risk: ask.risk, canAccept: ask.canAccept, canText: ask.canText,
-      tainted: opts.tainted === true,
+      tainted: opts.tainted === true, origin: opts.origin ?? null,
       answer: (a: Answer, cause: AnswerCause) => {
         asked.delete(rpcKey(rid));
         rpc.respond(rid, ask.reply(a));
