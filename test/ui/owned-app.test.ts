@@ -691,6 +691,7 @@ test('owned descriptors (review fixes): words for notes and fates, unknown outco
   // A 5xx may come after the effect: the outcome is unknown, never "not done" (T1); a 501 is a refusal.
   assert.equal(errText('http-500'), TOWER_TEXT['op.unknown']);
   assert.equal(errText('network'), TOWER_TEXT['op.unknown']);
+  assert.equal(errText('timeout'), TOWER_TEXT['op.unknown']);
   assert.equal(errText('http-501'), '没办成：http-501');
   // Why a session cannot start, in words; an unknown code says so.
   const off = { kind: 'owned-list', rev: 0, enabled: false, disabledWhy: 'not-asked', harnesses: { codex: false, claude: false }, owned: [], approvals: [] };

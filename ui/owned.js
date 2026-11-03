@@ -32,7 +32,7 @@ export const ownedIdOf = (n) => (n?.ownership === 'owned' && /^n:[0-9a-f]{20}$/.
 export const isOwnedList = (b) => b?.kind === 'owned-list' && Array.isArray(b.owned) && Array.isArray(b.approvals) && Number.isSafeInteger(b.rev);
 export const isFeed = (b) => b?.kind === 'owned-feed' && Array.isArray(b.events) && Number.isSafeInteger(b.to);
 /** No reply or a 5xx (maybe after the effect) is unknown, not a failure (T1). */
-export const errText = (code) => (Object.hasOwn(ERROR_TEXT, code) ? ERROR_TEXT[code] : t(code === 'network' || /^http-5(?!01)\d\d$/.test(code) ? 'op.unknown' : 'op.err', { code }));
+export const errText = (code) => (Object.hasOwn(ERROR_TEXT, code) ? ERROR_TEXT[code] : t(code === 'network' || code === 'timeout' || /^http-5(?!01)\d\d$/.test(code) ? 'op.unknown' : 'op.err', { code }));
 
 /** working.ts OwnedCodexStatus.why in words. */
 export const whyText = (why) => tk('why', why, 'why.other');

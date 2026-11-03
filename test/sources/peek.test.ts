@@ -98,6 +98,33 @@ test('a long Claude transcript is read from its end only, and the cut line is dr
   assert.ok(v.events.every((e) => e.text.length <= PEEK_LIMITS.fieldChars + 1));
 });
 
+test('only the shown records are redacted: a log of thousands costs as much as its last PEEK_LIMITS.events', (t) => {
+  // Redacting every record of a 16 MB Codex rollout held the daemon past the page's 4 s, and the
+  // page said "读取失败：network". Every line still counts toward unparsed; only the kept ones are redacted.
+  const fx = fixture(t);
+  const n = PEEK_LIMITS.events * 10;
+  const rows: unknown[] = [];
+  for (let i = 0; i < n; i++) {
+    rows.push({ type: 'tool/call', seq: i, time: 1_793_560_000_000 + i, data: { text: `${i} ${SECRET}` } });
+    if (i % 100 === 0) rows.push('not json');
+  }
+  put(path.join(fx.dsh, 'sessions', '--p--', U1, 'session.v4.jsonl.zstd'), frame(rows));
+  let calls = 0;
+  const counting = (text: string) => {
+    calls++;
+    return redact(text);
+  };
+  const v = readSession(fx.gate, listSessions(fx.gate, fx.roots, redact).sessions[0]!, counting);
+  assert.equal(v.note, null);
+  assert.equal(v.unparsed, n / 100);
+  assert.equal(v.events.length, PEEK_LIMITS.events);
+  assert.equal(v.events[0]!.type, `#${n - PEEK_LIMITS.events} tool/call`);
+  assert.equal(v.events.at(-1)!.type, `#${n - 1} tool/call`);
+  assert.ok(v.events.every((e) => !e.text.includes(SECRET)));
+  // dshEvent redacts twice per record (its type and its text).
+  assert.equal(calls, 2 * PEEK_LIMITS.events);
+});
+
 test('a DSH log is walked frame by frame; an unfinished last frame is left for later', (t) => {
   const fx = fixture(t);
   const done = Buffer.concat([

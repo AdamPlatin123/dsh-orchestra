@@ -3,6 +3,7 @@
 // values. Words come from shared/strings.js via t(); source strings are text, never parsed; time is an argument.
 
 import { TOWER_TEXT } from '../shared/strings.js';
+import { TIMEOUT_MS } from './api.js';
 import { indexOf, pathOf } from './tree.js';
 
 /**
@@ -411,13 +412,23 @@ export function describeDetail(snap, sel, rows, detail, ctx) {
   };
 }
 
+/**
+ * Why a session's events were not read, in words where the code is known (T1): no answer within the page's
+ * deadline, no connection, or no such file now; any other code as it came.
+ * @param {string} code
+ */
+export function detailErr(code) {
+  if (code === 'timeout') return t('detail.err.timeout', { s: TIMEOUT_MS / 1000 });
+  return Object.hasOwn(TOWER_TEXT, `detail.err.${code}`) ? t(`detail.err.${code}`) : t('detail.err', { code });
+}
+
 /** A session's last events, newest first; the note says what was not read (T1). @param {string | null} session @param {Detail | null} detail @param {(s: string) => string} fmtIso @returns {Record<string, Paint>} */
 function events(session, detail, fmtIso) {
   const box = { data: { hide: '0' } };
   if (session === null) return { evBox: box, evNote: { text: t('detail.noSession') }, events: { kids: [] }, full: { data: { hide: '1' } } };
   const body = detail !== null && detail.id === session ? detail.body : null;
   if (body === null) return { evBox: box, evNote: { text: t('detail.loading') }, events: { kids: [] }, full: { data: { hide: '0' } } };
-  if ('error' in body) return { evBox: box, evNote: { text: t('detail.err', { code: body.error }) }, events: { kids: [] }, full: { data: { hide: '0' } } };
+  if ('error' in body) return { evBox: box, evNote: { text: detailErr(body.error) }, events: { kids: [] }, full: { data: { hide: '0' } } };
   const last = body.events.slice(-EVENTS_SHOWN).reverse();
   const notes = [];
   if (body.note !== null && Object.hasOwn(TOWER_TEXT, `note.${body.note}`)) notes.push(t(`note.${body.note}`));

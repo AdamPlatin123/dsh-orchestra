@@ -3,7 +3,7 @@
 // hidden), the route, clicks and keys, one render per frame. Owned sessions are driven once this tab is
 // unlocked (slice design §2.7), each allow under r4 §10.9's guards (D8); ui/owned.js says what shows.
 // Under the pointer or focus the tree's order holds (research §1.5): changes count on "↻ N".
-import { getFeed, getOwned, getSession, getTower, oneAtATime, post } from './api.js';
+import { TIMEOUT_MS, getFeed, getOwned, getSession, getTower, oneAtATime, post } from './api.js';
 import { after, every, fmtIso, nowMono, onFrame } from './clock.js';
 import { makePatcher } from './dom.js';
 import { getCsrf, getTheme, setCsrf, setTheme } from './prefs.js';
@@ -61,6 +61,8 @@ const state = {
   /** The rows on screen. @type {Row[]} */ rows: [],
   /** @type {Detail | null} */ detail: null,
   detailRev: '',
+  /** A session read is out: a failed one goes out again only when none is. */ detailOut: false,
+  /** When the last session read went out (monotonic ms). */ detailMono: 0,
   /** @type {Map<string, string>} */ lastState: new Map(),
   /** A changed row's new state, lit once until `until`. @type {Map<string, { state: string, until: number }>} */ flash: new Map(),
   /** The last render's view, to move the focus when the node page opens or closes. */ lastView: 'tower',
@@ -257,16 +259,26 @@ function answeredAt(el, id) {
   if (list) state.apprFocus = { id, el: item, list, card: item.classList.contains('card'), i: Array.from(list.children).indexOf(item) };
 }
 
-/** The selected node's session detail, read once per session and rev. @param {TowerSnapshot} snap @returns {Detail | null} */
+/**
+ * The selected node's session detail, read once per session and rev. A read that got no answer (timeout,
+ * network) goes out again POLL_MS after the last one, rev or not: the note says it is read again.
+ * @param {TowerSnapshot} snap @returns {Detail | null}
+ */
 function detailFor(snap) {
   const hit = state.sel === null ? undefined : indexOf(snap).byId.get(state.sel);
   const id = hit?.node.session ?? null;
   if (id === null) return null;
-  if (state.detail !== null && state.detail.id === id && state.detailRev === snap.meta.rev) return state.detail;
+  const body = state.detail !== null && state.detail.id === id ? state.detail.body : null;
+  const unanswered = body !== null && 'error' in body && (body.error === 'timeout' || body.error === 'network');
+  const retry = unanswered && !state.detailOut && nowMono() - state.detailMono >= POLL_MS;
+  if (state.detail !== null && state.detail.id === id && state.detailRev === snap.meta.rev && !retry) return state.detail;
   if (state.detail === null || state.detail.id !== id) state.detail = { id, body: null };
   state.detailRev = snap.meta.rev;
+  state.detailOut = true;
+  state.detailMono = nowMono();
   void getSession(id).then((a) => {
     if (state.detail === null || state.detail.id !== id) return;
+    state.detailOut = false;
     state.detail = { id, body: a.ok ? /** @type {any} */ (a.body) : { error: a.code } };
     schedule();
   });
@@ -279,7 +291,7 @@ async function poll() {
   const a = await towerOnce();
   if (a === null) return;
   if (!a.ok) {
-    state.error = a.code === 'unpaired' ? t('err.unpaired') : a.code === 'network' ? t('err.network') : t('err.http', { code: a.code });
+    state.error = a.code === 'unpaired' ? t('err.unpaired') : a.code === 'network' ? t('err.network') : a.code === 'timeout' ? t('err.timeout', { s: TIMEOUT_MS / 1000 }) : t('err.http', { code: a.code });
     return schedule();
   }
   const body = /** @type {any} */ (a.body);
@@ -474,7 +486,7 @@ async function suggest() {
     if (!a.ok && a.code === 'not-unlocked') lock();
     schedule();
     // No suggestion is no harm: nothing was started or written; the person can pick by hand.
-    const reason = a.ok ? t('route.failed.shape') : a.code === 'network' || /^http-5(?!01)\d\d$/.test(a.code) ? t('route.failed.none') : errText(a.code);
+    const reason = a.ok ? t('route.failed.shape') : a.code === 'network' || a.code === 'timeout' || /^http-5(?!01)\d\d$/.test(a.code) ? t('route.failed.none') : errText(a.code);
     return dlgSay('new-dlg', t('route.failed', { why: reason }));
   }
   state.desk = { text, reply: a.body };

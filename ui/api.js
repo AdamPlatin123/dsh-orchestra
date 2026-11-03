@@ -1,6 +1,7 @@
 // @ts-check
 // The page's only network calls (orchestra app plan §5), to literal /api/ paths; owned ones carry the token
-// (§2.7). An answer: { ok, body } or { ok: false, code } ('unpaired': a bare 403; 'network': unknown, T1).
+// (§2.7). An answer: { ok, body } or { ok: false, code } ('unpaired': a bare 403; 'timeout': no answer within the
+// request's deadline; 'network': the connection was refused or broke. Either way what the daemon did is unknown, T1).
 
 import { deadline } from './clock.js';
 
@@ -36,8 +37,10 @@ async function read(go) {
   let res;
   try {
     res = await go();
-  } catch {
-    return { ok: false, code: 'network' };
+  } catch (e) {
+    // The deadline (clock.js) rejects the fetch with a DOMException named TimeoutError; a refused or broken
+    // connection rejects it with a TypeError.
+    return { ok: false, code: /** @type {{ name?: unknown }} */ (e)?.name === 'TimeoutError' ? 'timeout' : 'network' };
   }
   if (res.status === 204) return { ok: true, body: null };
   let body = null;

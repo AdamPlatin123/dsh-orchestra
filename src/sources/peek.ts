@@ -537,22 +537,39 @@ function codexLines(gate: ReadGate, s: PeekSession, each: (line: string) => void
   return 'tail-only';
 }
 
-/** The last events of a session, read once through the gate. */
+/** Whether a line is one JSON object: the lines the event parsers turn into an event, the rest they refuse. */
+function isRecordLine(line: string): boolean {
+  try {
+    return isObject(JSON.parse(line));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The last events of a session, read once through the gate. Every line is checked, but only the last
+ * PEEK_LIMITS.events records become events: redaction is the costly step, and a 16 MB Codex rollout
+ * holds thousands of records (redacting them all held the daemon's one thread past the page's 4 s).
+ */
 export function readSession(gate: ReadGate, s: PeekSession, redact: Redact): PeekView {
   const keep = PEEK_LIMITS.events;
-  const events: PeekEvent[] = [];
+  const last: string[] = [];
   let unparsed = 0;
   const parse = s.harness === 'claude' ? claudeEvent : s.harness === 'codex' ? codexEvent : dshEvent;
   const note = eachLine(gate, s, (line) => {
     if (line.trim() === '') return;
-    const e = parse(line, redact);
-    if (e === null) {
+    if (!isRecordLine(line)) {
       unparsed++;
       return;
     }
-    events.push(e);
-    if (events.length > keep) events.shift();
+    last.push(line);
+    if (last.length > keep) last.shift();
   });
+  const events: PeekEvent[] = [];
+  for (const line of last) {
+    const e = parse(line, redact);
+    if (e !== null) events.push(e);
+  }
   return { session: s, events, unparsed, note };
 }
 

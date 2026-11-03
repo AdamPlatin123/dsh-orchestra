@@ -35,6 +35,8 @@ test('the page boots, renders the fetched tower, and drives selection, keys, fil
   const fetched: string[] = [];
   let mono = 1000;
   let tower: Record<string, any> = structuredClone(GOLDEN);
+  /** How the next session reads fail: as a fetch past its deadline, or not at all. */
+  let sessionFails: 'timeout' | null = null;
   const loc = { hash: '', href: '', pathname: '/', search: '', replaced: [] as string[], replace(u: string) { this.replaced.push(u); this.hash = u.slice(u.indexOf('#')); } };
   const win = {};
   let narrow = false;
@@ -58,6 +60,7 @@ test('the page boots, renders the fetched tower, and drives selection, keys, fil
   define('localStorage', { getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); } });
   define('fetch', async (url: string) => {
     fetched.push(url);
+    if (sessionFails === 'timeout' && url.startsWith('/api/peek/session')) throw new DOMException('signal timed out', 'TimeoutError');
     const body = url === '/api/tower' ? tower : { session: { id: url.slice(-20) }, events: [{ at: '2026-11-02T10:00:00.000Z', type: 'assistant', text: 'synthetic event' }], unparsed: 0, note: null };
     return { status: 200, ok: true, json: async () => structuredClone(body) };
   });
@@ -78,6 +81,8 @@ test('the page boots, renders the fetched tower, and drives selection, keys, fil
 
     // A click on a node row selects it and opens its page (#/n/<id>); its session is read once.
     const claude = GOLDEN.projects[0].nodes.find((n: any) => n.harness === 'claude' && n.layer === 'agent');
+    // Its first read gets no answer within the page's deadline: the note says so, not "network".
+    sessionFails = 'timeout';
     const row = rows().find((r) => r.getAttribute('data-key') === claude.id)!;
     fire(doc, 'click', { target: row.querySelector('[data-slot=act]') });
     assert.equal(loc.hash, `#/n/${claude.id}`);
@@ -92,7 +97,27 @@ test('the page boots, renders the fetched tower, and drives selection, keys, fil
     assert.equal(detail.querySelector('[data-slot=title]')!.textContent, claude.title);
     assert.ok(fetched.includes(`/api/peek/session?id=${claude.session}`));
     await flush();
+    assert.equal(detail.querySelector('[data-slot=evNote]')!.textContent, TOWER_TEXT['detail.err.timeout'].replace('{s}', '4'));
+    assert.equal(detail.querySelectorAll('.ev').length, 0);
+    const reads = () => fetched.filter((u) => u === `/api/peek/session?id=${claude.session}`).length;
+    assert.equal(reads(), 1);
+    // Within POLL_MS nothing goes out again; past it, the same rev, the read goes out again and lands.
+    sessionFails = null;
+    mono += 1000;
+    intervals[1]!();
+    await flush();
+    assert.equal(reads(), 1);
+    mono += 1000;
+    intervals[1]!();
+    await flush();
+    assert.equal(reads(), 2);
+    await flush();
     assert.equal(detail.querySelectorAll('.ev').length, 1);
+    // A read that landed is not read again on the same rev.
+    mono += 5000;
+    intervals[1]!();
+    await flush();
+    assert.equal(reads(), 2);
 
     // Down moves the selection and the focus to the next row; Space opens its peek in place.
     fire(tree, 'keydown', { target: row, key: 'ArrowDown' });

@@ -338,10 +338,21 @@ test('detail: a node shows its fields and basis, unknown said as unknown, its la
   assert.equal(ev[0]!.querySelector('[data-slot=tx]')!.textContent, 'synthetic line 14');
   assert.equal(ev[0]!.querySelector('[data-slot=at]')!.textContent, '10:00:14');
   assert.equal(slotText(d, 'evNote'), [t('detail.lastN', { n: EVENTS_SHOWN }), TOWER_TEXT['note.tail-only'], t('detail.unparsed', { n: 2 })].join(TOWER_TEXT['sep.notes']));
-  ui.detail = { id: unk.session, body: { error: 'not-found' } };
-  render(s);
-  assert.equal(slotText(d, 'evNote'), t('detail.err', { code: 'not-found' }));
-  assert.equal(d.querySelectorAll('.ev').length, 0);
+  // A read that failed says why in words where the code is known (T1): no answer within the page's 4 s
+  // is not "can't connect", and neither is "no such file"; another code shows as it came.
+  for (const [code, text] of [
+    ['not-found', TOWER_TEXT['detail.err.not-found']],
+    ['timeout', t('detail.err.timeout', { s: 4 })],
+    ['network', TOWER_TEXT['detail.err.network']],
+    ['http-500', t('detail.err', { code: 'http-500' })],
+  ]) {
+    ui.detail = { id: unk.session, body: { error: code } };
+    render(s);
+    assert.equal(slotText(d, 'evNote'), text, code);
+    assert.equal(d.querySelectorAll('.ev').length, 0);
+  }
+  assert.notEqual(TOWER_TEXT['detail.err.timeout'], TOWER_TEXT['detail.err.network']);
+  assert.match(t('detail.err.timeout', { s: 4 }), /4 秒内没有回复/);
   // Nothing selected: the hint, and the dock says to pick a row first.
   ui.sel = null;
   render(s);
