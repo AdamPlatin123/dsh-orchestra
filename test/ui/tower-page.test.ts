@@ -155,7 +155,7 @@ test('one colour, one meaning: yellow only for waiting, vermilion only for error
   const dark = rules.filter((r) => r.sel.includes(':root') && /color-scheme: dark/.test(r.body));
   assert.equal(dark.length, 2);
   assert.ok(dark.some((r) => r.at.includes('prefers-color-scheme: dark') && r.sel.includes(':not([data-theme=light])')));
-  for (const d of dark) for (const tkn of ['paper', 'ink', 'wait', 'err', 'run', 'claude', 'dsh', 'codex']) assert.match(d.body, new RegExp(`--${tkn}:`), tkn);
+  for (const d of dark) for (const tkn of ['paper', 'ink', 'wait', 'err', 'run', 'taint', 'claude', 'dsh', 'codex']) assert.match(d.body, new RegExp(`--${tkn}:`), tkn);
   // Text sizes: nothing below 12px (meta is 12.5px), as the chart direction asks.
   for (const m of CSS.matchAll(/font-size: ([\d.]+)px/g)) assert.ok(Number(m[1]) >= 12, m[0]);
   assert.match(CSS, /--row: 30px;/);

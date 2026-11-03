@@ -128,15 +128,23 @@ export const atBottom = (el) => !((el.scrollHeight ?? 0) - (el.scrollTop ?? 0) -
 /** The waiting bar shows this request whole. */
 export const pinWhole = (a) => !a.tooLong && a.preview.length <= 280 && a.preview.split('\n').length <= 4;
 
-/** Deny first; allow only where the request shows whole (high risk: held or typed; void within SETTLE_MS of a change), else 去看. */
+/**
+ * How a card's allow is given: '0' a click; '1' held (or typed), r4 §10.9's high risk; '2' typed only: a high-risk
+ * request of a tainted session (r4 §8.5: shell, the network, a write outside cwd take the typed word).
+ */
+export const allowHow = (a) => (!a.high ? '0' : a.tainted === true ? '2' : '1');
+
+/** Deny first; allow only where the request shows whole (high risk: held or typed, tainted: typed; void within SETTLE_MS of a change), else 去看. */
 export function apprActs(a, g, where) {
   if (!g.unlocked) return [lockBtn()];
   const appr = a.approvalId;
   const what = { t: a.title || tk('kind', a.kind, 'kind.command') };
   const out = [btn('deny', t('appr.deny'), { act: 'deny', appr }, { 'aria-disabled': busy(g), 'aria-label': t('appr.denyLabel', what) })];
   if (a.canAccept && !a.tooLong && (where === 'card' || pinWhole(a))) {
-    out.push(btn('allow', t(a.high ? 'appr.hold' : 'appr.allow'), { act: 'allow', appr, high: a.high ? '1' : '0', settle: g.settle, hold: g.hold === appr ? '1' : '0' }, {
-      'aria-disabled': g.settle !== '' ? 'true' : busy(g), title: a.high ? t('appr.holdHint') : null, 'aria-label': t(a.high ? 'appr.holdLabel' : 'appr.allowLabel', what),
+    const how = allowHow(a);
+    out.push(btn('allow', t(how === '2' ? 'appr.typeOnly' : how === '1' ? 'appr.hold' : 'appr.allow'), { act: 'allow', appr, high: how, settle: g.settle, hold: g.hold === appr ? '1' : '0' }, {
+      'aria-disabled': g.settle !== '' ? 'true' : busy(g), title: how === '2' ? t('appr.typeOnlyHint') : how === '1' ? t('appr.holdHint') : null,
+      'aria-label': t(how === '2' ? 'appr.typeOnlyLabel' : how === '1' ? 'appr.holdLabel' : 'appr.allowLabel', what),
     }));
   } else if (where === 'pin') out.push(btn('see', t('appr.see'), { act: 'see', appr }));
   return out;
@@ -146,13 +154,14 @@ export function apprActs(a, g, where) {
 export function describeCard(a, g) {
   const left = a.deadline - g.nowWall;
   return {
-    key: a.approvalId, tpl: 'tpl-card', data: { high: a.high ? '1' : '0' },
+    key: a.approvalId, tpl: 'tpl-card', data: { high: a.high ? '1' : '0', tainted: a.tainted === true ? '1' : '0' },
     slots: {
-      kind: { text: join([tk('kind', a.kind, 'kind.command'), tk('risk', a.risk, 'risk.other'), a.high && t('appr.high')]) },
+      // r4 §8.5: a tainted session's card says first where its turns came from (a red bar, tower.css).
+      kind: { text: join([a.tainted === true && t('appr.tainted'), tk('kind', a.kind, 'kind.command'), tk('risk', a.risk, 'risk.other'), a.high && t('appr.high')]) },
       left: { text: left > 0 ? t('wait.left', { t: fmtLeft(left) }) : t('wait.overdue') },
       title: { text: a.title },
       pv: { text: a.preview },
-      note: { text: join([a.tooLong ? t('appr.cut') : !a.canAccept && t('appr.noAccept'), a.redactions > 0 && t('appr.redacted', { n: a.redactions })], 'sep.notes') },
+      note: { text: join([a.tooLong ? t('appr.cut') : !a.canAccept && t('appr.noAccept'), a.redactions > 0 && t('appr.redacted', { n: a.redactions }), a.tainted === true && t(a.high ? 'appr.taintedHigh' : 'appr.taintedNote')], 'sep.notes') },
       acts: { kids: apprActs(a, g, 'card') },
     },
   };

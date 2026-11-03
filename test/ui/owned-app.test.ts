@@ -7,7 +7,7 @@ import { TOWER_TEXT } from '../../shared/strings.js';
 import { towerFromStage, type OwnedSeat } from '../../src/sources/tower.ts';
 import { busyStage } from '../helpers/tower-fixture.ts';
 import {
-  apprActs, atBottom, chatNews, describeAskPins, describeChat, describeNew, describeOwned, describeOwnedDock, describeRequestPins, errText, mergeFeed, msgError, notifyText, pinExtra, requestModel, requestOf, withRequests, type Approval, type Guard,
+  allowHow, apprActs, atBottom, describeCard, chatNews, describeAskPins, describeChat, describeNew, describeOwned, describeOwnedDock, describeRequestPins, errText, mergeFeed, msgError, notifyText, pinExtra, requestModel, requestOf, withRequests, type Approval, type Guard,
 } from '../../ui/owned.js';
 
 // Orchestra's own sessions on the tower page (orchestra app plan §2-§5): ui/app.js booted against the
@@ -46,7 +46,7 @@ const seat = (ownedId: string, title: string, state: OwnedSeat['state'], deadlin
 });
 const approval = (id: string, ownedId: string, over: Partial<Approval> & { rev: number }) => ({
   approvalId: id, ownedId, kind: 'command', title: 'req', preview: 'command: npm test\ncwd: work', tooLong: false, redactions: 0,
-  digest: id.slice(0, 1).repeat(64), risk: 'write', high: false, canAccept: true, canText: false, deadline: OBSERVED + 20 * MIN, ...over,
+  digest: id.slice(0, 1).repeat(64), risk: 'write', high: false, tainted: false, canAccept: true, canText: false, deadline: OBSERVED + 20 * MIN, ...over,
 });
 const LONG = Array.from({ length: 12 }, (_, i) => `+ line ${i} of a long diff that will not fit on the waiting bar`).join('\n');
 
@@ -592,6 +592,28 @@ test('owned descriptors: no allow for a cut request or a native wait, words for 
   const c = describeChat(f);
   assert.equal(c.kids.length, 2);
   assert.ok(c.note.includes(TOWER_TEXT['chat.clipped']!), 'T1: what the daemon no longer holds is said');
+});
+
+test("owned descriptors (r4 §8.5 review fix): a tainted session's card has the red bar and its source; its high risk is typed only, no hold", () => {
+  const g: Guard = { unlocked: true, settle: '', hold: null, busy: false, nowWall: 0 };
+  const plainHigh = approval(AP.a, ID.a, { rev: 1, risk: 'shell', high: true }) as Approval;
+  const taintedHigh = { ...plainHigh, tainted: true } as Approval;
+  const taintedLow = approval(AP.a, ID.a, { rev: 1, tainted: true }) as Approval;
+  assert.deepEqual([allowHow(approval(AP.a, ID.a, { rev: 1 })), allowHow(plainHigh), allowHow(taintedHigh), allowHow(taintedLow)], ['0', '1', '2', '0']);
+  const allowOf = (x: Approval) => apprActs(x, g, 'card').find((d) => d.data!.act === 'allow')!;
+  assert.deepEqual([allowOf(plainHigh).data!.high, allowOf(plainHigh).text], ['1', TOWER_TEXT['appr.hold']]);
+  // data-high 2: the page's hold handlers take only data-high 1 (app.js holdBtn), so no hold starts on it.
+  assert.deepEqual([allowOf(taintedHigh).data!.high, allowOf(taintedHigh).text], ['2', TOWER_TEXT['appr.typeOnly']]);
+  assert.equal(allowOf(taintedHigh).attr!['aria-label'], TOWER_TEXT['appr.typeOnlyLabel']!.replace('{t}', 'req'));
+  assert.equal(allowOf(taintedLow).data!.high, '0', 'r4 §8.5 names shell, the network, writes outside cwd: a low-risk card keeps its click');
+  const card = describeCard(taintedHigh, g) as any;
+  assert.deepEqual(card.data, { high: '1', tainted: '1' });
+  assert.ok(card.slots.kind.text.startsWith(TOWER_TEXT['appr.tainted']!), card.slots.kind.text);
+  assert.ok(card.slots.note.text.includes(TOWER_TEXT['appr.taintedHigh']!), card.slots.note.text);
+  assert.ok(describeCard(taintedLow, g).slots.note.text.includes(TOWER_TEXT['appr.taintedNote']!));
+  const plain = describeCard(plainHigh, g) as any;
+  assert.equal(plain.data.tainted, '0');
+  assert.ok(!plain.slots.kind.text.includes(TOWER_TEXT['appr.tainted']!));
 });
 
 test('owned descriptors (review fixes): words for notes and fates, unknown outcomes, why off, busy keeps the focus, unique ids', () => {

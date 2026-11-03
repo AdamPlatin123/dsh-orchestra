@@ -57,6 +57,8 @@ export type ApprovalInput = {
   canAccept: boolean;
   /** A question one line of text can answer. */
   canText: boolean;
+  /** r4 §8.5: the session's turns come from an unbound sender (a seat request); absent: false. */
+  tainted?: boolean;
   /** Writes the answer to the child; called once. */
   answer(a: Answer, cause: AnswerCause): void;
 };
@@ -73,6 +75,12 @@ export type ApprovalView = {
   readonly risk: ApprovalRisk;
   /** §10.9 high risk: a shell, the network, a grant, or a hidden secret; the page asks to hold or type. */
   readonly high: boolean;
+  /**
+   * r4 §8.5: the session is tainted (a seat request: an unbound sender). The page draws a red bar and the
+   * source, and a high-risk allow takes the typed word only (no hold). The server does not tell a held
+   * allow from a typed one (as for any high-risk card): this is the page's half.
+   */
+  readonly tainted: boolean;
   /** The list revision this entry came in with (the list's own rev moves on with every later change). */
   readonly rev: number;
   readonly canAccept: boolean;
@@ -139,7 +147,7 @@ export class Approvals {
     const view: ApprovalView = Object.freeze({
       approvalId, ownedId: input.ownedId, kind: input.kind, title, preview, tooLong: !whole, redactions: input.redactions,
       digest: canonicalDigest({ approvalId, kind: input.kind, title, preview }),
-      risk, high, rev: this.#rev + 1, canAccept: whole && input.canAccept, canText: whole && input.canText,
+      risk, high, tainted: input.tainted === true, rev: this.#rev + 1, canAccept: whole && input.canAccept, canText: whole && input.canText,
       deadlineMono, deadlineWall: this.#clock.nowWall() + this.#timeoutMs,
     });
     const timerId = `deadline:${approvalId}:0`;

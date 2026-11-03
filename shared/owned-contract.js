@@ -178,10 +178,12 @@ export function holdsControl(s) {
  *   (its cwd, resolved, inside a project root); null: in Orchestra's own work dir, and runInWhy says why.
  * @typedef {{
  *   approvalId: string, ownedId: string, kind: string, title: string, preview: string, tooLong: boolean, redactions: number,
- *   digest: string, risk: string, high: boolean, rev: number, canAccept: boolean, canText: boolean, deadline: number,
+ *   digest: string, risk: string, high: boolean, tainted: boolean, rev: number, canAccept: boolean, canText: boolean, deadline: number,
  * }} ApprovalEntry
  *   high: r4 §10.9's high risk (a shell, the network, a protected path or a write outside the work dir,
  *   a grant, a hidden secret): the page asks to hold or type before it sends an allow.
+ *   tainted: r4 §8.5, the session runs a seat request (an unbound sender): the card has a red bar and says
+ *   where the request came from, and a high-risk allow takes the typed word only (no hold).
  *   deadline: the wall time (epoch ms) the queue declines it at (D8: a timeout is a refusal).
  * @typedef {{
  *   v: 1, kind: 'owned-feed', ownedId: string, from: number, to: number, clipped: boolean, events: FeedEntry[],
@@ -350,7 +352,7 @@ export function validateOwnedList(x) {
   const ids = new Set();
   c.arr(s.approvals, '$.approvals').forEach((e, i) => {
     const at = `$.approvals[${i}]`;
-    const a = c.obj(e, at, ['approvalId', 'ownedId', 'kind', 'title', 'preview', 'tooLong', 'redactions', 'digest', 'risk', 'high', 'rev', 'canAccept', 'canText', 'deadline']);
+    const a = c.obj(e, at, ['approvalId', 'ownedId', 'kind', 'title', 'preview', 'tooLong', 'redactions', 'digest', 'risk', 'high', 'tainted', 'rev', 'canAccept', 'canText', 'deadline']);
     if (a === null) return;
     c.re(a.approvalId, `${at}.approvalId`, APPROVAL_ID_RE, 'approval id');
     if (ids.has(a.approvalId)) c.bad(`${at}.approvalId`, `${String(a.approvalId)} listed twice`);
@@ -368,6 +370,7 @@ export function validateOwnedList(x) {
     c.re(a.digest, `${at}.digest`, OWNED_DIGEST_RE, 'digest');
     c.en(a.risk, `${at}.risk`, OWNED_ENUMS.risk);
     c.bool(a.high, `${at}.high`);
+    c.bool(a.tainted, `${at}.tainted`);
     c.int(a.rev, `${at}.rev`, 1);
     if (typeof a.rev === 'number' && typeof s.rev === 'number' && a.rev > s.rev) c.bad(`${at}.rev`, `${a.rev}, after the list's own ${s.rev}`);
     c.bool(a.canAccept, `${at}.canAccept`);

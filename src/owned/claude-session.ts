@@ -465,7 +465,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     let approvalId = '';
     const view = approvals.add({
       ownedId, kind: kindOf(a.toolName), title: t.text, preview: p.text, redactions: t.redactions + p.redactions + (typeof f.redactions === 'number' ? f.redactions : 0),
-      risk: a.risk, canAccept: !a.tooLong, canText: false,
+      risk: a.risk, canAccept: !a.tooLong, canText: false, tainted: opts.tainted === true,
       answer: (ans: Answer, cause: AnswerCause) => {
         asked.delete(reqId);
         perm(ans.decision === 'accept');

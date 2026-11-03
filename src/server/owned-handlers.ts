@@ -112,7 +112,7 @@ export const ownedEnabled = (deps: Pick<OwnedRoutesDeps, 'codex' | 'claude'>): b
 function approvalEntry(a: ApprovalView) {
   return {
     approvalId: a.approvalId, ownedId: a.ownedId, kind: a.kind, title: a.title, preview: a.preview, tooLong: a.tooLong, redactions: a.redactions,
-    digest: a.digest, risk: a.risk, high: a.high, rev: a.rev, canAccept: a.canAccept, canText: a.canText, deadline: a.deadlineWall,
+    digest: a.digest, risk: a.risk, high: a.high, tainted: a.tainted, rev: a.rev, canAccept: a.canAccept, canText: a.canText, deadline: a.deadlineWall,
   };
 }
 

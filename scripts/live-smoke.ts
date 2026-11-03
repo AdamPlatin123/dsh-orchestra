@@ -343,9 +343,15 @@ async function main(): Promise<number> {
           await sleep(250);
         }
         report.aliveAfterKill = timeline;
+        // The pass/fail reads this: the count within 20 s of the kill (review fix: never the recount after the restart).
         report.survivors = timeline.at(-1)!.alive;
-        const after = await pg.info(job);
-        report.jobAfterKill = after.found ? { found: true, procs: after.procs.length } : { found: false };
+        // found:false only from procguard's own "no such Job"; a probe that failed is recorded apart, and fails the run.
+        try {
+          const after = await pg.info(job);
+          report.jobAfterKill = after.found ? { found: true, procs: after.procs.length } : { found: false };
+        } catch (e) {
+          report.jobAfterKill = { found: null, error: e instanceof Error ? e.message : String(e) };
+        }
       }
       report.recordAfterKill = endReasonOnDisk(testDir, id);
       await Promise.race([exited, sleep(10_000)]);
@@ -375,7 +381,9 @@ async function main(): Promise<number> {
       await endIt();
       endIt = null;
     }
-    if (pg !== null) report.survivors = held.length === 0 ? null : (await pg.alive(held)).length;
+    // --daemon-kill: survivors is the count within 20 s of the kill; the recount after the restart is kept apart.
+    if (pg !== null && daemonKill) report.survivorsAfterRestart = held.length === 0 ? null : (await pg.alive(held)).length;
+    else if (pg !== null) report.survivors = held.length === 0 ? null : (await pg.alive(held)).length;
     const last = daemonStop || daemonKill ? null : (await get('/api/owned')).json.owned.find((o: { ownedId: string }) => o.ownedId === id);
     const count: Record<string, number> = {};
     for (const e of events) {

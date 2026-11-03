@@ -47,17 +47,18 @@ async function handshake(m: Mem, echo: unknown, sandbox: string): Promise<void> 
   await settle();
 }
 
-async function session(opts: { tainted?: boolean; projectRoot?: boolean; echo: unknown; sandbox: string }): Promise<{ s: CodexSession; m: Mem }> {
+async function session(opts: { tainted?: boolean; projectRoot?: boolean; echo: unknown; sandbox: string }): Promise<{ s: CodexSession; m: Mem; approvals: Approvals }> {
   const clock = new VirtualClock({ mono: 1_000, wall: 1_800_000_000_000 });
   const m = memPipe();
+  const approvals = new Approvals({ hub: clock, settleMs: 0 });
   const started = startCodexSession({
-    ownedId: '0123456789abcdef0123', cwd: CWD, model: DEFAULT_CODEX_MODEL, launch: () => m.pipe, approvals: new Approvals({ hub: clock, settleMs: 0 }),
+    ownedId: '0123456789abcdef0123', cwd: CWD, model: DEFAULT_CODEX_MODEL, launch: () => m.pipe, approvals,
     now: () => clock.wall, redact: (text) => ({ text, count: 0 }), hub: clock,
     ...(opts.tainted === undefined ? {} : { tainted: opts.tainted }), ...(opts.projectRoot === undefined ? {} : { projectRoot: opts.projectRoot }),
   });
   assert.ok(started.ok);
   await handshake(m, opts.echo, opts.sandbox);
-  return { s: started.session, m };
+  return { s: started.session, m, approvals };
 }
 
 const threadStart = (m: Mem) => m.sent().find((x) => x.method === 'thread/start');
@@ -130,4 +131,17 @@ test('CodexOwned.create hands tainted down: a tainted create asks for untrusted,
   assert.equal(await a.session.ready, true);
   assert.equal(await b.session.ready, true);
   owned.endAll();
+});
+
+test("review fix (r4 §8.5): a tainted session's approvals say so (the card's red bar, typed-only high risk); a plain one's do not", async () => {
+  for (const tainted of [true, false]) {
+    const { s, m, approvals } = await session({ tainted, echo: tainted ? 'untrusted' : 'on-request', sandbox: 'readOnly' });
+    assert.equal(await s.ready, true);
+    m.send({ id: 'srv-1', method: 'item/commandExecution/requestApproval', params: { threadId: 'thr', turnId: 't1', itemId: 'cmd_1', command: 'Get-Content notes.txt', cwd: CWD } });
+    await settle();
+    const open = approvals.list();
+    assert.equal(open.length, 1);
+    assert.equal(open[0]!.tainted, tainted);
+    assert.equal(open[0]!.high, true, 'a command is a shell: high risk');
+  }
 });

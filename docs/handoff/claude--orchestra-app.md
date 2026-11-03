@@ -34,11 +34,11 @@
 
 ## Unverified（做了但没验证，或验证没过）
 - **真实 profile 一次都没跑过**（代-2：只能由用户在可见控制台里启动）。塔表在真实数据上有多少项目和节点、真实 profile 下自有会话能不能起停、`start-orchestra.cmd` 实际启动（等 5 秒开浏览器、Ctrl+C 只停 orchestrad、退出后停在「按任意键」）、带 `--project-root` 的真实启动，全部未知。
-- 项目根：Claude 会话在项目根里没有实测（只跑了 Codex）；r4 §8.5 要求 seat 派给 Codex 时用 untrusted 审批策略，没做（app-server 对这个参数的回复没实测），Codex 读项目文件会不会先问人，未知；受保护路径的卡是「按住或键入」确认，不是 §7.4 说的「必须键入」；`package.json` 整个文件算受保护；`.git/config` 不在清单里；r4 §10.8 双写者告警没做；根只能用启动参数给，改根要重启（原计划写「在设置里登记」，已记分歧）。
+- 项目根：Claude 会话在项目根里没有实测（只跑了 Codex）；seat 派出的会话按 r4 §8.5 记为 tainted（d212b86：Codex 用 untrusted 审批策略启动并校验回显，Claude 每次工具调用都问），但 seat→Codex 在项目根里没有 live 跑，seat→Claude（项目根或自建目录）没有 live 跑，只有单元测试；untrusted 下读文件先问人只在 Orchestra 外的探针里测过一次（Get-Content、列目录、写，3/3 先问），别的读法未测；tainted 会话的审批卡（红条、来源一行、高风险只认键入，复核后补）只有单元测试，没在页面上 live 看过，卡上只写「来自 DSH 会话」，没有 r4 §8.5 说的完整来源链；受保护路径的卡是「按住或键入」确认，不是 §7.4 说的「必须键入」；`package.json` 整个文件算受保护；`.git/config` 不在清单里；r4 §10.8 双写者告警没做；根只能用启动参数给，改根要重启（原计划写「在设置里登记」，已记分歧）。
 - seat 装进日常 DSH profile 的步骤（README 新一节）没在真 DSH 上走过；卸载命令写的是「未知」。
 - seat：抢管道的冒名实例只有单元测试，没有用真的第二个管道实例复现；读到令牌文件又抢到管道的进程仍能冒充 orchestrad（已记残余）。Codex 沙箱里的进程能不能连上请求口管道，没验证。
 - 真正的系统级「标签页隐藏」在内置浏览器里模拟不出来（后台标签页 `document.hidden` 仍为 false，只是 requestAnimationFrame 停了），后台标题只在模拟 hidden 时看过。
-- 会话还在跑时强杀 orchestrad：没有实测。被 Node 启动器直接启动、父进程被杀时 orchestrad 的停止顺序不跑（实测一次），这时自有会话的 Job 跟着关没有在会话跑着时实测。
+- 会话还在跑时强杀 orchestrad：18d5a03 加了 `scripts/live-smoke.ts --daemon-kill`，codex 跑两次、claude 跑一次，退出码都是 0（杀后 Job 0 幸存、Job 打不开、重启后 unknown / daemon-restart）；复核后修了判据（幸存数改用杀后 20 s 内的时间线，探针出错不再算「Job 已关」），改后只重跑了 codex 一次（退出码 0）。仍未知：只测了被 Node 脚本用管道启动的 orchestrad，别的启动方式没测；Node 升级后要复跑。
 - 花费：走 magpie 的模型不在 Claude CLI 的价目表里，真实花费未知。
 - 自有会话跨重启：重启后没结束的会话显示状态未知、对话内容看不到，还在等的 seat 请求丢失。设计如此，没在真实重启下跑过。
 - Job 挡不住同一用户的进程；node.exe 只查存在和不是链接，没有哈希。
@@ -48,8 +48,8 @@
 1. 真实 profile 启动检查（只能由用户本人做）— 在普通（非管理员）cmd 里双击或运行仓库根的 `start-orchestra.cmd`（worktree 里先设 `ORCHESTRA_NODE` 指向主检出目录的 `.tools\node24\node.exe`）。验收：控制台打印配对码、`procguard on`、两家 `owned … sessions on`、`working (real profile …)`；浏览器自动打开 `http://orchestra.localhost:7470/`；配对后塔表有数据、顶栏数字等于点开后的行数；派一个 Codex 会话「只回复 ok，不用工具」到空闲后结束；Ctrl+C 后任务管理器里没有 codex.exe、procguard.exe。结果记进本文件。
 2. 决定 push / 合并（只能由用户本人做）— 本分支只在这台机器上；`hosts/claude/node_modules` 也只在这个 worktree。要推远端或合进主线，由用户定目标分支。
 3. 项目根里跑 Claude — `node scripts/live-smoke.ts --harness claude --project-root`。验收：退出码 0、`listedCwd.kind` 为 project-root、文件在根里、leftover 0。结果写进计划「项目根」一节。
-4. seat→Codex 的 untrusted 审批策略（r4 §8.5）— 在 `src/owned/codex-session.ts` 里，seat 请求派出的会话 `thread/start` 改用 untrusted 审批策略；先用一个测试 profile 会话实测 app-server 的回复。验收：live-smoke 过、读项目文件时出审批卡。
-5. 会话在跑时强杀 orchestrad — 给 `scripts/live-smoke.ts` 加一个模式：会话空闲时 `child.kill()`（不先关 stdin），再用脚本自己的 procguard 探针按 pid + 创建时间查 Job。验收：0 个幸存；写进计划「进程树的 Job 回收」的残余 ②。
+4. seat→Codex / seat→Claude 在 orchestrad 里 live 跑一次（untrusted 已由 d212b86 做）— 用实验室 seat 冒烟（测试 profile orchestrad + 隔离 `DSH_HOME`），orchestrad 带 `--project-root`，请求的 cwd 落在根里，Codex、Claude 各一次，任务里含读一个项目文件。验收：读文件也出审批卡、对话流 ran-unasked 0、审批卡 `tainted` 为 true、页面上高风险卡只有「输入确认词允许」、残余 0。结果写进计划「项目根」一节。
+5. `--harness claude --daemon-kill` 在复核修正后的判据上重跑一次（codex 已重跑）。验收：退出码 0、`survivors` 0、`jobAfterKill.found` 为 false、重启后 unknown / daemon-restart、leftover 0。结果写进计划「进程树的 Job 回收」残余 ② 的「改后重跑」。
 6. `scripts/live-smoke.ts --harness codex --outside` 和 `--harness claude --outside` 各重跑一次。验收：`approvalsAllowed` 里有命令卡，`ranUnasked` 为 0。
 
 ## Do not touch

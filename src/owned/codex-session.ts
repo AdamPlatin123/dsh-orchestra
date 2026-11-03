@@ -735,6 +735,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     let approvalId = '';
     const view = approvals.add({
       ownedId, kind: ask.kind, title: t.text, preview: p.text, redactions: t.redactions + p.redactions, risk: ask.risk, canAccept: ask.canAccept, canText: ask.canText,
+      tainted: opts.tainted === true,
       answer: (a: Answer, cause: AnswerCause) => {
         asked.delete(rpcKey(rid));
         rpc.respond(rid, ask.reply(a));

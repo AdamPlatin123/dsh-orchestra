@@ -238,9 +238,14 @@ export function jobsOf(testDir: string): { rule: string; job: string; pid: numbe
 export type JobProc = { pid: number; createTime: string | null; image: string | null };
 
 export type Probe = {
+  /**
+   * job-info: found false only on procguard's own "no such Job" (ok:true, found:false). Any other answer
+   * (ok:false: OpenJobObject refused, an exception) throws: a probe that failed is never "the Job is gone".
+   */
   info(job: string): Promise<{ found: boolean; procs: JobProc[] }>;
   /** Ends every process in the Job named `job` (kill-job): found false when there is no such Job any more. */
   kill(job: string): Promise<{ found: boolean; before: number | null; after: number | null }>;
+  /** alive: an answer that is not ok:true with an alive array throws (never read as "none alive"). */
   alive(procs: { pid: number; createTime: string }[]): Promise<string[]>;
   close(): void;
 };
@@ -330,7 +335,9 @@ export function probeOf(testDir: string): { pg: Probe; why: null } | { pg: null;
     pg: {
       info: async (job) => {
         const r = await ask({ cmd: 'job-info', name: job });
-        return { found: r.found === true, procs: Array.isArray(r.procs) ? r.procs : [] };
+        // Review fix: an error answer has no found field; read as found:false it would pass as "the Job is gone".
+        if (r.ok !== true || typeof r.found !== 'boolean') throw new Error(`probe: job-info failed: ${String(r.error)}${r.message === undefined ? '' : ` (${String(r.message)})`}`);
+        return { found: r.found, procs: Array.isArray(r.procs) ? r.procs : [] };
       },
       kill: async (job) => {
         const r = await ask({ cmd: 'kill-job', name: job, waitMs: 3000 });
@@ -339,7 +346,8 @@ export function probeOf(testDir: string): { pg: Probe; why: null } | { pg: null;
       },
       alive: async (procs) => {
         const r = await ask({ cmd: 'alive', procs });
-        return Array.isArray(r.alive) ? r.alive : [];
+        if (r.ok !== true || !Array.isArray(r.alive)) throw new Error(`probe: alive failed: ${String(r.error)}${r.message === undefined ? '' : ` (${String(r.message)})`}`);
+        return r.alive;
       },
       close: () => {
         child.stdin.end();

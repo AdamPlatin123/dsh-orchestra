@@ -9,7 +9,7 @@ import { makePatcher } from './dom.js';
 import { getCsrf, getTheme, setCsrf, setTheme } from './prefs.js';
 import {
   HOLD_MS, SETTLE_MS, brakeWhyText, modelsOf, atBottom, chatNews, describeDesk, describeNew, describeOwned, describeOwnedDock, describeRequestPins, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError,
-  describeAskPins, notifyRequestText, notifyText, ownedIdOf, pinExtra, pinWhole, requestModel, whyText, withRequests,
+  allowHow, describeAskPins, notifyRequestText, notifyText, ownedIdOf, pinExtra, pinWhole, requestModel, whyText, withRequests,
 } from './owned.js';
 import { go, openFull, parse } from './route.js';
 import { FILTERS, buildRows, freeze, groupKey, indexOf, navigate, projectKey, towerFrame } from './tree.js';
@@ -568,12 +568,16 @@ async function stop(verb) {
   said(a, b?.left === 0 ? t('op.braked', { n: b.killed ?? 0 }) : typeof b?.left === 'number' ? t('op.brakeLeft', { n: b.left }) : t('op.brakedUnsure'));
 }
 
-/** An allow carries the shown digest and the queue rev; high risk only `sure` (held, typed). @param {string} id @param {boolean} sure @param {boolean} inPin @param {Element | null} el */
-async function allow(id, sure, inPin, el = null) {
+/**
+ * An allow carries the shown digest and the queue rev; high risk only held or typed, and a tainted session's
+ * high risk only typed (r4 §8.5). @param {string} id @param {'click' | 'held' | 'typed'} how @param {boolean} inPin @param {Element | null} el
+ */
+async function allow(id, how, inPin, el = null) {
   const list = state.owned;
   const a = list?.approvals.find((/** @type {any} */ x) => x.approvalId === id);
   if (!list || !a || !a.canAccept || a.tooLong || (inPin && !pinWhole(a))) return;
-  if (settling() || (a.high && !sure)) return say(t(settling() ? 'appr.settling' : 'appr.holdHint'));
+  const need = allowHow(a);
+  if (settling() || (need === '1' && how === 'click') || (need === '2' && how !== 'typed')) return say(t(settling() ? 'appr.settling' : need === '2' ? 'appr.typeOnlyHint' : 'appr.holdHint'));
   const r = await op(`approvals/${id}/allow`, { digest: a.digest, rev: list.rev });
   if (r?.ok && el !== null) answeredAt(el, id);
   said(r, t('appr.allowed'));
@@ -582,8 +586,8 @@ async function allow(id, sure, inPin, el = null) {
 /** r4 §10.9's typed way (browse-mode screen readers, phones). @param {HTMLElement} el @param {string} id */
 function typed(el, id) {
   const a = state.owned?.approvals.find((/** @type {any} */ x) => x.approvalId === id);
-  const got = a && window.prompt(t('appr.typePrompt', { t: a.title }));
-  if (typeof got === 'string') return got.trim() === t('appr.typeWord') ? allow(id, true, el.closest('.pin') !== null, el) : say(t('appr.typeWrong'));
+  const got = a && window.prompt(t(a.tainted === true ? 'appr.typePromptTainted' : 'appr.typePrompt', { t: a.title }));
+  if (typeof got === 'string') return got.trim() === t('appr.typeWord') ? allow(id, 'typed', el.closest('.pin') !== null, el) : say(t('appr.typeWrong'));
 }
 
 /** A high-risk allow held HOLD_MS (pointer or Enter); letting go or a moved list cancels. @param {any} el */
@@ -596,7 +600,7 @@ function holdStart(el) {
     if (state.hold?.id !== id) return;
     state.hold = null;
     state.justHeld = id;
-    if (state.owned?.rev === rev) void allow(id, true, el.closest('.pin') !== null, el);
+    if (state.owned?.rev === rev) void allow(id, 'held', el.closest('.pin') !== null, el);
     schedule();
   });
   state.hold = { id, cancel };
@@ -748,9 +752,10 @@ function act(el) {
       said(r, t('appr.denied'));
     });
   }
-  // High risk: held or typed; the click a finished hold ends with is the hold's own.
+  // High risk: held or typed (a tainted session's: typed only, data-high 2); the click a finished hold ends with is the hold's own.
   if (a === 'allow') {
-    if (t0.dataset.high !== '1') return void allow(appr, false, t0.closest('.pin') !== null, t0);
+    if (t0.dataset.high === '0') return void allow(appr, 'click', t0.closest('.pin') !== null, t0);
+    if (t0.dataset.high === '2') return void typed(t0, appr);
     if (state.justHeld !== appr) return void typed(t0, appr);
     state.justHeld = null;
     return;

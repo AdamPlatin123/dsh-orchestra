@@ -8,6 +8,8 @@
   --paper: #EEF1EF; --panel: #F4F6F4; --sel: #E2E7E4; --hover: #E8ECE9;
   --ink: #1C2530; --ink2: #58636F; --line: #C9D0CC; --rule: #D9DFDB; --grid: rgba(28, 37, 48, .04);
   --wait: #C98A00; --err: #C2362B; --run: #1C7487;
+  /* r4 §8.5: a tainted session's approval card (red bar). Its own token: vermilion stays errors only (P1). */
+  --taint: #A3245E;
   --claude: #7A5FB0; --dsh: #2F6FD6; --codex: #4E7D5B;
   --flash: rgba(28, 37, 48, .08);
   --row: 30px;
@@ -17,7 +19,7 @@
     color-scheme: dark;
     --paper: #11161B; --panel: #151B21; --sel: #1A2129; --hover: #171D24;
     --ink: #E1E6EB; --ink2: #8B96A4; --line: #2A333C; --rule: #222A32; --grid: rgba(225, 230, 235, .03);
-    --wait: #F0B429; --err: #FF6A5C; --run: #4DB0C2;
+    --wait: #F0B429; --err: #FF6A5C; --run: #4DB0C2; --taint: #F06A9E;
     --claude: #A99CF0; --dsh: #6E9BEF; --codex: #7FB38C;
     --flash: rgba(225, 230, 235, .08);
   }
@@ -26,7 +28,7 @@
   color-scheme: dark;
   --paper: #11161B; --panel: #151B21; --sel: #1A2129; --hover: #171D24;
   --ink: #E1E6EB; --ink2: #8B96A4; --line: #2A333C; --rule: #222A32; --grid: rgba(225, 230, 235, .03);
-  --wait: #F0B429; --err: #FF6A5C; --run: #4DB0C2;
+  --wait: #F0B429; --err: #FF6A5C; --run: #4DB0C2; --taint: #F06A9E;
   --claude: #A99CF0; --dsh: #6E9BEF; --codex: #7FB38C;
   --flash: rgba(225, 230, 235, .08);
 }
@@ -221,6 +223,9 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
 .req-h:hover { background: none; }
 .cards { display: grid; gap: 10px; margin-top: 6px; }
 .card[data-waiting] { padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--wait); background: var(--paper); }
+/* r4 §8.5: a tainted session's card has a red bar (--taint, not the errors' vermilion), its source line first in the head. */
+.card[data-waiting][data-tainted="1"] { border-left: 5px solid var(--taint); }
+.card[data-tainted="1"] .card-h { color: var(--taint); font-weight: 600; }
 .card-h { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--ink2); }
 .card-t { margin: 4px 0; font-weight: 600; overflow-wrap: anywhere; }
 .pv { margin: 0 0 8px; padding: 6px 8px; max-height: 40vh; overflow: auto; border: 1px solid var(--rule); background: var(--panel); }
