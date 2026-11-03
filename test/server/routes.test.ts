@@ -111,6 +111,7 @@ test('the steps of every route, in one order; a human route runs exactly plan li
     'text-too-long', 'brake-unavailable', 'not-test-root', 'plan-expired',
     'owned-disabled', 'owned-limit', 'slash-command', 'digest-mismatch', 'approval-gone', 'stale-view', 'still-running', 'source-live', 'cwd-gone',
     'cwd-forbidden', 'unfinished-frame', 'source-changed', 'newer-format', 'import-too-big', 'gateway-real-data', 'owned-ended', 'queue-full',
+    'request-gone', 'request-mismatch',
   ]);
   assert.deepEqual([...step('auth').codes], ['not-unlocked'], 'slice design §2.7: cookie without the controller token is 403 not-unlocked');
 });
@@ -285,11 +286,13 @@ const owned = (method: 'GET' | 'POST', path: string) => {
 };
 
 test('owned sessions: every route needs the pairing cookie; all but the unlock pair need the controller token too, a GET as well', () => {
-  const ownedPaths = ROUTES.filter((r) => /^\/api\/(?:owned|approvals|import|route)\//.test(r.path) || r.path === '/api/owned');
+  const ownedPaths = ROUTES.filter((r) => /^\/api\/(?:owned|approvals|import|route|agent-requests)\//.test(r.path) || r.path === '/api/owned');
   assert.deepEqual(ownedPaths.map((r) => `${r.method} ${r.path}`), [
     'POST /api/owned/unlock-code', 'POST /api/owned/unlock', 'GET /api/owned', 'GET /api/owned/:id/feed', 'GET /api/import/:id/check',
     'POST /api/route/suggest', 'POST /api/owned/new', 'POST /api/owned/:id/message', 'POST /api/owned/:id/interrupt', 'POST /api/owned/:id/end', 'POST /api/owned/:id/brake', 'POST /api/owned/:id/retry',
     'POST /api/approvals/:id/allow', 'POST /api/approvals/:id/deny', 'POST /api/import/claude', 'POST /api/import/dsh',
+    // seat: you reject an agent request on this page (its dispatch is owned-new with the requestId).
+    'POST /api/agent-requests/:id/reject',
   ]);
   for (const r of ownedPaths) assert.equal(r.auth, r.path.startsWith('/api/owned/unlock') ? 'cookie' : 'unlocked', r.path);
   assert.ok(ROUTES.every((r) => (r.auth === 'cookie' || r.auth === 'unlocked') === ownedPaths.includes(r)), 'no M0 route takes the new auth');
@@ -338,7 +341,10 @@ test('new and message: text up to the body cap as a shape, the 2 KB limit and th
   assert.equal(why(nu.body!, { actionId: ACT, text: 'x'.repeat(3000), harness: 'codex' }), 'ok', 'over 2 KB is text-too-long, never a 400');
   assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'codex', cwd: 'C:\\' }), 'extra-key $', 'no cwd from the browser');
   assert.equal(why(nu.body!, { actionId: ACT, text: 'hi\ud800', harness: 'codex' }), 'type $.text');
-  assert.deepEqual([...nu.own], ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command']);
+  assert.deepEqual([...nu.own], ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command', 'request-gone', 'request-mismatch']);
+  // seat: an agent request's dispatch names it; only an id of its grammar.
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'codex', requestId: '0123456789abcdef0123' }), 'ok');
+  assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'codex', requestId: 'x' }), 'grammar $.requestId');
   assert.equal(why(nu.reply!, { actionId: ACT, accepted: true, jseq: 3, ownedId: OID }), 'ok');
   assert.equal(why(nu.reply!, { actionId: ACT, accepted: true, jseq: 3, ownedId: OID, replayed: true }), 'ok');
   assert.equal(why(nu.reply!, { actionId: ACT, accepted: true, jseq: 3, ownedId: 'a/b' }), 'grammar $.ownedId');

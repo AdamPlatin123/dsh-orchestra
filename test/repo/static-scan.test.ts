@@ -12,6 +12,14 @@ const repo = fileURLToPath(new URL('../../', import.meta.url));
 
 type Case = { rule: string; file: string; text: string; hit: boolean };
 
+// What src/server/agent-port.ts must hold for net:agent-port-pipe-only (seat): the prefix, its check and the one pipe listen.
+const AGENT_OK = [
+  "const PIPE_PREFIX = '\\\\\\\\.\\\\pipe\\\\orchestra-agent-';",
+  'function pipeOptions(pipe) {',
+  '  if (!pipe.startsWith(PIPE_PREFIX)) throw new TypeError(pipe);',
+  '}',
+  'net.listen(pipeOptions(deps.pipe), () => {});',
+].join('\n');
 const pos = (rule: string, file: string, text: string): Case => ({ rule, file, text, hit: true });
 const neg = (rule: string, file: string, text: string): Case => ({ rule, file, text, hit: false });
 
@@ -647,6 +655,15 @@ const CASES: readonly Case[] = [
   pos('net:magpie-post-loopback-only', 'src/net/magpie.ts', "const LOOPBACK = '0.0.0.0';\nconst req = request({ host: LOOPBACK, port, method: 'POST', path });"),
   pos('net:magpie-post-loopback-only', 'src/net/magpie.ts', "const LOOPBACK = '127.0.0.1';\nlet LOOPBACK = 'example.com';"),
   neg('net:magpie-post-loopback-only', 'src/server/http.ts', 'const req = request(url);'),
+
+  // seat's agent request port: one listen, on the pipe options, and the pipe prefix bound once and checked.
+  neg('net:agent-port-pipe-only', 'src/server/agent-port.ts', AGENT_OK),
+  pos('net:agent-port-pipe-only', 'src/server/agent-port.ts', AGENT_OK.replace('net.listen(pipeOptions(deps.pipe)', "net.listen({ port: 7471, host: '127.0.0.1' }")),
+  pos('net:agent-port-pipe-only', 'src/server/agent-port.ts', `${AGENT_OK}\nweb.listen(pipeOptions(deps.pipe));`),
+  pos('net:agent-port-pipe-only', 'src/server/agent-port.ts', AGENT_OK.replace("const PIPE_PREFIX = '\\\\\\\\.\\\\pipe\\\\orchestra-agent-';", "const PIPE_PREFIX = '\\\\\\\\.\\\\pipe\\\\';")),
+  pos('net:agent-port-pipe-only', 'src/server/agent-port.ts', AGENT_OK.replace('if (!pipe.startsWith(PIPE_PREFIX)) throw ', 'if (false) throw ')),
+  pos('net:agent-port-pipe-only', 'src/server/agent-port.ts', `${AGENT_OK}\nPIPE_PREFIX = 'x';`),
+  neg('net:agent-port-pipe-only', 'src/server/http.ts', "server.listen({ port, host, exclusive: true });"),
 ];
 
 for (const c of CASES) {

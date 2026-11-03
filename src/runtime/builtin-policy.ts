@@ -52,6 +52,11 @@ export const BUILTIN_ROWS: readonly BuiltinRow[] = frozen([
   // magpie gateway. Only request, and the static scan (net:magpie-post-loopback-only) holds each call
   // to host 127.0.0.1 and method POST.
   { modules: ['src/net/magpie.ts'], allow: ['node:http'], only: { 'node:http': ['request'] } },
+  // seat's agent request port (final.md §5.1): node:net listens on one named pipe,
+  // \\.\pipe\orchestra-agent-<profile>, and node:http only parses what arrives there. Only
+  // createServer of each; the static scan (net:agent-port-pipe-only) holds the one listen call to the pipe
+  // options, so this row is no TCP listener and no client.
+  { modules: ['src/server/agent-port.ts'], allow: ['node:net', 'node:http'], only: { 'node:net': ['createServer'], 'node:http': ['createServer'] } },
 ]);
 
 export type BuiltinDecision =

@@ -7,7 +7,10 @@ import { isOver } from '../owned/codex-session.ts';
 import type { FeedEvent } from '../owned/feed.ts';
 import type { RestoredOwned } from '../owned/restored.ts';
 import type { Desk } from '../route/desk.ts';
+import type { AgentRequest, Requests } from '../route/requests.ts';
+import type { Rec } from '../store/journal.ts';
 import type { Log } from '../runtime/log.ts';
+import { canonicalDigest } from '../store/canonical-json.ts';
 import type { OwnedCall, OwnedHandlers, OwnedOutcome } from './owned.ts';
 import { OWNED_V } from '../../shared/owned-contract.js';
 import { makeOwnedHandlers } from './owned.ts';
@@ -43,6 +46,13 @@ import { makeOwnedHandlers } from './owned.ts';
 //                                       digest is declined (digest-mismatch), another rev or a list
 //                                       that moved in the last 750 ms changes nothing (stale-view).
 //   POST /api/approvals/:id/deny        always taken.
+//   POST /api/agent-requests/:id/reject seat: you refuse an agent request (r4 A17; D8, only here); one that no
+//                                       longer waits is request-gone. Its `agent-request` record (rejected)
+//                                       joins the batch of the human records.
+//   POST /api/owned/new + requestId     seat: you dispatch an agent request: the text and harness must be the
+//                                       card's (request-mismatch) and it must still wait (request-gone); the
+//                                       session is bound to the request, and an `agent-request` record
+//                                       (dispatched, naming the RouteDecision) joins the batch.
 //   GET  /api/owned                     OwnedList (shared/owned-contract.js).
 //   GET  /api/owned/:id/feed?after=     OwnedFeed.
 // POST /api/owned/:id/retry and the import routes keep no handler (501): an owned Codex session is not
@@ -59,6 +69,8 @@ export type OwnedRoutesDeps = {
   desk?: Desk | null;
   /** Sessions an earlier orchestrad left for a harness that is off now (src/owned/restored.ts): listed read only. */
   restored?: readonly RestoredOwned[];
+  /** The agent requests (seat, src/route/requests.ts); null or absent: no agent port, a requestId is request-gone. */
+  requests?: Requests | null;
   /** The limit of running sessions both harnesses share (codex-owned.ts OWNED_POOL_MAX); absent: each manager's own, summed. */
   maxOwned?: number;
   /**
@@ -96,8 +108,41 @@ function feedEntry(e: FeedEvent) {
   };
 }
 
-/** GET /api/owned's reply: every session the manager keeps, the open approvals in queue order, the limits. */
-export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'codexOff' | 'restored' | 'maxOwned' | 'brakeWhy'>) {
+/** An agent request as GET /api/owned lists it (shared/owned-contract.js RequestEntry). */
+export function requestEntry(r: AgentRequest) {
+  const g = r.suggestion;
+  return {
+    requestId: r.requestId, harness: r.harness, label: r.label, text: r.text, cwd: r.cwd, requester: `${r.requester.kind}:${r.requester.sessionId}`, state: r.state,
+    createdAt: r.createdWall, expiresAt: r.expiresWall, ownedId: r.ownedId, why: r.why,
+    suggestion: g === null ? null : { routeId: g.routeId, router: g.router, models: g.models.map((m) => ({ ...m })), pick: g.pick },
+  };
+}
+
+/** A person's decision on an agent request, for the journal (src/store/records.ts `agent-request`). */
+export function agentRequestRec(r: AgentRequest, d: { actionId: string; verdict: 'dispatched' | 'rejected'; ownedId: string | null; decisionId: string | null }): Rec {
+  return {
+    kind: 'agent-request',
+    body: {
+      requestId: r.requestId, actionId: d.actionId, verdict: d.verdict, harness: r.harness, requesterKind: r.requester.kind,
+      requesterDigest: canonicalDigest(`${r.requester.kind}:${r.requester.sessionId}`), ownedId: d.ownedId, decisionId: d.decisionId,
+    },
+  };
+}
+
+/**
+ * The person's normal stop order for an owned session (POST /api/owned/:id/end's), as an agent request's
+ * withdrawal runs it (seat; final.md §6.3 A: never the brake): its open approvals declined, then the child
+ * stopped, the session ended as requester-withdrew. False when no harness holds a running session of that id.
+ */
+export function endOwnedFor(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude'>, ownedId: string): boolean {
+  const s: AnySession | null = deps.codex?.get(ownedId) ?? deps.claude?.get(ownedId) ?? null;
+  if (s === null || FINAL(s)) return false;
+  s.end('requester-withdrew');
+  return true;
+}
+
+/** GET /api/owned's reply: every session the manager keeps, the open approvals in queue order, the limits, the agent requests. */
+export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'codexOff' | 'restored' | 'maxOwned' | 'brakeWhy' | 'requests'>) {
   const { codex, claude } = deps;
   const queue = queueOf(deps);
   const approvals = queue === null ? [] : queue.list();
@@ -124,6 +169,7 @@ export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'code
     harnesses: { codex: codex !== null, claude: claude !== null },
     owned, approvals: approvals.map(approvalEntry),
     limits: { maxOwned: deps.maxOwned ?? (codex === null ? 0 : codex.maxActive) + (claude === null ? 0 : claude.maxActive), active: sessions.filter(({ s }) => !FINAL(s)).length },
+    requests: (deps.requests?.list() ?? []).map(requestEntry),
   };
 }
 
@@ -133,6 +179,7 @@ const refuse = (error: Extract<OwnedOutcome, { ok: false }>['error']): OwnedOutc
 export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHandlers = makeOwnedHandlers()): OwnedHandlers {
   const { codex, claude, log } = deps;
   const desk = deps.desk ?? null;
+  const requests = deps.requests ?? null;
   const session = (call: OwnedCall): AnySession | null => {
     if (call.id === null) return null;
     const id = call.id;
@@ -167,6 +214,15 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     const manager = harness === 'claude' ? claude : codex;
     if (manager === null) return refuse('owned-disabled');
     const text = String(body.text);
+    const requestId = typeof body.requestId === 'string' ? body.requestId : null;
+    // seat: a dispatch of an agent request takes exactly what its card showed, while it still waits.
+    let asked: AgentRequest | null = null;
+    if (requestId !== null) {
+      if (requests === null) return refuse('request-gone');
+      const c = requests.claim(requestId, text, harness);
+      if (!c.ok) return refuse(c.why);
+      asked = c.request;
+    }
     const routeId = typeof body.routeId === 'string' ? body.routeId : null;
     const kept = routeId === null || desk === null ? null : desk.take(routeId, text);
     // A suggestion that aged out, or was made for another sentence: the session starts all the same, its decision a manual one.
@@ -184,13 +240,20 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
       return refuse(made.reason === 'model-refused' ? 'owned-disabled' : 'spawn-failed');
     }
     log.info('owned-started', { harness, ownedId: made.ownedId, model: made.session.model });
-    if (desk === null) return { ok: true, reply: { ownedId: made.ownedId }, targetId: made.ownedId };
+    // The session runs the request from now on (bound in the same turn as the claim: no second dispatch gets it).
+    if (asked !== null) {
+      requests!.bind(asked.requestId, made.ownedId);
+      log.info('agent-request-dispatched', { requestId: asked.requestId, ownedId: made.ownedId });
+    }
+    const requestRec = (decisionId: string | null): Rec[] => (asked === null ? [] : [agentRequestRec(asked, { actionId: call.actionId!, verdict: 'dispatched', ownedId: made.ownedId, decisionId })]);
+    if (desk === null) return { ok: true, reply: { ownedId: made.ownedId }, targetId: made.ownedId, records: requestRec(null) };
     // Every dispatch is a RouteDecision (r4 §9.5), from a suggestion for this very sentence or by hand.
     const d = { ownedId: made.ownedId, harness, model: made.session.model } as const;
     const decision = kept === null ? desk.manual(text, { actionId: call.actionId!, ...d }) : desk.decision(kept, { actionId: call.actionId!, ...d });
     return {
       ok: true, reply: { ownedId: made.ownedId }, targetId: made.ownedId,
-      records: [decision],
+      // seat: the agent-request record names this RouteDecision, so the decision's source is the request.
+      records: [decision, ...requestRec(String((decision.body as { decisionId: unknown }).decisionId))],
       after: () => desk.dispatched(d),
     };
   });
@@ -238,6 +301,14 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
       return refuse(v);
     }
     return { ok: true, reply: {} };
+  });
+
+  handlers.register('POST', '/api/agent-requests/:id/reject', (call) => {
+    if (requests === null) return refuse('request-gone');
+    const r = requests.get(call.id!);
+    if (r === null || !requests.reject(r.requestId)) return refuse('request-gone');
+    log.info('agent-request-rejected', { requestId: r.requestId });
+    return { ok: true, reply: {}, records: [agentRequestRec(r, { actionId: call.actionId!, verdict: 'rejected', ownedId: null, decisionId: null })] };
   });
 
   handlers.register('POST', '/api/approvals/:id/deny', (call) => {

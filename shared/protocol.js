@@ -18,11 +18,12 @@ export const PROTOCOL_V = 1;
 /**
  * The human verbs: each one writes a `human` and a `human.result` journal record, and is what
  * ActionOutcome.verb names (UI design 一 5). The routes that take them are HUMAN_VERB_ROUTES. From
- * `owned-new` on: the owned-session verbs of alpha 0.2 (slice design §2.7).
+ * `owned-new` on: the owned-session verbs of alpha 0.2 (slice design §2.7); `request-reject`: seat's refusal of an agent request.
  */
 export const HUMAN_VERBS = Object.freeze(/** @type {const} */ ([
   'seen', 'snooze', 'acted', 'remind', 'brake', 'roots-add', 'roots-confirm', 'protect-add', 'protect-remove', 'dsh-connect', 'self-rating',
   'owned-new', 'owned-message', 'owned-interrupt', 'owned-end', 'owned-brake', 'owned-retry', 'approval-allow', 'approval-deny', 'import-claude', 'import-dsh',
+  'request-reject',
 ]));
 /** @typedef {typeof HUMAN_VERBS[number]} HumanVerb */
 
@@ -50,6 +51,8 @@ export const HUMAN_VERB_ROUTES = Object.freeze(/** @type {const} */ ({
   'approval-deny': '/api/approvals/:id/deny',
   'import-claude': '/api/import/claude',
   'import-dsh': '/api/import/dsh',
+  // seat: a person rejects an agent request (r4 A17; D8: only on this page). Its dispatch is owned-new with the requestId.
+  'request-reject': '/api/agent-requests/:id/reject',
 }));
 
 /**
@@ -102,6 +105,9 @@ export const ERROR_STATUS = Object.freeze(/** @type {const} */ ({
   'owned-ended': 409,
   'queue-full': 409,
   'spawn-failed': 503,
+  // seat: the agent request a dispatch or a refusal names is gone (decided, expired, withdrawn, forgotten), or is not what the card showed
+  'request-gone': 409,
+  'request-mismatch': 409,
 }));
 /** @typedef {keyof typeof ERROR_STATUS} ErrorCode */
 /** @type {readonly ErrorCode[]} */

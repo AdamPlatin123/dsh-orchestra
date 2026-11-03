@@ -827,6 +827,8 @@ test('the builtin policy table is pinned: every row\'s modules, builtins, named-
     { modules: ['src/runtime/clock.ts'], allow: ['node:timers', 'node:timers/promises'] },
     // The dispatch desk's one outbound POST to magpie (orchestra app plan §3).
     { modules: ['src/net/magpie.ts'], allow: ['node:http'], only: { 'node:http': ['request'] } },
+    // seat's agent request port: node:net listens on one named pipe, node:http only parses (final.md §5.1).
+    { modules: ['src/server/agent-port.ts'], allow: ['node:net', 'node:http'], only: { 'node:net': ['createServer'], 'node:http': ['createServer'] } },
   ]);
   assert.deepEqual([...DEFAULT_BUILTINS], ['node:path', 'node:url', 'node:events', 'node:util', 'node:crypto', 'node:zlib']);
   assert.deepEqual([...FORBIDDEN_BUILTINS], ['node:vm', 'node:wasi', 'node:inspector', 'node:repl', 'node:cluster']);

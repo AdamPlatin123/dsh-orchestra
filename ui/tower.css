@@ -215,6 +215,10 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
 .pin-pv { flex: 1 1 100%; padding: 0 10px 4px 40px; }
 .pin-acts { display: flex; gap: 6px; padding: 4px 8px; }
 .pin-pv:empty, .pin-acts:empty, .card-note:empty { display: none; }
+/* seat: an agent request card in 「等你」: its words in full (scrolling), who and where below. */
+.req-pv { flex: 1 1 100%; margin: 0 10px 4px 40px; max-height: 9em; overflow: auto; }
+.req > .pin-hint { flex: 1 1 100%; padding: 0 10px 2px 40px; white-space: normal; }
+.req-h:hover { background: none; }
 .cards { display: grid; gap: 10px; margin-top: 6px; }
 .card[data-waiting] { padding: 10px 12px; border: 1px solid var(--line); border-left: 3px solid var(--wait); background: var(--paper); }
 .card-h { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--ink2); }

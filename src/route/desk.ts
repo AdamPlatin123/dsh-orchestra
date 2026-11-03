@@ -80,7 +80,11 @@ export type DeskDeps = {
 };
 
 export type Desk = {
-  suggest(text: string): Promise<SuggestReply>;
+  /**
+   * The card for one sentence. `only` (seat: an agent request names its harness) holds the rules and the
+   * router model to that harness: the other one counts as off for this card.
+   */
+  suggest(text: string, only?: RouteHarness): Promise<SuggestReply>;
   /** The suggestion `routeId` names, if it is still kept and was made for this very sentence (it stays kept). */
   take(routeId: string, text: string): Kept | null;
   /** The RouteDecision record of a dispatch from `kept`; the suggestion is used up. */
@@ -102,8 +106,9 @@ export function makeDesk(deps: DeskDeps): Desk {
   const fresh = (k: Kept) => deps.nowMono() - k.madeMono <= DESK_LIMITS.ttlMs;
   let asking = 0;
 
-  const suggest = async (text: string): Promise<SuggestReply> => {
+  const suggest = async (text: string, only?: RouteHarness): Promise<SuggestReply> => {
     const on = { ...deps.on() };
+    if (only !== undefined) for (const h of ROUTE_HARNESSES) if (h !== only) on[h] = false;
     const full = deps.full?.() ?? false;
     const rules = runRules(text, on);
     let state: RouterState;

@@ -519,7 +519,8 @@ test('the journal takes nothing by default: writer, clock, redactor, bootId and 
 
 // Orchestra app (dispatch desk): oneOfEach gained a last batch (owned-new and its `route` record), on purpose;
 // phase 3 review: the route record gained routerModel and routerWhy (and a nullable routeId), on purpose.
-const REPLAY_GOLDEN = 'ecd1cf2cd138af46366dc8bdaba63360c511db7ff32bbd5dd26bbd720a317583';
+// seat: oneOfEach gained a last batch (request-reject and its `agent-request` record), on purpose.
+const REPLAY_GOLDEN = '03e24a117f1ccfa48ae3d3e0c75e6182caa979766f91dd9ecf0476c1c4ebd239';
 
 test('replay is deterministic: the same records, bootId and clock give byte-identical journals and identical projections', async (t) => {
   const runs: { journal: string; dump: unknown }[] = [];

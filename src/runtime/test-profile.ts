@@ -57,13 +57,14 @@ export type ProfileRefusal =
   | { reason: 'localappdata-unset' }
   | { reason: 'roots-dir-bad-path'; path: string; detail: PathRejectReason }
   | { reason: 'roots-dir-outside-frozen'; path: string; frozen: string }
-  | { reason: 'bad-peek-port'; value: string };
+  | { reason: 'bad-peek-port'; value: string }
+  | { reason: 'agent-port-without-owned' };
 
 /**
  * `peekPort` is there only when --peek-port was given (the thin slice's peek page, src/server/http.ts);
  * `owned` only when --owned was (owned Codex sessions, orchestra app plan §2).
  */
-export type ProfileParse = { ok: true; profile: Profile; peekPort?: number; owned?: true } | { ok: false; refusal: ProfileRefusal };
+export type ProfileParse = { ok: true; profile: Profile; peekPort?: number; owned?: true; agentPort?: true } | { ok: false; refusal: ProfileRefusal };
 
 export type ProfileDeps = {
   env: Readonly<Record<string, string | undefined>>;
@@ -99,6 +100,11 @@ const PEEK_PORT_FLAG = '--peek-port';
 const PORT = /^[1-9]\d{3,4}$/;
 /** --owned: either profile, at most once, no value. */
 const OWNED_FLAG = '--owned';
+/**
+ * --agent-port (seat, final.md §5.1): either profile, at most once, no value, and only with --owned. Opens
+ * the agent request pipe; without it no agent can reach orchestrad at all, even with --owned.
+ */
+const AGENT_PORT_FLAG = '--agent-port';
 
 /**
  * Parses orchestrad's own arguments. Anything unrecognized, repeated or out of place refuses the
@@ -123,6 +129,7 @@ export function parseProfileArgs(argv: readonly string[], givenDeps: ProfileDeps
   const seenTestFlags: string[] = [];
   let peekPort: number | null = null;
   let owned = false;
+  let agentPort = false;
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]!;
     if (arg === PEEK_PORT_FLAG) {
@@ -137,6 +144,11 @@ export function parseProfileArgs(argv: readonly string[], givenDeps: ProfileDeps
     if (arg === OWNED_FLAG) {
       if (owned) return refuse({ reason: 'duplicate-flag', flag: arg });
       owned = true;
+      continue;
+    }
+    if (arg === AGENT_PORT_FLAG) {
+      if (agentPort) return refuse({ reason: 'duplicate-flag', flag: arg });
+      agentPort = true;
       continue;
     }
     if (arg === '--test-profile') {
@@ -162,7 +174,8 @@ export function parseProfileArgs(argv: readonly string[], givenDeps: ProfileDeps
       pids.push(pid);
     }
   }
-  const peek = { ...(peekPort !== null ? { peekPort } : {}), ...(owned ? { owned: true as const } : {}) };
+  if (agentPort && !owned) return refuse({ reason: 'agent-port-without-owned' });
+  const peek = { ...(peekPort !== null ? { peekPort } : {}), ...(owned ? { owned: true as const } : {}), ...(agentPort ? { agentPort: true as const } : {}) };
   if (!testProfile) {
     if (seenTestFlags.length > 0) return refuse({ reason: 'test-flag-without-test-profile', flag: seenTestFlags[0]! });
     if (envGet(deps.env, TEST_RUNNER_MARKER) !== undefined || envGet(deps.processEnv, TEST_RUNNER_MARKER) !== undefined) {
@@ -313,6 +326,8 @@ export function describeRefusal(r: ProfileRefusal): string {
       return `--roots-dir must lie below ${r.frozen}: ${r.path}`;
     case 'bad-peek-port':
       return `--peek-port needs a port from 1024 to 65535, got ${JSON.stringify(r.value)}`;
+    case 'agent-port-without-owned':
+      return '--agent-port only works with --owned (an agent request is dispatched as an owned session)';
   }
 }
 

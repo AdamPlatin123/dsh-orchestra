@@ -126,6 +126,7 @@ export const CHECKS: readonly Check[] = Object.freeze([
       'text-too-long', 'brake-unavailable', 'not-test-root', 'plan-expired',
       'owned-disabled', 'owned-limit', 'slash-command', 'digest-mismatch', 'approval-gone', 'stale-view', 'still-running', 'source-live', 'cwd-gone',
       'cwd-forbidden', 'unfinished-frame', 'source-changed', 'newer-format', 'import-too-big', 'gateway-real-data', 'owned-ended', 'queue-full',
+      'request-gone', 'request-mismatch',
     ],
   },
   { step: 'execute', status: null, codes: [] },
@@ -155,8 +156,8 @@ export type Route = {
   readonly human: HumanVerb | null;
   /** Where the item comes from, when the route acts on one. */
   readonly item: 'path' | 'body' | 'body-or-none' | null;
-  /** What an owned-session route acts on: `:id` or the body's stageId names it (null: nothing, or an inbox item). */
-  readonly target: 'owned' | 'approval' | 'stage' | null;
+  /** What an owned-session route acts on: `:id` or the body's stageId names it (null: nothing, or an inbox item); request: an agent request (seat). */
+  readonly target: 'owned' | 'approval' | 'stage' | 'request' | null;
   /** The steps of checkOrder() this route runs, in that order. */
   readonly checks: readonly CheckStep[];
   /** The verb's own checks (the `own` step) and the codes its execution may fail with. */
@@ -253,8 +254,8 @@ const message = text(OWNED_BODY_MAX_BYTES, 'message');
 const accepted = (extra: Record<string, Shape> = {}): Shape => obj({ actionId: uuid, accepted: konst(true), jseq, replayed: konst(true), ...extra }, ['replayed']);
 const OWNED_CHECKS: readonly CheckStep[] = ['auth', 'ui-only', 'actionId', 'dedup', 'own', 'execute'];
 const OWNED_TARGET_CHECKS: readonly CheckStep[] = ['auth', 'ui-only', 'actionId', 'dedup', 'item', 'own', 'execute'];
-/** The body fields a route may leave out: a retry's confirmGone, a new session's model and the suggestion it came from. */
-const OPTIONAL_BODY = ['confirmGone', 'model', 'routeId'];
+/** The body fields a route may leave out: a retry's confirmGone, a new session's model, the suggestion it came from and the agent request it answers. */
+const OPTIONAL_BODY = ['confirmGone', 'model', 'routeId', 'requestId'];
 /** An owned-session human route: the cookie and the controller token, a uuid actionId, the human record; never an inbox item. */
 const owned = (verb: HumanVerb, target: Route['target'], body: Record<string, Shape>, reply: Shape, own: ErrorCode[] = [], failures: ErrorCode[] = []): Route => ({
   method: 'POST', path: HUMAN_VERB_ROUTES[verb], auth: 'unlocked', human: verb, item: null, target,
@@ -291,6 +292,8 @@ const COPY_FAILS: ErrorCode[] = ['reparse-point', 'source-changed', 'rename-busy
 
 /** A suggestion's id (src/route/desk.ts): 20 lowercase hex, like an owned session's. */
 export const ROUTE_ID_RE = frozen(/^[0-9a-f]{20}$/);
+/** An agent request's id (src/route/requests.ts, seat): 20 lowercase hex. */
+export const AGENT_REQUEST_ID_RE = frozen(/^[0-9a-f]{20}$/);
 const routeModel = re(OWNED_MODEL_RE, 'model');
 /**
  * POST /api/route/suggest's reply: the "Route to?" card (r4 §9.2 step 10). Every candidate names its
@@ -357,9 +360,13 @@ export const ROUTES: readonly Route[] = Object.freeze([
     body: obj({ text: message }), reply: SUGGEST_REPLY, checks: ['auth', 'ui-only', 'shape', 'own', 'execute'], own: ['text-too-long', 'slash-command'],
   }),
   // routeId: the suggestion the person dispatched from (its RouteDecision goes into the same batch).
+  // requestId (seat): the agent request this dispatch answers; its text and harness must be the card's
+  // (request-mismatch), and it must still wait (request-gone). Its `agent-request` record joins the batch.
   owned(
-    'owned-new', null, { text: message, harness: en(OWNED_HARNESSES), model: re(OWNED_MODEL_RE, 'model'), routeId: re(ROUTE_ID_RE, 'routeId') }, accepted({ ownedId: id }),
-    ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command'], NEW_FAILS,
+    'owned-new', null, {
+      text: message, harness: en(OWNED_HARNESSES), model: re(OWNED_MODEL_RE, 'model'), routeId: re(ROUTE_ID_RE, 'routeId'), requestId: re(AGENT_REQUEST_ID_RE, 'requestId'),
+    }, accepted({ ownedId: id }),
+    ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command', 'request-gone', 'request-mismatch'], NEW_FAILS,
   ),
   // via: what became of it at once: handed to codex (turn/start, turn/steer) or waiting here (queued).
   owned('owned-message', 'owned', { text: message }, accepted({ uuid, queued: count, via: en(MESSAGE_VIA) }), ['text-too-long', 'slash-command', 'owned-ended', 'queue-full']),
@@ -377,6 +384,8 @@ export const ROUTES: readonly Route[] = Object.freeze([
     CLAUDE_IMPORT_OWN, [...COPY_FAILS, ...SPAWN_FAILS],
   ),
   owned('import-dsh', 'stage', { stageId }, accepted({ importId: id }), DSH_IMPORT_OWN, COPY_FAILS),
+  // seat: you reject an agent request (r4 A17, D8: a person, this page). One that no longer waits is request-gone.
+  owned('request-reject', 'request', {}, accepted(), ['request-gone']),
 ].map((r) => Object.freeze(r)));
 
 /** The route of `method path` (a pattern as the table writes it), or undefined. */

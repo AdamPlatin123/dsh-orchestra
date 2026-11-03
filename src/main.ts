@@ -264,5 +264,7 @@ export async function start(f: Features, fence: FenceStatus, given: BootPorts, o
     ...(parsed.peekPort !== undefined ? { peekPort: parsed.peekPort } : {}),
     // With --owned, procguard always: every owned session's tree in a Job of its own (r4 D4).
     ...(parsed.owned === true ? { owned: true as const, procguard: true as const } : {}),
+    // seat: the agent request pipe, only when asked for (and only with --owned: test-profile.ts refuses it alone).
+    ...(parsed.agentPort === true ? { agentPort: true as const } : {}),
   });
 }

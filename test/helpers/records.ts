@@ -80,6 +80,17 @@ export function routeRec(actionId: string, ownedId: string, over: Record<string,
   return { kind: 'route', body: { decisionId: canonicalDigest(body), ...body } };
 }
 
+/** A person's decision on an agent request (seat's `agent-request` record): dispatched as `ownedId`, naming its RouteDecision, or rejected. */
+export function agentRequestRec(actionId: string, over: Record<string, unknown> = {}): Rec {
+  return {
+    kind: 'agent-request',
+    body: {
+      requestId: 'abcdef0123456789abcd', actionId, verdict: 'dispatched', harness: 'codex', requesterKind: 'dsh', requesterDigest: canonicalDigest('dsh:sess-1'),
+      ownedId: '0123456789abcdef0123', decisionId: canonicalDigest('a decision'), ...over,
+    },
+  };
+}
+
 export function oneOfEach(): Rec[][] {
   const a = uuidOf('each-action');
   const b = uuidOf('each-brake');
@@ -102,6 +113,11 @@ export function oneOfEach(): Rec[][] {
     [R.protect('add', 4242, '133000000000000042')],
     // A dispatch from the dispatch desk: owned-new's human records and its RouteDecision, one batch.
     [R.human(uuidOf('each-route'), 'owned-new', '0123456789abcdef0123'), R.result(uuidOf('each-route'), 'owned-new', '0123456789abcdef0123'), routeRec(uuidOf('each-route'), '0123456789abcdef0123')],
+    // seat: a person rejects an agent request: request-reject's human records and the `agent-request` record, one batch.
+    [
+      R.human(uuidOf('each-reject'), 'request-reject', 'abcdef0123456789abcd'), R.result(uuidOf('each-reject'), 'request-reject', 'abcdef0123456789abcd'),
+      agentRequestRec(uuidOf('each-reject'), { verdict: 'rejected', ownedId: null, decisionId: null }),
+    ],
   ];
 }
 

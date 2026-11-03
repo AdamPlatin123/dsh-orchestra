@@ -17,6 +17,8 @@ import type { OwnedRegistry } from '../owned/registry.ts';
 import type { Redact } from '../owned/text.ts';
 import type { PathJudge } from '../owned/codex-session.ts';
 import type { Desk } from '../route/desk.ts';
+import type { Requests } from '../route/requests.ts';
+import type { AgentPort } from '../server/agent-port.ts';
 import type { CwdPolicySpec } from '../os/cwd.ts';
 import type { ProvenSystemRoot } from '../os/spawn.ts';
 import type { DbOpener, DbOpenerSpec } from '../store/db.ts';
@@ -30,14 +32,14 @@ import type { StartupNote } from './startup.ts';
 import type { StdinEndWhy, StdinKind } from './stdin-end.ts';
 import type { PairingOutput, Profile } from './test-profile.ts';
 import { rootDenyList } from '../fs/harness-roots.ts';
-import { pathKey } from '../fs/paths.ts';
+import { checkPath, pathKey } from '../fs/paths.ts';
 import { makeRedactor } from '../store/redact.ts';
 import { openStore } from '../store/store.ts';
 import { oneShot } from './clock.ts';
 import { checkDataDir, describeDataDir, prepareDataDir } from './data-dir.ts';
 import { acquireLock, encodeDaemonInfo, heldMessage, lockPipeName, parseDaemonInfo } from './lock.ts';
 import { EXIT, describeNote } from './startup.ts';
-import { TestRoots, decidePairingOutput, testReadDirs } from './test-profile.ts';
+import { TEST_DIR_PREFIX, TestRoots, decidePairingOutput, testReadDirs } from './test-profile.ts';
 
 const win = path.win32;
 
@@ -107,7 +109,25 @@ export type WorkingContext = {
    * in-process tests), the sessions run without Jobs and the page says the brake was not asked for.
    */
   procguard?: true;
+  /**
+   * --agent-port (seat, final.md §5.1; only with --owned): the agent request pipe
+   * \\.\pipe\orchestra-agent-<profile> and its per-start token file. It also needs the paired page
+   * (--peek-port), where a person dispatches or rejects each request, and an owned harness that is on;
+   * without either it stays off and says why (an agent could only ask for what nobody can grant).
+   */
+  agentPort?: true;
 };
+
+/**
+ * The agent request port (seat): on, with its pipe and token file, or off and why (T1): not asked (no
+ * --agent-port), no paired page (no --peek-port), no owned harness on, or the pipe or the token failed.
+ */
+export type AgentPortStatus =
+  | { on: true; pipe: string; tokenFile: string }
+  | { on: false; why: 'not-asked' | 'no-page' | 'owned-off' | 'pipe-busy' | 'listen-failed' | 'token-failed' | 'setup-failed'; detail: string | null };
+
+/** How long a pending agent request waits for you (final.md §5.1: 10 minutes); then it expires, a refusal (D8). */
+export const AGENT_REQUEST_TTL_MS = 10 * 60 * 1000;
 
 /**
  * The gateway the owned Claude sessions' host talks to (ANTHROPIC_BASE_URL): the same local magpie as
@@ -203,6 +223,8 @@ export type WorkingOutcome =
     ownedClaude: OwnedClaudeStatus;
     /** procguard: on (the owned sessions in Jobs, with a brake), or why not (also in the log and on the console). */
     procguard: ProcguardStatus;
+    /** The agent request port (seat): on with its pipe and token file, or why not (also in the log and on the console). */
+    agentPort: AgentPortStatus;
     /** Ends this orchestrad through ctx.stopping.end (in main.ts: the process exits). */
     stop(): Promise<void>;
     /** Settles once stop() has given up the lock, whoever called it (in main.ts: never, the process is gone). */
@@ -367,10 +389,18 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   let pool: OwnedPool | null = null;
   /** Sessions an earlier orchestrad left for a harness that is off now: listed read only (src/owned/restored.ts). */
   const restoredOff: RestoredOwned[] = [];
+  /** The cwd table the owned sessions' gates use, as an agent request's cwd is judged by it (seat); null while the owned part is off. */
+  let judgeOwned: PathJudge | null = null;
+  /** The owned sessions' redactor (with its count), as an agent request's words go through it (seat). */
+  let ownedRedact: Redact | null = null;
   if (ctx.owned === true) {
     const { OWNED_POOL_MAX } = await import('../owned/codex-owned.ts');
     pool = Object.freeze({ max: OWNED_POOL_MAX, active: () => (codexOwned?.active() ?? 0) + (claudeOwned?.active() ?? 0) });
     const shared = await setUpOwnedShared(ctx, fence, gate, home, pool);
+    if (shared.ok) {
+      judgeOwned = shared.base.judge;
+      ownedRedact = shared.base.redact;
+    }
     const pg = shared.ok && ctx.procguard === true ? await setUpProcguard(ctx, fence, gate, shared.base, {
       // T1: a resident that went away is said at once, and the page says the brake can no longer report what it did.
       onGone: (detail) => {
@@ -439,6 +469,9 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   // The thin slice's peek page, only when asked for: loaded here so that a start without --peek-port
   // resolves no HTTP module at all.
   let peek: { close(): Promise<void> } | null = null;
+  let requests: Requests | null = null;
+  let agentPort: AgentPort | null = null;
+  let agentStatus: AgentPortStatus = { on: false, why: ctx.agentPort === true && ctx.peekPort === undefined ? 'no-page' : 'not-asked', detail: null };
   if (ctx.peekPort !== undefined) {
     const redactor = makeRedactor({ env: ctx.env });
     try {
@@ -464,8 +497,30 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
           restored: lastDispatchIn(store.db),
         });
       }
+      // seat (final.md §5.1): the agent requests, with --agent-port only, and only when some owned harness
+      // is on (an agent may only ask for what a person can grant here: D8, A17).
+      if (ctx.agentPort === true && ctx.owned === true) {
+        if ((codexOwned === null && claudeOwned === null) || ownedRedact === null) agentStatus = { on: false, why: 'owned-off', detail: null };
+        else {
+          const { makeRequests } = await import('../route/requests.ts');
+          const { endOwnedFor } = await import('../server/owned-handlers.ts');
+          const redactOwned = ownedRedact!;
+          requests = makeRequests({
+            after: oneShot(ctx.clock, 'agent-requests'),
+            nowMono: () => wall.nowMono(),
+            nowWall: () => wall.nowWall(),
+            redact: redactOwned,
+            observe: (id) => codexOwned?.get(id) ?? claudeOwned?.get(id) ?? null,
+            // The person's normal stop order (POST /api/owned/:id/end's), never the brake (final.md §6.3 A).
+            endOwned: (id) => endOwnedFor({ codex: codexOwned, claude: claudeOwned }, id),
+            ...(desk === null ? {} : { suggest: (text: string, harness: 'codex' | 'claude') => desk!.suggest(text, harness) }),
+            ttlMs: AGENT_REQUEST_TTL_MS,
+            onMove: (r, from) => log.info('agent-request', { requestId: r.requestId, from, to: r.state, why: r.why, harness: r.harness, ownedId: r.ownedId }),
+          });
+        }
+      }
       const deps = {
-        codex: codexOwned, codexOff: ownedCodex.on ? 'on' : ownedCodex.why, claude: claudeOwned, desk, log, restored: restoredOff,
+        codex: codexOwned, codexOff: ownedCodex.on ? 'on' : ownedCodex.why, claude: claudeOwned, desk, log, restored: restoredOff, requests,
         // Why a new session has no brake (null: each runs in a Job of its own), read at each list: a
         // resident procguard that went away since says so (the brake then cannot report what it did).
         brakeWhy: () => (!procguard.on ? procguard.why : resident !== null && !resident.up ? 'procguard-resident-gone' : null),
@@ -496,10 +551,49 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
       });
       peek = server;
       ctx.console.out(`orchestrad: peek page at ${server.url} (read-only; pair with the code above)`);
+      if (requests !== null) {
+        const { AGENT_TOKEN_FILE, agentPipeName, startAgentPort } = await import('../server/agent-port.ts');
+        const testName = ctx.profile.kind === 'test' ? win.basename(ctx.profile.testDir).slice(TEST_DIR_PREFIX.length) : null;
+        const judge = judgeOwned;
+        const started = await startAgentPort({
+          pipe: agentPipeName(ctx.profile.kind, testName),
+          tokenFile: win.join(home, AGENT_TOKEN_FILE),
+          writeToken: (file, text) => fence.writeAtomic(file, text),
+          removeToken: (file) => {
+            fence.rm(file);
+          },
+          requests,
+          // The cwd a requester names is shown on its card only; the spawn gate's own table still refuses a protected one.
+          judgeCwd: (cwd) => {
+            const c = checkPath(cwd);
+            if (!c.ok) return `bad-path:${c.reason}`;
+            if (judge === null) return 'no-table';
+            return judge(c.path).hit;
+          },
+          log,
+        });
+        if (started.ok) {
+          agentPort = started.port;
+          agentStatus = { on: true, pipe: started.port.pipe, tokenFile: started.port.tokenFile };
+          ctx.console.out(`orchestrad: agent request port on ${started.port.pipe} (token in ${started.port.tokenFile}, new at every start): an agent may only ask; each request waits for you on the page, ${AGENT_REQUEST_TTL_MS / 60000} minutes, then it is refused`);
+        } else {
+          requests.close();
+          requests = null;
+          agentStatus = { on: false, why: started.why, detail: started.detail };
+          ctx.console.out(`orchestrad: the agent request port is off: ${started.why} (${started.detail})`);
+        }
+      } else if (ctx.agentPort === true) {
+        log.warn('agent-port-off', { why: agentStatus.on ? 'on' : agentStatus.why });
+        ctx.console.out(`orchestrad: the agent request port is off: ${agentStatus.on ? 'on' : agentStatus.why}`);
+      }
     } catch (e) {
       log.error('peek-failed', { error: e });
       ctx.console.err(`orchestrad: the peek page did not start on port ${ctx.peekPort}: ${describe(e)}`);
+      if (ctx.agentPort === true && !agentStatus.on) agentStatus = { on: false, why: 'setup-failed', detail: describe(e) };
     }
+  } else if (ctx.agentPort === true) {
+    log.warn('agent-port-off', { why: 'no-page' });
+    ctx.console.out('orchestrad: the agent request port is off: no-page (it needs --peek-port: each request waits for you on the paired page)');
   }
   let resolveStopped!: () => void;
   const stopped = new Promise<void>((r) => {
@@ -509,6 +603,10 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   let ending: Promise<void> | null = null;
   const stop = (): Promise<void> => (ending ??= (async () => {
     uninstall();
+    // The agent side first: open requests are over (failed, daemon-stop), their long polls answered, then
+    // the pipe closes and its token file goes. Nothing can ask for work while the sessions are ending.
+    requests?.close();
+    if (agentPort !== null) await agentPort.close();
     // The owned sessions first: their open approvals are declined while the children can still read it.
     if (codexOwned !== null) log.info('owned-codex-ended', { sessions: codexOwned.endAll() });
     if (claudeOwned !== null) {
@@ -558,7 +656,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   log.info('working', { profile: ctx.profile.kind, pipe, bootId });
   // Last line of the startup: everything above is on disk and on the console before it.
   ctx.console.out(`orchestrad: working (${ctx.profile.kind} profile, pid ${ctx.pid}, data ${home})`);
-  return { mode: 'working', profile: ctx.profile.kind, home, pipe, pairing, testRoots, store, ownedCodex, ownedClaude, procguard, stop, stopped };
+  return { mode: 'working', profile: ctx.profile.kind, home, pipe, pairing, testRoots, store, ownedCodex, ownedClaude, procguard, agentPort: agentStatus, stop, stopped };
 }
 
 

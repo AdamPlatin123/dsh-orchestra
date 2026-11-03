@@ -80,6 +80,8 @@ export const ERROR_TEXT = Object.freeze({
   'owned-ended': '会话已结束',
   'queue-full': '排队的消息已满',
   'spawn-failed': '会话没能启动',
+  'request-gone': '这条 DSH 请求已不在了（已处理、到期、被撤回，或 orchestrad 重启过）',
+  'request-mismatch': '派出的内容和请求卡上的不一致，没有派出',
 });
 
 /** @type {Readonly<Record<import('./protocol.js').EndClass, string>>} */
@@ -523,6 +525,7 @@ export const TOWER_TEXT = frozen({
   'life.protocol-error': '它发来了 Orchestra 读不懂的内容，Orchestra 停了它',
   'life.daemon-stop': 'orchestrad 停机时结束了它',
   'life.braked': '你踩了刹车：Orchestra 停它整个 Job 里的进程',
+  'life.requester-withdrew': '请求它的 DSH 会话撤回了请求：Orchestra 按正常顺序结束了它（不是刹车）',
   'fnote.withdrawn': '撤回了 {t} 条排队消息',
   'fnote.ask-withdrawn': '一条审批被收回了',
   'fnote.not-sent': '这条消息没有发给它：{t}',
@@ -577,4 +580,31 @@ export const TOWER_TEXT = frozen({
   'res.declined': '被拒绝',
   'res.running': '在跑',
   'res.unknown': '状态未知',
+  // seat: an agent request in 「等你」 (src/route/requests.ts). It only asks; you dispatch or reject it here
+  // (D8). "done" is never said (T2): its first turn came back, which is not a verdict on the work.
+  'req.kind': 'DSH 请求派 {h}：',
+  'req.left': '剩 {t} 自动拒',
+  'req.overdue': '已到期，等 Orchestra 自动拒',
+  'req.who': '请求方 {who}',
+  'req.cwd': '它想在 {cwd} 干活；派出后仍在 Orchestra 自建的工作目录里跑',
+  'req.model': '模型 {m}（{src}）',
+  'req.src.model': '路由模型建议',
+  'req.src.rule': '规则建议',
+  'req.src.default': '默认，还没有建议',
+  'req.go': '派出',
+  'req.no': '拒绝',
+  'req.goLabel': '派出 DSH 请求：{what}',
+  'req.noLabel': '拒绝 DSH 请求：{what}',
+  'req.sent': '派出了 DSH 请求的会话',
+  'req.rejected': '拒绝了这条 DSH 请求',
+  'req.of': '这个会话由 DSH 请求派出：{who} · 请求现在{st}',
+  'reqst.dispatched': '已派出，会话在启动',
+  'reqst.running': '会话在跑',
+  'reqst.done': '第一回合已返回，结果已交回请求方（不是对工作的判定）',
+  'reqst.rejected': '被你拒绝了',
+  'reqst.expired': '到期没人处理，算拒绝',
+  'reqst.withdrawn': '被请求方撤回了',
+  'reqst.failed': '没有返回结果（{why}）',
+  'reqst.pending': '还在等你',
+  'reqst.other': '状态 {s}',
 });

@@ -35,12 +35,20 @@ export const OWNED_ENUMS = frozen({
    * protocol-error: the child said something Orchestra cannot read, so Orchestra stopped it;
    * daemon-stop: orchestrad ended it on its own way out (nobody pressed end); braked: you pressed the
    * brake, and Orchestra ended every process in its procguard Job (whether all of them stopped is the
-   * feed's tree-* note and the brake's reply, never this reason: T1).
+   * feed's tree-* note and the brake's reply, never this reason: T1); requester-withdrew: the agent that asked
+   * for the session (seat) withdrew its request, and Orchestra ended it by the same stop order as your end.
    */
-  endReason: ['you-ended', 'exited', 'start-failed', 'policy-mismatch', 'daemon-restart', 'safety-stop', 'interrupt-unsure', 'protocol-error', 'daemon-stop', 'braked'],
+  endReason: ['you-ended', 'exited', 'start-failed', 'policy-mismatch', 'daemon-restart', 'safety-stop', 'interrupt-unsure', 'protocol-error', 'daemon-stop', 'braked', 'requester-withdrew'],
   approvalKind: ['command', 'file-change', 'permissions', 'question', 'elicitation', 'tool'],
   risk: ['shell', 'write', 'net', 'protected', 'other'],
   feedKind: ['you', 'text', 'tool', 'tool-result', 'ask', 'answer', 'auto-denied', 'lifecycle', 'result', 'note'],
+  /**
+   * An agent request's state (seat, src/route/requests.ts): pending waits for you; dispatched, running and
+   * done name the session you dispatched (done: its first turn ended and what it said went back to the
+   * requester, never a verdict on the work: T2, D19); rejected, expired, withdrawn and failed say why it is over.
+   */
+  requestState: ['pending', 'dispatched', 'running', 'done', 'rejected', 'expired', 'withdrawn', 'failed'],
+  requestSource: ['rule', 'model'],
 });
 
 export const OWNED_BOUNDS = frozen({
@@ -54,6 +62,12 @@ export const OWNED_BOUNDS = frozen({
   feedBytes: 2048,
   /** A feed event's ref (a codex item, turn or approval id). */
   refChars: 200,
+  /** An agent request's task text, label and cwd, in UTF-8 bytes (src/route/requests.ts REQUEST_LIMITS). */
+  requestTextBytes: 2048,
+  requestLabelBytes: 120,
+  requestCwdBytes: 520,
+  /** The router model's reason for a model, in UTF-8 bytes (routes.ts SUGGEST_REPLY's 200 code points, at most 4 bytes each). */
+  reasonBytes: 800,
 });
 
 /**
@@ -76,6 +90,7 @@ export const OWNED_TOWER_TEXT = frozen({
   'end.daemon-stop': '已结束：orchestrad 停机时结束了它',
   // T1: no word on whether everything stopped: the feed's tree-* note says (gone after a restart: unknown then).
   'end.braked': '已结束：你踩了刹车，Orchestra 结束了它 Job 里的进程（是否全停见对话记录）',
+  'end.requester-withdrew': '已结束：请求它的 DSH 会话撤回了请求，Orchestra 按正常顺序结束了它（不是刹车）',
   'end.unknown': '已结束',
   // The newest thing the session said or did, for its activity line (src/sources/tower.ts ownedNode).
   'act.command': '命令：',
@@ -90,6 +105,10 @@ export const OWNED_DIGEST_RE = frozen(/^[0-9a-f]{64}$/);
 export const OWNED_UUID_RE = frozen(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 /** A code (why the feature is off, a feed event's state): ASCII, never source text. */
 export const OWNED_CODE_RE = frozen(/^[a-z][a-z0-9.-]{0,63}$/);
+/** An agent request's id (src/route/requests.ts REQUEST_ID_RE). */
+export const REQUEST_ID_RE = frozen(/^[0-9a-f]{20}$/);
+/** Who asked, as the card names it: dsh:<its session id> (an id, never free text). */
+export const REQUESTER_RE = frozen(/^dsh:[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/);
 /** A model of the owned list (src/owned/models.ts OWNED_MODEL_RE). */
 export const OWNED_MODEL_NAME_RE = frozen(/^(?:zcode|opencode-go|codex)\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/);
 // C0 and C1 controls but tab and newline, DEL, and the bidi embeddings, overrides and isolates.
@@ -99,7 +118,7 @@ const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
  * @typedef {{
  *   v: 1, kind: 'owned-list', rev: number, enabled: boolean, disabledWhy: string | null, brakeWhy: string | null,
  *   harnesses: { codex: boolean, claude: boolean },
- *   owned: OwnedEntry[], approvals: ApprovalEntry[], limits: { maxOwned: number, active: number },
+ *   owned: OwnedEntry[], approvals: ApprovalEntry[], limits: { maxOwned: number, active: number }, requests: RequestEntry[],
  * }} OwnedList
  *   rev: the approval queue's revision; the page sends it back with an allow (stale-view otherwise).
  *   enabled: whether any harness can start a session now; disabledWhy says why not (null when enabled).
@@ -113,6 +132,13 @@ const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
  * }} OwnedEntry
  *   title: the first line of its first message, shown (possibly empty); waiting: an approvalId.
  * @typedef {{ input: number, cachedInput: number, output: number, total: number }} Tokens
+ * @typedef {{
+ *   requestId: string, harness: 'codex' | 'claude', label: string | null, text: string, cwd: string, requester: string, state: string,
+ *   createdAt: number, expiresAt: number, ownedId: string | null, why: string | null,
+ *   suggestion: { routeId: string | null, router: string, models: { model: string, source: string, rule: string | null, reason: string | null }[], pick: number | null } | null,
+ * }} RequestEntry
+ *   An agent request (seat): text, label and cwd are the requester's words, redacted and shown; expiresAt the wall
+ *   time a pending one is refused at by itself (D8); ownedId the session you dispatched for it.
  * @typedef {{
  *   approvalId: string, ownedId: string, kind: string, title: string, preview: string, tooLong: boolean, redactions: number,
  *   digest: string, risk: string, high: boolean, rev: number, canAccept: boolean, canText: boolean, deadline: number,
@@ -214,7 +240,7 @@ function checkTokens(c, v, at) {
  */
 export function validateOwnedList(x) {
   const c = checker();
-  const s = c.obj(x, '$', ['v', 'kind', 'rev', 'enabled', 'disabledWhy', 'brakeWhy', 'harnesses', 'owned', 'approvals', 'limits']);
+  const s = c.obj(x, '$', ['v', 'kind', 'rev', 'enabled', 'disabledWhy', 'brakeWhy', 'harnesses', 'owned', 'approvals', 'limits', 'requests']);
   if (s === null) return { ok: false, errors: c.errors };
   if (s.v !== OWNED_V) c.bad('$.v', `${JSON.stringify(s.v)}, not ${OWNED_V}`);
   if (s.kind !== 'owned-list') c.bad('$.kind', `${JSON.stringify(s.kind)}, not owned-list`);
@@ -306,6 +332,8 @@ export function validateOwnedList(x) {
     if (o.waiting !== first?.approvalId) c.bad(`$.owned: ${String(id)}.waiting`, `${JSON.stringify(o.waiting)}, its first open approval is ${String(first?.approvalId)}`);
   }
 
+  checkRequests(c, s.requests);
+
   const limits = c.obj(s.limits, '$.limits', ['maxOwned', 'active']);
   if (limits !== null) {
     c.int(limits.maxOwned, '$.limits.maxOwned');
@@ -315,6 +343,59 @@ export function validateOwnedList(x) {
     if (limits.active !== k) c.bad('$.limits.active', `${String(limits.active)}, but ${k} listed sessions still run`);
   }
   return { ok: c.errors.length === 0, errors: c.errors };
+}
+
+/**
+ * The agent requests (seat): each names its harness, its text, label and cwd as shown, who asked, its
+ * state and the wall time a pending one expires at (D8: then it is a refusal); a dispatched, running or
+ * done one names its session, a pending, rejected or expired one none. The suggestion lists only models
+ * of the request's harness, and its pick is one of them.
+ * @param {Checker} c @param {unknown} v
+ */
+function checkRequests(c, v) {
+  const ids = new Set();
+  c.arr(v, '$.requests').forEach((e, i) => {
+    const at = `$.requests[${i}]`;
+    const r = c.obj(e, at, ['requestId', 'harness', 'label', 'text', 'cwd', 'requester', 'state', 'createdAt', 'expiresAt', 'ownedId', 'why', 'suggestion']);
+    if (r === null) return;
+    c.re(r.requestId, `${at}.requestId`, REQUEST_ID_RE, 'request id');
+    if (ids.has(r.requestId)) c.bad(`${at}.requestId`, `${String(r.requestId)} listed twice`);
+    ids.add(r.requestId);
+    c.en(r.harness, `${at}.harness`, OWNED_ENUMS.harness);
+    if (r.label !== null) c.text(r.label, `${at}.label`, OWNED_BOUNDS.requestLabelBytes);
+    c.text(r.text, `${at}.text`, OWNED_BOUNDS.requestTextBytes);
+    c.text(r.cwd, `${at}.cwd`, OWNED_BOUNDS.requestCwdBytes);
+    c.re(r.requester, `${at}.requester`, REQUESTER_RE, 'requester');
+    c.en(r.state, `${at}.state`, OWNED_ENUMS.requestState);
+    c.int(r.createdAt, `${at}.createdAt`);
+    c.int(r.expiresAt, `${at}.expiresAt`);
+    if (r.ownedId !== null) c.re(r.ownedId, `${at}.ownedId`, OWNED_ID_RE, 'owned id');
+    const bound = r.state === 'dispatched' || r.state === 'running' || r.state === 'done';
+    const unbound = r.state === 'pending' || r.state === 'rejected' || r.state === 'expired';
+    if (bound && r.ownedId === null) c.bad(`${at}.ownedId`, `a ${String(r.state)} request names its session`);
+    if (unbound && r.ownedId !== null) c.bad(`${at}.ownedId`, `a ${String(r.state)} request names no session`);
+    if (r.why !== null) c.re(r.why, `${at}.why`, OWNED_CODE_RE, 'code');
+    if (r.suggestion === null) return;
+    const g = c.obj(r.suggestion, `${at}.suggestion`, ['routeId', 'router', 'models', 'pick']);
+    if (g === null) return;
+    if (g.routeId !== null) c.re(g.routeId, `${at}.suggestion.routeId`, REQUEST_ID_RE, 'route id');
+    c.re(g.router, `${at}.suggestion.router`, OWNED_CODE_RE, 'code');
+    const models = c.arr(g.models, `${at}.suggestion.models`);
+    if (models.length > 3) c.bad(`${at}.suggestion.models`, `${models.length}, at most 3`);
+    models.forEach((m, k) => {
+      const mat = `${at}.suggestion.models[${k}]`;
+      const o = c.obj(m, mat, ['model', 'source', 'rule', 'reason']);
+      if (o === null) return;
+      c.re(o.model, `${mat}.model`, OWNED_MODEL_NAME_RE, 'model of the owned list');
+      c.en(o.source, `${mat}.source`, OWNED_ENUMS.requestSource);
+      if (o.rule !== null) c.re(o.rule, `${mat}.rule`, OWNED_CODE_RE, 'code');
+      if (o.reason !== null) c.text(o.reason, `${mat}.reason`, OWNED_BOUNDS.reasonBytes);
+    });
+    if (g.pick !== null) {
+      c.int(g.pick, `${at}.suggestion.pick`);
+      if (typeof g.pick === 'number' && g.pick >= models.length) c.bad(`${at}.suggestion.pick`, `${g.pick}, but ${models.length} models are listed`);
+    }
+  });
 }
 
 /**

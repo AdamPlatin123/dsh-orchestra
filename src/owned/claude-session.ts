@@ -75,7 +75,7 @@ export type ClaudeSessionState = 'starting' | 'idle' | 'running' | 'ended' | 'fa
  * host said something Orchestra cannot read, so Orchestra stopped it; exited: the host went away by
  * itself; start-failed, safety-stop, daemon-restart: shared/owned-contract.js.
  */
-export type ClaudeEndReason = 'you-ended' | 'exited' | 'start-failed' | 'safety-stop' | 'daemon-restart' | 'interrupt-unsure' | 'protocol-error' | 'daemon-stop' | 'braked';
+export type ClaudeEndReason = 'you-ended' | 'exited' | 'start-failed' | 'safety-stop' | 'daemon-restart' | 'interrupt-unsure' | 'protocol-error' | 'daemon-stop' | 'braked' | 'requester-withdrew';
 export const isClaudeOver = (state: ClaudeSessionState): boolean => state === 'ended' || state === 'failed' || state === 'unknown';
 
 export type ClaudeSessionOptions = {
@@ -123,8 +123,8 @@ export type ClaudeSession = {
   readonly exited: Promise<void>;
   send(text: string, uuid: string): ClaudeSendResult;
   interrupt(): Promise<{ withdrawn: number; denied: number }>;
-  /** Ends the session: a person's end (you-ended) unless orchestrad itself is stopping (daemon-stop). */
-  end(why?: 'you-ended' | 'daemon-stop'): { denied: number };
+  /** Ends the session: a person's end (you-ended), orchestrad stopping (daemon-stop) or its requester withdrawing (requester-withdrew, seat), one stop order. */
+  end(why?: 'you-ended' | 'daemon-stop' | 'requester-withdrew'): { denied: number };
   /** Whether its host's whole tree runs in a Job of its own and the host has not closed (so the brake can still end it, even while it is ending). */
   readonly jobbed: boolean;
   /** The brake: the whole tree stopped now, the approvals declined, the session ended as braked. */
@@ -621,7 +621,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     });
   }
 
-  function endSession(cause: 'end', why: 'you-ended' | 'daemon-stop' | 'interrupt-unsure' = 'you-ended'): { denied: number } {
+  function endSession(cause: 'end', why: 'you-ended' | 'daemon-stop' | 'interrupt-unsure' | 'requester-withdrew' = 'you-ended'): { denied: number } {
     if (terminal()) return { denied: 0 };
     const denied = approvals.declineOwned(ownedId, cause);
     state = 'ended';
@@ -691,7 +691,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
       changed();
       return { withdrawn, denied };
     },
-    end: (why: 'you-ended' | 'daemon-stop' = 'you-ended') => endSession('end', why === 'daemon-stop' ? 'daemon-stop' : 'you-ended'),
+    end: (why: 'you-ended' | 'daemon-stop' | 'requester-withdrew' = 'you-ended') => endSession('end', why === 'daemon-stop' || why === 'requester-withdrew' ? why : 'you-ended'),
     get jobbed() {
       return job !== null && !closed && !braked;
     },

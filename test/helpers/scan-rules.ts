@@ -692,6 +692,29 @@ const magpiePost: Rule = {
   },
 };
 
+// seat's agent request port (final.md §5.1): builtin-policy.ts lets src/server/agent-port.ts take node:net's
+// and node:http's createServer, and here that is held to one named pipe: the module declares the pipe prefix
+// \\.\pipe\orchestra-agent- once, pipeOptions refuses any other path, and every listen call in it is
+// `listen(pipeOptions(` (no port, no host, no second listener: node:http never listens there itself).
+const AGENT_PORT_FILE = 'src/server/agent-port.ts';
+const agentPortPipe: Rule = {
+  id: 'net:agent-port-pipe-only',
+  applies: (f) => f === AGENT_PORT_FILE,
+  find(text) {
+    const out: Finding[] = [];
+    const decl = "const PIPE_PREFIX = '\\\\\\\\.\\\\pipe\\\\orchestra-agent-';";
+    if (!text.includes(decl)) out.push({ index: 0, text: `no ${decl}` });
+    for (const m of text.matchAll(/\bPIPE_PREFIX\s*=(?!=)/g)) if (m.index !== text.indexOf(decl) + 'const '.length) out.push({ index: m.index, text: 'PIPE_PREFIX bound again' });
+    if (!/if \(!pipe\.startsWith\(PIPE_PREFIX\)\) throw /.test(text)) out.push({ index: 0, text: 'pipeOptions does not hold the path to PIPE_PREFIX' });
+    const listens = [...text.matchAll(/\.\s*listen\s*\(/g)];
+    if (listens.length !== 1) out.push({ index: listens[1]?.index ?? 0, text: `${listens.length} listen calls, one expected` });
+    for (const m of listens) {
+      if (!/^\s*pipeOptions\(/.test(text.slice(m.index + m[0].length))) out.push({ index: m.index, text: text.slice(m.index, m.index + 48).split('\n')[0]! });
+    }
+    return out;
+  },
+};
+
 export const RULES: readonly Rule[] = [
   builtinPolicy,
   builtinOnlyNames,
@@ -782,6 +805,7 @@ export const RULES: readonly Rule[] = [
   hostNoBypass,
   hostNoDynamicCode,
   magpiePost,
+  agentPortPipe,
 ];
 
 function lineOf(text: string, index: number): number {

@@ -79,6 +79,8 @@ export const EDGES: Readonly<Record<Entity, readonly string[]>> = Object.freeze(
 export const JUDGMENT_NAMES = Object.freeze(['redact'] as const);
 export const PROTECT_REASONS = Object.freeze(['tuning', 'config'] as const);
 export const NOTIFY_VIA = Object.freeze(['browser', 'toast'] as const);
+/** What a person did with an agent request (seat): dispatched it, or rejected it. Expiry and withdrawal are no human decision and write no record. */
+export const AGENT_VERDICTS = Object.freeze(['dispatched', 'rejected'] as const);
 
 /** A human action's target: an item, root or other id, or pid:createTime. */
 export const TARGET_RE = frozen(/^(?:[A-Za-z0-9][A-Za-z0-9_-]{0,63}|[1-9][0-9]{0,9}:[1-9][0-9]{0,19})$/);
@@ -190,6 +192,16 @@ export const BODY_SCHEMAS = frozen({
     candidates: arr(obj({ harness: en(ROUTE_HARNESSES), model: { t: 'model' }, source: en(['rule', 'model']), rule: nul(en(RULE_IDS)) }), 0, MAX_CANDIDATES),
     chosen: obj({ harness: en(ROUTE_HARNESSES), model: { t: 'model' } }), pick: nul(int(0, MAX_CANDIDATES - 1)), reason: en(ROUTE_REASONS),
     router: en(ROUTE_RECORD_ROUTER), routerModel: nul({ t: 'model' }), routerWhy: nul(en(ROUTER_WHY)), mode: en(ROUTE_MODES),
+  }),
+  // seat (final.md §5.1): a person's decision on an agent request (r4 A17), in the batch of its human
+  // records: dispatched (owned-new with the requestId; decisionId names that dispatch's `route` record, so
+  // the RouteDecision's source is the agent request) or rejected (request-reject; ownedId and decisionId
+  // null). The `route` body stays as it was: every field of a kind is required, and a journal written before
+  // this kind existed must still replay. The requester's session id is not source free text a body may
+  // keep: only its sha256 (over "dsh:" and the id) is, enough to tie two decisions to one requester.
+  'agent-request': obj({
+    requestId: id, actionId: uuid, verdict: en(AGENT_VERDICTS), harness: en(ROUTE_HARNESSES), requesterKind: en(['dsh']), requesterDigest: digest,
+    ownedId: nul(id), decisionId: nul(digest),
   }),
 } satisfies Record<string, Schema>);
 
@@ -389,6 +401,9 @@ function consistency(kind: Kind, b: Record<string, unknown>): BodyError | null {
       if (c.harness !== chosen.harness || c.model !== chosen.model) return bad('$.chosen');
       return b.reason === (c.rule ?? 'router-model') ? null : bad('$.reason');
     }
+    case 'agent-request':
+      // A dispatch names its session (and its RouteDecision when a desk made one); a refusal names neither.
+      return (b.verdict === 'dispatched') !== (b.ownedId !== null) ? bad('$.ownedId') : b.verdict === 'rejected' && b.decisionId !== null ? bad('$.decisionId') : null;
     case 'brake.plan': {
       if (b.expiresAt !== (b.createdWall as number) + PLAN_TTL_MS) return bad('$.expiresAt');
       const nodes = new Set((b.nodes as { pid: number; createTime: string }[]).map((n) => `${n.pid}:${n.createTime}`));

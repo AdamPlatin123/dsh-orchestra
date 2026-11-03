@@ -173,6 +173,15 @@ test('--owned: either profile, at most once, no value; absent means off', () => 
   assert.deepEqual(parseProfileArgs(['--owned=1'], deps), { ok: false, refusal: { reason: 'unknown-argument', arg: '--owned=1' } });
 });
 
+test('--agent-port (seat): only with --owned, at most once, no value; absent means no agent pipe at all', () => {
+  const deps = { env: {}, processEnv: {}, realpath: (p: string) => p };
+  assert.deepEqual(parseProfileArgs(['--owned', '--agent-port', '--peek-port', '7470'], deps), { ok: true, profile: { kind: 'real' }, peekPort: 7470, owned: true, agentPort: true });
+  assert.deepEqual(parseProfileArgs(['--agent-port'], deps), { ok: false, refusal: { reason: 'agent-port-without-owned' } });
+  assert.deepEqual(parseProfileArgs(['--owned', '--agent-port', '--agent-port'], deps), { ok: false, refusal: { reason: 'duplicate-flag', flag: '--agent-port' } });
+  assert.deepEqual(parseProfileArgs(['--owned', '--agent-port=x'], deps), { ok: false, refusal: { reason: 'unknown-argument', arg: '--agent-port=x' } });
+  assert.equal(parseProfileArgs(['--owned'], deps).ok && 'agentPort' in parseProfileArgs(['--owned'], deps), false);
+});
+
 test('approvals: within 750 ms of a change of the list an allow is stale-view (r4 §10.9), a deny is not; every entry that leaves says how and why', () => {
   const clock = new VirtualClock({ mono: 0, wall: 1_000_000 });
   const settled: [string, string, string][] = [];

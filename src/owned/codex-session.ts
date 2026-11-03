@@ -109,8 +109,14 @@ export const CODEX_DEADLINES = frozen({ startMs: 60_000, turnMs: 60_000, interru
 
 /** unknown: a session an earlier orchestrad started (its registry entry outlived a restart); nobody here holds its child. */
 export type CodexSessionState = 'starting' | 'idle' | 'running' | 'ended' | 'failed' | 'unknown';
-/** daemon-stop: orchestrad ended it on its own way out (nobody pressed end); braked: you stopped its whole tree; the rest: shared/owned-contract.js. */
-export type CodexEndReason = 'you-ended' | 'exited' | 'start-failed' | 'policy-mismatch' | 'daemon-restart' | 'daemon-stop' | 'braked';
+/**
+ * daemon-stop: orchestrad ended it on its own way out (nobody pressed end); braked: you stopped its whole
+ * tree; requester-withdrew: the agent that asked for it (seat) withdrew, and it was ended by the same stop
+ * order as your end; the rest: shared/owned-contract.js.
+ */
+export type CodexEndReason = 'you-ended' | 'exited' | 'start-failed' | 'policy-mismatch' | 'daemon-restart' | 'daemon-stop' | 'braked' | 'requester-withdrew';
+/** Why an end() ran: a person, orchestrad's own stop, or the agent request's withdrawal (seat); each runs the same stop order. */
+export type EndWhy = 'you-ended' | 'daemon-stop' | 'requester-withdrew';
 
 /**
  * What the brake did: ok with the processes the Job held when it came (killed) and those left after the
@@ -179,8 +185,8 @@ export type CodexSession = {
   readonly ready: Promise<boolean>;
   send(text: string, uuid: string): SendResult;
   interrupt(): Promise<{ withdrawn: number; denied: number }>;
-  /** Ends the session: a person's end (you-ended) unless orchestrad itself is stopping (daemon-stop). */
-  end(why?: 'you-ended' | 'daemon-stop'): { denied: number };
+  /** Ends the session: a person's end (you-ended), orchestrad stopping (daemon-stop) or its requester withdrawing (requester-withdrew), one stop order. */
+  end(why?: EndWhy): { denied: number };
   /** Whether its child's whole tree runs in a Job of its own and the child has not closed (so the brake can still end it, even while it is ending). */
   readonly jobbed: boolean;
   /** The brake: the whole tree stopped now, the approvals declined, the session ended as braked. */
@@ -932,11 +938,11 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       changed();
       return { withdrawn, denied };
     },
-    end(why: 'you-ended' | 'daemon-stop' = 'you-ended') {
+    end(why: EndWhy = 'you-ended') {
       if (terminal()) return { denied: 0 };
       const denied = approvals.declineOwned(ownedId, 'end');
       state = 'ended';
-      endReason = why === 'daemon-stop' ? 'daemon-stop' : 'you-ended';
+      endReason = why === 'daemon-stop' || why === 'requester-withdrew' ? why : 'you-ended';
       turnId = null;
       withdrawAll();
       feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'ended' });

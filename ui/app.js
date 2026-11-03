@@ -8,8 +8,8 @@ import { after, every, fmtIso, nowMono, onFrame } from './clock.js';
 import { makePatcher } from './dom.js';
 import { getCsrf, getTheme, setCsrf, setTheme } from './prefs.js';
 import {
-  HOLD_MS, SETTLE_MS, brakeWhyText, modelsOf, atBottom, chatNews, describeDesk, describeNew, describeOwned, describeOwnedDock, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError, notifyText, ownedIdOf,
-  pinExtra, pinWhole, whyText,
+  HOLD_MS, SETTLE_MS, brakeWhyText, modelsOf, atBottom, chatNews, describeDesk, describeNew, describeOwned, describeOwnedDock, describeRequestPins, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError,
+  notifyText, ownedIdOf, pinExtra, pinWhole, whyText, withRequests,
 } from './owned.js';
 import { go, openFull, parse } from './route.js';
 import { FILTERS, buildRows, freeze, groupKey, indexOf, navigate, projectKey, towerFrame } from './tree.js';
@@ -165,7 +165,9 @@ function render() {
   }
   const pinBar = holdPins(snap);
   // The bar or queue moved: allows are void for SETTLE_MS (r4 §10.9), a hold lets go.
-  const sig = `${pinBar.map((e) => e.node).join()}|${state.owned?.rev ?? ''}`;
+  // seat: a new or gone agent request moves the bar too (派出 is void for SETTLE_MS, as an allow).
+  const reqIds = (state.owned?.requests ?? []).filter((/** @type {any} */ r) => r.state === 'pending').map((/** @type {any} */ r) => r.requestId).join();
+  const sig = `${pinBar.map((e) => e.node).join()}|${state.owned?.rev ?? ''}|${reqIds}`;
   if (sig !== state.pinSig) {
     state.pinSig = sig;
     state.changedMono = nowMono();
@@ -175,7 +177,7 @@ function render() {
     after(SETTLE_MS + 20, schedule);
   }
   const g = guard();
-  dom.paintId('pins', describePins(snap, { sel: state.sel, nowWall: wall, bar: pinBar, extra: (e) => pinExtra(e, state.owned, g) }));
+  dom.paintId('pins', withRequests(describePins(snap, { sel: state.sel, nowWall: wall, bar: pinBar, extra: (e) => pinExtra(e, state.owned, g) }), describeRequestPins(state.owned, g)));
   dom.paintId('tower', describeTower(rows, {
     filter: state.filter, pending, sel: state.sel, peek: state.peek, flash, detectsError: detectsError(snap), clipped: clippedSessions(snap), dispatch: snap.router.dispatch, nowWall: nowWall(),
   }));
@@ -477,6 +479,33 @@ async function dispatch() {
   if (/^[0-9a-f]{20}$/.test(id)) openNode(`n:${id}`);
 }
 
+/**
+ * seat: 派出 an agent request: owned-new with its requestId, the card's text and harness and the model the
+ * card named (the router model's pick, else the default). The server takes it only while it still waits.
+ * @param {HTMLElement} el
+ */
+async function requestGo(el) {
+  const id = el.dataset.req ?? '';
+  const r = state.owned?.requests?.find((/** @type {any} */ x) => x.requestId === id && x.state === 'pending');
+  if (r === undefined) return;
+  if (settling()) return say(t('appr.settling'));
+  const routeId = r.suggestion?.routeId ?? null;
+  const model = el.dataset.model || modelsOf(r.harness)[0];
+  const a = await op('owned/new', { text: r.text, harness: r.harness, model, requestId: r.requestId, ...(routeId === null ? {} : { routeId }) });
+  if (a?.ok) answeredAt(el, id);
+  said(a, t('req.sent'));
+  if (a?.ok) void poll();
+}
+
+/** seat: 拒绝 an agent request (always taken while it waits). @param {HTMLElement} el */
+async function requestNo(el) {
+  const id = el.dataset.req ?? '';
+  if (!/^[0-9a-f]{20}$/.test(id)) return;
+  const a = await op(`agent-requests/${id}/reject`, {});
+  if (a?.ok) answeredAt(el, id);
+  said(a, t('req.rejected'));
+}
+
 async function sendMsg() {
   const to = state.to ?? selTo();
   const text = val('dock-in');
@@ -699,6 +728,8 @@ function act(el) {
     state.justHeld = null;
     return;
   }
+  if (a === 'req-go') return void requestGo(t0);
+  if (a === 'req-no') return void requestNo(t0);
   if (a === 'see') return openNode(/** @type {any} */ (t0.closest('.pin')).dataset.node);
   if (a === 'theme') {
     state.theme = state.theme === 'auto' ? 'light' : state.theme === 'light' ? 'dark' : 'auto';

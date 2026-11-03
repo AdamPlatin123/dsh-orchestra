@@ -27,6 +27,8 @@ test('the enums are the frozen sets of UI design 一, each unique and frozen', (
     'seen', 'snooze', 'acted', 'remind', 'brake', 'roots-add', 'roots-confirm', 'protect-add', 'protect-remove', 'dsh-connect', 'self-rating',
     // alpha 0.2's owned sessions (slice design §2.7): new, message, interrupt, end, retry, allow, deny, and the two imports
     'owned-new', 'owned-message', 'owned-interrupt', 'owned-end', 'owned-brake', 'owned-retry', 'approval-allow', 'approval-deny', 'import-claude', 'import-dsh',
+    // seat: you reject an agent request (its dispatch is owned-new with the requestId)
+    'request-reject',
   ]);
   assert.deepEqual(Object.keys(HUMAN_VERB_ROUTES), [...HUMAN_VERBS], 'every human verb has its route, in the same order');
   assert.ok(Object.values(HUMAN_VERB_ROUTES).every((r) => /^\/api\/[a-z/:-]+$/.test(r)));
@@ -84,6 +86,9 @@ test('the error codes are UI design 一 5\'s table, with ui-only, procguard-time
     'owned-ended': 409,
     'queue-full': 409,
     'spawn-failed': 503,
+    // seat: the agent request a dispatch or a refusal names no longer waits, or is not what the card showed
+    'request-gone': 409,
+    'request-mismatch': 409,
   });
   assert.deepEqual([...ERROR_CODES], Object.keys(ERROR_STATUS));
   assert.deepEqual([...RESERVED_ERROR_CODES], ['ui-only']);

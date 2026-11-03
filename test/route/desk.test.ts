@@ -139,6 +139,14 @@ test('the router model agrees with a rule: one candidate, the rule\'s, and route
   assert.deepEqual([r.router.state, r.router.pick], ['answered', 0]);
 });
 
+test('seat: an agent request\'s card is held to its harness: the other one counts as off, and the router model may not pick it', async () => {
+  const post: LoopbackPost = async () => ok(completion(JSON.stringify({ harness: 'claude', model: 'zcode/GLM-5.3', title: '修测试', reason: '随便' })));
+  const r = await desk(post).d.suggest('修一个测试', 'codex');
+  assert.ok(r.candidates.every((c) => c.harness === 'codex'), JSON.stringify(r.candidates));
+  assert.deepEqual(r.off, ['claude']);
+  assert.deepEqual([r.router.state, r.router.why, r.router.pick], ['no-answer', 'harness-off', null], 'a pick of the other harness is refused');
+});
+
 test('content that is not JSON: no answer (bad-json), the card is the rules\' alone', async (t) => {
   const fake = await fakeMagpie(t, () => ({ status: 200, text: completion('Sure! I would use codex.') }));
   const clock = new VirtualClock({ mono: 0, wall: 0 });

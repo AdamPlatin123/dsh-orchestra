@@ -165,6 +165,66 @@ export function pinExtra(e, list, g) {
   return { acts: { kids: !mine ? [] : !g.unlocked ? [lockBtn()] : a === undefined ? [] : apprActs(a, g, 'pin') }, pv: { text: mine && g.unlocked && a !== undefined && pinWhole(a) ? a.preview : '' } };
 }
 
+// --- seat: agent requests in 「等你」 (src/route/requests.ts; r4 A17, D8) ---------------------------------
+
+/** The model a request's 派出 sends: the router model's pick for its harness, else the first suggested, else the harness's default. */
+export function requestModel(r) {
+  const g = r.suggestion;
+  const m = g === null ? undefined : g.models[g.pick ?? 0];
+  if (m !== undefined && modelsOf(r.harness).includes(m.model)) return { model: m.model, src: m.source === 'model' ? 'req.src.model' : 'req.src.rule' };
+  return { model: modelsOf(r.harness)[0], src: 'req.src.default' };
+}
+
+/** What a request card names it by: its label, else its text's first line, at most 120 characters. */
+const reqWhat = (r) => {
+  const s = (r.label ?? r.text.split('\n', 1)[0] ?? '').trim();
+  return s.length > 120 ? `${s.slice(0, 120)}…` : s;
+};
+
+/**
+ * The pending agent requests as cards for 「等你」, the one expiring first on top: who asked, what, where it
+ * wanted to work, the model a dispatch would take, the time left (then it is a refusal, D8), and 派出 /
+ * 拒绝. 派出 is void for SETTLE_MS after the bar moved (r4 §10.9, as an allow). Locked: the unlock button.
+ */
+export function describeRequestPins(list, g) {
+  if (list === null || !Array.isArray(list.requests)) return [];
+  const pending = list.requests.filter((r) => r.state === 'pending').sort((p, q) => p.expiresAt - q.expiresAt);
+  return pending.map((r) => {
+    const left = r.expiresAt - g.nowWall;
+    const what = reqWhat(r);
+    const m = requestModel(r);
+    const acts = !g.unlocked ? [lockBtn()] : [
+      btn('no', t('req.no'), { act: 'req-no', req: r.requestId }, { 'aria-disabled': busy(g), 'aria-label': t('req.noLabel', { what }) }),
+      btn('go', t('req.go'), { act: 'req-go', req: r.requestId, model: m.model, settle: g.settle }, { 'aria-disabled': g.settle !== '' ? 'true' : busy(g), 'aria-label': t('req.goLabel', { what }) }),
+    ];
+    return {
+      key: `req:${r.requestId}`, tpl: 'tpl-req', data: { req: r.requestId, harness: r.harness },
+      slots: {
+        kind: { text: t('req.kind', { h: t(`harness.${r.harness}`) }) },
+        what: { text: what },
+        clock: { text: left > 0 ? t('req.left', { t: fmtLeft(left) }) : t('req.overdue') },
+        pv: { text: r.text },
+        meta: { text: join([t('req.who', { who: r.requester }), t('req.cwd', { cwd: r.cwd }), t('req.model', { m: m.model, src: t(m.src) })], 'sep.notes') },
+        acts: { kids: acts },
+      },
+    };
+  });
+}
+
+/** 「等你」 with the request cards first (each has a deadline); its count is the list's length (T3). */
+export function withRequests(pins, reqs) {
+  if (reqs.length === 0) return pins;
+  const kids = [...reqs, ...pins.slots.list.kids];
+  return { ...pins, data: { ...pins.data, hide: '0' }, slots: { ...pins.slots, n: { text: t('pin.n', { n: kids.length }) }, note: { text: t('pin.order') }, list: { kids } } };
+}
+
+/** What a session page says of the agent request it was dispatched for (seat), or '' for a session you started yourself. */
+export function requestOf(list, ownedId) {
+  const r = list?.requests?.find((x) => x.ownedId === ownedId);
+  if (r === undefined) return '';
+  return t('req.of', { who: r.requester, st: tk('reqst', r.state, 'reqst.other', { why: r.why ?? t('dash') }) });
+}
+
 /** Never an allow in a notification (r4 §10.9). */
 export const notifyText = (a, who) => t('notify.body', { who, what: tk('kind', a.kind, 'kind.command') });
 
@@ -181,7 +241,7 @@ export function describeOwned(id, list, feed, g) {
     ownSt: {
       text: join([
         t('own.st', { model: o.model, state: tk('state', o.state, 'state.unknown') }), o.endReason === 'daemon-restart' && t('life.daemon-restart'),
-        o.queued > 0 && t('own.queued', { n: o.queued }), o.tokens !== null && t('own.tokens', { n: o.tokens.total }),
+        o.queued > 0 && t('own.queued', { n: o.queued }), o.tokens !== null && t('own.tokens', { n: o.tokens.total }), requestOf(list, id),
       ]),
     },
     cardsH: { data: { hide: mine.length > 0 ? '0' : '1' }, text: t('own.cards', { n: mine.length }) },
