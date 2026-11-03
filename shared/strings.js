@@ -177,7 +177,11 @@ export const TOWER_TEXT = frozen({
   'col.own': '归属',
   'router.icon': '◆',
   'router.you': '你',
-  'router.note': '没有读到派活记录（orchestrad 不带 --owned 启动时，派活台不开，也不读以前的记录）',
+  // The router row with no dispatch to show: the desk off (why), on but nothing dispatched in this data, or
+  // not known before the unlock (T1: the tower snapshot never says whether the desk is on).
+  'router.note': '现在不能派活（{why}），也就没有派活记录可显示',
+  'router.none': '还没派过活（这份数据里没有派活记录）：点「派活」写一句话任务',
+  'router.unknown': '派活记录：未知（派活台开没开，解锁后才读得到）',
   'router.last': '最近派活：{t}（{h} · {m}，{ago}）',
   'state.waiting': '等你',
   'state.error': '出错',
@@ -344,8 +348,9 @@ export const TOWER_TEXT = frozen({
   // allow button's word appears only on a button of the paired page (D8, r4 §10.9): never in the title or a notification.
   'bar.unlock': '解锁操作',
   'bar.unlocked': '已解锁',
-  'bar.new': '新会话',
-  'bar.newLocked': '新会话 · 先解锁',
+  'bar.new': '派活',
+  'bar.newLocked': '派活 · 先解锁',
+  'bar.newHint': '派活台：写一句话任务，派给一个 Orchestra 自己开的新会话',
   'op.lock': '先解锁',
   'op.busy': '处理中…',
   'op.unknown': '没收到回复，结果不明：请看对话记录',
@@ -365,7 +370,7 @@ export const TOWER_TEXT = frozen({
   'unlock.ok': '已解锁：这个标签页可以操作 Orchestra 自己开的会话',
   'unlock.lost': '解锁失效了（orchestrad 可能重启过），请重新解锁',
   'dlg.cancel': '取消',
-  'new.title': '派活台：派一个新会话',
+  'new.title': '派活：写一句话任务，派给一个新会话',
   'new.ask': '给建议',
   'new.asking': '正在问…（最多约 20 秒）',
   'route.title': '派给谁？',

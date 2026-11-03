@@ -115,10 +115,11 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
 .c-kids, .kids { text-align: right; }
 .c-age, .age { text-align: right; }
 .row.proj .kids { width: 76px; flex: none; }
-.router { gap: 8px; }
+.router { gap: 8px; flex-wrap: wrap; }
 .r-ico { font-size: 12px; }
 .r-name { font-weight: 600; }
 .r-note { font-size: 12.5px; color: var(--ink2); }
+.r-go { min-height: 24px; padding: 0 10px; font-size: 12.5px; flex: none; }
 .tree { padding-bottom: 8px; }
 .row { position: relative; cursor: default; outline-offset: -2px; }
 .row::after { content: ""; position: absolute; inset: 0; background: var(--flash); opacity: 0; pointer-events: none; }

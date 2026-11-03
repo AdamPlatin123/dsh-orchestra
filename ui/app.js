@@ -145,7 +145,7 @@ function render() {
   const snap = state.snap;
   const bar = describeBar(snap, { filter: state.filter, ageMs, stale: ageMs !== null && ageMs > STALE_MS, theme: state.theme, view });
   const open = state.csrf !== null;
-  Object.assign(/** @type {any} */ (bar.slots), { new: { text: t(open ? 'bar.new' : 'bar.newLocked') }, unlock: { text: t(open ? 'bar.unlocked' : 'bar.unlock') } });
+  Object.assign(/** @type {any} */ (bar.slots), { new: { text: t(open ? 'bar.new' : 'bar.newLocked'), attr: { title: t('bar.newHint') } }, unlock: { text: t(open ? 'bar.unlocked' : 'bar.unlock') } });
   dom.paintId('bar', bar);
   dom.paintId('note', { text: state.note ?? '', data: { hide: state.note === null ? '1' : '0' } });
   const nowDesk = {
@@ -192,6 +192,8 @@ function render() {
   dom.paintId('pins', withRequests(describePins(snap, { sel: state.sel, nowWall: wall, bar: pinBar, extra: (e) => pinExtra(e, state.owned, g) }), reqCards, pinBar));
   dom.paintId('tower', describeTower(rows, {
     filter: state.filter, pending, sel: state.sel, peek: state.peek, flash, detectsError: detectsError(snap), clipped: clippedSessions(snap), dispatch: snap.router.dispatch, nowWall: nowWall(),
+    // Whether the dispatch desk is on: only the owned list says (after the unlock); before that, unknown (T1).
+    desk: state.owned === null ? null : state.owned.enabled === false ? { on: false, why: whyText(state.owned.disabledWhy ?? '') } : { on: true }, unlocked: state.csrf !== null,
     // An owned row names the folder it works in, once unlocked (the list carries it; the tower never does).
     cwdOf: (/** @type {string} */ id) => state.owned?.owned?.find((/** @type {any} */ o) => `n:${o.ownedId}` === id)?.cwd?.path ?? null,
   }));

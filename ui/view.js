@@ -302,7 +302,7 @@ function nodeRow(r, attr, base, ctx) {
   };
 }
 
-/** The tree's frame: filter line, pending changes, rows, sessions the limits left out (T1). @param {readonly Row[]} rows @param {RowCtx & { filter: Filter | null, pending: number, clipped?: number }} ctx @returns {Paint} */
+/** The tree's frame: filter line, pending changes, rows, sessions the limits left out (T1). @param {readonly Row[]} rows @param {RowCtx & { filter: Filter | null, pending: number, clipped?: number, dispatch?: any, nowWall?: number, desk?: { on: boolean, why?: string } | null, unlocked?: boolean }} ctx @returns {Paint} */
 export function describeTower(rows, ctx) {
   const f = ctx.filter;
   const n = rows.filter((r) => r.match).length;
@@ -315,15 +315,23 @@ export function describeTower(rows, ctx) {
       tree: { kids: describeRows(rows, ctx) },
       empty: { data: { hide: rows.length === 0 ? '0' : '1' }, text: f === null ? t('tree.empty') : t('tree.emptyFilter', { f: t(`state.${f}`) }) },
       clipNote: { data: { hide: clipped > 0 ? '0' : '1' }, text: clipped > 0 ? t('tree.clipped', { n: clipped }) : '' },
-      rNote: { text: routerNote(ctx.dispatch ?? null, ctx.nowWall ?? 0) },
+      rNote: { text: routerNote(ctx.dispatch ?? null, ctx.nowWall ?? 0, ctx.desk ?? null) },
+      // With no dispatch to show, the row points at the way to make one: the top bar's button, here too.
+      rGo: { text: t(ctx.unlocked === true ? 'bar.new' : 'bar.newLocked'), data: { hide: (ctx.dispatch ?? null) === null && ctx.desk?.on !== false ? '0' : '1' } },
     },
   };
 }
 
-/** The router row ("你"): the dispatch desk's last dispatch, or that there was none yet. @param {any} d @param {number} nowWall */
-export function routerNote(d, nowWall) {
-  if (d === null) return t('router.note');
-  return t('router.last', { t: d.title, h: t(`harness.${d.harness}`), m: d.model, ago: fmtAge(nowWall - d.at, 'ago') });
+/**
+ * The router row ("你"): the dispatch desk's last dispatch; else why there is none. The tower snapshot
+ * never says whether the desk is on: desk is what the owned list said (unlocked only), null before (T1:
+ * then it is unknown, not "no desk"). desk.why is already the reason in words.
+ * @param {any} d @param {number} nowWall @param {{ on: boolean, why?: string } | null} [desk]
+ */
+export function routerNote(d, nowWall, desk = null) {
+  if (d !== null) return t('router.last', { t: d.title, h: t(`harness.${d.harness}`), m: d.model, ago: fmtAge(nowWall - d.at, 'ago') });
+  if (desk === null) return t('router.unknown');
+  return desk.on ? t('router.none') : t('router.note', { why: desk.why ?? '' });
 }
 
 /** Sessions the limits left out, over every source (each source's total - shown). @param {TowerSnapshot} snap */
