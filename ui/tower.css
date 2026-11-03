@@ -304,7 +304,8 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
   .pin-clock { grid-column: 3; grid-row: 1; }
   .cols, .router, .row .line, .row.proj, .row.group { padding-left: 14px; padding-right: 12px; gap: 8px; }
   .cols, .row .line { grid-template-columns: minmax(0, 46%) minmax(0, 1fr) auto; }
-  .own, .age { display: none; }
+  /* The row's columns only: the detail's owned box is .dt-sec.own too, and it must show on a phone. */
+  .row .own, .row .age { display: none; }
 }
 @media (max-width: 720px) {
   :root { --row: 44px; }

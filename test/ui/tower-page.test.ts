@@ -193,6 +193,13 @@ test('narrow screens: one column, rows 44px tall, the node page full screen, not
   assert.ok(narrow.some((r) => r.sel === '.detail' && /display: none/.test(r.body)));
   assert.ok(narrow.some((r) => r.sel.includes(':root[data-view=node] .detail') && /display: block/.test(r.body)));
   assert.ok(narrow.some((r) => r.sel.includes(':root[data-view=node] .tower') && /display: none/.test(r.body)));
+  // The row's 归属 and age columns fold away; nothing narrow hides a bare .own, which is also the node
+  // page's owned box (its state, buttons, approval cards and chat).
+  assert.ok(narrow.some((r) => r.sel === '.row .own, .row .age' && /display: none/.test(r.body)));
+  for (const r of narrow.filter((x) => /display: none/.test(x.body))) {
+    for (const s of r.sel.split(',').map((x) => x.trim())) assert.ok(!/(^|\s)\.own$/.test(s) || s.startsWith('.row '), `${r.sel} hides the owned box`);
+  }
+  assert.ok(/class="dt-sec own"/.test(HTML), 'the owned box still carries .own (the case this guards)');
   assert.ok(phone.some((r) => r.sel === ':root' && /--row: 44px/.test(r.body)));
   assert.ok(phone.some((r) => r.sel === '.count' && /min-height: 44px/.test(r.body)));
   // A button acting on an owned session (an approval card's, the composer's) is 44px tall at any width;
