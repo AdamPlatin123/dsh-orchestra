@@ -103,7 +103,7 @@ test('the steps of every route, in one order; a human route runs exactly plan li
   }
   const step = (s: CheckStep) => CHECKS.find((c) => c.step === s)!;
   assert.deepEqual([step('auth').status, step('ui-only').status, step('actionId').status, step('item').status, step('verb').status], [403, 503, 400, 404, 422]);
-  assert.deepEqual([...step('actionId').codes], ['actionId-missing']);
+  assert.deepEqual([...step('actionId').codes], ['actionId-missing', 'body-too-big'], 'a body the route cannot take; step 5 gave the 64 KiB cap its code');
   assert.deepEqual([...step('dedup').codes], ['in-flight', 'actionId-reused']);
   assert.equal(step('ended').outcome, 'noop:already-ended');
   assert.ok(CHECKS.findIndex((c) => c.step === 'ended') < CHECKS.findIndex((c) => c.step === 'verb'), 'an ended item has no verbs: ended answers first');

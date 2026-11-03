@@ -78,6 +78,8 @@ test('the error codes are UI design 一 5\'s table, with ui-only, procguard-time
     'gateway-real-data': 409,
     'rename-busy': 503,
     'host-tampered': 503,
+    // step 5: an owned-session body over 64 KiB
+    'body-too-big': 413,
   });
   assert.deepEqual([...ERROR_CODES], Object.keys(ERROR_STATUS));
   assert.deepEqual([...RESERVED_ERROR_CODES], ['ui-only']);

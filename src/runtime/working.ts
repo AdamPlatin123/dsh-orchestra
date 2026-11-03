@@ -251,8 +251,20 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
     const redactor = makeRedactor({ env: ctx.env });
     try {
       const { startPeekServer } = await import('../server/http.ts');
+      const { humanJournal } = await import('../server/owned.ts');
       const server = await startPeekServer({
         port: ctx.peekPort, gate, roots: ctx.roots, redact: (text) => redactor.redact({ text }).text, clock: ctx.clock.port(null), log, pairingCode: code, profile: ctx.profile.kind,
+        // alpha 0.2's owned-session base (slice design §2.7): unlock codes go where the pairing code
+        // goes; owned sessions stay off (409 owned-disabled) until step 6c turns them on for the test
+        // profile with a gateway, and every route answers 501 until it registers its handler.
+        owned: {
+          journal: humanJournal(store),
+          printUnlockCode: pairing.print === 'none' ? null : (c) => {
+            ctx.console.out(`orchestrad: unlock code ${c}`);
+            log.info('unlock-code-printed', { to: pairing.print });
+          },
+          enabled: false,
+        },
       });
       peek = server;
       ctx.console.out(`orchestrad: peek page at ${server.url} (read-only; pair with the code above)`);

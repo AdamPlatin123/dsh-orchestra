@@ -75,6 +75,7 @@ export const ERROR_TEXT = Object.freeze({
   'gateway-real-data': '用网关时不导入真实数据',
   'rename-busy': '文件被占用，稍后再试',
   'host-tampered': '会话程序被改过，不启动',
+  'body-too-big': '内容太大，没有收下',
 });
 
 /** @type {Readonly<Record<import('./protocol.js').EndClass, string>>} */
