@@ -62,10 +62,11 @@ export type OwnedRoutesDeps = {
   /** The limit of running sessions both harnesses share (codex-owned.ts OWNED_POOL_MAX); absent: each manager's own, summed. */
   maxOwned?: number;
   /**
-   * Why a new session's tree runs without a Job of its own, so it has no brake (working.ts: procguard's
-   * status), or null when every new session gets one. Absent: not asked (no procguard at all).
+   * Why a new session's tree runs without a Job of its own, so it has no brake, or why the brake cannot
+   * report what it did (procguard-resident-gone), or null when every session's brake works (working.ts:
+   * procguard's status, read at each list when it is a function). Absent: not asked (no procguard at all).
    */
-  brakeWhy?: string | null;
+  brakeWhy?: string | null | (() => string | null);
   log: Log;
 };
 
@@ -112,13 +113,14 @@ export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'code
     return {
       ownedId: s.ownedId, harness, model: s.model, title: meta?.title ?? '', state: s.state, endReason: s.endReason,
       waiting: first === null ? null : first.approvalId, queued: FINAL(s) ? 0 : s.queued, tokens: s.tokens === null ? null : { ...s.tokens },
-      lastSeq: s.feed.lastSeq, createdAt: meta?.createdAt ?? 0, brake: !FINAL(s) && s.jobbed,
+      // An ending session whose child has not closed yet can still be braked (its stop order may hang).
+      lastSeq: s.feed.lastSeq, createdAt: meta?.createdAt ?? 0, brake: s.state !== 'unknown' && s.jobbed,
     };
   });
   const enabled = ownedEnabled(deps);
   return {
     v: OWNED_V, kind: 'owned-list', rev: queue === null ? 0 : queue.rev, enabled, disabledWhy: enabled ? null : deps.codexOff,
-    brakeWhy: deps.brakeWhy === undefined ? 'not-asked' : deps.brakeWhy,
+    brakeWhy: deps.brakeWhy === undefined ? 'not-asked' : typeof deps.brakeWhy === 'function' ? deps.brakeWhy() : deps.brakeWhy,
     harnesses: { codex: codex !== null, claude: claude !== null },
     owned, approvals: approvals.map(approvalEntry),
     limits: { maxOwned: deps.maxOwned ?? (codex === null ? 0 : codex.maxActive) + (claude === null ? 0 : claude.maxActive), active: sessions.filter(({ s }) => !FINAL(s)).length },
@@ -218,8 +220,8 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
   handlers.register('POST', '/api/owned/:id/brake', async (call) => {
     const s = session(call);
     if (s === null) return refuse('item-unknown');
-    if (FINAL(s)) return refuse('owned-ended');
-    if (!s.jobbed) return refuse('brake-unavailable');
+    // Ended but its child still closing: the brake still reaches it (phase 4 review). Closed: owned-ended.
+    if (!s.jobbed) return refuse(FINAL(s) ? 'owned-ended' : 'brake-unavailable');
     const r = await s.brake();
     if (!r.ok) return refuse(r.reason === 'ended' ? 'owned-ended' : 'brake-unavailable');
     log.info('owned-braked', { ownedId: s.ownedId, killed: r.killed, left: r.left });

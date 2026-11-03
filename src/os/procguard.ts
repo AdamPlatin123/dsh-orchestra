@@ -12,12 +12,15 @@ const win = path.win32;
 //
 //  - the build: native/procguard/ProcGuard.cs, held to its pinned sha256 (procguard-pins.ts), compiled by
 //    the system csc.exe only (the spawn gate's rule csc, its fixed flags) into
-//    ORCHESTRA_HOME\runtime\procguard\<source sha256>\procguard.exe. The old csc has no /deterministic,
-//    so the exe cannot be pinned in the repository: its sha256 is written next to it when it is built
-//    (procguard.exe.sha256) and the exe is held to that at every startup and before every start of it
-//    (the spawn gate's procguardPin). An exe that does not match is tampered: the owned sessions stay
-//    off (T1, with the reason). A source that does not match its pin is never built: no Job, no brake,
-//    and the page says why.
+//    ORCHESTRA_HOME\runtime\procguard\<source sha256>\procguard.exe, at every startup (S4: 1-2 s). The
+//    old csc has no /deterministic, so the exe cannot be pinned in the repository, and a sha256 kept next
+//    to it would vouch for itself (whoever can replace the exe can replace that file too: phase 4
+//    review). So an exe found there is never trusted: it is built again from the pinned source, and its
+//    sha256 lives in this process's memory only; the spawn gate holds procguard.exe to it before every
+//    start of it (procguardPin), and one that changed is tampered and starts nothing. A source that does
+//    not match its pin is never built: no Job, no brake, no owned session (working.ts), and the page
+//    says why. Residual: the gate hashes the file by its path and then starts it by that path, so a
+//    swap in between is not seen (the plan's D4 residuals).
 //  - the Jobs: each owned session's child starts as procguard.exe run-in-job --name <job> ... -- <exe>
 //    (the spawn gate's wrapped rules). Its whole tree lives in that Job; when the wrapper ends, however
 //    it ends, the Job's last handle closes and everything in it dies (KILL_ON_JOB_CLOSE).
@@ -28,7 +31,7 @@ const win = path.win32;
 /** The files of one procguard site, ORCHESTRA_HOME\runtime\procguard\<source sha256>\. */
 export const PROCGUARD_FILES = frozen({
   exe: 'procguard.exe',
-  /** The sha256 of procguard.exe as it was built, one line of hex. */
+  /** An earlier orchestrad's record of procguard.exe's sha256 (no longer written, removed when found: it vouched for itself). */
   pin: 'procguard.exe.sha256',
   /** What csc writes before it is checked and moved into place. */
   build: 'procguard.new.exe',
@@ -43,10 +46,13 @@ export function newJobName(): string {
 }
 
 export const sha256 = (b: Uint8Array): string => crypto.createHash('sha256').update(b).digest('hex');
-const HEX64 = /^[0-9a-f]{64}$/;
 
-/** Why the owned sessions run without Jobs, or are off (tampered), as GET /api/owned's brakeWhy names it. */
-export type ProcguardOffWhy = 'not-asked' | 'procguard-source-unpinned' | 'procguard-build-failed' | 'procguard-tampered' | 'procguard-start-failed' | 'procguard-setup-failed';
+/**
+ * Why procguard is off, as GET /api/owned's brakeWhy names it. With procguard asked for (main.ts, always
+ * with --owned), any of these keeps the owned sessions off too (r4 D4: no owned child outside a Job);
+ * not-asked is the in-process tests' start without procguard, whose sessions run without Jobs.
+ */
+export type ProcguardOffWhy = 'not-asked' | 'procguard-source-unpinned' | 'procguard-build-failed' | 'procguard-start-failed' | 'procguard-setup-failed';
 
 export type ProcguardSite =
   | { ok: true; dir: string; exe: string; sha256: string; built: boolean }
@@ -92,10 +98,11 @@ function cscSaid(r: RunResult): string {
 }
 
 /**
- * The procguard site, built when it is not there: the source held to its pin, an exe and its recorded
- * sha256 that match (used as is), or a new build (csc to procguard.new.exe, its sha256 written, then the
- * exe moved into place). An exe whose recorded sha256 it does not match is tampered and never replaced
- * here: a person deletes the site dir to have it built again.
+ * The procguard site, built at every startup: the source held to its pin, csc to procguard.new.exe, its
+ * bytes read and hashed (the sha256 stays in memory, the caller's pin), then moved into place over
+ * whatever procguard.exe an earlier orchestrad left (never trusted, never run: phase 4 review). An earlier
+ * orchestrad's procguard.exe.sha256 is removed. An old exe that cannot be replaced (one of it still runs)
+ * is a setup failure with that said.
  */
 export async function ensureProcguard(d: ProcguardBuildDeps): Promise<ProcguardSite> {
   const exe = win.join(d.dir, PROCGUARD_FILES.exe);
@@ -111,22 +118,19 @@ export async function ensureProcguard(d: ProcguardBuildDeps): Promise<ProcguardS
   if (got !== d.sourceHash) return { ok: false, why: 'procguard-source-unpinned', detail: `ProcGuard.cs is ${got}, pinned ${d.sourceHash} (run scripts/pin-procguard.ts after a reviewed change)` };
   try {
     d.mkdirp(d.dir);
-    const have = maybe(() => d.readFile(exe));
-    const pinned = maybe(() => d.readFile(pinFile));
-    if (have !== null && pinned !== null) {
-      const want = Buffer.from(pinned).toString('latin1').trim();
-      const now = sha256(have);
-      if (HEX64.test(want) && now === want) return { ok: true, dir: d.dir, exe, sha256: now, built: false };
-      return { ok: false, why: 'procguard-tampered', detail: `${PROCGUARD_FILES.exe} is ${now}, built as ${HEX64.test(want) ? want : 'an unreadable pin'}; delete ${d.dir} to have it built again` };
-    }
+    // The self-vouching record of an earlier orchestrad: nothing reads it any more.
+    if (maybe(() => d.readFile(pinFile)) !== null) d.rm(pinFile);
     if (maybe(() => d.readFile(out)) !== null) d.rm(out);
     const r = await d.runCsc(out);
     if (!r.ok || r.exitCode !== 0) return { ok: false, why: 'procguard-build-failed', detail: cscSaid(r) };
     const bytes = maybe(() => d.readFile(out));
     if (bytes === null || bytes.length === 0) return { ok: false, why: 'procguard-build-failed', detail: 'csc wrote no exe' };
     const hash = sha256(bytes);
-    d.writeAtomic(pinFile, `${hash}\n`);
-    d.writeAtomic(exe, bytes);
+    try {
+      d.writeAtomic(exe, bytes);
+    } catch (e) {
+      return { ok: false, why: 'procguard-setup-failed', detail: `cannot replace ${exe} (${codeOf(e)}): does a procguard.exe an earlier orchestrad started still run?` };
+    }
     d.rm(out);
     return { ok: true, dir: d.dir, exe, sha256: hash, built: true };
   } catch (e) {
@@ -208,11 +212,13 @@ function procsOf(v: unknown): JobProc[] {
  * The client of a resident procguard the spawn gate started (rule procguard, no argv): one JSON command
  * per line, answers matched by id, each with a deadline on the caller's Clock (`after`).
  */
-export function residentOf(h: ProcHandle, after: After, limits: { readyMs?: number; commandMs?: number } = {}): Resident {
+export function residentOf(h: ProcHandle, after: After, limits: { readyMs?: number; commandMs?: number; onGone?: (detail: string) => void } = {}): Resident {
   const readyMs = limits.readyMs ?? PROCGUARD_LIMITS.readyMs;
   const commandMs = limits.commandMs ?? PROCGUARD_LIMITS.commandMs;
   let up = false;
   let gone = false;
+  /** stop() was called: the exit that follows is the one asked for, not news. */
+  let stopping = false;
   let seq = 0;
   let tail = '';
   const waiting = new Map<number, { resolve(v: Obj): void; reject(e: Error): void; cancel(): void }>();
@@ -221,8 +227,10 @@ export function residentOf(h: ProcHandle, after: After, limits: { readyMs?: numb
     settleReady = r;
   });
   const cancelReady = after(readyMs, () => settleReady(false));
-  const end = () => {
+  /** It went away. Once it had said ready and nobody asked it to stop, its holder hears it (onGone: the brake can no longer say what it did, T1). */
+  const end = (detail: string) => {
     if (gone) return;
+    const was = up;
     gone = true;
     up = false;
     cancelReady();
@@ -232,6 +240,13 @@ export function residentOf(h: ProcHandle, after: After, limits: { readyMs?: numb
       w.reject(new ProcguardError('gone', 'procguard is not running'));
     }
     waiting.clear();
+    if (was && !stopping) {
+      try {
+        limits.onGone?.(detail);
+      } catch {
+        // A listener's failure is its own.
+      }
+    }
   };
   const line = (text: string) => {
     let m: unknown;
@@ -266,8 +281,8 @@ export function residentOf(h: ProcHandle, after: After, limits: { readyMs?: numb
     }
   });
   h.onStderr(() => {});
-  h.onClose(() => end());
-  h.onError(() => end());
+  h.onClose((code, signal) => end(code !== null ? `exit code ${code}` : `signal ${String(signal)}`));
+  h.onError((code) => end(`pipe ${code}`));
   const send = (cmd: Obj): Promise<Obj> => {
     if (gone) return Promise.reject(new ProcguardError('gone', 'procguard is not running'));
     const id = ++seq;
@@ -313,6 +328,7 @@ export function residentOf(h: ProcHandle, after: After, limits: { readyMs?: numb
       return Array.isArray(r.alive) ? r.alive.filter((x): x is string => typeof x === 'string') : [];
     },
     stop: () => {
+      stopping = true;
       try {
         h.end();
       } catch {
@@ -337,6 +353,63 @@ export type OwnedJob = {
   /** Ends every process in the Job now and waits until none is left (the brake; and the check after an end). */
   endTree(): Promise<JobOutcome>;
 };
+
+/**
+ * The owned sessions' Jobs as working mode holds them: `job(name)` is ownedJob whose every end is heard
+ * (onTree: working.ts logs it as owned-tree) and kept until it answers; `opened(pipe)` follows a wrapped
+ * child until it closes; `quiet()` settles once every such child closed and every check their closes
+ * started answered. A stopping orchestrad waits on it (bounded) before it lets the resident go, so the
+ * check after a daemon-stop is made and logged (phase 4 review: it used to reach a resident already told
+ * to exit). A close starts its session's check in the same turn (codex-session.ts, claude-session.ts),
+ * and `opened` listens first (it runs inside the launch, before the session), so once the closes settled
+ * every check is held.
+ */
+export type JobTracker = {
+  job(name: string): OwnedJob;
+  opened(pipe: { onClose(cb: () => void): void }): void;
+  quiet(): Promise<void>;
+};
+
+export function jobTracker(resident: Resident | null, onTree: (job: string, o: JobOutcome) => void): JobTracker {
+  const open = new Set<Promise<void>>();
+  const checks = new Set<Promise<JobOutcome>>();
+  return Object.freeze({
+    job: (name: string): OwnedJob => {
+      const j = ownedJob(name, resident);
+      return Object.freeze({
+        name,
+        endTree: (): Promise<JobOutcome> => {
+          const p = j.endTree().then((o) => {
+            try {
+              onTree(name, o);
+            } catch {
+              // A listener's failure is its own.
+            }
+            return o;
+          });
+          checks.add(p);
+          void p.finally(() => checks.delete(p));
+          return p;
+        },
+      });
+    },
+    opened: (pipe: { onClose(cb: () => void): void }) => {
+      let closed!: () => void;
+      const p = new Promise<void>((r) => {
+        closed = r;
+      });
+      open.add(p);
+      pipe.onClose(() => {
+        open.delete(p);
+        closed();
+      });
+    },
+    quiet: async () => {
+      await Promise.all([...open]);
+      await Promise.all([...checks]);
+    },
+  });
+}
 
 /** The Job named `name`, killed through the resident procguard (null: none runs, so every kill is unknown). */
 export function ownedJob(name: string, resident: Resident | null): OwnedJob {

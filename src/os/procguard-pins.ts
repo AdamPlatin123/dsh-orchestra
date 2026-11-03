@@ -3,4 +3,4 @@
 // hash, into ORCHESTRA_HOME\runtime\procguard\<this hash>\ (src/os/procguard.ts ensureProcguard).
 
 /** sha256 of native/procguard/ProcGuard.cs, lowercase hex. */
-export const PROCGUARD_SOURCE_SHA256 = '240dd45b940c35fdc6af567df38ced13bcc645763672037b72b4033ce4476013';
+export const PROCGUARD_SOURCE_SHA256 = 'e83104b3355f27d1b6ac9c48a4b80e60856d0e7ca69ce5760b79336ba993f577';

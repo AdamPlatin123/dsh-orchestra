@@ -181,7 +181,7 @@ export type CodexSession = {
   interrupt(): Promise<{ withdrawn: number; denied: number }>;
   /** Ends the session: a person's end (you-ended) unless orchestrad itself is stopping (daemon-stop). */
   end(why?: 'you-ended' | 'daemon-stop'): { denied: number };
-  /** Whether its child's whole tree runs in a Job of its own (so the brake can stop it), as long as it runs. */
+  /** Whether its child's whole tree runs in a Job of its own and the child has not closed (so the brake can still end it, even while it is ending). */
   readonly jobbed: boolean;
   /** The brake: the whole tree stopped now, the approvals declined, the session ended as braked. */
   brake(): Promise<OwnedBrake>;
@@ -351,9 +351,12 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     note(n.state, n.text);
     changed();
   };
+  /** The child (the wrapper, with procguard) closed. */
+  let closed = false;
   // However the child closed (an end, a failure, an exit of its own), its Job is checked once it did:
   // the wrapper's close closed the Job, so this finds nothing left, or ends what is and says so.
   pipe.onClose(() => {
+    closed = true;
     if (job === null || braked) return;
     void job.endTree().then(noteTree);
   });
@@ -944,21 +947,24 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       return { denied };
     },
     get jobbed() {
-      return job !== null && !terminal();
+      return job !== null && !closed && !braked;
     },
     async brake(): Promise<OwnedBrake> {
-      if (terminal()) return { ok: false, reason: 'ended' };
+      if (closed || braked) return { ok: false, reason: 'ended' };
       if (job === null) return { ok: false, reason: 'no-job' };
       braked = true;
       // The kill goes first; the rest of the end happens while procguard ends the tree.
       const ending = job.endTree();
       approvals.declineOwned(ownedId, 'brake');
-      state = 'ended';
-      endReason = 'braked';
-      turnId = null;
-      withdrawAll();
+      // Ending already (its child not closed yet): the end reason it had stays, the feed says braked.
+      if (!terminal()) {
+        state = 'ended';
+        endReason = 'braked';
+        turnId = null;
+        withdrawAll();
+        settleReady(false);
+      }
       feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'braked' });
-      settleReady(false);
       changed();
       const o = await ending;
       // The wrapper too: its Job is empty (or going with it, when procguard could not say).

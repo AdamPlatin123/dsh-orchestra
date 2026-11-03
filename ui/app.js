@@ -8,7 +8,7 @@ import { after, every, fmtIso, nowMono, onFrame } from './clock.js';
 import { makePatcher } from './dom.js';
 import { getCsrf, getTheme, setCsrf, setTheme } from './prefs.js';
 import {
-  HOLD_MS, SETTLE_MS, modelsOf, atBottom, chatNews, describeDesk, describeNew, describeOwned, describeOwnedDock, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError, notifyText, ownedIdOf,
+  HOLD_MS, SETTLE_MS, brakeWhyText, modelsOf, atBottom, chatNews, describeDesk, describeNew, describeOwned, describeOwnedDock, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError, notifyText, ownedIdOf,
   pinExtra, pinWhole, whyText,
 } from './owned.js';
 import { go, openFull, parse } from './route.js';
@@ -505,6 +505,8 @@ async function stop(verb) {
   state.brakeArm = null;
   const a = await op(`owned/${to.id}/${verb}`, {});
   if (verb !== 'brake') return said(a, t('op.done', { what: t(`dock.${verb}`) }));
+  // The server knows why this session has no brake: the list's reason, not the shared code's two-way text.
+  if (a !== null && !a.ok && a.code === 'brake-unavailable') return void say(t('dock.noBrake', { why: brakeWhyText(state.owned?.brakeWhy) }));
   // The brake's reply counts what the Job held and what is left; null: procguard could not say (T1).
   const b = a?.body;
   said(a, b?.left === 0 ? t('op.braked', { n: b.killed ?? 0 }) : typeof b?.left === 'number' ? t('op.brakeLeft', { n: b.left }) : t('op.brakedUnsure'));

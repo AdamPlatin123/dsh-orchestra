@@ -136,7 +136,7 @@ async function main(): Promise<number> {
     report.orchestradSaid = lines.filter((l) => /owned|refus|failed|error/i.test(l) && !/code \d{8}/.test(l)).map((l) => l.replace(testDir, '<testDir>'));
   } finally {
     report.orchestradStopped = await stopDaemon(child, exited);
-    report.leftovers = leftovers(testDir);
+    report.leftovers = await leftovers(testDir);
     if (!keep) {
       for (let i = 0; i < 10; i++) {
         try {

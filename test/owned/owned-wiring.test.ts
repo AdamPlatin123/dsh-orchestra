@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { TestContext } from 'node:test';
@@ -171,7 +172,7 @@ const pgBehave = (bytes: string | null): FakeBehave => (call) => {
   return { hang: true };
 };
 
-test('procguard asked: csc builds it into runtime\\procguard\\<source sha256>, the resident says ready, and the codex gate allows only the wrapped rule, with its env allowlist written', async (t) => {
+test('procguard asked: csc builds it into runtime\\procguard\\<source sha256> at this startup, the resident says ready, and the codex gate allows only the wrapped rule, with its env allowlist written', async (t) => {
   const appData = path.join(fs.realpathSync.native(withTmp(t)), 'Roaming');
   put(path.join(appData, CODEX_EXE_REL), 'not really codex');
   await working(t, { APPDATA: appData }, true, (w) => {
@@ -182,7 +183,8 @@ test('procguard asked: csc builds it into runtime\\procguard\\<source sha256>, t
     assert.equal(pg.exe, path.join(dir, 'procguard.exe'));
     assert.equal(pg.built, true);
     assert.equal(fs.readFileSync(path.join(dir, 'procguard.exe'), 'utf8'), 'MZ fake');
-    assert.equal(fs.readFileSync(path.join(dir, 'procguard.exe.sha256'), 'utf8').trim(), pg.sha256);
+    // Phase 4 review: its sha256 is held in memory only, never written next to it.
+    assert.equal(fs.existsSync(path.join(dir, 'procguard.exe.sha256')), false);
     assert.equal(fs.existsSync(path.join(dir, 'procguard.new.exe')), false);
     assert.ok(w.out.some((l) => l.startsWith('orchestrad: procguard on (built ')), w.out.join('\n'));
     const s = w.o.ownedCodex;
@@ -199,45 +201,39 @@ test('procguard asked: csc builds it into runtime\\procguard\\<source sha256>, t
   }, { procguard: true, behave: pgBehave('MZ fake') });
 });
 
-test('procguard that cannot be built: the owned sessions run as before (no Job), and why there is no brake is on the console and in the outcome', async (t) => {
+test('procguard asked and not built: no owned session at all (r4 D4: none outside a Job), with procguard\'s reason on the console and in the outcome', async (t) => {
   const appData = path.join(fs.realpathSync.native(withTmp(t)), 'Roaming');
   put(path.join(appData, CODEX_EXE_REL), 'not really codex');
   await working(t, { APPDATA: appData }, true, (w) => {
     assert.deepEqual(w.o.procguard, { on: false, why: 'procguard-build-failed', detail: 'csc wrote no exe' });
-    assert.ok(w.out.includes('orchestrad: procguard is off: procguard-build-failed (csc wrote no exe); owned sessions run without Jobs, no brake'), w.out.join('\n'));
-    const s = w.o.ownedCodex;
-    assert.ok(s.on && !s.jobs, JSON.stringify(s));
-    assert.deepEqual([...w.specs.find((x) => x.rules.includes('codex-app-server'))!.rules], ['codex-app-server']);
+    assert.ok(w.out.includes('orchestrad: procguard is off: procguard-build-failed (csc wrote no exe); owned sessions are off (r4 D4: no owned session outside a Job of its own)'), w.out.join('\n'));
+    assert.deepEqual(w.o.ownedCodex, { on: false, why: 'procguard-build-failed', detail: 'csc wrote no exe' });
+    assert.deepEqual(w.o.ownedClaude, { on: false, why: 'procguard-build-failed', detail: 'csc wrote no exe' });
+    assert.equal(w.specs.filter((x) => x.rules.some((r) => r !== 'csc' && r !== 'procguard')).length, 0, 'no session gate at all: no codex.exe, no host outside a Job');
   }, { procguard: true, behave: pgBehave(null) });
 });
 
-test('a procguard.exe that does not match the sha256 recorded at its build is tampered: the owned sessions stay off, with the reason', async (t) => {
+test('a procguard.exe and sha256 file an earlier orchestrad left are never used: built again at this startup, the old record removed', async (t) => {
   const appData = path.join(fs.realpathSync.native(withTmp(t)), 'Roaming');
   put(path.join(appData, CODEX_EXE_REL), 'not really codex');
-  let built = false;
   await working(t, { APPDATA: appData }, true, (w) => {
-    assert.equal(w.o.procguard.on, false);
-    if (w.o.procguard.on) return;
-    assert.equal(w.o.procguard.why, 'procguard-tampered');
-    assert.equal(w.o.ownedCodex.on ? 'on' : w.o.ownedCodex.why, 'procguard-tampered');
-    assert.equal(w.o.ownedClaude.on ? 'on' : w.o.ownedClaude.why, 'procguard-tampered');
-    assert.equal(w.specs.filter((x) => x.rules.some((r) => r !== 'csc' && r !== 'procguard')).length, 0, 'no session gate at all');
-    assert.ok(w.out.some((l) => l.startsWith('orchestrad: procguard is off: procguard-tampered') && l.endsWith('; owned sessions are off')), w.out.join('\n'));
-    assert.equal(built, false, 'a tampered exe is not rebuilt over');
+    const pg = w.o.procguard;
+    assert.equal(pg.on, true, JSON.stringify(pg));
+    const dir = path.join(w.home, 'runtime', 'procguard', PROCGUARD_SOURCE_SHA256);
+    assert.equal(fs.readFileSync(path.join(dir, 'procguard.exe'), 'utf8'), 'MZ fresh', 'the swapped exe was built over');
+    assert.equal(fs.existsSync(path.join(dir, 'procguard.exe.sha256')), false);
+    assert.ok(w.o.ownedCodex.on);
   }, {
     procguard: true,
-    behave: (call) => {
-      if (/csc\.exe$/i.test(call.exe)) built = true;
-      return { hang: true };
-    },
-    // The site as an earlier build left it, then changed: put in place before the working mode reads it.
+    behave: pgBehave('MZ fresh'),
+    // The site as an earlier build left it, then swapped together with its record: put in place before the working mode reads it.
     readGate: ((spec) => {
       const home = (spec as { orchestraHome?: string }).orchestraHome;
       if (home !== undefined) {
         const dir = path.join(home, 'runtime', 'procguard', PROCGUARD_SOURCE_SHA256);
         if (!fs.existsSync(dir)) {
-          put(path.join(dir, 'procguard.exe'), 'MZ changed later');
-          put(path.join(dir, 'procguard.exe.sha256'), `${'0'.repeat(64)}\n`);
+          put(path.join(dir, 'procguard.exe'), 'MZ swapped');
+          put(path.join(dir, 'procguard.exe.sha256'), `${crypto.createHash('sha256').update('MZ swapped').digest('hex')}\n`);
         }
       }
       return makeReadGate(spec);

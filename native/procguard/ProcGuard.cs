@@ -7,15 +7,18 @@
 //   procguard.exe run-in-job --name <job> --env-allowlist <file> -- <exe> [args]
 //       One-shot, one per owned session. Makes a Job named <job> (KILL_ON_JOB_CLOSE; no BREAKAWAY_OK, no
 //       SILENT_BREAKAWAY_OK, no UI limits; an existing name is refused, never joined), creates <exe>
-//       suspended with an environment built from zero (each name in <file>, its value copied from ours),
-//       letting it inherit only our three std handles (PROC_THREAD_ATTRIBUTE_HANDLE_LIST), assigns it to
-//       the Job, resumes it, waits for it and exits with its exit code. Our stdio is the child's, so the
+//       suspended and already inside the Job (PROC_THREAD_ATTRIBUTE_JOB_LIST: no moment outside it, even
+//       when we die during the start), with an environment built from zero (each name in <file>, its
+//       value copied from ours), letting it inherit only our three std handles
+//       (PROC_THREAD_ATTRIBUTE_HANDLE_LIST); checks it is in the Job (IsProcessInJob; assigns it when
+//       not, as a second guard), resumes it, waits for it and exits with its exit code. Our stdio is the child's, so the
 //       session's JSON-RPC or host pipes pass straight through. However we exit (the child exited,
 //       orchestrad killed us, orchestrad died and its own Job took us), the Job's last handle closes with
 //       us and every process still in it dies. Our own failures exit 125 with one line on stderr.
 //   procguard.exe
 //       Resident, one per orchestrad: one JSON command per line on stdin, one JSON result per line on
-//       stdout; it exits on stdin EOF. ping; job-info {name}; kill-job {name, waitMs}; alive {procs}.
+//       stdout; on stdin EOF it lets the commands it took answer (at most DrainMs), then exits.
+//       ping; job-info {name}; kill-job {name, waitMs}; alive {procs}.
 //       It opens a Job by name only for the command and closes it before it answers.
 using System;
 using System.Collections;
@@ -34,7 +37,9 @@ namespace ProcGuard {
 static class W {
   public const uint KILL_ON_JOB_CLOSE = 0x2000, CREATE_SUSPENDED = 0x4, CREATE_UNICODE_ENV = 0x400, EXTENDED_STARTUPINFO_PRESENT = 0x00080000;
   public const uint PQLI = 0x1000, JOB_QUERY = 0x4, JOB_TERMINATE = 0x8, STILL_ACTIVE = 259;
-  public const int ERROR_ALREADY_EXISTS = 183, ERROR_FILE_NOT_FOUND = 2;
+  public const int ERROR_ALREADY_EXISTS = 183, ERROR_FILE_NOT_FOUND = 2, ERROR_MORE_DATA = 234;
+  /** ProcThreadAttributeValue(ProcThreadAttributeHandleList = 2 / ProcThreadAttributeJobList = 13, input). */
+  public static readonly IntPtr ATTR_HANDLE_LIST = new IntPtr(0x20002), ATTR_JOB_LIST = new IntPtr(0x2000D);
   [StructLayout(LayoutKind.Sequential)] public struct BASIC_LIMIT { public long PerProc, PerJob; public uint LimitFlags; public UIntPtr MinWs, MaxWs; public uint ActiveLimit; public UIntPtr Affinity; public uint Prio, Sched; }
   [StructLayout(LayoutKind.Sequential)] public struct IO_COUNTERS { public ulong a, b, c, d, e, f; }
   [StructLayout(LayoutKind.Sequential)] public struct EXT_LIMIT { public BASIC_LIMIT Basic; public IO_COUNTERS Io; public UIntPtr ProcMem, JobMem, PeakProcMem, PeakJobMem; }
@@ -49,6 +54,7 @@ static class W {
   [DllImport("kernel32", SetLastError = true)] public static extern bool QueryInformationJobObject(IntPtr job, int cls, out ACCT info, int len, IntPtr ret);
   [DllImport("kernel32", SetLastError = true, EntryPoint = "QueryInformationJobObject")] public static extern bool QueryJobRaw(IntPtr job, int cls, IntPtr buf, int len, IntPtr ret);
   [DllImport("kernel32", SetLastError = true)] public static extern bool AssignProcessToJobObject(IntPtr job, IntPtr proc);
+  [DllImport("kernel32", SetLastError = true)] public static extern bool IsProcessInJob(IntPtr proc, IntPtr job, out bool result);
   [DllImport("kernel32", SetLastError = true)] public static extern bool TerminateJobObject(IntPtr job, uint code);
   [DllImport("kernel32", SetLastError = true, CharSet = CharSet.Unicode)] public static extern bool CreateProcessW(string app, StringBuilder cmd, IntPtr pa, IntPtr ta, bool inh, uint flags, IntPtr env, string cwd, ref SIEX si, out PI pi);
   [DllImport("kernel32", SetLastError = true)] public static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, int flags, ref IntPtr size);
@@ -84,6 +90,12 @@ static class P {
   static readonly JavaScriptSerializer Json = new JavaScriptSerializer { MaxJsonLength = 1 << 20, RecursionLimit = 16 };
   static readonly object OutLock = new object();
   static StreamWriter Out;
+  /** Commands taken and not yet answered; at stdin EOF they get at most DrainMs (a kill-job waits at most 10 s). */
+  static int Pending;
+  static readonly object PendingLock = new object();
+  const int DrainMs = 15000;
+  /** The most Job members one answer lists (an answer is one line, and orchestrad reads at most 1 MiB of one). */
+  const int MaxListed = 4096;
 
   static int Main(string[] args) {
     if (args.Length > 0 && args[0] == "run-in-job") return OneShot(args);
@@ -105,7 +117,7 @@ static class P {
     string exe = args[i];
     if (!Path.IsPathRooted(exe)) { Console.Error.WriteLine("procguard: the program must be an absolute path"); return 2; }
     string cmdline = string.Join(" ", args.Skip(i).Select(Quote).ToArray());
-    IntPtr env = IntPtr.Zero, attrs = IntPtr.Zero, hlist = IntPtr.Zero;
+    IntPtr env = IntPtr.Zero, attrs = IntPtr.Zero, hlist = IntPtr.Zero, jlist = IntPtr.Zero;
     try {
       env = BuildEnv(File.ReadAllLines(allow));
       IntPtr job = CreateKillOnCloseJob(name);
@@ -114,19 +126,27 @@ static class P {
       // Only our own std handles reach the child (review fix of the spike: no other inheritable handle).
       var own = new List<IntPtr>();
       foreach (var h in new[] { si.si.hIn, si.si.hOut, si.si.hErr }) if (h != IntPtr.Zero && h != new IntPtr(-1) && !own.Contains(h)) own.Add(h);
-      uint flags = W.CREATE_SUSPENDED | W.CREATE_UNICODE_ENV;
+      uint flags = W.CREATE_SUSPENDED | W.CREATE_UNICODE_ENV | W.EXTENDED_STARTUPINFO_PRESENT;
+      // The child is made inside the Job (the job list), so it is never outside it, not even suspended
+      // between its creation and an assignment (review fix: a wrapper killed in between left it outside).
+      int nattr = own.Count > 0 ? 2 : 1;
+      IntPtr size = IntPtr.Zero; W.InitializeProcThreadAttributeList(IntPtr.Zero, nattr, 0, ref size);
+      attrs = Marshal.AllocHGlobal(size);
+      if (!W.InitializeProcThreadAttributeList(attrs, nattr, 0, ref size)) { int e = Marshal.GetLastWin32Error(); Marshal.FreeHGlobal(attrs); attrs = IntPtr.Zero; throw new Fail("InitializeProcThreadAttributeList", e); }
       if (own.Count > 0) {
         hlist = Marshal.AllocHGlobal(own.Count * IntPtr.Size);
         for (int k = 0; k < own.Count; k++) Marshal.WriteIntPtr(hlist, k * IntPtr.Size, own[k]);
-        IntPtr size = IntPtr.Zero; W.InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref size);
-        attrs = Marshal.AllocHGlobal(size);
-        if (!W.InitializeProcThreadAttributeList(attrs, 1, 0, ref size)) { int e = Marshal.GetLastWin32Error(); Marshal.FreeHGlobal(attrs); attrs = IntPtr.Zero; throw new Fail("InitializeProcThreadAttributeList", e); }
-        if (!W.UpdateProcThreadAttribute(attrs, 0, new IntPtr(0x20002), hlist, new IntPtr(own.Count * IntPtr.Size), IntPtr.Zero, IntPtr.Zero)) throw new Fail("UpdateProcThreadAttribute");
-        si.attrs = attrs; flags |= W.EXTENDED_STARTUPINFO_PRESENT;
+        if (!W.UpdateProcThreadAttribute(attrs, 0, W.ATTR_HANDLE_LIST, hlist, new IntPtr(own.Count * IntPtr.Size), IntPtr.Zero, IntPtr.Zero)) throw new Fail("UpdateProcThreadAttribute(handle list)");
       }
+      jlist = Marshal.AllocHGlobal(IntPtr.Size); Marshal.WriteIntPtr(jlist, job);
+      if (!W.UpdateProcThreadAttribute(attrs, 0, W.ATTR_JOB_LIST, jlist, new IntPtr(IntPtr.Size), IntPtr.Zero, IntPtr.Zero)) throw new Fail("UpdateProcThreadAttribute(job list)");
+      si.attrs = attrs;
       W.PI pi;
       if (!W.CreateProcessW(exe, new StringBuilder(cmdline, 32768), IntPtr.Zero, IntPtr.Zero, own.Count > 0, flags, env, null, ref si, out pi)) throw new Fail("CreateProcess");
-      if (!W.AssignProcessToJobObject(job, pi.hProcess)) { int e = Marshal.GetLastWin32Error(); W.TerminateProcess(pi.hProcess, 1); throw new Fail("AssignProcessToJobObject", e); }
+      // The second guard: still suspended, it must be in the Job before it runs a single instruction.
+      bool inJob;
+      if (!W.IsProcessInJob(pi.hProcess, job, out inJob)) { int e = Marshal.GetLastWin32Error(); W.TerminateProcess(pi.hProcess, 1); throw new Fail("IsProcessInJob", e); }
+      if (!inJob && !W.AssignProcessToJobObject(job, pi.hProcess)) { int e = Marshal.GetLastWin32Error(); W.TerminateProcess(pi.hProcess, 1); throw new Fail("AssignProcessToJobObject", e); }
       if (W.ResumeThread(pi.hThread) == 0xFFFFFFFF) { int e = Marshal.GetLastWin32Error(); W.TerminateJobObject(job, 1); throw new Fail("ResumeThread", e); }
       W.CloseHandle(pi.hThread);
       W.WaitForSingleObject(pi.hProcess, 0xFFFFFFFF);
@@ -141,6 +161,7 @@ static class P {
     } finally {
       if (attrs != IntPtr.Zero) { W.DeleteProcThreadAttributeList(attrs); Marshal.FreeHGlobal(attrs); }
       if (hlist != IntPtr.Zero) Marshal.FreeHGlobal(hlist);
+      if (jlist != IntPtr.Zero) Marshal.FreeHGlobal(jlist);
       if (env != IntPtr.Zero) Marshal.FreeHGlobal(env);
     }
   }
@@ -201,9 +222,18 @@ static class P {
     while ((line = input.ReadLine()) != null) {
       if (line.Trim().Length == 0) continue;
       string l = line;
-      ThreadPool.QueueUserWorkItem(delegate { Handle(l); });
+      lock (PendingLock) Pending++;
+      ThreadPool.QueueUserWorkItem(delegate {
+        try { Handle(l); } finally { lock (PendingLock) { Pending--; Monitor.PulseAll(PendingLock); } }
+      });
     }
-    Environment.Exit(0); // stdin EOF: orchestrad is gone
+    // stdin EOF: orchestrad is gone or stopping. What it asked before (the check after a session's end
+    // during its stop, above all) still runs and answers, at most DrainMs; then we exit.
+    var sw = Stopwatch.StartNew();
+    lock (PendingLock) {
+      while (Pending > 0) { long left = DrainMs - sw.ElapsedMilliseconds; if (left <= 0) break; Monitor.Wait(PendingLock, (int)left); }
+    }
+    Environment.Exit(0);
     return 0;
   }
 
@@ -222,7 +252,8 @@ static class P {
     } catch (Exception e) { r = Err("exception"); r["message"] = e.GetType().Name + ": " + e.Message; }
     r["id"] = id;
     string s = Json.Serialize(r);
-    lock (OutLock) Out.WriteLine(s);
+    // A reader gone (orchestrad exited before the answer came) is no reason to crash: nobody hears it.
+    try { lock (OutLock) Out.WriteLine(s); } catch (IOException) { } catch (ObjectDisposedException) { }
   }
 
   static void Emit(Dictionary<string, object> r) { string s = Json.Serialize(r); lock (OutLock) Out.WriteLine(s); }
@@ -243,12 +274,25 @@ static class P {
     return acct;
   }
 
-  /** The processes in the Job now: pid, create time (FILETIME as a decimal string) and image name. */
-  static List<object> Members(IntPtr h) {
+  /**
+   * The processes in the Job now: pid, create time (FILETIME as a decimal string) and image name; at most
+   * MaxListed of them (truncated: more were in it). A buffer too small is ERROR_MORE_DATA: asked again with
+   * room for MaxListed, and past that only what the answer put in the buffer is listed.
+   */
+  static List<object> Members(IntPtr h, out bool truncated) {
+    truncated = false;
     int n = 1024; IntPtr buf = Marshal.AllocHGlobal(8 + 8 * n); var res = new List<object>();
     try {
-      if (!W.QueryJobRaw(h, 3, buf, 8 + 8 * n, IntPtr.Zero)) throw new Fail("QueryInformationJobObject(pids)");
-      int cnt = Marshal.ReadInt32(buf, 4);
+      for (;;) {
+        Marshal.WriteInt64(buf, 0, 0); // both counts 0 unless the answer writes them
+        if (W.QueryJobRaw(h, 3, buf, 8 + 8 * n, IntPtr.Zero)) break;
+        int e = Marshal.GetLastWin32Error();
+        if (e != W.ERROR_MORE_DATA) throw new Fail("QueryInformationJobObject(pids)", e);
+        if (n >= MaxListed) { truncated = true; break; }
+        n = MaxListed; Marshal.FreeHGlobal(buf); buf = Marshal.AllocHGlobal(8 + 8 * n);
+      }
+      int cnt = Math.Min(Math.Max(Marshal.ReadInt32(buf, 4), 0), n);
+      if (Marshal.ReadInt32(buf, 0) > cnt) truncated = true;
       for (int i = 0; i < cnt; i++) {
         uint pid = (uint)Marshal.ReadInt64(buf, 8 + 8 * i); var d = new Dictionary<string, object>(); d["pid"] = pid;
         IntPtr p = W.OpenProcess(W.PQLI, false, pid);
@@ -269,24 +313,33 @@ static class P {
     var r = Ok();
     if (h == IntPtr.Zero) { r["found"] = false; return r; }
     try {
-      var acct = Acct(h); r["found"] = true; r["activeProcesses"] = acct.ActiveProcesses; r["totalProcesses"] = acct.TotalProcesses; r["procs"] = Members(h);
+      var acct = Acct(h); r["found"] = true; r["activeProcesses"] = acct.ActiveProcesses; r["totalProcesses"] = acct.TotalProcesses;
+      bool truncated; r["procs"] = Members(h, out truncated); if (truncated) r["truncated"] = true;
     } finally { W.CloseHandle(h); }
     return r;
   }
 
   // The brake and the reaper: every process in the Job ends now (TerminateJobObject), then we wait, at most
-  // waitMs, until the Job's accounting counts none active. "before" is the count at the moment we came.
+  // waitMs, until the Job's accounting counts none active. "before" is the count at the moment we came
+  // (one fixed-size query, then the kill at once: nothing that grows with the Job runs before it, review
+  // fix); "procs" lists, last and best effort, what is still in it after the wait (normally nobody). A
+  // count before that could not be read still lets the kill run, and the answer is then an error (unknown).
   static Dictionary<string, object> KillJob(Dictionary<string, object> a) {
     IntPtr h = OpenJob(a, W.JOB_QUERY | W.JOB_TERMINATE);
     var r = Ok();
     if (h == IntPtr.Zero) { r["found"] = false; return r; }
     try {
       int waitMs = a.ContainsKey("waitMs") ? Math.Min(Math.Max(Convert.ToInt32(a["waitMs"]), 0), 10000) : 2000;
-      var before = Acct(h); r["found"] = true; r["before"] = before.ActiveProcesses; r["procs"] = Members(h);
+      W.ACCT before = new W.ACCT(); Fail beforeFailed = null;
+      try { before = Acct(h); } catch (Fail f) { beforeFailed = f; }
       if (!W.TerminateJobObject(h, 1)) throw new Fail("TerminateJobObject");
+      if (beforeFailed != null) throw beforeFailed;
+      r["found"] = true; r["before"] = before.ActiveProcesses;
       var sw = Stopwatch.StartNew(); W.ACCT acct;
       while (true) { acct = Acct(h); if (acct.ActiveProcesses == 0 || sw.ElapsedMilliseconds > waitMs) break; Thread.Sleep(5); }
       r["after"] = acct.ActiveProcesses; r["ms"] = sw.Elapsed.TotalMilliseconds;
+      try { bool truncated; r["procs"] = Members(h, out truncated); if (truncated) r["truncated"] = true; }
+      catch (Exception e) { r["procs"] = new object[0]; r["procsError"] = e.GetType().Name + ": " + e.Message; }
     } finally { W.CloseHandle(h); }
     return r;
   }

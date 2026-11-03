@@ -41,7 +41,10 @@ const win = path.win32;
 //              Job (procguard off), when the kill was needed the feed says claude.exe may remain
 //              (note host-killed).
 //   brake:     (a Job only) every process in the Job ended at once, the approvals declined, the session
-//              ended as braked, then the host's handle goes, with no stop order (codex-session.ts).
+//              ended as braked, then the host's handle goes, with no stop order (codex-session.ts). It
+//              works as long as the host has not closed: also while an end or a failure walks the stop
+//              order (up to 5 s; phase 4 review), when the order's remaining steps give way to it and the
+//              session keeps the end reason it already had (the feed says braked).
 //
 // What the host says becomes feed events: text (a reply, in chunks of at most 2 KB), tool (a tool call
 // by name; hidden while an approval about it is open, told again after the answer, as codex-session.ts
@@ -122,7 +125,7 @@ export type ClaudeSession = {
   interrupt(): Promise<{ withdrawn: number; denied: number }>;
   /** Ends the session: a person's end (you-ended) unless orchestrad itself is stopping (daemon-stop). */
   end(why?: 'you-ended' | 'daemon-stop'): { denied: number };
-  /** Whether its host's whole tree runs in a Job of its own (so the brake can stop it), as long as it runs. */
+  /** Whether its host's whole tree runs in a Job of its own and the host has not closed (so the brake can still end it, even while it is ending). */
   readonly jobbed: boolean;
   /** The brake: the whole tree stopped now, the approvals declined, the session ended as braked. */
   brake(): Promise<OwnedBrake>;
@@ -690,23 +693,27 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     },
     end: (why: 'you-ended' | 'daemon-stop' = 'you-ended') => endSession('end', why === 'daemon-stop' ? 'daemon-stop' : 'you-ended'),
     get jobbed() {
-      return job !== null && !terminal();
+      return job !== null && !closed && !braked;
     },
     async brake(): Promise<OwnedBrake> {
-      if (terminal()) return { ok: false, reason: 'ended' };
+      if (closed || braked) return { ok: false, reason: 'ended' };
       if (job === null) return { ok: false, reason: 'no-job' };
       braked = true;
       const ending = job.endTree();
       approvals.declineOwned(ownedId, 'brake');
       cancelInit();
-      state = 'ended';
-      endReason = 'braked';
-      turn = false;
-      withdrawAll();
-      unsureAll();
-      showAllTools();
+      // Ending already (the stop order runs): the rest of the order gives way, the end reason stays.
+      cancelStop();
+      if (!terminal()) {
+        state = 'ended';
+        endReason = 'braked';
+        turn = false;
+        withdrawAll();
+        unsureAll();
+        showAllTools();
+        settleReady(false);
+      }
       feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'braked' });
-      settleReady(false);
       changed();
       const o = await ending;
       if (!closed) endHostNow(pipe);

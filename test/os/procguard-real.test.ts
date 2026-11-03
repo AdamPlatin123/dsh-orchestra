@@ -166,3 +166,20 @@ test('procguard real: an ordinary end (stdin closed, then the wrapper killed) ta
   assert.deepEqual(await until('no survivor', async () => ((await r.resident.alive(live)).length === 0 ? [] : null), 5_000), []);
   assert.ok(!s.feed.since(0).events.some((e) => e.state === 'children-may-remain'));
 });
+
+test('procguard real: a resident told to stop right after a kill-job still ends the Job and answers before it exits (the check during a daemon-stop)', { skip }, async (t) => {
+  const r = await rig(t);
+  const { s, job } = r.start();
+  const live = ids(await treeOf(r, s, job));
+  assert.ok(live.length >= 3);
+  // As orchestrad's stop does once its sessions are ending: the last command, then stdin EOF at once.
+  const killing = r.resident.killJob(job);
+  r.resident.stop();
+  const k = await killing;
+  assert.equal(k.found, true, 'answered, not dropped at EOF');
+  if (!k.found) return;
+  assert.ok(k.before >= 3, `before ${k.before}`);
+  assert.equal(k.after, 0, 'every process of the Job ended');
+  assert.deepEqual([...k.procs], [], 'nobody left in it after the wait');
+  await until('the session to see its child close', () => (s.state === 'failed' || s.state === 'ended' ? true : null));
+});

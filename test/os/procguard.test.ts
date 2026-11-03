@@ -6,7 +6,7 @@ import * as path from 'node:path';
 import type { ProcHandle, RunResult } from '../../src/os/spawn.ts';
 import type { ProcguardBuildDeps, Resident } from '../../src/os/procguard.ts';
 import { PROCGUARD_SOURCE, PROCGUARD_JOB_RE } from '../../src/os/spawn.ts';
-import { PROCGUARD_FILES, PROCGUARD_LIMITS, ProcguardError, ensureProcguard, newJobName, ownedJob, procguardPin, residentOf } from '../../src/os/procguard.ts';
+import { PROCGUARD_FILES, PROCGUARD_LIMITS, ProcguardError, ensureProcguard, jobTracker, newJobName, ownedJob, procguardPin, residentOf } from '../../src/os/procguard.ts';
 import { PROCGUARD_SOURCE_SHA256 } from '../../src/os/procguard-pins.ts';
 import { render } from '../../scripts/pin-procguard.ts';
 
@@ -62,6 +62,11 @@ test('the source pin: PROCGUARD_SOURCE_SHA256 is the sha256 of native/procguard/
   // The source keeps the parts the owned sessions rely on.
   const cs = fs.readFileSync(PROCGUARD_SOURCE, 'utf8');
   for (const must of ['KILL_ON_JOB_CLOSE', 'CREATE_SUSPENDED', '0x20002', 'ERROR_ALREADY_EXISTS', 'TerminateJobObject', 'BuildEnv']) assert.ok(cs.includes(must), must);
+  // Phase 4 review: the child is made inside its Job (the job list) and checked there before it runs;
+  // the brake's kill comes before anything that grows with the Job; answers asked before EOF still go out.
+  for (const must of ['0x2000D', 'IsProcessInJob', 'ERROR_MORE_DATA', 'DrainMs']) assert.ok(cs.includes(must), must);
+  const kill = cs.slice(cs.indexOf('static Dictionary<string, object> KillJob'), cs.indexOf('static Dictionary<string, object> Alive'));
+  assert.ok(kill.indexOf('TerminateJobObject') < kill.indexOf('Members('), 'kill-job terminates before it lists members');
   assert.ok(!/BREAKAWAY_OK\s*[|=]/.test(cs.replace(/\/\/.*$/gm, '')), 'no breakaway flag is set');
 });
 
@@ -82,37 +87,39 @@ test('ensureProcguard: a source that does not match its pin is never compiled', 
   assert.deepEqual(calls, []);
 });
 
-test('ensureProcguard: no exe yet: csc writes procguard.new.exe, its sha256 is recorded, then it is moved into place', async () => {
+test('ensureProcguard: every startup builds: a stale build file goes, csc writes procguard.new.exe, its sha256 stays in memory, the exe is moved into place', async () => {
   const disk: Disk = new Map([[OUT, Buffer.from('stale')]]);
   const { d, calls } = deps(disk);
   const r = await ensureProcguard(d);
   assert.deepEqual(r, { ok: true, dir: DIR, exe: EXE, sha256: sha('MZ built'), built: true });
-  // A stale build file goes first; the pin is written before the exe, so an exe never stands without its pin.
-  assert.deepEqual(calls, [`mkdirp ${DIR}`, 'rm procguard.new.exe', 'csc procguard.new.exe', 'write procguard.exe.sha256', 'write procguard.exe', 'rm procguard.new.exe']);
-  assert.equal(Buffer.from(disk.get(PIN)!).toString(), `${sha('MZ built')}\n`);
+  assert.deepEqual(calls, [`mkdirp ${DIR}`, 'rm procguard.new.exe', 'csc procguard.new.exe', 'write procguard.exe', 'rm procguard.new.exe']);
+  // Phase 4 review: no sha256 file next to the exe (it would vouch for itself).
+  assert.equal(disk.has(PIN), false);
   assert.equal(disk.has(OUT), false);
 });
 
-test('ensureProcguard: an exe that matches its recorded sha256 is used as it is; one that does not is tampered and left alone', async () => {
-  const exe = Buffer.from('MZ earlier');
-  const ok: Disk = new Map([[EXE, exe], [PIN, Buffer.from(`${sha(exe)}\n`)]]);
-  const a = deps(ok);
-  assert.deepEqual(await ensureProcguard(a.d), { ok: true, dir: DIR, exe: EXE, sha256: sha(exe), built: false });
-  assert.ok(!a.calls.some((c) => c.startsWith('csc') || c.startsWith('write')), 'nothing built or written');
-  const bad: Disk = new Map([[EXE, Buffer.from('MZ changed')], [PIN, Buffer.from(`${sha(exe)}\n`)]]);
-  const b = deps(bad);
-  const r = await ensureProcguard(b.d);
-  assert.equal(r.ok, false);
-  if (!r.ok) {
-    assert.equal(r.why, 'procguard-tampered');
-    assert.match(r.detail, /delete .* to have it built again/);
+test('ensureProcguard: an exe an earlier orchestrad left is never trusted, even with a matching sha256 file: built again over it, and that file goes', async () => {
+  const exe = Buffer.from('MZ swapped by someone');
+  // Exe and record replaced together: the old check let this through on the next start.
+  const disk: Disk = new Map([[EXE, exe], [PIN, Buffer.from(`${sha(exe)}\n`)]]);
+  const { d, calls } = deps(disk);
+  const r = await ensureProcguard(d);
+  assert.deepEqual(r, { ok: true, dir: DIR, exe: EXE, sha256: sha('MZ built'), built: true });
+  assert.ok(calls.includes('csc procguard.new.exe'), calls.join(' '));
+  assert.ok(calls.includes('rm procguard.exe.sha256'));
+  assert.equal(Buffer.from(disk.get(EXE)!).toString(), 'MZ built');
+  assert.equal(disk.has(PIN), false);
+  // One that cannot be replaced (an old procguard.exe still runs): a setup failure that says so.
+  const busy = deps(new Map([[EXE, exe]]));
+  const locked = { ...busy.d, writeAtomic: (file: string) => {
+    if (file === EXE) throw Object.assign(new Error('EPERM: rename'), { code: 'EPERM' });
+  } };
+  const b = await ensureProcguard(locked);
+  assert.equal(b.ok, false);
+  if (!b.ok) {
+    assert.equal(b.why, 'procguard-setup-failed');
+    assert.match(b.detail, /cannot replace .*procguard\.exe \(EPERM\): does a procguard\.exe an earlier orchestrad started still run\?/);
   }
-  assert.ok(!b.calls.some((c) => c.startsWith('csc') || c.startsWith('write') || c.startsWith('rm')), 'a tampered exe is never replaced here');
-  // An exe without its pin (a build cut short) is built again.
-  const half: Disk = new Map([[EXE, exe]]);
-  const c = deps(half);
-  assert.equal((await ensureProcguard(c.d)).ok, true);
-  assert.ok(c.calls.includes('csc procguard.new.exe'));
 });
 
 test('ensureProcguard: a failed csc run is build-failed with csc\'s own words; an exe nobody wrote too', async () => {
@@ -150,7 +157,7 @@ test('procguardPin: null while procguard.exe is what was built; a change or an u
 
 // --- the resident ---------------------------------------------------------------------------------------
 
-type FakeResident = { h: ProcHandle; sent: Record<string, unknown>[]; say(o: unknown): void; close(): void; ended: number; fire(): void };
+type FakeResident = { h: ProcHandle; sent: Record<string, unknown>[]; say(o: unknown): void; close(code?: number | null): void; ended: number; fire(): void };
 
 function fakeResident(): FakeResident {
   const outs: ((c: Buffer) => void)[] = [];
@@ -178,7 +185,7 @@ function fakeResident(): FakeResident {
       kill: () => {},
     }) as ProcHandle,
     say: (o) => outs.forEach((cb) => cb(Buffer.from(`${JSON.stringify(o)}\n`))),
-    close: () => closes.forEach((cb) => cb(0, null)),
+    close: (code: number | null = 0) => closes.forEach((cb) => cb(code, null)),
     fire: () => {
       const fns = [...timers.values()];
       timers.clear();
@@ -276,4 +283,82 @@ test('ownedJob: what the brake and the check after an end hear: counts, no Job l
   assert.deepEqual(await ownedJob(JOB, null).endTree(), { ok: false, why: 'procguard-not-running' });
   assert.deepEqual(await ownedJob(JOB, { ...answer({ found: false }), up: false }).endTree(), { ok: false, why: 'procguard-not-running' });
   assert.throws(() => ownedJob('x', null), /not a job name/);
+});
+
+test('resident: one that goes away after ready and unasked is heard (onGone, with how it ended); one asked to stop is not', async () => {
+  const f = fakeResident();
+  const gone: string[] = [];
+  const r = residentOf(f.h, afterOf(f), { onGone: (d) => gone.push(d) });
+  f.say({ event: 'ready' });
+  await r.ready;
+  f.close(3);
+  assert.deepEqual(gone, ['exit code 3']);
+  assert.equal(r.up, false);
+  f.close(3);
+  assert.equal(gone.length, 1, 'heard once');
+  // Asked to stop (orchestrad's own stop): its exit is not news.
+  const g = fakeResident();
+  const heard: string[] = [];
+  const s2 = residentOf(g.h, afterOf(g), { onGone: (d) => heard.push(d) });
+  g.say({ event: 'ready' });
+  await s2.ready;
+  s2.stop();
+  g.close(0);
+  assert.deepEqual(heard, []);
+  // Never ready: setUpProcguard says why itself, onGone stays quiet.
+  const h = fakeResident();
+  const never: string[] = [];
+  residentOf(h.h, afterOf(h), { onGone: (d) => never.push(d) });
+  h.close(1);
+  assert.deepEqual(never, []);
+});
+
+test('jobTracker: every end of a Job is heard and held; quiet() waits for the wrapped children to close and for the checks their closes started', async () => {
+  let release!: () => void;
+  const killed: string[] = [];
+  const resident: Resident = {
+    ready: Promise.resolve(true), up: true,
+    jobInfo: async () => ({ found: false }),
+    killJob: (name: string) => {
+      killed.push(name);
+      return new Promise((r) => {
+        release = () => r({ found: true, before: 2, after: 0, procs: [] });
+      });
+    },
+    alive: async () => [],
+    stop: () => {},
+  };
+  const heard: string[] = [];
+  const t = jobTracker(resident, (job, o) => heard.push(`${job}:${o.ok ? `${o.killed}/${o.left}` : o.why}`));
+  const closes: (() => void)[] = [];
+  const pipe = { onClose: (cb: () => void) => closes.push(cb) };
+  t.opened(pipe);
+  const j = t.job(JOB);
+  assert.equal(j.name, JOB);
+  // The session's own close listener comes after the tracker's and starts the check (codex-session.ts).
+  pipe.onClose(() => {
+    void j.endTree();
+  });
+  let quiet = false;
+  void t.quiet().then(() => {
+    quiet = true;
+  });
+  await tick();
+  assert.equal(quiet, false, 'a child still open');
+  closes.forEach((cb) => cb());
+  await tick();
+  assert.deepEqual(killed, [JOB]);
+  assert.equal(quiet, false, 'the check its close started has not answered');
+  release();
+  await tick();
+  await tick();
+  assert.equal(quiet, true);
+  assert.deepEqual(heard, [`${JOB}:2/0`]);
+  // Nothing open and nothing asked: quiet at once.
+  await jobTracker(null, () => {}).quiet();
+  // Without a resident the end is unknown, and still heard (T1).
+  const lone: string[] = [];
+  const none = jobTracker(null, (_j, o) => lone.push(o.ok ? 'ok' : o.why));
+  assert.deepEqual(await none.job(JOB).endTree(), { ok: false, why: 'procguard-not-running' });
+  assert.deepEqual(lone, ['procguard-not-running']);
 });

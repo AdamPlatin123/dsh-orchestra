@@ -36,8 +36,8 @@ export const errText = (code) => (Object.hasOwn(ERROR_TEXT, code) ? ERROR_TEXT[c
 
 /** working.ts OwnedCodexStatus.why in words. */
 export const whyText = (why) => tk('why', why, 'why.other');
-/** Why a session has no brake: the list's brakeWhy (procguard's state), else no Job of its own. */
-const brakeWhyText = (why) => tk('bwhy', why ?? 'no-job', 'bwhy.other');
+/** Why a session has no brake (or a blind one): the list's brakeWhy (procguard's state), else no Job of its own. */
+export const brakeWhyText = (why) => tk('bwhy', why ?? 'no-job', 'bwhy.other');
 
 /** The server's 422s, said first (routes.ts OWNED_TEXT_MAX_BYTES). */
 export function msgError(text) {
@@ -191,12 +191,21 @@ export function describeOwned(id, list, feed, g) {
 
 /**
  * The composer: a message steers a running turn; three stops: interrupt, end (two clicks), and for a
- * session in a Job of its own the brake (two clicks), its whole tree; without one the note says why not.
+ * session in a Job of its own the brake (two clicks), every process in that Job; without one the note
+ * says why not, and a brake that cannot report what it did says that. An ended session whose child has
+ * not closed yet (its stop order runs) keeps the brake alone.
  */
 export function describeOwnedDock(to, list, g, held, armed, brakeArmed = false) {
   const o = entry(list, to?.id);
   const note = to === null ? 'dock.readonly' : !g.unlocked ? 'dock.locked' : o === undefined ? 'own.missing'
     : o.state === 'unknown' ? 'dock.unknown' : o.state === 'ended' || o.state === 'failed' ? 'dock.ended' : '';
+  if (note === 'dock.ended' && o?.brake === true) {
+    return {
+      st: { text: '' }, in: off,
+      btns: { kids: [btn('brake', t(brakeArmed ? 'dock.brakeSure' : 'dock.brake'), { act: 'brake', armed: brakeArmed ? '1' : '0' }, { 'aria-disabled': busy(g) })] },
+      note: { text: join([t('dock.stopping'), list?.brakeWhy != null && t('dock.brakeUnsure', { why: brakeWhyText(list.brakeWhy) })], 'sep.notes') },
+    };
+  }
   if (note !== '' || o === undefined) return { st: { text: '' }, in: off, btns: { kids: g.unlocked || to === null ? [] : [lockBtn()] }, note: { text: t(note) } };
   const run = o.state === 'running';
   const b = busy(g);
@@ -212,7 +221,7 @@ export function describeOwnedDock(to, list, g, held, armed, brakeArmed = false) 
         ...(o.brake ? [btn('brake', t(brakeArmed ? 'dock.brakeSure' : 'dock.brake'), { act: 'brake', armed: brakeArmed ? '1' : '0' }, { 'aria-disabled': b })] : []),
       ],
     },
-    note: { text: join([held && t('dock.lockedTo'), !o.brake && t('dock.noBrake', { why: brakeWhyText(list?.brakeWhy) })], 'sep.notes') },
+    note: { text: join([held && t('dock.lockedTo'), o.brake ? list?.brakeWhy != null && t('dock.brakeUnsure', { why: brakeWhyText(list.brakeWhy) }) : t('dock.noBrake', { why: brakeWhyText(list?.brakeWhy) })], 'sep.notes') },
   };
 }
 

@@ -14,6 +14,9 @@ import { startClaudeSession } from '../../src/owned/claude-session.ts';
 import { DEFAULT_CLAUDE_MODEL, DEFAULT_CODEX_MODEL } from '../../src/owned/models.ts';
 import { ownedList } from '../../src/server/owned-handlers.ts';
 import { validateOwnedFeed, validateOwnedList } from '../../shared/owned-contract.js';
+import { OWNED_TOWER_TEXT } from '../../shared/owned-contract.js';
+import { TOWER_TEXT } from '../../shared/strings.js';
+import { ownedNode } from '../../src/sources/tower.ts';
 
 // The owned sessions' Jobs and brake (orchestra app: owned sessions in procguard Jobs; r4 D4, D8), over
 // in-memory pipes, a fake Job and a virtual clock: no child, no procguard. The brake ends the Job first,
@@ -276,10 +279,13 @@ test('claude end with a Job: the stop order\'s kill says no host-killed (the Job
   old.clock.advanceBy(HOST_STOP_MS.afterEof);
   await settle();
   assert.ok(notes(old.s).includes('note:host-killed'));
+  assert.deepEqual(await old.s.brake(), { ok: false, reason: 'no-job' });
+  old.host.close(null);
+  await settle();
   assert.deepEqual(await old.s.brake(), { ok: false, reason: 'ended' });
 });
 
-test('GET /api/owned: each entry says whether it has a brake, the list says why new sessions have none; an ended session has no brake', async () => {
+test('GET /api/owned: each entry says whether it has a brake, the list says why new sessions have none; an ended session whose child closed has no brake', async () => {
   const fj = fakeJob();
   const { s } = await codex(fj.job);
   const clock = new VirtualClock({ mono: 1, wall: 1 });
@@ -292,11 +298,78 @@ test('GET /api/owned: each entry says whether it has a brake, the list says why 
   const off = ownedList({ codex: fake, claude: null, codexOff: 'on', brakeWhy: 'procguard-build-failed' });
   assert.equal(off.brakeWhy, 'procguard-build-failed');
   assert.equal(ownedList({ codex: fake, claude: null, codexOff: 'on' }).brakeWhy, 'not-asked', 'T1: no procguard says so');
+  // Read at each list when it is a function (working.ts: a resident procguard that went away says so).
+  let why: string | null = null;
+  const live = { codex: fake, claude: null, codexOff: 'on', brakeWhy: () => why };
+  assert.equal(ownedList(live).brakeWhy, null);
+  why = 'procguard-resident-gone';
+  assert.equal(ownedList(live).brakeWhy, 'procguard-resident-gone');
+  assert.ok(validateOwnedList(ownedList(live)).ok);
   await s.brake();
   const after = ownedList({ codex: fake, claude: null, codexOff: 'on', brakeWhy: null });
   assert.deepEqual([after.owned[0]!.state, after.owned[0]!.endReason, after.owned[0]!.brake], ['ended', 'braked', false]);
   assert.ok(validateOwnedList(after).ok);
-  const lying = { ...after, owned: [{ ...after.owned[0]!, brake: true }] };
-  assert.ok(!validateOwnedList(lying).ok, 'an ended session with a brake is refused by the contract');
+  // An ended session still stopping may carry a brake; one an earlier orchestrad left never does.
+  assert.ok(validateOwnedList({ ...after, owned: [{ ...after.owned[0]!, brake: true }] }).ok);
+  const lying = { ...after, owned: [{ ...after.owned[0]!, state: 'unknown', endReason: 'daemon-restart', brake: true }] };
+  assert.ok(!validateOwnedList(lying).ok, 'a session an earlier orchestrad left with a brake is refused by the contract');
   assert.ok(!validateOwnedList({ ...after, brakeWhy: 'Not A Code' }).ok);
+});
+
+// --- phase 4 review ----------------------------------------------------------------------------------------
+
+test('claude brake while the stop order runs (an end, a failure): the Job is ended, the rest of the order gives way, the host goes at once; the end reason stays', async () => {
+  const fj = fakeJob({ ok: true, found: true, killed: 4, left: 0 });
+  const { host, s, clock } = claude(fj.job);
+  s.end();
+  assert.deepEqual([s.state, s.endReason], ['ended', 'you-ended']);
+  assert.equal(s.jobbed, true, 'the host has not closed: the brake still reaches it');
+  // Within the order's first 3 s, before stdin is closed: the person brakes.
+  clock.advanceBy(1_000);
+  await settle();
+  assert.equal(host.kills, 0);
+  assert.deepEqual(await s.brake(), { ok: true, killed: 4, left: 0 });
+  assert.equal(fj.calls, 1);
+  assert.equal(host.kills, 1, 'the host goes now, not after 5 s');
+  assert.deepEqual([s.state, s.endReason, s.jobbed], ['ended', 'you-ended', false]);
+  const ns = notes(s);
+  assert.ok(ns.includes('lifecycle:braked') && ns.includes('note:tree-stopped=4'), ns.join(' '));
+  // The order's remaining steps were cancelled: no second kill when their time comes.
+  clock.advanceBy(HOST_STOP_MS.afterClose + HOST_STOP_MS.afterEof);
+  await settle();
+  assert.equal(host.kills, 1);
+  host.close(null);
+  await settle();
+  assert.equal(fj.calls, 1, 'the close after the brake checks nothing again');
+  assert.deepEqual(await s.brake(), { ok: false, reason: 'ended' });
+  feedOk(s);
+});
+
+test('codex brake after an end, before its child closed: the Job is ended and counted, the end reason stays; once closed, owned-ended', async () => {
+  const fj = fakeJob({ ok: true, found: true, killed: 2, left: 0 });
+  const { m, s } = await codex(fj.job);
+  s.end();
+  assert.equal(s.jobbed, true);
+  assert.deepEqual(await s.brake(), { ok: true, killed: 2, left: 0 });
+  assert.deepEqual([s.endReason, s.jobbed], ['you-ended', false]);
+  m.close(null);
+  await settle();
+  assert.equal(fj.calls, 1);
+  const b = await codex(fakeJob().job);
+  b.s.end();
+  b.m.close(null);
+  await settle();
+  assert.equal(b.s.jobbed, false);
+  assert.deepEqual(await b.s.brake(), { ok: false, reason: 'ended' });
+});
+
+test('the tower row of a braked session never says the tree stopped (T1: the brake may have left some, or procguard could not say)', () => {
+  const seat = { ownedId: '0123456789abcdef0123', harness: 'codex' as const, title: 't', state: 'ended' as const, endReason: 'braked', waiting: null, lastAt: 1, recent: null };
+  const node = ownedNode(seat as never, 2);
+  assert.equal(node.activity, OWNED_TOWER_TEXT['end.braked']);
+  for (const text of [OWNED_TOWER_TEXT['end.braked'], TOWER_TEXT['op.braked'], TOWER_TEXT['fnote.tree-ended'], TOWER_TEXT['fnote.tree-stopped'], TOWER_TEXT['dock.brake']]) {
+    assert.ok(!/整棵进程树已停|已停$/.test(text), text);
+  }
+  // What a Job cannot hold is said as unknown wherever "all stopped" is said.
+  for (const k of ['op.braked', 'fnote.tree-ended', 'fnote.tree-stopped']) assert.match(TOWER_TEXT[k], /不在 Job 里，是否还在未知/, k);
 });

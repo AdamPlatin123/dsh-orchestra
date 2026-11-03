@@ -535,7 +535,7 @@ export type SpawnGateConfig = {
   /** The Claude host's node.exe, host.mjs and pin check; required when the rule claude-host (or procguard-claude) is on. */
   claudeHost?: ClaudeHostSite;
   /**
-   * procguard.exe's pin check (src/os/procguard.ts: the sha256 the build recorded), run before every
+   * procguard.exe's pin check (src/os/procguard.ts: the sha256 of this startup's build, in memory), run before every
    * start of it, resident or wrapped: a procguard that changed since startup starts nothing
    * (procguard-tampered). Required when a wrapped rule is on.
    */

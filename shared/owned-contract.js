@@ -34,7 +34,8 @@ export const OWNED_ENUMS = frozen({
    * interrupt-unsure: an interrupt left something queued that could still run, so Orchestra ended it;
    * protocol-error: the child said something Orchestra cannot read, so Orchestra stopped it;
    * daemon-stop: orchestrad ended it on its own way out (nobody pressed end); braked: you pressed the
-   * brake, and its whole process tree (its procguard Job) was ended.
+   * brake, and Orchestra ended every process in its procguard Job (whether all of them stopped is the
+   * feed's tree-* note and the brake's reply, never this reason: T1).
    */
   endReason: ['you-ended', 'exited', 'start-failed', 'policy-mismatch', 'daemon-restart', 'safety-stop', 'interrupt-unsure', 'protocol-error', 'daemon-stop', 'braked'],
   approvalKind: ['command', 'file-change', 'permissions', 'question', 'elicitation', 'tool'],
@@ -73,7 +74,8 @@ export const OWNED_TOWER_TEXT = frozen({
   'end.interrupt-unsure': '已结束：你按了中断，但它还有没处理的消息，为免停不住，Orchestra 结束了它',
   'end.protocol-error': '已结束：它发来了 Orchestra 读不懂的内容，Orchestra 停了它',
   'end.daemon-stop': '已结束：orchestrad 停机时结束了它',
-  'end.braked': '已结束：你踩了刹车，整棵进程树已停',
+  // T1: no word on whether everything stopped: the feed's tree-* note says (gone after a restart: unknown then).
+  'end.braked': '已结束：你踩了刹车，Orchestra 结束了它 Job 里的进程（是否全停见对话记录）',
   'end.unknown': '已结束',
   // The newest thing the session said or did, for its activity line (src/sources/tower.ts ownedNode).
   'act.command': '命令：',
@@ -101,9 +103,10 @@ const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f‪-‮⁦-⁩]/;
  * }} OwnedList
  *   rev: the approval queue's revision; the page sends it back with an allow (stale-view otherwise).
  *   enabled: whether any harness can start a session now; disabledWhy says why not (null when enabled).
- *   brakeWhy: why a new session's tree runs without a procguard Job of its own, so it has no brake (a code;
- *   null: every new session gets one). T1: no brake says why.
- *   brake (of an entry): its tree runs in a Job of its own and it still runs, so the brake can stop it.
+ *   brakeWhy: why a new session's tree runs without a procguard Job of its own, so it has no brake, or why
+ *   the brake cannot report what it did (procguard-resident-gone) (a code; null: every brake works). T1.
+ *   brake (of an entry): its tree runs in a Job of its own and its child has not closed, so the brake can
+ *   still end it; an ended or failed session still stopping (its child not closed yet) has one too.
  * @typedef {{
  *   ownedId: string, harness: 'codex' | 'claude', model: string, title: string, state: string, endReason: string | null,
  *   waiting: string | null, queued: number, tokens: Tokens | null, lastSeq: number, createdAt: number, brake: boolean,
@@ -253,8 +256,9 @@ export function validateOwnedList(x) {
     c.int(o.lastSeq, `${at}.lastSeq`);
     c.int(o.createdAt, `${at}.createdAt`);
     c.bool(o.brake, `${at}.brake`);
-    // Nothing of an ended session runs here: there is no tree to brake.
-    if (over && o.brake === true) c.bad(`${at}.brake`, 'an ended session has no tree to brake');
+    // Nothing of a session an earlier orchestrad left runs here: there is no tree to brake. An ended or
+    // failed one may still be stopping (its child not closed yet), and the brake still reaches it.
+    if (o.state === 'unknown' && o.brake === true) c.bad(`${at}.brake`, 'a session an earlier orchestrad left has no tree to brake');
   });
 
   /** @type {Map<unknown, Record<string, unknown>[]>} */

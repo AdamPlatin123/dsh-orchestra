@@ -37,7 +37,8 @@
 // one; whatever happens, a session that was dispatched is ended through orchestrad (POST /end, then the
 // stop order is waited out; with --daemon-stop through orchestrad's own stop instead), orchestrad is
 // stopped by closing its stdin (killed only if it has not exited 15 s later), and the children orchestrad
-// recorded are looked for afterwards (and ended, with their trees, when still there).
+// recorded are looked for afterwards (a Job still there is ended by its name; a pid without a Job is only
+// counted, never ended: scripts/live-common.ts leftovers).
 //
 // Listed in EXEMPT_SCRIPTS (test/helpers/scan-rules.ts): it spawns orchestrad, speaks HTTP to it on
 // 127.0.0.1, waits on timers and reads the one file the session wrote in its test dir; it touches no
@@ -49,7 +50,7 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { endAndWait, endReasonOnDisk, jobsOf, leftovers, probe, request, sleep, stopDaemon } from './live-common.ts';
+import { endAndWait, endReasonOnDisk, jobsOf, leftovers, type probe, probeOf, request, sleep, stopDaemon } from './live-common.ts';
 
 const REPO = fileURLToPath(new URL('../', import.meta.url));
 const FILE = 'smoke.txt';
@@ -211,7 +212,9 @@ async function main(): Promise<number> {
     const jobs = jobsOf(testDir);
     report.jobs = jobs.map((j) => j.rule);
     const job = jobs.at(-1)?.job ?? null;
-    pg = job === null ? null : probe(testDir);
+    const opened = job === null ? null : probeOf(testDir);
+    pg = opened?.pg ?? null;
+    report.probe = opened === null ? null : opened.why;
     if (pg !== null && job !== null) {
       let info = await pg.info(job);
       if (brake) {
@@ -279,7 +282,7 @@ async function main(): Promise<number> {
       pg.close();
       await sleep(300);
     }
-    report.leftovers = leftovers(testDir);
+    report.leftovers = await leftovers(testDir);
     if (!keep) {
       // The host and claude.exe may still be leaving: a few tries.
       for (let i = 0; i < 10; i++) {
