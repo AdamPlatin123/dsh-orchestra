@@ -609,8 +609,9 @@ test("owned descriptors (r4 §8.5 review fix): a tainted session's card has the 
   const card = describeCard(taintedHigh, g) as any;
   assert.deepEqual(card.data, { high: '1', tainted: '1' });
   assert.ok(card.slots.kind.text.startsWith(TOWER_TEXT['appr.tainted']!), card.slots.kind.text);
-  assert.ok(card.slots.note.text.includes(TOWER_TEXT['appr.taintedHigh']!), card.slots.note.text);
-  assert.ok(describeCard(taintedLow, g).slots.note.text.includes(TOWER_TEXT['appr.taintedNote']!));
+  // These cards carry no origin: the note says the card has no source chain (source chain review fix), not where it stops.
+  assert.ok(card.slots.note.text.includes(TOWER_TEXT['appr.taintedHighBare']!), card.slots.note.text);
+  assert.ok(describeCard(taintedLow, g).slots.note.text.includes(TOWER_TEXT['appr.taintedNoteBare']!));
   const plain = describeCard(plainHigh, g) as any;
   assert.equal(plain.data.tainted, '0');
   assert.ok(!plain.slots.kind.text.includes(TOWER_TEXT['appr.tainted']!));

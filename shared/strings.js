@@ -480,14 +480,17 @@ export const TOWER_TEXT = frozen({
   'appr.holdLabel': '按住 1 秒允许，或点一下再输入确认词：{t}',
   // r4 §8.5: a tainted session (a seat request: a DSH session asked). Red bar; a high-risk allow is typed only.
   'appr.tainted': '来源不可信：DSH 会话发来的请求',
-  // The source chain (shared/owned-contract.js ApprovalOrigin): the requester's id is its own word, never checked.
-  'appr.origin': '来源不可信：{who}→ 请求「{label}」→ 这个会话',
+  // The source chain (shared/owned-contract.js ApprovalOrigin): the requester's id and the label are its own words, never checked.
+  'appr.origin': '来源不可信：{who}→ 请求「{label}」（标签是对方写的，未核实）→ 这个会话',
   'appr.originNoLabel': '来源不可信：{who}→ 请求 {req}（没写标签）→ 这个会话',
   'appr.originWho': 'DSH 会话 {id}（自称，未核实）',
   'appr.originWhoNone': 'DSH 会话 未知（请求没报自己的 id）',
   'appr.originCut': '（太长，截断处标了 …，全文在卡片上）',
   'appr.taintedNote': '这个会话由 DSH 会话的请求派出，按来源不可信处理；来源链只写到发请求的 DSH 会话，它自己读过什么、话从哪来，Orchestra 不知道',
   'appr.taintedHigh': '这个会话由 DSH 会话的请求派出，按来源不可信处理：高风险请求只能输入确认词放行，不能按住；来源链只写到发请求的 DSH 会话，它自己读过什么、话从哪来，Orchestra 不知道',
+  // A tainted card without a source chain (its head says only 来源不可信：DSH 会话发来的请求).
+  'appr.taintedNoteBare': '这个会话由 DSH 会话的请求派出，按来源不可信处理；这张卡没带来源链，是哪个 DSH 会话、哪条请求，卡上写不出',
+  'appr.taintedHighBare': '这个会话由 DSH 会话的请求派出，按来源不可信处理：高风险请求只能输入确认词放行，不能按住；这张卡没带来源链，是哪个 DSH 会话、哪条请求，卡上写不出',
   'appr.typeOnly': '输入确认词允许',
   'appr.typeOnlyHint': '来源不可信的高风险请求：点一下，再输入确认词才算数；按住不算',
   'appr.typeOnlyLabel': '点一下再输入确认词允许：{t}',

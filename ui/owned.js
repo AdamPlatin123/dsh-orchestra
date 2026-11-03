@@ -136,19 +136,30 @@ export const allowHow = (a) => (!a.high ? '0' : a.tainted === true ? '2' : '1');
 
 /** The pin's source chain cuts the requester's id and the label at this many characters each (the card shows them whole). */
 export const PIN_ORIGIN_CHARS = 16;
-// What the contract refuses in shown text (control and bidi characters; tab and newline too, the chain is one
-// line), written out as \u{..} should one ever arrive: never drawn as itself (r4 §5.3 rendering rule 2).
-const CTRL = /[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/g;
-const plain = (s) => String(s).replace(CTRL, (ch) => `\\u{${ch.codePointAt(0).toString(16)}}`);
-/** At most n characters (code points), a cut ending in '…'. */
+// Controls, format characters (bidi marks, embeddings, isolates, ALM, zero-width) and the line and paragraph
+// separators, written out as \u{..} should one ever arrive: never drawn as itself (r4 §5.3 rendering rule 2).
+// src/owned/text.ts escapeInvisible writes them out first and the contract refuses them in an origin's label;
+// this is the page's own second line. Tab and newline too: the chain is one line.
+const CTRL = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu;
+const esc = (ch) => `\\u{${ch.codePointAt(0).toString(16)}}`;
+const plain = (s) => String(s).replace(CTRL, esc);
+// The chain's own marks, written out in a label: the DSH session wrote it, so a 」 or a → in it never closes the
+// quote or adds a link that reads as Orchestra's own (a label 'x」→ 这个会话（已核实）' stays inside its quote).
+const MARKS = /[\u300c\u300d\u300e\u300f\u2192]/g;
+const quoted = (s) => plain(s).replace(MARKS, esc);
+// What a reader sees as one character (a letter and its combining marks, a flag, an emoji and its skin tone): a cut never splits one.
+const SEG = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
+const graphemes = (s) => (SEG === null ? [...s] : Array.from(SEG.segment(s), (g) => g.segment));
+/** At most n characters (graphemes; code points where Intl.Segmenter is missing), a cut ending in '…'. */
 const cutTo = (s, n) => {
-  const cps = [...s];
+  const cps = graphemes(s);
   return cps.length > n ? { text: `${cps.slice(0, Math.max(1, n - 1)).join('')}…`, cut: true } : { text: s, cut: false };
 };
 
 /**
  * r4 §8.5: the source chain at the top of a card (and a pin): who asked (the DSH session id the request named
- * itself by, its own word: 自称, 未核实; 未知 when it named none, T1), which request, and this session. ''
+ * itself by, its own word: 自称, 未核实; 未知 when it named none, T1), which request (its label is the DSH
+ * session's own words too, said so, its 「」→ written out), and this session. ''
  * when the approval has no origin and its session is not tainted (a person's own sentence); a tainted one
  * without an origin says only that a DSH session asked. max: the pin's cut of the id and the label, which
  * the line then says (A16: never silently short).
@@ -157,7 +168,7 @@ export function originLine(a, max = Infinity) {
   const o = a.origin;
   if (o == null || o.kind !== 'agent-request') return a.tainted === true ? t('appr.tainted') : '';
   const id = o.requester === null ? null : cutTo(plain(o.requester), max);
-  const label = o.label === null ? null : cutTo(plain(o.label), max);
+  const label = o.label === null ? null : cutTo(quoted(o.label), max);
   const who = id === null ? t('appr.originWhoNone') : t('appr.originWho', { id: id.text });
   const line = label === null ? t('appr.originNoLabel', { who, req: plain(o.requestId) }) : t('appr.origin', { who, label: label.text });
   return id?.cut === true || label?.cut === true ? line + t('appr.originCut') : line;
@@ -179,6 +190,13 @@ export function apprActs(a, g, where) {
   return out;
 }
 
+/**
+ * A tainted card's note: high risk is typed only; with a source chain, the chain stops at the DSH session that
+ * asked. Without one (an older list; GET /api/owned lists one for every tainted approval today) the head says
+ * only that a DSH session asked, and the note says the card has no chain (T1).
+ */
+const taintNote = (a) => (a.origin != null ? (a.high ? 'appr.taintedHigh' : 'appr.taintedNote') : a.high ? 'appr.taintedHighBare' : 'appr.taintedNoteBare');
+
 /** An approval in full. */
 export function describeCard(a, g) {
   const left = a.deadline - g.nowWall;
@@ -190,7 +208,7 @@ export function describeCard(a, g) {
       left: { text: left > 0 ? t('wait.left', { t: fmtLeft(left) }) : t('wait.overdue') },
       title: { text: a.title },
       pv: { text: a.preview },
-      note: { text: join([a.tooLong ? t('appr.cut') : !a.canAccept && t('appr.noAccept'), a.redactions > 0 && t('appr.redacted', { n: a.redactions }), a.tainted === true && t(a.high ? 'appr.taintedHigh' : 'appr.taintedNote')], 'sep.notes') },
+      note: { text: join([a.tooLong ? t('appr.cut') : !a.canAccept && t('appr.noAccept'), a.redactions > 0 && t('appr.redacted', { n: a.redactions }), a.tainted === true && t(taintNote(a))], 'sep.notes') },
       acts: { kids: apprActs(a, g, 'card') },
     },
   };

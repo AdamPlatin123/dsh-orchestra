@@ -166,7 +166,9 @@ export class Approvals {
     const view: ApprovalView = Object.freeze({
       approvalId, ownedId: input.ownedId, kind: input.kind, title, preview, tooLong: !whole, redactions: input.redactions,
       digest: canonicalDigest({ approvalId, kind: input.kind, title, preview }),
-      risk, high, tainted: input.tainted === true, origin: input.origin == null ? null : Object.freeze({ ...input.origin }), rev: this.#rev + 1, canAccept: whole && input.canAccept, canText: whole && input.canText,
+      // A source chain is an unbound sender's: an entry with one is tainted whoever forgot to say so (r4 §8.5;
+      // the contract refuses an origin on an untainted entry, and would turn the whole list into a 500).
+      risk, high, tainted: input.tainted === true || input.origin != null, origin: input.origin == null ? null : Object.freeze({ ...input.origin }), rev: this.#rev + 1, canAccept: whole && input.canAccept, canText: whole && input.canText,
       deadlineMono, deadlineWall: this.#clock.nowWall() + this.#timeoutMs,
     });
     const timerId = `deadline:${approvalId}:0`;

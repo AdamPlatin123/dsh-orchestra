@@ -171,6 +171,9 @@ function endOf(reason: string): ClaudeEndReason {
 
 /** Starts an owned Claude session; the host is running when this returns ok, the session starting. */
 export function startClaudeSession(opts: ClaudeSessionOptions, first: { text: string; uuid: string } | null = null): ClaudeStartResult {
+  // A session with a source chain is tainted even if the caller left tainted out (r4 §8.5): its host and its
+  // cards agree, and the owned contract (an origin only on a tainted entry) never fails the whole list over it.
+  if (opts.origin != null && opts.tainted !== true) opts = { ...opts, tainted: true };
   if (!isClaudeModel(opts.model)) return { ok: false, reason: 'model-refused', detail: String(opts.model) };
   let pipe: HostPipe;
   try {

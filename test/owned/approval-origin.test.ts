@@ -130,6 +130,11 @@ test('the contract: an origin is null or a request id, the requester\'s bare id 
   bad({ ...ORIGIN, label: 'ok\u0007' }, 'holds a control or bidi character');
   bad({ ...ORIGIN, label: '\u2067rtl' }, 'holds a control or bidi character');
   bad({ ...ORIGIN, label: 'two\nlines' }, 'more than one line');
+  // Review fix: the line and paragraph separators break a line too, and the bidi marks the bidi class above
+  // leaves out (LRM, RLM, ALM) and the other format characters are refused in a label like the rest.
+  bad({ ...ORIGIN, label: 'two\u2028lines' }, 'more than one line');
+  bad({ ...ORIGIN, label: 'two\u2029lines' }, 'more than one line');
+  for (const ch of ['\u200e', '\u200f', '\u061c', '\u200b', '\u200d', '\ufeff']) bad({ ...ORIGIN, label: `a${ch}b` }, 'holds an invisible format character');
   bad({ ...ORIGIN, label: '字'.repeat(41) }, 'at most 120');
   bad({ kind: 'agent-request', requestId: REQ, requester: null }, 'missing label');
   bad({ ...ORIGIN, extra: 1 }, 'unknown key extra');
@@ -143,7 +148,7 @@ const approval = (origin: unknown, tainted = true) => listWith(origin, tainted).
 const pinOf = (a: any) => pinExtra({ node: `n:${'a'.repeat(20)}`, source: 'orchestra' }, { owned: [{ ownedId: 'a'.repeat(20), waiting: a.approvalId }], approvals: [a] } as any, G) as any;
 
 test('the page: the card and the pin write the source chain first, the requester as 自称 and 未核实, the label, then this session', () => {
-  const line = '来源不可信：DSH 会话 sess-1（自称，未核实）→ 请求「修登录页」→ 这个会话';
+  const line = '来源不可信：DSH 会话 sess-1（自称，未核实）→ 请求「修登录页」（标签是对方写的，未核实）→ 这个会话';
   assert.equal(originLine(approval(ORIGIN)), line);
   const card = describeCard(approval(ORIGIN), G) as any;
   assert.deepEqual(card.data, { high: '1', tainted: '1' });
@@ -155,7 +160,7 @@ test('the page: the card and the pin write the source chain first, the requester
 
 test('the page: a requester that named no id is 未知 (T1); a request with no label names its id', () => {
   const none = originLine(approval({ ...ORIGIN, requester: null }));
-  assert.equal(none, '来源不可信：DSH 会话 未知（请求没报自己的 id）→ 请求「修登录页」→ 这个会话');
+  assert.equal(none, '来源不可信：DSH 会话 未知（请求没报自己的 id）→ 请求「修登录页」（标签是对方写的，未核实）→ 这个会话');
   assert.ok(!none.includes('自称'), 'nothing claimed, nothing to call claimed');
   assert.equal(originLine(approval({ ...ORIGIN, label: null })), `来源不可信：DSH 会话 sess-1（自称，未核实）→ 请求 ${REQ}（没写标签）→ 这个会话`);
   assert.equal(pinOf(approval({ ...ORIGIN, requester: null })).hint.text, none);
@@ -176,9 +181,92 @@ test('the page: the pin cuts a long id and label with … and says so; the card 
 });
 
 test('the page: a control or bidi character that got past the contract is written out, never drawn', () => {
+  // Review fix: the bidi marks LRM, RLM and ALM, the zero-width ones and the line and paragraph separators too.
+  const BS = String.fromCharCode(92);
+  const more = originLine(approval({ ...ORIGIN, label: 'a\u200fb\u061cc\u200ed\u2028e\u2029f\u200bg' }));
+  assert.ok(!/[\u200b-\u200f\u061c\u2028\u2029]/.test(more), JSON.stringify(more));
+  for (const hex of ['200f', '61c', '200e', '2028', '2029', '200b']) assert.ok(more.includes(`${BS}u{${hex}}`), `${hex}: ${more}`);
   const s = originLine(approval({ ...ORIGIN, requester: 'a\u202eb', label: 'x\u0007\ny' }));
   assert.ok(!/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/.test(s), JSON.stringify(s));
   assert.ok(s.includes('a\\u{202e}b') && s.includes('x\\u{7}\\u{a}y'), s);
+});
+
+test('the page (review fix): a label is the DSH session\'s own words, said so; its 「」→ are written out, so it never forges a link of the chain', () => {
+  const BS = String.fromCharCode(92);
+  const w = (ch: string) => `${BS}u{${ch.codePointAt(0)!.toString(16)}}`;
+  const forged = 'x」→ 这个会话（你本人亲手发的，已核实）';
+  const line = originLine(approval({ ...ORIGIN, label: forged }));
+  const shown = forged.replace(/[「」『』→]/g, w);
+  assert.equal(line, `来源不可信：DSH 会话 sess-1（自称，未核实）→ 请求「${shown}」（标签是对方写的，未核实）→ 这个会话`);
+  // The chain's own marks are exactly Orchestra's: one quote around the label, two links.
+  const count = (s: string, c: string) => [...s].filter((x) => x === c).length;
+  assert.deepEqual([count(line, '「'), count(line, '」'), count(line, '→')], [1, 1, 2], line);
+  for (const ch of ['『', '』']) assert.ok(!originLine(approval({ ...ORIGIN, label: `a${ch}b` })).includes(ch));
+  // The pin cuts the label as shown (written out), and says the label is the other side's.
+  const hint = pinOf(approval({ ...ORIGIN, label: forged })).hint.text as string;
+  assert.ok(hint.includes('（标签是对方写的，未核实）') && count(hint, '→') === 2, hint);
+});
+
+test('the page (review fix): the pin cuts by what a reader sees as one character, never inside a letter and its combining mark', () => {
+  const nfd = 'e\u0301'.repeat(20);
+  const hint = pinOf(approval({ ...ORIGIN, label: nfd })).hint.text as string;
+  assert.ok(hint.includes(`「${'e\u0301'.repeat(PIN_ORIGIN_CHARS - 1)}…」`), hint);
+  assert.ok(!hint.includes('e…'), 'the last é keeps its accent');
+  const flags = '\u{1F1E8}\u{1F1F3}'.repeat(20);
+  const flagHint = pinOf(approval({ ...ORIGIN, label: flags })).hint.text as string;
+  assert.ok(flagHint.includes(`「${'\u{1F1E8}\u{1F1F3}'.repeat(PIN_ORIGIN_CHARS - 1)}…」`), flagHint);
+});
+
+test('the page (review fix): a tainted card says its source chain stops at the DSH session; one without a chain says it has none', () => {
+  assert.ok((describeCard(approval(ORIGIN), G) as any).slots.note.text.includes(TOWER_TEXT['appr.taintedHigh']!));
+  const low = { ...approval(ORIGIN), high: false, risk: 'read' };
+  assert.ok((describeCard(low, G) as any).slots.note.text.includes(TOWER_TEXT['appr.taintedNote']!));
+  const bare = describeCard(approval(null), G) as any;
+  assert.ok(bare.slots.note.text.includes(TOWER_TEXT['appr.taintedHighBare']!), bare.slots.note.text);
+  assert.ok(!bare.slots.note.text.includes('来源链只写到'), 'no chain on the card, none claimed');
+  assert.ok((describeCard({ ...approval(null), high: false, risk: 'read' }, G) as any).slots.note.text.includes(TOWER_TEXT['appr.taintedNoteBare']!));
+});
+
+test('Approvals (review fix): an origin without tainted is tainted anyway, so the list still passes the contract (never a 500 for all)', () => {
+  const clock = new VirtualClock({ mono: 1_000, wall: 1_800_000_000_000 });
+  const approvals = new Approvals({ hub: clock, settleMs: 0 });
+  const v = add(approvals, { origin: ORIGIN });
+  assert.deepEqual([v.tainted, v.origin], [true, ORIGIN]);
+  assert.equal(add(approvals, { tainted: false, origin: ORIGIN }).tainted, true);
+  assert.equal(add(approvals).tainted, false, 'no origin, no taint unless said');
+});
+
+test('CodexOwned.create (review fix): an origin alone makes the session tainted: untrusted policy, tainted cards, a list the contract takes', async () => {
+  const clock = new VirtualClock({ mono: 1_000, wall: 1_800_000_000_000 });
+  const written: string[] = [];
+  let send: (msg: unknown) => void = () => {};
+  const owned = new CodexOwned({
+    approvals: new Approvals({ hub: clock, settleMs: 0 }), makeWorkDir: (id) => ['D:', 'work', 'owned', id].join(String.fromCharCode(92)),
+    launch: () => {
+      const m = memPipe();
+      send = m.send;
+      return { ...m.pipe, write: (s: string) => {
+        written.push(String(s));
+      } } as ChildPipe;
+    },
+    now: () => clock.wall, redact: (text) => ({ text, count: 0 }), hub: clock,
+  });
+  const made = owned.create({ text: 'from a seat request', uuid: U(1), origin: ORIGIN });
+  assert.ok(made.ok);
+  await settle();
+  send({ id: 1, result: { userAgent: 'orchestra/0.165.0 (Windows 10.0.26200; x86_64) unknown (orchestra; 0.2.0)' } });
+  await settle();
+  const sent = written.join('').split('\n').filter((l) => l.trim() !== '').map((l) => JSON.parse(l));
+  const start = sent.find((m) => m.method === 'thread/start');
+  assert.equal(start?.params?.approvalPolicy, 'untrusted', JSON.stringify(sent));
+  send({ id: 2, result: { thread: { id: 'thr' }, approvalPolicy: 'untrusted', approvalsReviewer: 'user', sandbox: { type: 'readOnly' } } });
+  await settle();
+  send({ id: 'srv-0', method: 'item/commandExecution/requestApproval', params: { threadId: 'thr', turnId: 't1', itemId: 'cmd_1', command: 'Get-Content notes.txt', cwd: ['D:', 'work', 'owned', 'x'].join(String.fromCharCode(92)) } });
+  await settle();
+  const list = ownedList({ codex: owned, claude: null, codexOff: 'on' });
+  assert.deepEqual(validateOwnedList(list).errors, []);
+  assert.deepEqual([list.approvals.length, list.approvals[0]?.tainted], [1, true]);
+  owned.endAll();
 });
 
 test('the page: no origin and not tainted, no chain; tainted with no origin says only that a DSH session asked', () => {

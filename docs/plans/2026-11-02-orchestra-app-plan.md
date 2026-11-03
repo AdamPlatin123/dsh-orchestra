@@ -235,6 +235,12 @@
 - 测试：新增 `test/owned/approval-origin.test.ts`（视图带 origin 并冻结、digest 和 allow / deny 不变；CodexOwned 经会话到 `GET /api/owned` 带 origin 且过契约，普通会话为 null；ClaudeOwned 经假 SDK 的宿主同样带到卡上；契约拒非 tainted、错 kind、错 requestId、带空格或 `-` 开头或超长的 id、label 里的控制字符和双向控制字符、换行、超长，缺键；卡片和等你栏文本、null 写未知、截断标注、控制字符写出）；`test/server/agent-requests-http.test.ts` 的派出用例改为期望 origin。全量 1534 通过、0 失败。分别去掉 `describeCard` 的 originLine、handler 传 origin、Claude 会话传 origin 那一处，各有测试失败（2 条、1 条、1 条），恢复后通过。没动 journal 和 contract-freeze 的金标准（这两处都没变）。
 - live（本机，测试 profile，各一次）：`scripts/live-smoke.ts --harness codex`（脚本新增报告项 `approvalOrigins`）：审批 2 张 command / shell 都允许，`approvalOrigins` 为 `{null: 2}`，文件内容对，残留 0，测试目录已删。实验室 `seat-smoke.ts complete`（先删 `%TEMP%\orchestra-test-seat`）：派出 200，请求 dispatched → running → done，审批 1 张（command / shell，tainted），它的 origin：kind `agent-request`、requestId 等于请求卡的、requester 和请求卡的 `dsh:<id>` 一致（非 null）、label「hello file」等于请求卡的；orchestrad stdin-eof 退出码 0，令牌文件已删，残留 0；跑完删了测试目录，除用户自己的 7470 orchestrad 外没有 orchestrad、codex、dsh 进程。
 - 仍没做、未验证：卡片和等你栏的来源链没在真实页面上看过（只有描述符的单元测试和 DOM 测试里现成的等你栏插槽测试），长链在窄屏上的折行没看；requester 为 null 的路径只有单元测试（seat 每次都报了 id）；seat→Claude 的来源链没有 live 跑；真实 profile 未验证（代-2）。
+- 复核修正（2026-11-03，提交 "orchestra app: source chain review fixes"）：
+  - 标签是对方写的：链改成「请求「<标签>」（标签是对方写的，未核实）→ 这个会话」；标签里的 「」『』→ 写成 `\u{..}`，带 」→ 的标签拼不出第二条链（新测试数了：一对「」、两个 →）。
+  - 上面「不许控制字符和双向控制字符」原先不全：LRM、RLM、ALM（U+200E、U+200F、U+061C）和别的格式字符（Unicode Cf）没拦，「只许一行」没查 U+2028、U+2029。现在契约对 origin 的 label 拒所有 Cf 和这两个分隔符；页面对来源链里所有 Cc、Cf、Zl、Zp 都写成 `\u{..}`。服务端 escapeInvisible 本来就先写出这些字符，这是第二道。契约的全局 CONTROLS 没扩，别的字段照旧。
+  - 等你栏按用户看到的字符（Intl.Segmenter 字形）截断，不会把字母和它的组合附加符号、国旗拆开；没有 Intl.Segmenter 时退回按码点。
+  - 备注按有没有 origin 选：有 origin 写「来源链只写到发请求的 DSH 会话……」；没有 origin 的 tainted 卡写「这张卡没带来源链……」（新键 appr.taintedNoteBare / appr.taintedHighBare）。
+  - 生产端：Approvals.add 有 origin 就算 tainted；startCodexSession / startClaudeSession 有 origin 而没说 tainted 时也按 tainted 起（Codex 用 untrusted 策略）。不再靠出口契约兜底把整份 GET /api/owned 变成 500。
 
 ### 5. 界面：塔表
 - 首页 `/`：顶栏（计数即筛选、刹车）、「等你」钉栏（按剩余时间）、跨项目树表（你 → agent → subagent，同一行格式，缩进表层级，子树小框 `子·错·等`）、右栏详情、底部「发给 → X」输入框和停止键。

@@ -439,9 +439,17 @@ function checkOrigin(c, v, at) {
   if (o.requester !== null) c.re(o.requester, `${at}.requester`, REQUESTER_SESSION_RE, 'requester session id');
   if (o.label !== null) {
     c.text(o.label, `${at}.label`, OWNED_BOUNDS.requestLabelBytes);
-    if (typeof o.label === 'string' && /[\r\n]/.test(o.label)) c.bad(`${at}.label`, 'more than one line');
+    if (typeof o.label === 'string' && LINE_BREAKS.test(o.label)) c.bad(`${at}.label`, 'more than one line');
+    // The rest of what src/owned/text.ts escapeInvisible writes out (LRM, RLM, ALM, zero-width and the other format
+    // characters) never reaches a label as itself: one that did is refused, not drawn (r4 §5.3 rendering rule 2).
+    if (typeof o.label === 'string' && FORMAT.test(o.label)) c.bad(`${at}.label`, 'holds an invisible format character');
   }
 }
+
+// One line: no CR, LF, line separator or paragraph separator.
+const LINE_BREAKS = /[\r\n\u2028\u2029]/;
+// Format characters (Unicode Cf: the bidi marks LRM, RLM and ALM, zero-width joiners and spaces, the soft hyphen...).
+const FORMAT = /\p{Cf}/u;
 
 /**
  * The agent requests (seat): each names its harness, its text, label and cwd as shown, who asked, its
