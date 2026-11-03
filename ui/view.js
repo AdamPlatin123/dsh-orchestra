@@ -175,9 +175,11 @@ export function describePins(snap, ctx) {
     const n = hit.node;
     const w = /** @type {NonNullable<Node['waiting']>} */ (n.waiting);
     const h = harnessName(n.harness);
+    // ctx.extra's data (a tainted session's pin, owned.js) goes on the pin itself; the rest are slots.
+    const { data: xd, ...xs } = ctx.extra?.(e) ?? {};
     kids.push({
       key: e.node, tpl: 'tpl-pin',
-      data: { node: e.node, src: e.source, harness: n.harness, sel: ctx.sel === e.node ? '1' : '0' },
+      data: { node: e.node, src: e.source, harness: n.harness, sel: ctx.sel === e.node ? '1' : '0', ...xd },
       slots: {
         ico: { text: t(`icon.${e.kind}`) },
         kind: { text: e.source === 'inferred' ? t('wait.inferred') : t(`wait.${e.kind}`) },
@@ -185,7 +187,7 @@ export function describePins(snap, ctx) {
         clock: { text: clockOf(w, n.harness, ctx.nowWall) },
         hint: { text: e.source === 'orchestra' ? '' : t(e.source === 'inferred' ? 'wait.goNativeGuess' : 'wait.goNative', { h }) },
         acts: { kids: [] }, pv: { text: '' },
-        ...ctx.extra?.(e),
+        ...xs,
       },
     });
   }

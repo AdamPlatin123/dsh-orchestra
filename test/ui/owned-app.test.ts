@@ -614,6 +614,12 @@ test("owned descriptors (r4 §8.5 review fix): a tainted session's card has the 
   const plain = describeCard(plainHigh, g) as any;
   assert.equal(plain.data.tainted, '0');
   assert.ok(!plain.slots.kind.text.includes(TOWER_TEXT['appr.tainted']!));
+  // The waiting bar's pin too (found on the page 2026-11-03: it was yellow with no source line): red bar, source in the hint.
+  const listWith = (x: Approval) => ({ owned: [{ ownedId: ID.a, waiting: x.approvalId }], approvals: [x] }) as any;
+  const pin = pinExtra({ node: `n:${ID.a}`, source: 'orchestra' }, listWith(taintedHigh), g) as any;
+  assert.deepEqual([pin.data, pin.hint.text, pin.acts.kids.find((d: any) => d.data.act === 'allow').data.high], [{ tainted: '1' }, TOWER_TEXT['appr.tainted'], '2']);
+  const plainPin = pinExtra({ node: `n:${ID.a}`, source: 'orchestra' }, listWith(plainHigh), g) as any;
+  assert.deepEqual([plainPin.data, plainPin.hint], [undefined, undefined], 'an untainted pin keeps the plain wait colour');
 });
 
 test('owned descriptors (review fixes): words for notes and fates, unknown outcomes, why off, busy keeps the focus, unique ids', () => {

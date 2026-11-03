@@ -282,6 +282,20 @@ test('the waiting bar: one entry per waiting node with its path from 你, the so
   assert.equal(pins.getAttribute('data-hide'), '1');
 });
 
+test("the waiting bar: ctx.extra's data lands on the pin (a tainted session's red bar, r4 §8.5), its slots fill the template", () => {
+  const { doc, dom } = page();
+  const s = golden();
+  const first = s.waitingBar[0].node;
+  const extra = (e: Json) => (e.node === first ? { data: { tainted: '1' }, hint: { text: TOWER_TEXT['appr.tainted'] } } : {});
+  dom.paintId('pins', describePins(s as any, { sel: null, nowWall: s.meta.observedAt, extra }));
+  const [one, two] = doc.getElementById('pins')!.querySelectorAll('.pin');
+  assert.deepEqual([one!.getAttribute('data-tainted'), one!.getAttribute('data-node')], ['1', first], 'the pin keeps its own data next to the extra');
+  assert.equal(slotText(one!, 'hint'), TOWER_TEXT['appr.tainted']);
+  assert.equal(two!.getAttribute('data-tainted'), null);
+  const css = fs.readFileSync(fileURLToPath(new URL('../../ui/tower.css', import.meta.url)), 'utf8');
+  assert.match(css, /\.pin\[data-tainted="1"\] \{ border-left-color: var\(--taint\); \}/);
+});
+
 test('an Orchestra wait counts down against the daemon time: 剩 m:ss 自动拒', () => {
   const { doc, render } = page();
   const s = golden();

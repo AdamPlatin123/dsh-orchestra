@@ -90,6 +90,9 @@ code, .pk-mono, .age, .kids, .ev-at, .rule-id, .num, .pin-clock { font-family: v
   width: 100%; min-height: var(--row); padding: 0 10px 0 8px; border: 0; background: none; text-align: left;
 }
 .pin[data-src=inferred] { border-left-style: dashed; }
+/* r4 §8.5: a tainted session's pin, like its card: red bar, source line in the hint. */
+.pin[data-tainted="1"] { border-left-color: var(--taint); }
+.pin[data-tainted="1"] .pin-hint { color: var(--taint); font-weight: 600; }
 .pin + .pin { border-top: 1px solid var(--rule); }
 .pin-go:hover { background: var(--hover); }
 .pin[data-sel="1"] .pin-go { background: var(--sel); }

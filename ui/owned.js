@@ -171,7 +171,9 @@ export function describeCard(a, g) {
 export function pinExtra(e, list, g) {
   const a = list?.approvals.find((x) => x.approvalId === entry(list, e.node.slice(2))?.waiting);
   const mine = e.source === 'orchestra';
-  return { acts: { kids: !mine ? [] : !g.unlocked ? [lockBtn()] : a === undefined ? [] : apprActs(a, g, 'pin') }, pv: { text: mine && g.unlocked && a !== undefined && pinWhole(a) ? a.preview : '' } };
+  // r4 §8.5: a tainted session's pin says where its turns came from, with the same red bar as its card.
+  const taint = mine && a !== undefined && a.tainted === true;
+  return { ...(taint ? { data: { tainted: '1' }, hint: { text: t('appr.tainted') } } : {}), acts:{ kids: !mine ? [] : !g.unlocked ? [lockBtn()] : a === undefined ? [] : apprActs(a, g, 'pin') }, pv: { text: mine && g.unlocked && a !== undefined && pinWhole(a) ? a.preview : '' } };
 }
 
 // --- seat: agent requests in 「等你」 (src/route/requests.ts; r4 A17, D8) ---------------------------------
