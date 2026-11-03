@@ -77,6 +77,53 @@ dsh --profile seat-hl --dump-config | Select-String "^- id: (orchestra-seat|tool
 # 只搜 "orchestra" 会命中十几行（patch 来源注释、name、pipe、tokenFile、provider 都含这个词），不代表装错
 ```
 
+## 装进你日常用的 DSH profile
+
+**这一步由你本人决定、由你本人动手。** AI 助手不替你装：依据是 r4 的两条。
+
+- **D11**（只对接、不魔改上游；r4 第 495 行）：「live `web` profile 里默认不放 Orchestra 代码（你可以 opt-in，Q5a 已定 2026-10-29）；任何 bundle 先在隔离的 `DSH_HOME` 加 3099 / 3199 端口上验证」。
+- **Q5a**（日常 profile 里放不放 Orchestra 代码；r4 第 2904 行，第 167、2254 行同义）：「默认不放；保留你手动 opt-in 的路径：在 Tuning 开启，是人类动词、记 Decision；开启前同一版本的 bundle 必须先在隔离 `DSH_HOME` 验过（推断）」。
+
+所以开始之前：
+
+1. **先用同一版本在隔离的 `DSH_HOME` 里验过**（上一节）。「同一版本」按提交算：bundle 的 `package.json` 版本号不随提交变，要记下你验过的是哪个提交，日常 profile 里 link 的也必须是那个提交。
+2. **知道它和 r4 原文对不上的三处**，由你决定接不接受：
+   - Q5a 写的是 opt-in 时**只加载 bundle 的只读部分**（转发子代理开始/结束、后代可见、BSB 标签页），不开会改变 agent 行为的部分。seat 不是只读的：它给日常 profile 里的每个会话加两个模型能调的工具，每调一次就在 Orchestra 配对页上出一张请求卡。它派不出任何东西（每张卡都要你点「派出」，10 分钟没人点就自动拒），但它确实超出了 Q5a 说的「只读部分」。
+   - Q5a 说「在 Tuning 开启」。Orchestra 现在没有 Tuning 页，也不记这次开启的 Decision：开启就是你手动跑下面的命令、手动改文件（计划 `docs/plans/2026-11-02-orchestra-app-plan.md` 的分歧一节记了这一条）。
+   - D11、Q5a 写的是 live `web` profile。r4 第 3879 行记着 DS-Bot 2026-10-26 起换成了桌面版，这两条要按桌面版重核。这里说的「日常 profile」就是你平时实际在用的那个 DSH profile，名字以你本机为准。Q5a 还要求隔离验证包括和 DS-Bot `approvals.js` 共存的检查（推断）：seat 不碰 `approval/request`，但共存没有验证过，你的日常 profile 里如果还装着 DS-Bot，结果未知。
+
+### 步骤
+
+**顺序：先让 orchestrad 带 `--agent-port` 起来，再用 DSH。** 令牌文件只在 orchestrad 运行时存在，每次启动都换新的；seat 每次请求都现读这个文件，所以 orchestrad 重启后 DSH 不用重启，但重启前还在等的请求全部丢失。orchestrad 没在跑时，委派会以 `error` 结束（诊断写找不到令牌文件或连不上）。orchestrad 的启动方法见 `docs/quickstart.md` 第 1 节（`start-orchestra.cmd`，或 `orchestra.cmd --owned --agent-port --peek-port 7470`）。
+
+1. **link 到一个稳定的检出目录，不要 link 到 `.claude\worktrees` 下。** `link:` 直接读磁盘上的文件，那个目录切分支、被清理、被删掉，你日常 DSH 里的代码就跟着变或者没了。worktree 是临时的。注意：seat 目前只在分支 `claude/orchestra-app` 上（没合并、没 push），主检出目录的 `main` 里还没有 `integrations\dsh-seat`。合并之前要装，就为它单独准备一个固定位置、不随手切分支的检出目录。
+2. **不要用 `--from-default-profile`。** 它会把 profile 删掉重建，用在日常 profile 上会抹掉你原来的配置。日常 profile 已经存在，直接装 bundle：
+
+   ```powershell
+   Remove-Item Env:DSH_HOME -ErrorAction SilentlyContinue   # 确认这个窗口没指向隔离目录；日常 DSH 用 ~/.dsh
+   Set-Location "<某个普通目录>"                              # dsh 会读当前目录的 .env，别在仓库目录里起
+   dsh plugin --profile <日常 profile> add -w --offline "link:<稳定检出目录>\integrations\dsh-seat"
+   ```
+
+3. **在日常 profile 的 `cordis.patch.yml`（`~\.dsh\profiles\<日常 profile>\cordis.patch.yml`）末尾追加下面这段，不要整份覆盖这个文件**（里面可能已经有你别的配置）。文件里已经有 `- id: orchestra-seat` 的话，改那一段，不要再加第二段。这一段会整段替换 bundle 自带的 config：
+
+   ```yaml
+   - id: orchestra-seat
+     config:
+       pipe: '\\.\pipe\orchestra-agent-real'                  # 真实 profile 的 pipe 名，和 src/server/agent-port.ts 一致
+       tokenFile: 'C:\Users\<你>\.orchestra\agent-port.token'  # 绝对路径；以 orchestrad 启动时控制台打印的「token in …」为准
+       requestTimeoutMs: 600000                                # 没人派出时 DSH 最多等多久，整数，最少 5000
+   ```
+
+   bundle 启动时按 `index.js` 的 `configProblem` 检查这段：`pipe` 必须以 `\\.\pipe\orchestra-agent-` 开头；`tokenFile` 必须是绝对路径（`%USERPROFILE%` 这类写法不算，要写展开后的路径）；`requestTimeoutMs` 可以不写，写了必须是不小于 5000 的整数。不合格时 bundle 不注册任何后端，只在 DSH 日志里写一行 `orchestra-seat: config unusable (…)`。你设了 `ORCHESTRA_HOME` 的话，令牌文件在那个目录里，照控制台打印的写。
+4. **检查**：`dsh --profile <日常 profile> --dump-config | Select-String "^- id: (orchestra-seat|tool-subagent-orchestra-)"` 应该是三行。
+
+### 装上以后会变的
+
+- **这个 DSH 里 `plugin_manager` 一律被拒**：bundle 注册的拦截器作用于这个 profile 起的整个 DSH 宿主，所有会话都一样，不管是谁调的。要装别的插件，改用命令行 `dsh plugin …`。
+- 日常 profile 里每个会话的模型都多了两个工具 `subagent_codex_governed`、`subagent_claude_governed`（全局工具，所有 preset 都看得到）。模型调一次，配对页上就多一张请求卡，等你处理。
+- 卸载：本文没核实 DSH 的卸载命令（未知）。至少要删掉第 3 步追加的那一段。
+
 ## 测试
 
 ```powershell

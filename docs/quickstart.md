@@ -1,6 +1,8 @@
-# Orchestra 上手指南（2026-11-02，分支 claude/orchestra-app）
+# Orchestra 上手指南（2026-11-03 更新，分支 claude/orchestra-app）
 
 写给 Orchestra 的主人：怎么启动、怎么配对、页面上每块是什么、哪些能操作、哪些只能看、现在还有哪些已知的限制。
+
+**代码在哪。** 本文说的功能（自有会话、派活台、刹车、DSH 请求卡）目前只在一个 git worktree 里：`G:\_Projects\dsh-orchestra\.claude\worktrees\zen-superagent-exploration-04992d`，分支 `claude/orchestra-app`。这条分支**没合并、没 push**，远端没有它。主检出目录 `G:\_Projects\dsh-orchestra` 上的 `main` 还没有这些功能。自有 Claude 会话要用的 `hosts\claude\node_modules` 也只在这个 worktree 里有。所以下面的命令都在这个 worktree 的根目录里运行。
 
 先说几个词：
 
@@ -14,14 +16,29 @@
 
 ### 1.1 用你的真实数据启动
 
-在仓库根目录打开一个**普通（不是管理员）的** cmd、PowerShell 或 Windows Terminal 窗口，运行：
+**最省事的办法：双击仓库根目录的 `start-orchestra.cmd`。** 它在一个看得见的控制台窗口里运行下面这条命令，大约 5 秒后用默认浏览器打开 `http://orchestra.localhost:7470/`：
+
+- **由你双击，不开机自启、不进计划任务、不由别的程序启动。** 原因是代-2（M0 计划 `docs/plans/2026-10-31-m0-implementation-plan.md` 第 200 行：真实 profile 只由你在可见控制台里用 `orchestra.cmd` 启动，不开机自启；配对码只在 stdin 和 stdout 都是控制台时打印；agent 只许起测试 profile）。
+- **配对码只在启动后 10 分钟内有效**，只能配一个浏览器。错过了就在那个窗口按 Ctrl+C，再双击一次。
+- **重启会丢东西**：自有会话的对话内容只在 orchestrad 的内存里，重启后看不到（没结束的会话显示「状态未知」）；还在等你的 DSH 请求也一起丢掉，DSH 那边再查会报错。
+- 它自己找 node：没设 `ORCHESTRA_NODE`、旁边也没有 `.tools\node24\node.exe` 时（worktree 就是这样），用主检出目录的 `.tools\node24\node.exe`（worktree 往上三级）。
+- 额外参数原样传给 orchestrad，例如 `start-orchestra.cmd --test-profile --test-dir %TEMP%\orchestra-test-x` 用合成数据（见 1.2）。再给一个 `--peek-port` 会被拒绝（重复参数）。`start-orchestra.cmd /dry-run` 只打印它会运行什么，不启动任何东西。
+- orchestrad 退出后窗口停在「按任意键继续」，方便你看退出原因。
+- 脚本里的注释是英文的：cmd 按控制台代码页读 .cmd 文件，里面的 UTF-8 中文可能把前后几行读坏。
+
+不用脚本时，在仓库根目录打开一个**普通（不是管理员）的** cmd、PowerShell 或 Windows Terminal 窗口，运行：
 
 ```
-orchestra.cmd --owned --peek-port 7470
+orchestra.cmd --owned --agent-port --peek-port 7470
 ```
 
 - `--peek-port 7470`：开页面，地址是 `http://orchestra.localhost:7470/`。不带这个参数就没有页面。
 - `--owned`：开自有会话、派活台和刹车。不带它，页面只能看，不能派活。
+- `--agent-port`：开 agent 侧请求口（一条 named pipe），让装了 seat bundle 的 DSH 能向 Orchestra **提请求**，每条请求都要你在页面上点「派出」或「拒绝」（见 3.5）。不用 DSH 的话可以不带。它有三个前提：
+  1. **必须和 `--owned` 一起给**，否则 orchestrad 拒绝启动（`--agent-port only works with --owned`，见 `src/runtime/test-profile.ts`）。
+  2. **要有 `--peek-port`**：请求要在配对页上等你处理。没有页面时请求口不开，控制台写 `the agent request port is off: no-page`。
+  3. **至少一家自有会话开着**（Codex 或 Claude）。两家都没开时请求口不开，控制台写 `the agent request port is off: owned-off`。
+  请求口开了，控制台打印一行，写明 pipe 名和令牌文件的位置（见下面「启动后控制台会打印」，代码在 `src/runtime/working.ts`）。DSH 那边的配置要照这两项写（`integrations/dsh-seat/README.md`）。
 - `orchestra.cmd` 默认用仓库里的 `.tools\node24\node.exe`。在 worktree 里没有这个文件时，先设 `ORCHESTRA_NODE` 指向主检出目录的那份，例如在 cmd 里：`set ORCHESTRA_NODE=<主检出目录>\.tools\node24\node.exe`。
 - 以管理员身份运行会被拒绝，orchestrad 直接退出。
 - **配对码只在交互式控制台里打印**，条件是 stdin 和 stdout 都是控制台。Git Bash 的 mintty 窗口不算控制台，在那里启动会显示 `pairing is off`，页面就配不上对。请用 cmd、PowerShell 或 Windows Terminal。
@@ -33,9 +50,10 @@ orchestra.cmd --owned --peek-port 7470
 - `orchestrad: pairing code 12345678`：配对码，见第 2 节。
 - `orchestrad: procguard on …`：每个自有会话都在它自己的 Job 里，刹车可用。Job 是 Windows 的进程组，能一次整组结束。procguard 是仓库自带的 C# 小程序，每次带 `--owned` 启动时都用系统自带的 csc 重新编译（约 1–2 秒），放在数据目录的 `runtime\procguard\` 下；上次留下的 exe 不直接用。procguard 没开（编译失败、源码和钉住的校验值对不上等）时，自有会话整个关闭，控制台写明原因：每个自有会话都必须在自己的 Job 里。
 - `orchestrad: owned Codex sessions on …` / `owned Claude sessions on …`：两家自有会话开没开。没开的会写原因，例如找不到 codex.exe。
+- `orchestrad: agent request port on \\.\pipe\orchestra-agent-real (token in …\agent-port.token, new at every start): …`：请求口开了。真实 profile 的 pipe 名固定是 `\\.\pipe\orchestra-agent-real`；令牌文件在数据目录里（默认 `%USERPROFILE%\.orchestra\agent-port.token`，以这一行打印的路径为准），**每次启动都换新令牌**，关闭时删掉。没开时这一行写 `the agent request port is off: <原因>`。
 - `orchestrad: working (real profile, pid …, data …)`：启动完成，这是最后一行。
 
-> 说明：这条命令在真实数据上（也就是真实 profile）还没被实际跑过一次。开发时 AI 助手按项目规则只用测试 profile（见 1.2）。规则原文见 `docs/plans/2026-10-31-m0-implementation-plan.md`：「agent 只能起测试 profile」，真实 profile 只由你启动、由你配对。第一次请你自己按第 6 节的清单走一遍。
+> 说明：这条命令在真实数据上（也就是真实 profile）还没被实际跑过一次，`start-orchestra.cmd` 也没有实际跑过（只用 `/dry-run` 查过它找到的 node 和拼出的命令）。开发时 AI 助手按代-2 只用测试 profile（见 1.2），真实 profile 只由你启动、由你配对。第一次请你自己按第 6 节的清单走一遍。
 
 ### 1.2 先用合成数据看看（测试 profile）
 
@@ -72,9 +90,9 @@ orchestra.cmd --test-profile --test-dir <临时目录>\orchestra-test-tower --pe
 
 ### 3.1 顶栏，从左到右
 
-- **Orchestra · 塔**：首页叫「塔」，是你 → agent → 分身（subagent）的跨项目会话树。有事在等你时，浏览器标签标题前面会出现等你的件数。
+- **Orchestra · 塔**：首页叫「塔」，是你 → agent → 分身（subagent）的跨项目会话树。有事在等你时，浏览器标签标题前面会出现件数，形如「(3) Orchestra · 塔」。**标题的数字 = 树里在等你的节点数 + 还在等你处理的 DSH 请求数**。页面在后台时它也会动（每 10 秒读一次）。
 - **测试数据**：只在测试 profile 下出现。
-- **计数：等你 N / 出错 N / 在跑 N**：点一下只看这一类，再点一下取消。数字等于点开后的行数。观察到的会话这一版不判定出错，没有判定规则时「出错」不显示，免得把「没看」写成「0 个」。
+- **计数：等你 N / 出错 N / 在跑 N**：点一下只看这一类，再点一下取消。它们是筛选，数字等于点开后的行数（T3：计数等于它链接的列表长度）。所以顶栏的「等你」**只数树里的节点，不数 DSH 请求卡**：请求卡不是树里的行，点开也不会出现。有 DSH 请求在等时，标题的数字会比顶栏「等你」大，差的就是请求卡的张数（它们在「等你」钉栏里，见 3.5）。观察到的会话这一版不判定出错，没有判定规则时「出错」不显示，免得把「没看」写成「0 个」。
 - **来源**：只在某个来源读取出错时出现，写明是哪一家、什么错。
 - **更新时间**：多久前拿到的数据；太久没拿到新数据会写「已 N 秒没拿到新数据」。
 - **关于数据**：诚实声明、每家来源读了多少、哪些判定规则没在真实样本上测过（写「没测过」）。
@@ -112,7 +130,24 @@ orchestra.cmd --test-profile --test-dir <临时目录>\orchestra-test-tower --pe
 - 浏览器通知和通知栏里不放「允许」按钮，只提醒你回页面。
 - 观察到的会话（Claude、DSH、Codex 自己开的）在等你时，这里只读：请到它自己的界面里处理。
 
-### 3.5 对话区和三档停止
+### 3.5 「等你」栏里的 DSH 请求卡
+
+只在 orchestrad 带 `--agent-port` 启动、并且某个 DSH 装了 seat bundle（`integrations/dsh-seat`）时出现。DSH 的主 agent 调 `subagent_codex_governed` 或 `subagent_claude_governed` 时，**不会启动任何进程**，只是向 Orchestra 提一条请求，请求在「等你」栏里变成一张卡，和审批卡一起按剩余时间排。
+
+- **没解锁时是占位卡**：「以 DSH 名义请求派 Codex：任务内容和请求方解锁后可见 · 剩 9:45 自动拒」，按钮是「先解锁」。这时页面只知道哪一家、还剩多久，看不到任务原文和请求方。
+- **解锁后是完整卡**：任务全文；「自称来自 DSH 会话 <id>（未核实）」，没给 id 时写「未知」；「它想在 <目录> 干活；派出后仍在 Orchestra 自建的工作目录里跑」；派出会用的模型和它的来源（路由模型建议、规则建议，或者默认值和为什么是默认值）。
+- **「自称来自…（未核实）」的意思**：请求方是谁，是它自己报的，Orchestra 没有核对（没有校验管道那头是哪个进程）。不要把它当成身份。
+- **「派出」**：开一个自有会话，任务就是卡上的原文，模型就是卡上写的那个。之后它和你自己派的会话一样：要审批的照样来问你，三档停止照样能用。会话第一回合结束后，最后一条消息交回给 DSH；这只表示「那一回合回来了」，不是工作做好了的判定。
+- **「拒绝」**：DSH 那边收到「人在 Orchestra 配对页上点了『拒绝』」，那次委派以拒绝结束。
+- **到点自动拒**：10 分钟没人处理，请求自动变成「已到期」，按拒绝算（超时即拒）。卡上一直有倒计时「剩 … 自动拒」。
+- 派出键和审批的允许键一样，「等你」栏刚变过（750 毫秒内）时点了无效。
+- DSH 那边中断了这次委派，请求随之撤回：还没派出的卡直接消失；已经派出的会话按「结束会话」的正常顺序收尾，不是刹车。
+- 页面在后台时，新请求会发浏览器通知，通知里没有「派出」按钮。
+- 请求只在 orchestrad 的内存里：重启后全部丢失。
+
+2026-11-03 在测试 profile 里用内置浏览器走过占位卡、完整卡、「派出」和「拒绝」两条路径；orchestrad 自己的 10 分钟到期也在测试 profile 里实跑过。
+
+### 3.6 对话区和三档停止
 
 选中一个自有会话，底部是「发给 → 它」的输入框：回合还在跑时发出的消息会插进当前回合（插话），空闲时开始新的一回合。消息不能以 `/` 开头，最多 2048 字节。
 
@@ -146,14 +181,15 @@ procguard 没开时自有会话整个关闭，不会出现没有 Job 的会话�
 - **orchestrad 被强杀时**：会话还在跑时强杀 orchestrad（任务管理器结束进程），按机制推断包装进程会跟着死，Job 也跟着关，但没有实测过。被强杀时 orchestrad 自己的停止顺序不会运行。
 - **派活台是简化版**：只有五条固定规则和一次路由模型。r4 规格要的完整路由内核（硬过滤、证据门、滞回、影子模式）没做。
 - **观察到的会话不判定出错**；Codex 的「可能在等你」可能漏掉（列表先按时间截取再读文件）。
-- **页面没在真实浏览器里走过**：页面只有模拟 DOM 的测试和直接打 HTTP 的联调脚本，按钮、按住确认、窄屏、深色主题都没有真人点过。遇到问题请记下来。
+- **页面只在测试 profile 里走过**：2026-11-03 在测试 profile 里用内置浏览器走过派活台的建议、派出、拒绝、按住 1 秒允许、中断、刹车、结束会话、亮暗两套主题和 375px 窄屏，修了两处布局问题：8bc1bd9（「等你」栏为空时，发送框和停止键被挤出屏幕）、e483824（手机宽度下自有会话的整块内容，包括状态、按钮、审批卡和对话，被藏起来）。真实 profile 下的页面仍只能由你自己走（代-2），见第 6 节。遇到问题请记下来。
+- **DSH 请求卡的残余**：请求方是自报的（「未核实」）；读到令牌文件的同用户进程都能提请求（但每条都要你点）；请求只在内存里，重启就丢。细节见 `integrations/dsh-seat/README.md` 的「已知限制」。
 - **node.exe 没有钉哈希**：只检查它存在、不是链接。
 
 ## 6. 第一次在真实数据上启动：自查清单
 
 这些开发时没做（见 1.1 的说明），请你自己走一遍：
 
-1. 按 1.1 启动，确认控制台打印了配对码、`procguard on`、两家 `owned … sessions on`，最后一行是 `working (real profile …)`。
+1. 按 1.1 启动（双击 `start-orchestra.cmd`，或手动运行 `orchestra.cmd --owned --agent-port --peek-port 7470`），确认控制台打印了配对码、`procguard on`、两家 `owned … sessions on`、`agent request port on \\.\pipe\orchestra-agent-real (token in …)`，最后一行是 `working (real profile …)`。
 2. 启动后 10 分钟内打开页面配对（配对码只能用一次，过期要重启），塔表应该显示你自己的项目和会话。顶栏的数字点开，行数应该和数字一样。
 3. 解锁，用派活台开一个 Codex 会话，任务写「只回复一个词 ok，不要用任何工具」，等它变成「空闲」。
 4. 点「结束会话」（3 秒内点两次），对话里应出现「它的 Job 里没有剩下的进程」一类的说明。
