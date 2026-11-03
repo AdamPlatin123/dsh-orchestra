@@ -1,5 +1,5 @@
 // @ts-check
-// The tower page's boot (orchestra app plan §5), the one module with effects: the 2 s poll (stopped while
+// The tower page's boot (orchestra app plan §5), the one module with effects: the 2 s poll (10 s while
 // hidden), the route, clicks and keys, one render per frame. Owned sessions are driven once this tab is
 // unlocked (slice design §2.7), each allow under r4 §10.9's guards (D8); ui/owned.js says what shows.
 // Under the pointer or focus the tree's order holds (research §1.5): changes count on "↻ N".
@@ -111,6 +111,14 @@ function selTo() {
   return id === null || n === undefined ? null : { id, title: n.title };
 }
 
+/** The tab's count. Painted by render and, while hidden (no frames then), by every tower read.
+ * A pending agent request waits for you too (seat): the tab says so, though the bar's 等你 filters nodes only.
+ * @param {TowerSnapshot} snap */
+function paintTitle(snap) {
+  const waiting = snap.tally.waiting + (snap.router.asks?.length ?? 0);
+  dom.title(waiting > 0 ? t('page.titleWait', { n: waiting }) : t('page.title'));
+}
+
 function schedule() {
   if (state.queued || document.hidden) return;
   state.queued = true;
@@ -144,9 +152,7 @@ function render() {
   };
   dom.paintId('new-dlg', { slots: { ...describeNew(state.owned, nowDesk.harness, state.busy), ...describeDesk(state.desk, nowDesk) } });
   if (snap === null) return;
-  // A pending agent request waits for you too (seat): the tab says so, though the bar's 等你 filters nodes only.
-  const waiting = snap.tally.waiting + (snap.router.asks?.length ?? 0);
-  dom.title(waiting > 0 ? t('page.titleWait', { n: waiting }) : t('page.title'));
+  paintTitle(snap);
 
   const fresh = buildRows(snap, { filter: state.filter, collapsed: state.collapsed, open: state.open });
   let pending = 0;
@@ -300,6 +306,8 @@ async function poll() {
   state.lastWaiting = snap.tally.waiting;
   state.snap = snap;
   if (state.route.node !== null && state.sel === null) select(state.route.node, false);
+  // Hidden, schedule() draws nothing: the tab's count is painted here so it moves in the background too.
+  if (document.hidden) paintTitle(snap);
   schedule();
 }
 
@@ -307,12 +315,13 @@ async function poll() {
 let timers = [];
 function wake() {
   timers.forEach((stop) => stop());
-  timers = document.hidden ? [every(HIDDEN_MS, pollOwned)] : [every(POLL_MS, () => { void poll(); pollOwned(); pollFeed(); }), every(1000, schedule)];
+  // Hidden: the tower and the queue every 10 s, for the tab's count and the notifications.
+  timers = document.hidden ? [every(HIDDEN_MS, () => { void poll(); pollOwned(); })] : [every(POLL_MS, () => { void poll(); pollOwned(); pollFeed(); }), every(1000, schedule)];
   if (!document.hidden) void poll();
   pollOwned();
 }
 
-// == owned sessions, once unlocked (hidden: the queue only, for notifications)
+// == owned sessions, once unlocked (hidden: read every 10 s, for notifications)
 const ownedOnce = oneAtATime(async () => (state.csrf === null ? null : getOwned(state.csrf)));
 async function pollOwned() {
   const csrf = state.csrf;
@@ -346,7 +355,7 @@ function tell(list, first) {
     if (!state.told.has(a.approvalId) && can()) {
       try {
         new Notification(t('notify.title'), { body: notifyText(a, list.owned.find((/** @type {any} */ o) => o.ownedId === a.ownedId)?.title || t('bar.brand')), tag: a.approvalId });
-      } catch {} // refused (a phone): the title still counts
+      } catch {} // refused (a phone): the tab's count (paintTitle) still moves, at the 10 s hidden read
     }
     state.told.add(a.approvalId);
   }

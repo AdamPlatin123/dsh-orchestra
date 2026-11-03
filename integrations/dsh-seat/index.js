@@ -292,6 +292,8 @@ export const DIAG = Object.freeze({
   status: (st, code) => `orchestrad 请求口回了 HTTP ${st}${code ? ` ${code}` : ''}。[port-status]`,
   unreachable: (code) => `连不上 orchestrad 请求口（${code}）。[unreachable]`,
   duplicate: (runId) => `没有再提一次：这个 DSH 会话刚提过一模一样的请求 ${runId}，它还没有结果（在配对页上等人处理，或已派出在跑）。外部子级在 list_agents 里看不到；它的结果会以完成通知送回，不用重试。[duplicate]`,
+  // The first is still being submitted: whether orchestrad takes it is unknown yet, so no promise of a result (T1).
+  duplicateSubmitting: '没有再提一次：这个 DSH 会话刚发出一模一样的请求，orchestrad 还没回话，收没收下未知。如果那次委派报错（没有提交上），可以再提一次；如果它被收下，它的结果会以那次委派的完成通知送回（外部子级在 list_agents 里看不到）。[duplicate-submitting]',
 });
 
 /** Why orchestrad would not take a request (POST /agent/v1/requests), by its code; start() rejects with it. */
@@ -326,7 +328,9 @@ export function makeSeatProvider({ providerName, harness, port, requestTimeoutMs
 
   // The requests of this provider still open, by requester, cwd and text. DSH's list_agents does not show an
   // external child, so a model that looks there may ask again; the same ask while the first is open is refused
-  // here, before orchestrad makes a second card (null: the first submit is still on its way).
+  // here, before orchestrad makes a second card (null: the first submit is still on its way). Only when the
+  // parent gives a session id: without one, two asks cannot be told apart by who asked (another session may
+  // have asked), so nothing is merged; orchestrad's own limits (requester-full, rate) still hold.
   const open = new Map();
 
   async function start(request) {
@@ -341,12 +345,12 @@ export function makeSeatProvider({ providerName, harness, port, requestTimeoutMs
     if (typeof cwd.isWellFormed === 'function' && !cwd.isWellFormed()) throw new Error('orchestra-seat: the working directory holds a broken character (a lone surrogate)');
     const label = labelOf(request.label);
     const body = { harness, text, cwd, ...(label === null ? {} : { label }), requester: { kind: 'dsh', sessionId: requesterId(request.parent) } };
-    const same = JSON.stringify([body.requester.sessionId, cwd, text]);
-    if (open.has(same)) {
+    const same = body.requester.sessionId === null ? null : JSON.stringify([body.requester.sessionId, cwd, text]);
+    if (same !== null && open.has(same)) {
       const first = open.get(same);
-      throw new Error(`orchestra-seat: ${DIAG.duplicate(first === null ? '（还在提交）' : `orchestra-${first}`)}`);
+      throw new Error(`orchestra-seat: ${first === null ? DIAG.duplicateSubmitting : DIAG.duplicate(`orchestra-${first}`)}`);
     }
-    open.set(same, null);
+    if (same !== null) open.set(same, null);
 
     // Submit. Failing here rejects start(): nothing was published, so nothing needs undoing (an abort that
     // lands after orchestrad made the card leaves one pending card, which expires on its own: timeout = deny).
@@ -365,11 +369,11 @@ export function makeSeatProvider({ providerName, harness, port, requestTimeoutMs
         throw new Error(`orchestra-seat: ${known}${DIAG.status(sub.status, code)}`);
       }
     } catch (e) {
-      open.delete(same);
+      if (same !== null) open.delete(same);
       throw e;
     }
     const requestId = sub.json.requestId;
-    open.set(same, requestId);
+    if (same !== null) open.set(same, requestId);
     // The key that alone withdraws this request: kept in this closure, never logged.
     const withdrawKey = WITHDRAW_KEY_RE.test(String(sub.json.withdrawKey ?? '')) ? sub.json.withdrawKey : null;
     log('info', `orchestra-seat: request ${requestId} (${harness}) waits for a person on the paired page`);
@@ -481,7 +485,7 @@ export function makeSeatProvider({ providerName, harness, port, requestTimeoutMs
         return signal?.aborted || disposed ? aborted() : error(`orchestra-seat: ${errorCode(e)}`);
       } finally {
         signal?.removeEventListener('abort', onAbort);
-        open.delete(same);
+        if (same !== null) open.delete(same);
       }
     })();
 

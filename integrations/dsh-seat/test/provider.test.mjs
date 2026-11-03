@@ -115,6 +115,41 @@ test('the same ask from the same DSH session while the first is open is refused 
   await again.result;
 });
 
+test('the same ask while the first is still being submitted: refused without promising a result (T1); if the first submit fails, the ask may be made again', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let n = 0;
+  const port = fakePort((method) => {
+    if (method === 'POST') return n++ === 0 ? async () => { await gate; return { status: 429, json: { error: 'rate' } }; } : submitted();
+    return ok({ state: 'rejected' });
+  });
+  const p = makeSeatProvider({ providerName: 'orchestra-codex', harness: 'codex', port });
+  const first = p.start(req());
+  await assert.rejects(p.start(req()), (e) => e.message.includes(DIAG.duplicateSubmitting) && !e.message.includes('不用重试') && /\[duplicate-submitting\]/.test(e.message));
+  release();
+  await assert.rejects(first, /HTTP 429 rate/);
+  const again = await p.start(req());
+  assert.equal(port.calls.filter((c) => c.method === 'POST').length, 2, 'the failed first left nothing held');
+  assert.equal((await again.result).stopReason, 'refusal');
+});
+
+test('without a session id two asks cannot be told apart by who asked: nothing is merged (orchestrad\'s limits still hold)', async () => {
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  let n = 0;
+  const port = fakePort((method) => {
+    if (method === 'POST') return submitted({ requestId: `${RID.slice(0, 19)}${n++}` });
+    return async () => { await gate; return ok({ state: 'rejected' }); };
+  });
+  const p = makeSeatProvider({ providerName: 'orchestra-codex', harness: 'codex', port });
+  const runs = [];
+  for (const parent of [undefined, {}, { id: '!!!' }]) runs.push(await p.start(req({ parent })));
+  assert.equal(new Set(runs.map((r) => r.id)).size, 3);
+  assert.deepEqual(port.calls.filter((c) => c.method === 'POST').map((c) => c.body.requester.sessionId), [null, null, null]);
+  release();
+  await Promise.all(runs.map((r) => r.result));
+});
+
 test('a refused submit does not hold the ask: the same ask may be tried again', async () => {
   let n = 0;
   const port = fakePort((method) => (method === 'POST' ? (n++ === 0 ? { status: 429, json: { error: 'rate' } } : submitted()) : ok({ state: 'rejected' })));

@@ -518,7 +518,7 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     list = { ...list, requests: [] };
 
     // Hidden: a new approval is notified with who and what; no notification and no title says allow.
-    // While hidden only the queue is read, every 10 s.
+    // While hidden the tower and the queue are read every 10 s.
     list = { ...list, rev: 4, approvals: [...list.approvals, approval(AP.d, ID.b, { rev: 4 })] };
     doc.hidden = true;
     fire(doc, 'visibilitychange');
@@ -540,6 +540,19 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     for (const n of notes) assert.ok(!n.body.includes(TOWER_TEXT['req.go']) && !n.title.includes(TOWER_TEXT['req.go']));
     for (const n of notes) assert.ok(!n.title.includes(ALLOW) && !n.body.includes(ALLOW));
     assert.ok(!doc.title.includes(ALLOW));
+    // Hidden, no frame draws: the tab's count still moves, from the tower read every 10 s (and back down).
+    const count = () => Number(/^\((\d+)\)/.exec(doc.title)?.[1] ?? 0);
+    const before = count();
+    const towerReads = requests.filter((r) => r.url === '/api/tower').length;
+    asks = [{ harness: 'codex', deadline: OBSERVED + 7 * MIN }, { harness: 'claude', deadline: OBSERVED + 8 * MIN }];
+    intervals.at(-1)!.fn();
+    await flush();
+    assert.ok(requests.filter((r) => r.url === '/api/tower').length > towerReads, 'the tower is read while hidden');
+    assert.equal(count(), before + 2, doc.title);
+    asks = [];
+    intervals.at(-1)!.fn();
+    await flush();
+    assert.equal(count(), before, doc.title);
   } finally {
     await flush();
     for (const [k, d] of Object.entries(saved)) {
