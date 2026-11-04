@@ -471,7 +471,7 @@ function settle(q,verb,text){
   if(q.kind==='dispatch'&&verb==='派出'){const m=q.title.match(/请求派 (\S+?)：(.*)$/);
     const par=w&&w.id,nw=spawn(m[1]+' 新会话',m[2],{h:m[1],model:q.model&&q.model.split('（')[0],scope:q.scope,parent:par,direct:!par,line:`应 ${lastN} 请求由你派出`});
     if(w)w.thread.push({t:NOW,who:'request',text:`你已派出：${nw.name}`,workerId:nw.id})}
-  if(q.kind==='decision'&&D.router)D.router.thread.push({t:NOW,who:'you',text:`${verb}：${q.title.replace('总台提议：','')}`});
+  if(q.kind==='decision'&&D.router)D.router.thread.push({t:NOW,who:'you',text:`${verb}：${q.title.replace(/^.*提议：/,'')}`});
   const i=S.stack.indexOf('q:'+q.id);if(i>=0)popTo(i);
   paint();toast(verb==='超时自动拒'?`${q.title}，已超时自动拒。`:`${text||verb}：${q.title}。等你还有 ${D.queue.length} 件。`);
 }

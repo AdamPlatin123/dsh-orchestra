@@ -5,7 +5,7 @@
 - When: 2026-11-03（审批卡来源链、键入放行实测之后；本机 shell 报的时区是 GMT）
 - Machine: 550W备份1号机
 - Branch: claude/orchestra-app（从 `claude/alpha-0.2-interactive` 的 76807ec 切出）
-- Commit: eb8d621（来源链复核修正；本交接文件随后单独提交）。之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
+- Commit: 随本文件一起提交，上一提交 88194f3（第二轮方案）。再往前 ad4c923 页面评审修正、eb8d621 来源链复核修正，之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
 - Pushed: no（远端还没有这条分支。76807ec 之后的提交只在这台机器上）
 - Uncommitted on that machine: `.claude/launch.json`（未跟踪，本机某次会话的预览配置，不要提交）。主检出目录里 r4 规格有用户本人的未提交改动，见 Do not touch。
 
@@ -47,6 +47,7 @@
 
 - 真实 profile 页面评审修正（d185e79、c0fc760、0a9cc8a、ad4c923）：派活入口改名、「你」行写法、路径名不再被熵规则遮掉（只限 `name: true` 的调用）、会话事件只遮显示的 200 条。用户正在跑的真实实例是这些提交之前的代码，要用户重启才生效。
 - 前端方向探索（bc50ea6 和本次提交）：`docs/design/mocks/2026-11-03-ensemble/` 第一轮 14 个隐喻方案，`round2/` 第二轮 6 个方案。第二轮按用户判断定了三条：总台（superrouter）只问答、派发一眼看清、subagent 默认折叠，折叠卡照用户截图做成共用的 `foldcard.js`。6 个方案各由一位没参与设计的检查员走完 10 个必看画面；1024 宽无横向滚动、两种数据都能切换，已在内置浏览器复核。这些都是假交互，没有接真实数据。
+- 规划交给 worker（2026-11-03 用户拍板）：总台不写验收、不拆 Task，只提议「派给谁」。`round2/scenario2.js` 加了规划 worker Sora 和派单 d0，Task 5 的拆分提议改由 Sora 发出，`round2/BRIEF.md` 第 1.2 节写了边界。6 个方案在 1024 宽下都能拍板这条提议，等你计数 4 减到 3，控制台无报错。
 
 更早的验证（自有会话端到端、procguard Job 和刹车、stdin EOF 停机、第 4 阶段复核、seat 复核修正 93f282d）见 git 历史里 99deb75 版本的本文件，这次没有重跑的项不再列。
 
@@ -64,7 +65,7 @@
 
 ## Next（按优先级，每条可独立执行）
 1. 真实 profile 启动检查（只能由用户本人做）— 先关掉 2026-11-01 从 `.claude\worktrees\m0-thin-slice-e9066d\orchestra.cmd --peek-port 7470` 起的旧 orchestrad（M0 旧代码，真实 profile，2026-11-03 还在跑并占着 7470 端口；不关的话新实例起不来，浏览器打开的也是旧页面）。然后在普通（非管理员）cmd 里双击或运行仓库根的 `start-orchestra.cmd`（worktree 里先设 `ORCHESTRA_NODE` 指向主检出目录的 `.tools\node24\node.exe`）。验收：控制台打印配对码、`procguard on`、两家 `owned … sessions on`、`working (real profile …)`；浏览器自动打开 `http://orchestra.localhost:7470/`；配对后塔表有数据、顶栏数字等于点开后的行数；派一个 Codex 会话「只回复 ok，不用工具」到空闲后结束；Ctrl+C 后任务管理器里没有 codex.exe、procguard.exe。结果记进本文件。
-2. 等用户审阅第二轮方案（`docs/design/mocks/2026-11-03-ensemble/round2/index.html`），按选中的方向改 `ui/tower.html`；在那之前不动现有前端。
+2. 等用户审阅第二轮方案（`docs/design/mocks/2026-11-03-ensemble/round2/index.html`），按选中的方向改 `ui/tower.html`；在那之前不动现有前端。总台不规划已定，改前端时按 `round2/BRIEF.md` 第 1.2 节。
 3. 决定 push / 合并（只能由用户本人做）— 本分支只在这台机器上；`hosts/claude/node_modules` 也只在这个 worktree。要推远端或合进主线，由用户定目标分支。
 
 ## Do not touch
@@ -73,6 +74,7 @@
 - 真实 `~/.dsh`、`%APPDATA%\npm`、真实 `~/.orchestra`：agent 不动。
 
 ## Open questions
+- r4 要不要跟着改：用户定了总台不规划，但 r4 §8.9 (c) 写规划者是主代理（M1–M3）、M4 起可为 Maestro，§9.1 同样写 Maestro 可当规划者。r4 由用户本人改，本分支没动。
 - 哪个 DSH profile 是日常用的、要不要把 seat 装进去：由用户定（D11 / Q5a：先在隔离 DSH_HOME 验过同一版本，再由主人自己装）。Q5a 和 seat 对不上的三处（没有 Tuning 页；seat 加的是能提请求的工具，不是只读；DS-Bot 已换桌面版要重核）记在计划分歧一节。
 - 真实 profile 下开不开自有会话：0.2 设计第 528 行原本要求 owned-disabled，被本计划 §2 取代成两种 profile 都开。要恢复限制，在 `setUpOwnedCodex` 开头对真实 profile 返回 off('not-asked')。
 - 实现会话能不能在真实 profile 下联调：现行约定（代-2）是不能。
@@ -80,6 +82,7 @@
 - 0.2 交接文件（`docs/handoff/claude--alpha-0.2-interactive.md`）里列的设计 §8 待定项仍没有逐条问过用户。
 
 ## Divergence（接手者填写：交接与现实的差异）
+- 2026-11-03 AdamPlatin123（规划交给 worker）：第二轮 88194f3 的数据里，总台其实还在写验收 7 条、提议拆 Task 5，和当时对用户说的「mock 里总台只转述计划」不符。发现后已改数据。
 - 2026-11-03 AdamPlatin123（项目根之后）：上一份交接写在 99deb75（Commit 4d7387e），之后 461ac11、8bc1bd9、e483824、73bad96、7f71981、75e2942、e850a20、a3cf458 没有更新交接；本次一并补上，旧的 Unverified（Claude 后端、10 分钟到期、标题计数、浏览器走查、`--dispatch`、`build:procguard`）移进 Done 或删除，Next 重排。项目根是启动参数而不是原计划的「在设置里登记」，记在计划里。
 - 2026-11-03 AdamPlatin123（seat 复核修正）：复核 28 条里没照做的三条和理由记在计划「seat 复核修正」一条。
 - 2026-11-03 AdamPlatin123（第 4 阶段复核）：procguard 没开时自有会话整个关闭（以前不经 Job 照开，和 r4 D4 冲突）。细节见计划「进程树的 Job 回收」。
