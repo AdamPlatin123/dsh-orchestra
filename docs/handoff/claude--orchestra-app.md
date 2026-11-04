@@ -45,10 +45,13 @@
   - 观察到：中断（interrupt）不会杀掉 Codex 已经起的命令，刹车会；页面对这条命令显示「在跑」，和实际一致。
 - 日常使用文档（7f71981、a3cf458）— `docs/quickstart.md` 写了 `--agent-port`、DSH 请求卡、`--project-root`（1.3 节）；`start-orchestra.cmd` 只用 `/dry-run` 跑过（找到主检出目录的 node.exe，退出码 0）；`integrations/dsh-seat/README.md` 新增「装进你日常用的 DSH profile」一节；`package.json` 删掉了指向不存在文件的 `build:procguard`。
 
+- 真实 profile 页面评审修正（d185e79、c0fc760、0a9cc8a、ad4c923）：派活入口改名、「你」行写法、路径名不再被熵规则遮掉（只限 `name: true` 的调用）、会话事件只遮显示的 200 条。用户正在跑的真实实例是这些提交之前的代码，要用户重启才生效。
+- 前端方向探索（bc50ea6 和本次提交）：`docs/design/mocks/2026-11-03-ensemble/` 第一轮 14 个隐喻方案，`round2/` 第二轮 6 个方案。第二轮按用户判断定了三条：总台（superrouter）只问答、派发一眼看清、subagent 默认折叠，折叠卡照用户截图做成共用的 `foldcard.js`。6 个方案各由一位没参与设计的检查员走完 10 个必看画面；1024 宽无横向滚动、两种数据都能切换，已在内置浏览器复核。这些都是假交互，没有接真实数据。
+
 更早的验证（自有会话端到端、procguard Job 和刹车、stdin EOF 停机、第 4 阶段复核、seat 复核修正 93f282d）见 git 历史里 99deb75 版本的本文件，这次没有重跑的项不再列。
 
 ## Unverified（做了但没验证，或验证没过）
-- **真实 profile 一次都没跑过**（代-2：只能由用户在可见控制台里启动）。塔表在真实数据上有多少项目和节点、真实 profile 下自有会话能不能起停、`start-orchestra.cmd` 实际启动（等 5 秒开浏览器、Ctrl+C 只停 orchestrad、退出后停在「按任意键」）、带 `--project-root` 的真实启动，全部未知。
+- **真实 profile 只由用户启动过一次**（代-2：只能由用户在可见控制台里启动；配对和解锁走通，见 Done），还没派过会话。真实 profile 下自有会话能不能起停、`start-orchestra.cmd` 实际启动（等 5 秒开浏览器、Ctrl+C 只停 orchestrad、退出后停在「按任意键」）、带 `--project-root` 的真实启动，全部未知。
 - 项目根：seat 派出的会话按 r4 §8.5 记为 tainted（d212b86：Codex 用 untrusted 审批策略启动并校验回显，Claude 每次工具调用都问），这些都已 live 跑过（见 Done）；untrusted 下读文件先问人只在 Orchestra 外的探针里测过一次（Get-Content、列目录、写，3/3 先问），别的读法未测；tainted 会话的审批卡、来源链和键入放行都在页面上实测过（见 Done），但人在真实浏览器的原生确认框里亲手键入没有测（测试是覆盖 window.prompt 交的确认词）；服务器不区分按住和键入，「必须键入」只在页面这一侧生效；来源链挂在会话上，不是逐回合；受保护路径的卡是「按住或键入」确认，不是 §7.4 说的「必须键入」；`package.json` 整个文件算受保护；`.git/config` 不在清单里；r4 §10.8 双写者告警没做；根只能用启动参数给，改根要重启（原计划写「在设置里登记」，已记分歧）。
 - seat 装进日常 DSH profile 的步骤（README 新一节）没在真 DSH 上走过；卸载命令写的是「未知」。
 - seat：抢管道的冒名实例只有单元测试，没有用真的第二个管道实例复现；读到令牌文件又抢到管道的进程仍能冒充 orchestrad（已记残余）。Codex 沙箱里的进程能不能连上请求口管道，没验证。
@@ -61,7 +64,8 @@
 
 ## Next（按优先级，每条可独立执行）
 1. 真实 profile 启动检查（只能由用户本人做）— 先关掉 2026-11-01 从 `.claude\worktrees\m0-thin-slice-e9066d\orchestra.cmd --peek-port 7470` 起的旧 orchestrad（M0 旧代码，真实 profile，2026-11-03 还在跑并占着 7470 端口；不关的话新实例起不来，浏览器打开的也是旧页面）。然后在普通（非管理员）cmd 里双击或运行仓库根的 `start-orchestra.cmd`（worktree 里先设 `ORCHESTRA_NODE` 指向主检出目录的 `.tools\node24\node.exe`）。验收：控制台打印配对码、`procguard on`、两家 `owned … sessions on`、`working (real profile …)`；浏览器自动打开 `http://orchestra.localhost:7470/`；配对后塔表有数据、顶栏数字等于点开后的行数；派一个 Codex 会话「只回复 ok，不用工具」到空闲后结束；Ctrl+C 后任务管理器里没有 codex.exe、procguard.exe。结果记进本文件。
-2. 决定 push / 合并（只能由用户本人做）— 本分支只在这台机器上；`hosts/claude/node_modules` 也只在这个 worktree。要推远端或合进主线，由用户定目标分支。
+2. 等用户审阅第二轮方案（`docs/design/mocks/2026-11-03-ensemble/round2/index.html`），按选中的方向改 `ui/tower.html`；在那之前不动现有前端。
+3. 决定 push / 合并（只能由用户本人做）— 本分支只在这台机器上；`hosts/claude/node_modules` 也只在这个 worktree。要推远端或合进主线，由用户定目标分支。
 
 ## Do not touch
 - 主检出目录里 `docs/specs/2026-10-27-dsh-orchestra-design-r4.md` 的未提交改动：用户本人的第七批改动。本分支只读引用它，不改、不提交、不覆盖。

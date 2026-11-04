@@ -1,0 +1,57 @@
+﻿/* 第二轮共用底子：只管色彩、字体、状态色和三种置信度。布局归各方案自己。 */
+:root{
+  --bg:#f3f5f7; --panel:#ffffff; --sunk:#e9edf1; --ink:#17202a; --ink-2:#4b5866; --ink-3:#5f6b77;
+  --line:#d8dfe6; --line-2:#bcc6d0;
+  --act:#1f5fbf; --act-ink:#ffffff; --act-soft:rgba(31,95,191,.10);
+  --wait:#a85a00; --wait-soft:rgba(168,90,0,.11);
+  --err:#b3261e; --err-soft:rgba(179,38,30,.10);
+  --run:#1b7a5a; --unk:#6c7683;
+  --font:"Microsoft YaHei UI","Microsoft YaHei","PingFang SC","Noto Sans CJK SC",system-ui,sans-serif;
+  --code:"Cascadia Mono",Consolas,ui-monospace,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#12161b; --panel:#1a2027; --sunk:#232b33; --ink:#e7ecf1; --ink-2:#aab5c0; --ink-3:#95a1ad;
+  --line:#2c353e; --line-2:#3e4954;
+  --act:#7fb0f0; --act-ink:#0d1722; --act-soft:rgba(127,176,240,.14);
+  --wait:#eba94f; --wait-soft:rgba(235,169,79,.14);
+  --err:#f08a80; --err-soft:rgba(240,138,128,.14);
+  --run:#67c9a5; --unk:#8f9aa6; color-scheme:dark;
+}}
+:root[data-theme="dark"]{
+  --bg:#12161b; --panel:#1a2027; --sunk:#232b33; --ink:#e7ecf1; --ink-2:#aab5c0; --ink-3:#95a1ad;
+  --line:#2c353e; --line-2:#3e4954;
+  --act:#7fb0f0; --act-ink:#0d1722; --act-soft:rgba(127,176,240,.14);
+  --wait:#eba94f; --wait-soft:rgba(235,169,79,.14);
+  --err:#f08a80; --err-soft:rgba(240,138,128,.14);
+  --run:#67c9a5; --unk:#8f9aa6; color-scheme:dark;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.6 var(--font)}
+code,pre,.code{font-family:var(--code);font-size:.92em}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--act);outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+/* 三种置信度：实 = 实心点；推测 = 空心点加 ≈；未知 = 虚线圈加「状态未知」文字 */
+.c-real{color:var(--run)} .c-guess{color:var(--ink-2)} .c-unk{color:var(--unk)}
+
+/* 共用折叠卡：照用户给的截图。第一行名字和右侧箭头，第二行类型、数量、耗时，第三行一个成员一个点。 */
+.fold{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:2px 12px;width:100%;max-width:440px;padding:12px 14px;text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:10px;cursor:pointer}
+.fold:hover{border-color:var(--line-2)}
+.fold-title{font-size:15px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fold-chev{align-self:center;grid-row:1/span 2;grid-column:2;width:8px;height:8px;border-right:1.5px solid var(--ink-3);border-top:1.5px solid var(--ink-3);transform:rotate(45deg);transition:transform .15s}
+.fold[aria-expanded="true"] .fold-chev{transform:rotate(135deg)}
+.fold-meta{grid-column:1;display:flex;flex-wrap:wrap;gap:0 14px;font-size:12.5px;color:var(--ink-2)}
+.fold-dots,.fold-bar{grid-column:1/-1;margin-top:8px}
+.fold-dots{display:flex;flex-wrap:wrap;gap:4px}
+.fd{width:8px;height:8px;border-radius:2px;background:currentColor}
+.fd-done{color:var(--act);background-color:var(--act)}
+.fd-run{color:var(--run);background-color:var(--run)}
+.fd-wait{color:var(--wait);background-color:var(--wait)}
+.fd-err{color:var(--err);background-color:var(--err)}
+.fd-known{color:var(--ink-3);background-color:var(--ink-3)}
+.fd-guess{color:var(--ink-3);background:transparent;box-shadow:inset 0 0 0 1.5px var(--ink-3)}
+.fd-unk{color:var(--unk);background:transparent;outline:1px dashed var(--unk);outline-offset:-1px}
+.fold-bar{display:flex;gap:2px;height:8px;max-width:220px}
+.fold-bar i{min-width:3px;border-radius:2px}

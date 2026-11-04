@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>第二轮方案</title>
+<link rel="stylesheet" href="kit.css">
+<style>
+.wrap{max-width:1040px;margin:0 auto;padding:0 24px 64px}
+.top{display:flex;align-items:center;gap:16px;padding:18px 0;font-size:13px}
+.top a{color:var(--ink-2)}
+.top .sp{flex:1}
+.tbtn{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:4px 10px;cursor:pointer;color:var(--ink-2)}
+h1{font-size:26px;line-height:1.3;margin:12px 0 8px;font-weight:600}
+.lead{max-width:62ch;color:var(--ink-2);margin:0 0 28px}
+.rules{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden;margin-bottom:12px}
+.rules div{background:var(--panel);padding:14px 16px}
+.rules h2{font-size:14.5px;margin:0 0 4px}
+.rules p{margin:0;font-size:13px;color:var(--ink-2)}
+.except{margin:0 0 28px;padding:10px 14px;background:var(--wait-soft);border-radius:8px;font-size:13.5px}
+.sample{display:flex;gap:24px;align-items:center;margin-bottom:36px}
+.sample .fold{flex:0 0 300px}
+.sample p{margin:0;font-size:13px;color:var(--ink-2);max-width:52ch}
+.m{display:grid;grid-template-columns:200px minmax(0,1fr);gap:8px 28px;padding:20px 0;border-top:1px solid var(--line)}
+.m h3{margin:0;font-size:17px;font-weight:600}
+.m h3 a{color:var(--ink);text-decoration:none}
+.m h3 a:hover{color:var(--act)}
+.m .open{display:inline-block;margin-top:10px;padding:5px 12px;border-radius:8px;background:var(--act);color:var(--act-ink);font-size:13px;text-decoration:none}
+.m .how{margin:0 0 8px}
+.m dl{margin:0;display:grid;grid-template-columns:64px minmax(0,1fr);gap:4px 10px;font-size:13px;color:var(--ink-2)}
+.m dt{color:var(--ink-3)}
+.m dd{margin:0}
+@media (max-width:760px){.rules{grid-template-columns:minmax(0,1fr)}.m{grid-template-columns:minmax(0,1fr)}.sample{flex-direction:column;align-items:stretch}.sample .fold{flex:none}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top"><a href="../index.html">回到第一轮画廊</a><span class="sp"></span><button class="tbtn" id="theme" type="button">切换深浅</button></div>
+  <h1>第二轮：不乱，又能一层层看下去</h1>
+  <p class="lead">6 个方案用同一份数据、同一套配色，只有展开方式不同。每点一次只多看一层：一句话，派单，worker 对话，subagent 列表，单个步骤，原始记录。</p>
+
+  <div class="rules">
+    <div><h2>总台只问答</h2><p>只回答你、派出活、转述回报。这里看不到工具调用、diff、日志。</p></div>
+    <div><h2>派发一眼看清</h2><p>每次派发写清派给谁、做什么、为什么、要交回什么、现在怎样。</p></div>
+    <div><h2>subagent 默认折叠</h2><p>用下面这张卡，点开才看细节，运行中也不自动展开。</p></div>
+  </div>
+  <p class="except">唯一例外：等你的事和出错的事不能被折叠藏住，永远冒到顶层。</p>
+
+  <div class="sample" id="sample"></div>
+
+  <div id="list"></div>
+</div>
+<script src="scenario2.js"></script>
+<script src="foldcard.js"></script>
+<script>
+const MOCKS = [
+  ['15-fold-thread.html', '一条对话，层层折叠', '最接近 Claude Desktop。全部内容都在一条总台对话里原地展开，同一时刻只开一条线，吸顶路径条告诉你在第几层。', '一种手势走到底，路径条能一键收回到任意一层。', '不能并排比两个 subagent，也没有 worker 全局名册。'],
+  ['16-push-columns.html', '右推三栏', '一栏一个人，往下钻就向右推一栏，左边退成带名字和等你标记的细条。', '层级全靠左右位置，再深也不缩进，第 5 层在 1024 宽下也放得下。', '「原地展开」和「推一栏」是两个手势，要多学一次。'],
+  ['17-desk-side.html', '左问答，右工位', '左边说话和拍板，右边看干活，工位一次开一张，每张记住自己看到哪。', '切换工位不丢位置，问答区不会长成聊天墙。', 'worker 到十个以上时，开着的工位会被挤矮。'],
+  ['18-dispatch-ledger.html', '派单簿', '首屏只记派单。竖线左边是谁派的，过线是谁接的，派发方向不用读字就能看见。', '合作感最强，今天的 111 个 subagent 压成一行格子带。', '全靠派单记录，今天 98% 对不上，要等派活记录补上才真正有内容。'],
+  ['19-front-desk.html', '前台窗口', '首屏只有一句回答、问答框和一条状态线，往下看时从右边叠抽屉，退回就抽走一张。', '最安静，钻多深都看得见最急的事。', '合作感几乎全靠状态线上那条小动线。'],
+  ['20-depth-dial.html', '深度档位', '一张大纲加一个 1–4 档位，你决定此刻看多深，换档时选中的行不动。', '信息量由你控制，等你和出错不受档位影响。', '档位是全局状态，看深之后容易忘了调回。'],
+];
+const esc = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+document.getElementById('list').innerHTML = MOCKS.map(([f, t, how, best, weak]) =>
+  '<section class="m"><div><h3><a href="' + f + '">' + esc(t) + '</a></h3><a class="open" href="' + f + '">打开</a></div>' +
+  '<div><p class="how">' + esc(how) + '</p><dl><dt>最强</dt><dd>' + esc(best) + '</dd><dt>最弱</dt><dd>' + esc(weak) + '</dd></dl></div></section>').join('');
+const g = window.R2.rich.workers[0].groups[0];
+document.getElementById('sample').innerHTML = R2Fold.card(R2Fold.fromGroup(g)) + '<p>折叠卡照你给的截图做：名字，类型、数量、耗时，一个成员一个点。蓝是已回报，虚线是状态未知。超过 16 个成员时点换成分段条，卡片高度不变。</p>';
+document.querySelector('#sample .fold').addEventListener('click', (e) => { const b = e.currentTarget; b.setAttribute('aria-expanded', b.getAttribute('aria-expanded') === 'true' ? 'false' : 'true'); });
+document.getElementById('theme').addEventListener('click', () => {
+  const r = document.documentElement, dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme:dark)').matches;
+  r.dataset.theme = dark ? 'light' : 'dark';
+});
+</script>
+</body>
+</html>

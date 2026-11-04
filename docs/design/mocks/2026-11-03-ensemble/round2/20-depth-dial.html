@@ -1,0 +1,877 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>深度档位</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="kit.css">
+<style>
+html,body{height:100%;overflow:hidden}
+.app{display:grid;grid-template-rows:56px minmax(0,1fr);height:100vh}
+kbd{font:11px var(--code);padding:0 4px;border:1px solid var(--line-2);border-radius:3px;color:var(--ink-3)}
+.btn{height:32px;padding:0 10px;border:1px solid var(--line-2);border-radius:6px;background:var(--panel);cursor:pointer;white-space:nowrap}
+.btn:hover{background:var(--sunk)}
+.btn.pri{background:var(--act);border-color:var(--act);color:var(--act-ink)}
+.btn.pri kbd{color:inherit;border-color:currentColor;opacity:.7}
+.btn.sm{height:28px;padding:0 9px;font-size:12.5px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.link{border:0;background:none;padding:0;color:var(--act);cursor:pointer;font-size:12.5px}
+.link:hover{text-decoration:underline}
+
+/* 顶栏 */
+.top{display:flex;align-items:center;gap:12px;padding:0 16px;background:var(--panel);border-bottom:1px solid var(--line);min-width:0}
+.back{color:var(--ink-2);text-decoration:none;font-size:13px;white-space:nowrap}
+.back:hover{color:var(--act)}
+.ttl{font-size:14px;white-space:nowrap}
+.grow{flex:1}
+#dial{position:relative;display:grid;grid-template-columns:repeat(4,88px);height:42px;background:var(--sunk);border-radius:8px;padding:0}
+.thumb{position:absolute;top:2px;bottom:2px;left:2px;width:84px;background:var(--panel);border-radius:6px;box-shadow:0 0 0 1px var(--line-2);transition:transform .18s cubic-bezier(.3,.7,.3,1)}
+.stop{position:relative;border:0;background:none;cursor:pointer;padding:0;line-height:1.2;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--ink-2)}
+.stop b{font-weight:600;font-size:13px;white-space:nowrap}
+.stop b i{font:12px var(--code);color:var(--ink-2);margin-right:4px}
+.stop small{font-size:11px;color:var(--ink-2)}
+.stop[aria-checked=true]{color:var(--ink)}
+.stop[aria-checked=true] b i{color:var(--act)}
+.seg{display:flex;border:1px solid var(--line-2);border-radius:6px;overflow:hidden}
+.seg button{height:30px;padding:0 9px;border:0;background:none;cursor:pointer;font-size:12.5px;color:var(--ink-2);white-space:nowrap}
+.seg button[aria-pressed=true]{background:var(--act-soft);color:var(--ink);font-weight:600}
+
+/* 主区 */
+.main{display:grid;grid-template-columns:minmax(0,1fr) 304px;min-height:0}
+@media (min-width:1360px){.main{grid-template-columns:minmax(0,1fr) 348px}}
+.left{display:grid;grid-template-rows:40px minmax(0,1fr);min-height:0;min-width:0}
+#path{display:flex;align-items:center;gap:8px;padding:0 16px;border-bottom:1px solid var(--line);font-size:12.5px;min-width:0;background:var(--bg)}
+.crumbs{display:flex;align-items:center;gap:3px;min-width:0;flex:1;overflow:hidden;white-space:nowrap}
+.crumbs button{border:0;background:none;padding:1px 3px;border-radius:3px;color:var(--ink-2);cursor:pointer;flex:none}
+.crumbs button:hover{background:var(--sunk);color:var(--ink)}
+.crumbs button:last-of-type{color:var(--ink);font-weight:600;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
+.crumbs span{color:var(--ink-3);flex:none}
+.pact{display:flex;align-items:center;gap:6px;flex:none}
+.hint{color:var(--ink-3);white-space:nowrap;flex:none;font-size:12px}
+#pane{overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable;padding:0 8px;outline-offset:-2px}
+#gap{height:0;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;color:var(--ink-3);font-size:12px}
+#gap span{padding-top:8px}
+#list{max-width:1040px;margin:0 auto;padding-top:8px}
+#tail{height:48px}
+
+/* 一行：全页只有这一种语法 */
+.row{position:relative}
+.line{--ind:calc(var(--l,0)*14px);display:flex;align-items:center;gap:7px;min-height:30px;padding:3px 8px 3px calc(var(--ind) + 8px);border-radius:5px;cursor:default;font-size:13px;color:var(--ink-2);
+  background-image:repeating-linear-gradient(90deg,var(--line) 0 1px,transparent 1px 14px);background-size:var(--ind) 100%;background-repeat:no-repeat;background-position:13px 0}
+.row.can>.line{cursor:pointer}
+.row.can>.line:hover{background-color:var(--sunk)}
+.row.sel>.line{background-color:var(--act-soft);box-shadow:inset 2px 0 var(--act)}
+.chev,.chev0{flex:none;width:14px;height:14px;display:inline-flex;align-items:center;justify-content:center}
+.chev::before{content:"";width:5px;height:5px;border-right:1.5px solid var(--ink-3);border-bottom:1.5px solid var(--ink-3);transform:rotate(-45deg);transition:transform .14s ease}
+.row.can>.line:hover .chev::before{border-color:var(--ink)}
+.row.open>.line .chev::before{transform:rotate(45deg) translate(-1px,-1px);border-color:var(--ink-2)}
+.dot{flex:none;width:8px;height:8px;border-radius:50%;background:currentColor}
+.d-run{color:var(--run)}.d-wait{color:var(--wait)}.d-err{color:var(--err)}.d-rep{color:var(--act)}.d-known{color:var(--ink-3)}.d-agent{color:var(--ink-2)}
+.d-guess{background:none;border:1.5px solid var(--ink-2)}
+.d-unk{background:none;border:1.5px dashed var(--unk)}
+.d-idle{width:7px;height:2px;border-radius:1px;background:var(--ink-3)}
+.nm{flex:none;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mt{flex:1 1 0;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-3);font-size:12.5px}
+.tl{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--ink-2);font-size:12.5px}
+.mk{flex:none;display:flex;gap:4px}
+.mk button,.mk span{border:0;font-size:11.5px;line-height:18px;padding:0 6px;border-radius:9px;white-space:nowrap}
+.mk button{background:var(--wait-soft);color:var(--wait);cursor:pointer}
+.mk button:hover{box-shadow:0 0 0 1px var(--wait)}
+.mk span{background:var(--err-soft);color:var(--err)}
+.st{flex:none;max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;color:var(--ink-2)}
+.st.s-wait{color:var(--wait)}.st.s-err{color:var(--err)}.st.s-unk{color:var(--unk)}.st.s-guess{color:var(--ink-2)}
+.tm{flex:none;width:44px;white-space:nowrap;text-align:right;font:12px var(--code);color:var(--ink-3)}
+.t-root>.line{min-height:34px;color:var(--ink);font-size:14px}
+.t-root>.line .nm{font-weight:600}
+.t-worker>.line .nm{color:var(--ink);font-weight:600}
+.t-disp>.line .nm{color:var(--ink)}
+.t-disp>.line .nm em{font-style:normal;color:var(--ink-3);font-size:12px;margin-right:6px}
+.t-step>.line{font:12.5px var(--code);color:var(--ink-2);min-height:26px}
+.t-step>.line .st{font:12px var(--code);color:var(--ink-2)}
+.t-rest>.line{color:var(--ink-2);font-size:12.5px;min-height:26px}
+.t-fold>.line{color:var(--ink-2);font-size:12.5px;min-height:26px}
+.t-say>.line{align-items:flex-start;min-height:26px;color:var(--ink-2)}
+.t-say>.line .nm{flex:1;max-width:none;white-space:normal}
+.t-say>.line .chev0,.t-say>.line .tm{margin-top:2px}
+.t-note>.line{color:var(--ink-3);font-size:12.5px}
+.t-note>.line .nm{flex:1;max-width:none;white-space:normal}
+.t-note>.line .mt{display:none}
+/* subagent 折叠卡在大纲里的一行。卡本身在 kit.css 的 .fold，这里只管摆放 */
+.line.fline{align-items:center;padding-top:4px;padding-bottom:4px}
+.fline .fold{flex:0 1 440px;min-width:0}
+.fline .tm{margin-left:auto}
+.row.can>.line.fline:hover{background-color:transparent}
+.row.sel>.line.fline .fold{border-color:var(--act)}
+
+/* 点开后的内容 */
+.body{margin:2px 8px 8px calc(var(--l,0)*14px + 29px);padding:8px 12px;background:var(--panel);border:1px solid var(--line);border-radius:6px;font-size:13px;overflow:hidden}
+.body p{margin:0 0 6px}.body p:last-child{margin-bottom:0}
+.five{display:grid;grid-template-columns:64px minmax(0,1fr);gap:2px 10px;margin:0}
+.five dt{color:var(--ink-3);font-size:12.5px}.five dd{margin:0}
+.u{font-style:normal;color:var(--unk);border-bottom:1px dashed var(--unk)}
+.sub{color:var(--ink-3);font-size:12.5px}
+.rep{margin-top:8px;padding-top:8px;border-top:1px solid var(--line)}
+.rep q{display:block;quotes:none;color:var(--ink-3);font-size:12.5px;margin-top:4px}
+.panel{border-color:var(--line-2)}
+.panel h4{margin:0 0 4px;font-size:13px}
+.panel ul{margin:0 0 8px;padding-left:18px}
+.panel .acts{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+
+/* 总台问答块 */
+.ask{margin:2px 8px 6px 37px}
+.ask form{display:flex;gap:6px}
+.ask input{flex:1;min-width:0;height:34px;padding:0 10px;border:1px solid var(--line-2);border-radius:6px;background:var(--panel);color:var(--ink);font:inherit}
+.qa{margin:0 8px 6px 37px;padding:6px 10px 8px;border-left:2px solid var(--line-2)}
+.qa .q{color:var(--ink-3);font-size:12.5px}
+.qa .a{margin:2px 0 4px}
+.srcs{display:flex;flex-wrap:wrap;gap:4px;align-items:center;font-size:12px;color:var(--ink-3)}
+.srcs button{border:1px solid var(--line);background:none;border-radius:3px;padding:0 5px;line-height:18px;font-size:12px;color:var(--ink-2);cursor:pointer}
+.srcs button:hover{border-color:var(--act);color:var(--act)}
+.chip{border:1px dashed var(--line-2);background:none;border-radius:12px;padding:0 10px;line-height:24px;font-size:12.5px;color:var(--ink-2);cursor:pointer;margin-top:6px}
+.chip:hover{border-color:var(--act);color:var(--act)}
+.entry{margin:2px 0 8px;padding:10px 12px;border:1px solid var(--line-2);border-radius:6px;background:var(--panel)}
+.entry p{margin:0 0 6px}
+.fake{width:100%;height:34px;display:flex;align-items:center;justify-content:space-between;padding:0 10px;border:1px solid var(--line-2);border-radius:6px;background:var(--bg);color:var(--ink-3);cursor:text}
+
+/* 右栏：不受档位影响 */
+#rail{display:flex;flex-direction:column;min-height:0;border-left:1px solid var(--line);background:var(--panel);position:relative}
+#railBody{flex:1;min-height:0;overflow-y:auto;padding:10px 12px}
+.rs{margin-bottom:12px}
+.rs h2{display:flex;align-items:baseline;gap:6px;margin:0 0 6px;font-size:13px;font-weight:600}
+.rs h2 b{font-size:18px;line-height:1}
+.rs.w h2 b{color:var(--wait)}.rs.e h2 b{color:var(--err)}
+.qi{border:1px solid var(--line);border-radius:6px;margin-bottom:6px;background:var(--bg)}
+.qi.flash{animation:fl 1s ease}
+@keyframes fl{0%{box-shadow:0 0 0 2px var(--wait)}100%{box-shadow:0 0 0 2px transparent}}
+.qh{display:flex;gap:4px;width:100%;border:0;background:none;text-align:left;padding:6px 8px 0 4px;cursor:pointer;font-size:13px;line-height:1.45}
+.qh .chev{margin-top:3px}
+.qi.open .qh .chev::before{transform:rotate(45deg) translate(-1px,-1px)}
+.qm{padding:0 8px 6px 22px;font-size:12px;color:var(--ink-3)}
+.qm .lf{color:var(--wait);font-family:var(--code);white-space:nowrap}
+.qb{padding:0 8px 8px 22px;font-size:12.5px}
+.qb p{margin:0 0 4px;color:var(--ink-2)}
+.tag{color:var(--wait);font-weight:600}
+.verbs{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:6px}
+.verbs .link{margin-left:auto}
+.verbs input,.qb textarea{min-width:0;border:1px solid var(--line-2);border-radius:5px;background:var(--panel);color:var(--ink);font:inherit;padding:3px 6px}
+.qb textarea{width:100%;height:46px;resize:none;margin-top:2px}
+.verbs input{width:92px;height:28px}
+.hold{position:relative;overflow:hidden}
+.hold::before{content:"";position:absolute;inset:0;background:var(--act-ink);opacity:.28;transform:scaleX(0);transform-origin:left}
+.hold.ing::before{transition:transform 1s linear;transform:scaleX(1)}
+.locked .verbs .btn{opacity:.5}
+.oq{border:1px dashed var(--line-2);border-radius:6px;padding:6px 8px;font-size:12.5px;color:var(--ink-2)}
+.muted{margin:0;font-size:12.5px;color:var(--ink-3)}
+#live{min-height:26px;padding:4px 12px;font-size:12px;color:var(--ink-2);border-top:1px solid var(--line)}
+.note{border-top:1px solid var(--line);font-size:12.5px}
+.note summary{padding:6px 12px;cursor:pointer;color:var(--ink-3)}
+.note[open]{position:absolute;right:8px;bottom:8px;width:min(460px,calc(100vw - 32px));max-height:calc(100vh - 90px);overflow:auto;border:1px solid var(--line-2);border-radius:8px;background:var(--panel);z-index:5;box-shadow:0 6px 24px rgba(0,0,0,.18)}
+.note div{padding:0 14px 12px}
+.note h3{font-size:13px;margin:10px 0 2px}
+.note p{margin:0 0 4px;color:var(--ink-2)}
+
+/* 派活面板 */
+#comp{position:fixed;top:60px;right:16px;width:420px;max-width:calc(100vw - 32px);z-index:6;background:var(--panel);border:1px solid var(--line-2);border-radius:8px;padding:12px;box-shadow:0 8px 28px rgba(0,0,0,.2)}
+#comp h3{margin:0 0 6px;font-size:14px}
+#comp textarea{width:100%;height:66px;resize:none;border:1px solid var(--line-2);border-radius:6px;background:var(--bg);color:var(--ink);font:inherit;padding:6px 8px}
+#comp select{height:30px;border:1px solid var(--line-2);border-radius:6px;background:var(--bg);color:var(--ink);font:inherit;padding:0 4px;max-width:100%}
+#comp .f{margin:8px 0;display:flex;gap:8px;align-items:center;font-size:12.5px;color:var(--ink-2)}
+#comp .acts{display:flex;gap:6px;justify-content:flex-end;margin-top:10px}
+#comp .pp{margin:0 0 6px;font-size:12.5px;color:var(--ink-3)}
+@media (max-width:1100px){.ttl{display:none}.main{grid-template-columns:minmax(0,1fr) 288px}#dial{grid-template-columns:repeat(4,80px)}.thumb{width:76px}}
+</style>
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <a class="back" href="index.html">← 返回第二轮</a>
+    <b class="ttl">深度档位</b>
+    <div id="dial" role="radiogroup" aria-label="深度档位，键盘 1 到 4"></div>
+    <span class="grow"></span>
+    <button id="newBtn" class="btn pri">派活 <kbd>n</kbd></button>
+    <div id="mode" class="seg" role="group" aria-label="数据"></div>
+    <button id="theme" class="btn" aria-label="切换深浅色">深浅</button>
+  </header>
+  <div class="main">
+    <section class="left">
+      <div id="path"></div>
+      <div id="pane" tabindex="0" role="tree" aria-label="大纲"><div id="gap"><span></span></div><div id="list"></div><div id="tail"></div></div>
+    </section>
+    <aside id="rail" aria-label="等你和出错">
+      <div id="railBody"></div>
+      <div id="live" role="status"></div>
+      <details class="note"><summary>设计说明</summary><div>
+        <h3>怎么回答「不乱又能看下去」</h3>
+        <p>只有一张大纲，一个全局档位决定默认看到多深，档位上直接写着每一档有多少行。你自己决定此刻要多少信息，任何一行还能单独点开或收起。换档时选中行不动，上下的行围着它长出来或收回去。</p>
+        <p>档位 3、4 不把行数摊开：档位 4 把 Explore ×12 拆成「已回报 9」「状态未知 3」两行，步骤合计成一句；只有点开才是 12 行。今天的数据里空闲和状态未知的会话留在一行。</p>
+        <h3>三条规则怎么落地</h3>
+        <p>F1 总台只问答：总台那一行下面只有问答、回报摘要、派单回执，没有工具调用。今天没有总台，这里就换成派活入口，档位 1 改名「总数」。</p>
+        <p>F2 派发看得清：派单是大纲里的一行，worker 挂在它的派单下面；worker 行尾写「派给 Explore ×12 · test-writer」。点开是五件事，写不出的留「未知」。</p>
+        <p>F3 subagent 默认折叠：默认档位 2 看不到 subagent。到档位 3 也只是一张折叠卡：名字，类型、数量、耗时，一个成员一个点；运行中不自己展开，点卡片才出成员。更深的 subagent 是折叠里的折叠。等你和出错住在右栏，不看档位；卡旁只带一个小标记。</p>
+        <h3>两个小约定</h3>
+        <p>选中的那条祖先链不受档位影响，兄弟折成「同层还有 N 行」。档位展开的是摘要，再点一下才是全文；点箭头永远是开或关。再按一次当前档位，清掉所有单独展开。</p>
+        <h3>最弱的一点</h3>
+        <p>同一行有两种打开：档位打开是摘要，手动打开是全文。这是为了压行数，但要学一次。其次，档位是全局状态，看深的时候第二天回来容易忘记调回去；今天的真实数据里档位 4 几乎没有东西可看，四档实际只有三档有用。折叠卡比一行高，档位上的「N 行」把一张卡算一行，行数不再等于高度。</p>
+        <p class="sub">mock 时钟停在 14:20，倒计时不走。</p>
+      </div></details>
+    </aside>
+  </div>
+</div>
+<div id="comp" hidden></div>
+<script src="scenario2.js"></script>
+<script src="foldcard.js"></script>
+<script>
+(() => {
+'use strict';
+const R = window.R2, NOW = R.meta.now, $ = s => document.querySelector(s);
+const clone = o => JSON.parse(JSON.stringify(o));
+const esc = s => String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const DATA = { rich: clone(R.rich), barren: clone(R.barren) };
+DATA.rich.router.pending = DATA.rich.router.thread.splice(-2); // 最后一问等你问了才出现
+const mkS = () => ({ over: {}, talk: {}, panel: {}, sel: null, miss: null, qOpen: undefined, errOpen: false, procOpen: false });
+const ST = { rich: mkS(), barren: mkS() };
+const LABELS = { rich: ['总台', 'worker', 'subagent', '步骤'], barren: ['总数', '会话', 'subagent', '步骤'] };
+let mode = 'rich', gear = 2, lockUntil = 0, armed = null, gap = 0, idx = {}, roots = [], wantSee = null;
+const D = () => DATA[mode], S = () => ST[mode];
+const pane = $('#pane'), list = $('#list'), gapEl = $('#gap'), tailEl = $('#tail'), els = new Map();
+const calm = matchMedia('(prefers-reduced-motion:reduce)');
+const say = t => { $('#live').textContent = t; };
+
+// ---------- 节点 ----------
+function N(key, type, parent, o) {
+  const n = Object.assign({ key, type, parent, og: 99, name: '', meta: '', tail: '', st: '', stc: '', dot: '', tm: '', list: [], q: [], err: false }, o);
+  idx[key] = n; return n;
+}
+const kidsOf = (n, g, man) => n.view ? n.view(g, man) : n.list;
+const allOf = n => n.all || n.list;
+const expandable = n => !n.block && (allOf(n).length > 0 || !!n.body || !!n.talkOf);
+const U = '<i class="u">未知</i>';
+function five(o) {
+  const v = x => x ? esc(x) : U;
+  const to = o.by ? esc(o.by) + ' → ' + esc(o.to) : (o.byUnknown ? U + ' → ' + esc(o.to) : esc(o.to));
+  return '<dl class="five"><dt>派给谁</dt><dd>' + to + '</dd><dt>做什么</dt><dd>' + v(o.task) + '</dd><dt>为什么</dt><dd>' + v(o.why) +
+    '</dd><dt>要交回</dt><dd>' + v(o.returns) + '</dd><dt>现在怎样</dt><dd>' + v(o.now) + '</dd></dl>';
+}
+const dotOf = s => ({ running: 'd-run', reported: 'd-rep', waitingYou: 'd-wait', waitingAgent: 'd-agent', error: 'd-err', guess: 'd-guess', guessWaiting: 'd-guess', unknown: 'd-unk', idle: 'd-idle', braked: 'd-known' }[s] || 'd-unk');
+const stcOf = s => ({ waitingYou: 's-wait', error: 's-err', unknown: 's-unk', guess: 's-guess', guessWaiting: 's-guess' }[s] || '');
+const bd = a => a.map(x => x[0] + ' ' + x[1]).join(' · ');
+const oneCard = (name, state) => R2Fold.fromGroup({ label: name, total: 1, members: [{ state }] }); // 不成组的 subagent，数据里没有耗时
+
+function qSrc() {
+  const d = D(), m = {};
+  d.queue.forEach(q => {
+    const w = d.workers.find(w => w.waitingOn.queueId === q.id || w.thread.some(t => t.queueId === q.id));
+    const k = w ? w.id : (q.path[q.path.length - 1] === '总台' ? 'router' : 'dsh');
+    (m[k] = m[k] || []).push(q.id);
+  });
+  return m;
+}
+const pendingQ = id => id && D().queue.some(q => q.id === id);
+
+function sayNode(key, parent, t, extra) {
+  return N(key, 'say', parent, Object.assign({ name: t.text, tm: t.t, q: pendingQ(t.queueId) ? [t.queueId] : [] }, extra));
+}
+function raw(m, parent) {
+  return N(m.id + '/raw', 'fold', parent, { name: '原始记录', body: () => '<p class="sub">在 orchestrad 账本里，按 ' + esc(m.id) + ' 索引（占位，mock 不接）。</p>' });
+}
+function memberNode(m, parent, solo, byName, gr) {
+  const kidsM = (m.children || []).map(c => memberNode(c, null, true, m.name));
+  const n = N(m.id, 'member', parent, {
+    name: m.name, crumb: m.name, sub: true, card: solo ? (gr ? R2Fold.fromGroup(gr) : oneCard(m.name, m.state)) : null, meta: m.dispatch.task, tail: kidsM.length ? '派给 ' + m.children.map(c => c.name).join(' · ') : '',
+    st: m.stateText, stc: stcOf(m.state), dot: dotOf(m.state), tm: m.dispatch.at, og: solo ? 4 : 99,
+    body: () => five({ by: byName, to: m.name, task: m.dispatch.task, why: m.dispatch.why, returns: m.dispatch.returns, now: m.stateText }) +
+      (m.guessBasis ? '<p class="sub" style="margin-top:6px">≈ ' + esc(m.guessBasis) + '</p>' : '') +
+      (m.summary ? '<div class="rep"><p>' + (m.status ? '状态：' + esc(m.status) + ' <span class="sub">（守护进程填）</span>' : '回报摘要') + '</p><p>' + esc(m.summary) + '</p>' +
+        (m.truncated ? '<p class="sub">' + esc(m.truncated) + '</p>' : '') + (m.quote ? '<q>「' + esc(m.quote.text) + '」——' + esc(m.quote.who) + '</q>' : '') + '</div>' : '')
+  });
+  kidsM.forEach(k => { k.parent = n; });
+  const steps = m.steps ? m.steps.map((s, i) => N(m.id + '/s' + i, 'step', n, { name: s.tool + ' ' + s.arg, st: s.result })) :
+    [N(m.id + '/s', 'step', n, { name: '步骤未读到', st: '状态未知' })];
+  const refs = (m.refs || []).map((r, i) => N(m.id + '/r' + i, 'fold', n, { name: '引用 · ' + r, body: () => '<p class="sub">原文在证据库里（占位，mock 不接）。</p>' }));
+  const rw = raw(m, n);
+  n.view = (g, man) => [...steps, ...(man ? [...refs, rw] : []), ...kidsM];
+  n.all = [...steps, ...refs, rw, ...kidsM];
+  return n;
+}
+function groupNode(gr, parent, byName) {
+  if (gr.total === 1) return memberNode(gr.members[0], parent, true, byName, gr);
+  const n = N(gr.id, 'group', parent, { name: gr.label, crumb: gr.label, sub: true, card: R2Fold.fromGroup(gr), tm: gr.members[0].dispatch.at, og: 4 });
+  const ms = gr.members.map(m => memberNode(m, n, false, byName));
+  const same = k => gr.members.every(m => m.dispatch[k] === gr.members[0].dispatch[k]) ? gr.members[0].dispatch[k] : null;
+  n.body = () => five({ by: byName, to: gr.label, task: gr.total + ' 项，逐项在下面', why: same('why'), returns: same('returns'), now: bd(gr.breakdown) });
+  const buckets = gr.breakdown.map(([label, c]) => {
+    const sub = gr.members.filter(m => m.stateText === label), sn = ms.filter(x => sub.some(m => m.id === x.key));
+    const tools = {}; let steps = 0;
+    sub.forEach(m => (m.steps || []).forEach(s => { tools[s.tool] = (tools[s.tool] || 0) + 1; steps++; }));
+    const unk = sub.every(m => !m.steps);
+    return N(gr.id + '/' + label, 'group', n, {
+      name: label + ' ' + c, list: sn, dot: dotOf(sub[0].state),
+      meta: unk ? '步骤未读到' : steps + ' 步 · ' + Object.keys(tools).map(t => t + ' ' + tools[t]).join(' · ')
+    });
+  });
+  n.view = (g, man) => man ? ms : buckets;
+  n.all = ms;
+  return n;
+}
+function workerNode(w, parent) {
+  const d = D(), s = S();
+  const kidW = d.workers.filter(x => x.parent === w.id);
+  const q = qSrc()[w.id] || [];
+  const wait = w.waitingOn && w.waitingOn.minutes ? ' · 已等 ' + w.waitingOn.minutes + ' 分' : '';
+  const tail = [...w.groups.map(g => g.label), ...kidW.map(c => c.name)];
+  const v = w.verdict;
+  const dp = (d.dispatches || []).find(x => x.id === w.dispatchId);
+  const par = w.parent && d.workers.find(x => x.id === w.parent);
+  const task = String(w.task).replace(/^你派的：/, '');
+  const n = N(w.id, 'worker', parent, {
+    name: w.name, crumb: w.name.replace('Codex ', ''), own: true, w, q: q.filter(id => w.waitingOn.queueId === id || w.thread.some(t => t.queueId === id)),
+    meta: dp && dp.task === task ? [w.harness, w.role].filter(Boolean).join(' · ') : task, tail: v ? '刚判 ' + v.task + ' ' + v.result + '（打回 ' + v.bounce + '）' : tail.length ? '派给 ' + tail.join(' · ') : '',
+    st: w.stateText + wait, stc: stcOf(w.state), dot: dotOf(w.state), tm: w.since,
+    body: () => five({ by: dp ? dp.by : par ? '你（应 ' + par.name + ' 请求）' : /^你派的/.test(w.task) ? '你' : null, byUnknown: !dp && !par && !/^你派的/.test(w.task), to: w.name, task, why: dp && dp.why, returns: dp && dp.returns, now: w.stateText + wait }) +
+      '<p class="sub" style="margin-top:6px">' + [w.harness, w.model, w.ownership, w.project, w.role].filter(Boolean).map(esc).join(' · ') + '</p>' +
+      '<p class="sub">最近一句：' + esc(w.lastLine) + '</p>' +
+      (w.waitingOn && w.waitingOn.delivery ? '<p class="sub">' + esc(w.waitingOn.text) + ' · ' + esc(w.waitingOn.delivery) + '</p>' : '') +
+      (v ? '<p class="sub">复核：' + esc(v.task) + ' ' + esc(v.result) + '（' + esc(v.by) + '）· 证据：' + esc(v.evidence) + '</p>' : '')
+  });
+  const tf = N(w.id + '/talk', 'fold', n, { talkOf: w.id });
+  const gs = {}; w.groups.forEach(g => { gs[g.id] = groupNode(g, n, w.name); });
+  const cs = kidW.map(c => workerNode(c, n));
+  const struct = [...Object.values(gs), ...cs], talk = [];
+  w.thread.forEach((t, i) => {
+    if (t.who === 'subgroup') { talk.push(gs[t.groupId]); return; }
+    talk.push(sayNode(w.id + '/t' + i, n, t, t.queueId ? { toQ: t.queueId } : {}));
+    if (t.workerId) { const c = cs.find(x => x.key === t.workerId); if (c) talk.push(c); }
+  });
+  cs.forEach(c => { if (!talk.includes(c)) talk.push(c); });
+  tf.name = '对话 ' + talk.length + ' 条';
+  n.view = (g, man) => s.talk[w.id] ? [tf, ...talk] : [...(g >= 3 || man ? [tf] : []), ...struct];
+  n.all = [tf, ...new Set([...struct, ...talk])];
+  n.og = cs.length ? 2 : struct.length ? 3 : 99;
+  return n;
+}
+
+function buildRich() {
+  const d = D(), s = S(), r = d.router, src = qSrc();
+  const root = N('router', 'root', null, { name: r.name, crumb: '总台', meta: r.harness + ' · 只问答 · ' + r.purity.note, og: 1, q: src.router || [] });
+  const ask = N('ask', 'ask', root, { block: true }), qa = N('qa', 'qa', root, { block: true });
+  const away = d.away, ex = d.workers[0].groups[0].members.filter(m => m.state === 'reported');
+  const aw = N('away', 'fold', root, { name: '自 ' + away.since + ' 离开', meta: '回报 ' + away.reports + ' · 交接 ' + away.handoffs + ' · ' + away.wishMove + ' · 打回 ' + away.bounces + ' · 出错 ' + away.errors });
+  const rp = N('away/r', 'fold', aw, { name: '回报 ' + away.reports, meta: bd(away.reportsBreakdown) });
+  rp.list = away.reportsBreakdown.map(([l, c], i) => {
+    const x = N('away/r' + i, 'fold', rp, { name: l + ' ' + c });
+    if (c > 1) x.list = ex.map(m => N('away/rx' + m.id, 'say', x, { name: m.name + ' · ' + m.dispatch.task, tm: m.dispatch.at, jump: m.id }));
+    return x;
+  });
+  const hand = [...d.dispatches.filter(x => x.at >= away.since && !x.fresh).map(x => ({ t: x.at, text: x.by + ' → ' + x.to + ' · ' + x.task })),
+    ...d.workers.flatMap(w => w.thread.filter(t => t.who === 'request' && !t.fresh).map(t => ({ t: t.t, text: w.name + ' ' + t.text })))].sort((a, b) => a.t < b.t ? -1 : 1);
+  const hd = N('away/h', 'fold', aw, { name: '交接 ' + hand.length });
+  hd.list = hand.map((t, i) => sayNode('away/h' + i, hd, t));
+  const mio = d.workers.find(w => w.verdict);
+  aw.list = [rp, hd, N('away/w', 'say', aw, { name: away.wishMove, jump: 'wish' }),
+    N('away/b', 'say', aw, { name: '打回 ' + away.bounces + ' · ' + mio.lastLine, jump: mio.id }),
+    N('away/e', 'say', aw, { name: '出错 ' + away.errors + ' · Kaito 的 ' + d.observed.kaito.sub.name, jump: 'kaito/rg' })];
+  const wi = N('wish', 'fold', root, { name: '愿望 ' + r.wish.id + ' · ' + r.wish.title, st: r.wish.verified + '/' + r.wish.total + ' 已验证', body: () => '<p>' + esc(r.wish.source) + '</p>' });
+  const th = r.thread, c = w => th.filter(t => t.who === w).length;
+  const tk = N('r-talk', 'fold', root, { name: '总台对话 ' + th.length + ' 条', meta: '你 ' + c('you') + ' · 回答 ' + c('router') + ' · 派单回执 ' + c('receipt') + ' · 回报 ' + c('report') });
+  tk.list = th.map((t, i) => {
+    if (t.who === 'receipt') { const x = d.dispatches.find(y => y.id === t.dispatchId); return N('r-t' + i, 'say', tk, { name: '派单回执 → ' + x.to + ' · ' + x.task, tm: t.t, jump: 'd-' + x.id }); }
+    if (t.who === 'report') return N('r-t' + i, 'say', tk, { name: '回报摘要 · ' + t.from + '：' + t.text + '（' + t.status + '）', tm: t.t });
+    return N('r-t' + i, 'say', tk, { name: (t.who === 'you' ? '你：' : '总台：') + t.text + (t.sources ? ' · 出处：' + t.sources.join('、') : ''), tm: t.t });
+  });
+  const old = d.dispatches.filter(x => !x.fresh);
+  const hostOf = w => w.dispatchId || (old.filter(x => x.to === w.name).pop() || {}).id;
+  const tops = d.workers.filter(w => !w.parent);
+  const ds = d.dispatches.map(x => {
+    const n = N('d-' + x.id, 'disp', root, {
+      name: '<em>派单</em>→ ' + esc(x.to), html: true, plain: '派单 → ' + x.to, meta: x.task, st: x.status, tm: x.at, og: 2,
+      body: () => {
+        const cur = tops.find(w => w.name === x.to);
+        const note = cur && hostOf(cur) !== x.id ? '<p class="sub" style="margin-top:6px">' + esc(x.to) + ' 现在的活在 ' + esc((d.dispatches.find(y => y.id === hostOf(cur)) || {}).at) + ' 那张派单下面。</p>' : '';
+        return five({ by: x.by, to: x.to, task: x.task, why: x.why, returns: x.returns, now: x.status }) + note;
+      }
+    });
+    n.list = tops.filter(w => hostOf(w) === x.id).map(w => workerNode(w, n));
+    return n;
+  });
+  const loose = tops.filter(w => !d.dispatches.some(x => x.id === hostOf(w))).map(w => workerNode(w, root));
+  root.list = [ask, qa, aw, wi, tk, ...ds, ...loose];
+  const k = d.observed.kaito, o = d.observed.others;
+  const ro = N('ro', 'root', null, { name: '只读会话 ' + (o.total + 1), meta: '出错 1 · ' + bd(o.breakdown), og: 2 });
+  const kn = N('kaito', 'worker', ro, {
+    name: k.name, crumb: k.name, ro: true, proc: true, meta: k.harness + ' · ' + k.ownership + ' · ' + k.project, tail: '派给 ' + k.sub.name, st: k.stateText, stc: 's-err', dot: 'd-err', og: 3,
+    body: () => '<p>' + esc(k.note) + '</p>'
+  });
+  kn.list = [N('kaito/rg', 'member', kn, {
+    name: k.sub.name, crumb: k.sub.name, proc: true, err: true, card: oneCard(k.sub.name, 'error'), meta: k.sub.text, st: k.stateText, stc: 's-err', dot: 'd-err', tm: k.sub.since,
+    body: () => five({ by: k.name, to: k.sub.name, now: k.sub.text }) + '<p class="sub" style="margin-top:6px">' + esc(k.sub.action) + '</p>'
+  })];
+  const ot = N('ro-o', 'fold', ro, { name: '其它只读 ' + o.total, meta: o.projects + ' 个项目 · ' + bd(o.breakdown) });
+  let i0 = 0;
+  ot.list = o.breakdown.map(([l, c]) => {
+    const b = N('ro-o/' + l, 'fold', ot, { name: l + ' ' + c });
+    b.list = Array.from({ length: c }, () => { i0++; return N('ro-o/x' + i0, 'member', b, { name: '只读会话 #' + i0, crumb: '只读会话 #' + i0, ro: true, st: l, stc: l === '状态未知' ? 's-unk' : '', dot: l === '在跑' ? 'd-run' : l === '空闲' ? 'd-idle' : l === '状态未知' ? 'd-unk' : 'd-guess' }); });
+    return b;
+  });
+  ro.list = [kn, ot];
+  return [root, ro];
+}
+
+function buildBarren() {
+  const d = D(), src = qSrc();
+  const entry = N('entry', 'entry', null, { block: true });
+  const own = N('own', 'root', null, { name: '自有会话 ' + d.workers.length, meta: bd(Object.entries(d.workers.reduce((a, w) => (a[w.stateText] = (a[w.stateText] || 0) + 1, a), {}))), og: 2 });
+  own.list = d.workers.map(w => workerNode(w, own));
+  const ob = d.observedMain, sa = d.subagents;
+  const obs = N('obs', 'root', null, { name: '观察到的主会话 ' + ob.total, meta: bd(ob.breakdown), tail: 'subagent ' + sa.total + ' · 状态未知 ' + sa.unknown, og: 2,
+    body: () => '<p>' + sa.total + ' 个 subagent 全部折叠在各自会话的一张卡里：' + sa.unknown + ' 个状态未知，' + sa.linkedToDispatch + ' 个能对上派活，其余只知道属于谁。一个会话最多挂 ' + sa.maxPerSession + ' 个。</p>' });
+  obs.list = ob.breakdown.map(([l, c]) => {
+    const ss = d.sessions.filter(s => s.stateText === l), subs = ss.reduce((a, s) => a + s.subagents, 0);
+    const hot = ss[0].state === 'running' || ss[0].state === 'guessWaiting';
+    const b = N('ob/' + l, 'group', obs, { name: l + ' ' + c, dot: dotOf(ss[0].state), meta: 'subagent ' + subs, og: hot ? 3 : 99 });
+    b.list = ss.map(s => {
+      const free = s.subagents - s.subagentsLinked;
+      const n = N(s.id, 'session', b, {
+        name: s.name, crumb: s.name, ro: true, meta: s.project + ' · ' + s.ownership + ' · ' + (s.inRegistry ? '在 registry 里' : '不在 registry 里'),
+        tail: s.subagents ? 'subagent ' + s.subagents + (s.subagentsLinked ? ' · ' + s.subagentsLinked + ' 能对上派活 · ' + free + ' 只知道属于谁' : ' · 只知道属于谁') : '未读到 subagent',
+        st: s.stateText, stc: stcOf(s.state), dot: dotOf(s.state), og: hot && s.subagents ? 3 : 99,
+        body: () => '<p class="sub">只读，去它自己的界面处理。</p>'
+      });
+      if (!s.subagents) return n;
+      const fc = N(s.id + '/subs', 'group', n, { name: 'subagent ' + s.subagents, sub: true, ro: true, card: Object.assign(R2Fold.fromSession(s), { title: s.name + ' 的 subagent' }) });
+      n.list = [fc];
+      fc.list = Array.from({ length: s.subagents }, (_, i) => {
+        const linked = i < s.subagentsLinked;
+        return N(s.id + '/a' + (i + 1), 'member', fc, {
+          name: 'subagent ' + (i + 1), crumb: 'subagent ' + (i + 1), sub: true, ro: true, meta: linked ? '能对上一次派活' : '只知道属于谁',
+          st: linked ? '有记录' : '状态未知', stc: linked ? '' : 's-unk', dot: linked ? 'd-known' : 'd-unk',
+          body: () => five({ by: s.name, to: 'subagent ' + (i + 1), now: linked ? '有记录，这份数据没写是哪种' : null }) + (linked ? '<p class="sub" style="margin-top:6px">靠 agentId 对上了一次派活；这份数据没有写派单内容，所以五件事还是未知。</p>' : '')
+        });
+      });
+      return n;
+    });
+    return b;
+  });
+  const dsh = N('dsh', 'root', null, {
+    name: 'DSH ' + d.dsh.text, meta: '磁盘上 ' + d.dsh.onDisk + '，读入 ' + d.dsh.read, q: src.dsh || [],
+    body: () => '<p>快照先取最新的一批，名额被 Claude 会话占满，DSH 一个也没进来。这不等于没有会话；它们的状态这里都不知道。</p>'
+  });
+  const clip = N('clip', 'root', null, {
+    name: sa.clipped + ' 个因上限未画出', meta: '不算进上面的 ' + ob.total + ' 和 ' + sa.total,
+    body: () => '<p>快照到上限后，后面的 ' + sa.clipped + ' 个成员没有进这张图。它们是谁、在做什么、状态如何，这里都不知道。</p>'
+  });
+  const note = N('note4', 'note', null, { name: '档位 4 今天多不出什么：最大深度 ' + sa.depthMax + '，到 subagent 为止，步骤没有读入。', minG: 4 });
+  return [entry, own, obs, dsh, clip, note];
+}
+
+// ---------- 摊平 ----------
+function chainSet() {
+  const c = new Set(); let x = idx[S().sel];
+  for (; x; x = x.parent) c.add(x.key);
+  return c;
+}
+function flat(g) {
+  const out = [], s = S(), ch = chainSet();
+  const open = n => { const o = s.over[n.key]; return o !== undefined ? o : g >= n.og; };
+  const walk = (n, l) => {
+    n.l = l; n.isOpen = open(n); out.push(n);
+    const man = s.over[n.key] === true, k = kidsOf(n, g, man), a = allOf(n);
+    const c = a.find(x => ch.has(x.key));
+    if (n.isOpen) {
+      k.forEach(x => walk(x, l + 1));
+      if (c && !k.includes(c) && n.type !== 'group') walk(c, l + 1);
+    } else if (c) {
+      walk(c, l + 1);
+      const vis = new Set([...kidsOf(n, g, true), c].filter(x => !x.block));
+      if (vis.size > 1) {
+        const r = N(n.key + '/rest', 'rest', n, { name: '同层还有 ' + (vis.size - 1) + ' 行', forKey: n.key });
+        r.l = l + 1; out.push(r);
+      }
+    }
+  };
+  roots.filter(n => !n.minG || g >= n.minG).forEach(n => walk(n, 0));
+  return out;
+}
+
+// ---------- 画行 ----------
+function marks(n) {
+  const qs = new Set(n.q), seen = new Set(); let e = n.err;
+  if (!n.isOpen) (function w(x) { allOf(x).forEach(c => { if (seen.has(c)) return; seen.add(c); c.q.forEach(i => qs.add(i)); e = e || c.err; w(c); }); })(n);
+  return { qs: [...qs], e };
+}
+function brakePanel(n) {
+  const w = n.w, L = affected(w), on = armed === n.key;
+  return '<div class="panel"><h4>刹车 ' + esc(w.name) + '：停它整棵进程树</h4><ul>' + (L.length ? L.map(x => '<li>' + esc(x) + '</li>').join('') : '<li>只有它自己，名下没有 subagent</li>') +
+    '</ul><div class="acts"><button class="btn sm" data-tier="中断这一回合">中断这一回合</button><button class="btn sm" data-tier="结束会话">结束会话</button>' +
+    '<button class="btn sm pri" data-brake="' + esc(n.key) + '">' + (on ? '再点一次刹车（3 秒内）' : '刹车（3 秒内点两次）') + '</button><button class="link" data-closep="' + esc(n.key) + '">收起</button></div></div>';
+}
+function affected(w) {
+  const d = D(), L = [];
+  const m = x => { if (x.state !== 'reported') L.push(x.name + '：' + x.stateText); (x.children || []).forEach(m); };
+  w.groups.forEach(g => {
+    if (g.total > 1) {
+      const hit = g.members.filter(x => x.state !== 'reported'), by = {};
+      hit.forEach(x => { by[x.stateText] = (by[x.stateText] || 0) + 1; });
+      L.push(g.label + '：' + g.total + ' 个里 ' + Object.keys(by).map(k => by[k] + ' 个' + k).join('、') + '，可能还活着；另外 ' + (g.total - hit.length) + ' 个已回报，不受影响');
+    } else g.members.forEach(m);
+  });
+  d.workers.filter(c => c.parent === w.id).forEach(c => { L.push(c.name + '：' + c.stateText); L.push(...affected(c)); });
+  return L;
+}
+function bodyOf(n) {
+  const s = S(), p = s.panel[n.key];
+  let b = s.over[n.key] === true && n.body ? n.body() : '';
+  let h = b ? '<div class="body">' + b + '</div>' : '';
+  if (p === 'brake') h += '<div class="body panel">' + brakePanel(n) + '</div>';
+  if (p === 'enter') h += '<div class="body panel"><h4>' + esc(n.w.name) + ' 的完整对话页（占位）</h4><p class="sub">这里会是能直接打字的对话页，地址 /worker/' + esc(n.w.id) + '。</p><button class="link" data-closep="' + esc(n.key) + '">回到大纲</button></div>';
+  return h;
+}
+function rowHTML(n) {
+  if (n.type === 'ask') return '<div class="ask"><form data-ask><input id="askIn" placeholder="问总台一句" autocomplete="off" aria-label="问总台"><button class="btn">问</button></form></div>';
+  if (n.type === 'qa') return qaHTML();
+  if (n.type === 'entry') return '<div class="entry"><p>' + esc(D().routerNote) + '</p><button class="fake" data-new>写一句要派的活 <kbd>n</kbd></button></div>';
+  const m = marks(n);
+  const mk = (m.qs.length ? '<button data-q="' + m.qs[0] + '" title="去等你那一栏">等你 ' + m.qs.length + '</button>' : '') + (m.e && (n.card || n.stc !== 's-err') ? '<span>出错 1</span>' : '');
+  if (n.card) return '<div class="line fline">' + R2Fold.card(Object.assign({}, n.card, { id: n.key, open: n.isOpen })) + '<span class="mk">' + mk + '</span><span class="tm">' + esc(n.tm) + '</span></div>' + bodyOf(n);
+  return '<div class="line">' + (expandable(n) ? '<span class="chev" data-chev></span>' : '<span class="chev0"></span>') + (n.dot ? '<span class="dot ' + n.dot + '"></span>' : '') +
+    '<span class="nm" title="' + esc(n.plain || n.name) + '">' + (n.html ? n.name : esc(n.name)) + '</span>' +
+    (n.type === 'say' ? '' : '<span class="mt" title="' + esc(n.meta) + '">' + esc(n.meta) + '</span>') + (n.tail ? '<span class="tl" title="' + esc(n.tail) + '">' + esc(n.tail) + '</span>' : '') +
+    '<span class="mk">' + mk + '</span>' + (n.st ? '<span class="st ' + n.stc + '" title="' + esc(n.st) + '">' + esc(n.st) + '</span>' : '') + (n.type === 'step' ? '' : '<span class="tm">' + esc(n.tm) + '</span>') + '</div>' + bodyOf(n);
+}
+function qaHTML() {
+  const r = D().router, s = S(), th = r.thread;
+  let ai = -1; th.forEach((t, i) => { if (t.who === 'router' && t.sources) ai = i; });
+  let qi = ai; while (qi >= 0 && th[qi].who !== 'you') qi--;
+  const a = th[ai], q = th[qi];
+  const chip = r.pending ? '<button class="chip" data-chip>' + esc(r.pending[0].text) + '</button>' : '';
+  return '<div class="qa"><div class="q">' + esc(q.t) + ' 你：' + esc(q.text) + '</div><div class="a">' + esc(a.text) + '</div><div class="srcs">出处 ' +
+    (a.sources || []).map(x => '<button data-src="' + esc(x) + '">' + esc(x) + '</button>').join('') + '</div>' +
+    (s.miss ? '<p class="sub" style="margin:6px 0 0">「' + esc(s.miss) + '」：这份 mock 只备了' + (r.pending ? '下面' : '上面') + '这一问的回答。</p>' : '') + chip + '</div>';
+}
+
+// ---------- 渲染：换档时锚住一行，其余行围着它动 ----------
+function render() {
+  const s = S(), pr = pane.getBoundingClientRect(), seen = new Map(), tops = new Map();
+  [...list.children].forEach(el => seen.set(el.dataset.key, el.getBoundingClientRect().top)); // 动画中的位置，给 FLIP 接着动
+  list.getAnimations({ subtree: true }).forEach(x => x.cancel());
+  [...list.children].forEach(el => tops.set(el.dataset.key, el.getBoundingClientRect().top)); // 真实位置，给锚点用
+  let a = null;
+  if (s.sel && tops.has(s.sel) && tops.get(s.sel) >= pr.top - 2 && tops.get(s.sel) < pr.bottom - 20) a = s.sel;
+  else for (const [k, t] of tops) if (t >= pr.top - 1) { a = k; break; }
+  const aChain = []; for (let x = idx[a]; x; x = x.parent) aChain.push(x.key);
+  const aTop = a ? tops.get(a) : 0;
+
+  idx = {}; roots = mode === 'rich' ? buildRich() : buildBarren();
+  if (s.sel && !idx[s.sel]) s.sel = null;
+  const counts = [1, 2, 3, 4].map(g => flat(g).filter(n => !n.block).length);
+  const rows = flat(gear);
+  renderTop(counts); renderPath(); renderRail();
+
+  const keep = new Set(rows.map(n => n.key)), fresh = [], grown = [];
+  els.forEach((el, k) => { if (!keep.has(k)) { el.remove(); els.delete(k); } });
+  let cur = list.firstChild;
+  rows.forEach(n => {
+    let el = els.get(n.key); const h = rowHTML(n);
+    if (!el) { el = document.createElement('div'); el.dataset.key = n.key; el.id = 'r-' + n.key; el.innerHTML = h; el._h = h; els.set(n.key, el); fresh.push(el); }
+    else if (el._h !== h) {
+      const had = el.querySelectorAll('.body').length; el.innerHTML = h; el._h = h;
+      if (el.querySelectorAll('.body').length > had) grown.push(el);
+      if (n.type === 'qa') grown.push(el);
+    }
+    const on = n.talkOf ? !!s.talk[n.talkOf] : n.isOpen;
+    el.className = 'row t-' + (n.type === 'session' || n.type === 'group' || n.type === 'member' ? 'sub' : n.type) + (expandable(n) || n.type === 'rest' || n.jump || pendingQ(n.toQ) ? ' can' : '') + (on && expandable(n) ? ' open' : '') + (s.sel === n.key ? ' sel' : '');
+    el.style.setProperty('--l', n.l);
+    if (!n.block) { el.setAttribute('role', 'treeitem'); el.setAttribute('aria-level', n.l + 1); if (expandable(n)) el.setAttribute('aria-expanded', !!on); el.setAttribute('aria-selected', s.sel === n.key); }
+    if (el !== cur) list.insertBefore(el, cur); else cur = cur.nextSibling;
+  });
+  if (s.sel) pane.setAttribute('aria-activedescendant', 'r-' + s.sel); else pane.removeAttribute('aria-activedescendant');
+
+  const ak = aChain.find(k => els.has(k));
+  let target = pane.scrollTop;
+  if (ak) {
+    target += els.get(ak).getBoundingClientRect().top - aTop;
+    if (target < 0) { gap += -target; target = 0; }
+    else if (gap > 0 && target > 0) { const r = Math.min(gap, target); gap -= r; target -= r; }
+  }
+  setGap();
+  tailEl.style.height = Math.max(48, target + pane.clientHeight - gap - list.offsetHeight, gap ? pane.clientHeight - list.offsetHeight : 0) + 'px';
+  pane.scrollTop = target;
+  if (wantSee && els.get(wantSee)) { const k = wantSee; wantSee = null; const r = els.get(k).getBoundingClientRect(), p = pane.getBoundingClientRect(); if (r.top < p.top + 4 || r.bottom > p.bottom - 4) pane.scrollTop += r.top - p.top - p.height * .3; }
+
+  if (calm.matches) return;
+  const E = 'cubic-bezier(.3,.7,.3,1)';
+  [...list.children].forEach((el, i) => {
+    const o = seen.get(el.dataset.key);
+    if (o === undefined) return;
+    const dy = o - el.getBoundingClientRect().top;
+    if (Math.abs(dy) > .5 && Math.abs(dy) < 1400) el.animate([{ transform: 'translateY(' + dy + 'px)' }, { transform: 'none' }], { duration: 170, easing: E });
+  });
+  fresh.forEach((el, i) => el.animate([{ opacity: 0, transform: 'translateY(-5px)' }, { opacity: 1, transform: 'none' }], { duration: 150, delay: Math.min(i * 12, 90), easing: E, fill: 'backwards' }));
+  grown.forEach(el => { const b = el.querySelector('.body') || el.firstChild; const h = b.offsetHeight; b.animate([{ opacity: 0, height: Math.min(h, 24) + 'px' }, { opacity: 1, height: h + 'px' }], { duration: 170, easing: E }); });
+}
+function setGap() {
+  gapEl.style.height = gap + 'px';
+  gapEl.firstChild.textContent = gap >= 40 ? '这段留白让选中行不动 · 滚动或按 Home 收拢' : '';
+}
+pane.addEventListener('scroll', () => { if (gap && pane.scrollTop >= gap) { const t = pane.scrollTop - gap; gap = 0; setGap(); pane.scrollTop = t; } });
+
+function renderTop(counts) {
+  const L = LABELS[mode];
+  const h = '<span class="thumb" style="transform:translateX(calc(' + (gear - 1) + ' * 100% + ' + (gear - 1) * 4 + 'px))"></span>' + L.map((l, i) =>
+    '<button class="stop" role="radio" aria-checked="' + (gear === i + 1) + '" data-gear="' + (i + 1) + '" title="键盘 ' + (i + 1) + '"><b><i>' + (i + 1) + '</i>' + l + '</b><small>' + counts[i] + ' 行</small></button>').join('');
+  const dial = $('#dial');
+  if (!dial.firstChild) dial.innerHTML = h;
+  else { // 留住滑块元素，才有滑动
+    dial.querySelector('.thumb').style.transform = 'translateX(calc(' + (gear - 1) + ' * 100% + ' + (gear - 1) * 4 + 'px))';
+    [...dial.querySelectorAll('.stop')].forEach((b, i) => { b.setAttribute('aria-checked', gear === i + 1); b.innerHTML = '<b><i>' + (i + 1) + '</i>' + L[i] + '</b><small>' + counts[i] + ' 行</small>'; });
+  }
+  const md = $('#mode');
+  if (!md.firstChild) md.innerHTML = ['rich', 'barren'].map(k => '<button data-mode="' + k + '" aria-pressed="' + (mode === k) + '">' + esc(R[k].label) + '</button>').join('');
+  else [...md.children].forEach(b => b.setAttribute('aria-pressed', mode === b.dataset.mode));
+}
+function renderPath() {
+  const s = S(), n = idx[s.sel], chain = [];
+  for (let x = n; x; x = x.parent) if (x.crumb || x === n) chain.unshift(x);
+  let h = '<div class="crumbs"><button data-cr="">你</button>';
+  chain.forEach(x => { h += '<span>→</span><button data-cr="' + esc(x.key) + '">' + esc(x.crumb || x.plain || x.name) + '</button>'; });
+  h += '</div>';
+  const man = Object.keys(s.over).length + Object.values(s.talk).filter(Boolean).length;
+  if (man) h += '<span class="hint">单独展开 ' + man + ' · 再按 ' + gear + ' 清掉</span>';
+  if (!n) h += '<span class="hint">↑↓ 移动 · → 展开 · ← 退回 · 1–4 换档</span>';
+  else if (n.own) h += '<span class="pact"><button class="btn sm" data-act="enter">进入对话</button><button class="btn sm" data-act="brake">刹车 <kbd>b</kbd></button></span>';
+  else if (n.proc) h += '<span class="pact"><span class="hint">去 Codex CLI 里处理</span><button class="btn sm" data-act="proc">本机进程刹车</button></span>';
+  else if (n.ro) h += '<span class="hint">只读，去它自己的界面处理</span>';
+  else if (n.sub) h += '<span class="hint">subagent 不收消息</span>';
+  $('#path').innerHTML = h;
+}
+function qItem(q, open, locked) {
+  const left = q.left ? '<span class="lf">剩 ' + esc(q.left) + ' 自动拒</span> · ' : '不限时 · ';
+  let b = '';
+  if (open) {
+    const hold = q.hold, vs = q.verbs.map((v, i) => {
+      if (q.kind === 'question') return '<button class="btn sm pri" data-verb="' + esc(v) + '" data-qid="' + q.id + '">' + esc(v) + '</button>';
+      if (hold && i === 0) return '<button class="btn sm pri hold" data-hold="' + q.id + '" data-v="' + esc(v) + '">' + esc(v) + '</button>';
+      return '<button class="btn sm' + (i === 0 ? ' pri' : '') + '" data-verb="' + esc(v) + '" data-qid="' + q.id + '">' + esc(v) + '</button>';
+    }).join('');
+    b = '<div class="qb">' + (q.risk ? '<p><span class="tag">' + esc(q.risk) + '</span>，按住 1 秒批准</p>' : '') + (q.claim ? '<p>' + esc(q.claim) + '</p>' : '') + (q.model ? '<p>派出会用 ' + esc(q.model) + '</p>' : '') + (q.scope ? '<p>想在 ' + esc(q.scope) + ' 干活</p>' : '') +
+      (q.kind === 'question' ? '<textarea id="ans" aria-label="回答" placeholder="写回答"></textarea>' : '') +
+      '<div class="verbs">' + vs + '<button class="link" data-goq="' + q.id + '">在大纲里看</button></div></div>';
+  }
+  return '<article class="qi' + (open ? ' open' : '') + (locked ? ' locked' : '') + '" id="qi-' + q.id + '"><button class="qh" data-qt="' + q.id + '" aria-expanded="' + open + '"><span class="chev"></span><span>' + esc(q.title) + '</span></button>' +
+    '<div class="qm">' + left + esc(q.path.join(' → ')) + (q.via ? '（经 ' + esc(q.via) + '）' : '') + '</div>' + b + '</article>';
+}
+function renderRail() {
+  const d = D(), s = S(), qs = [...d.queue].sort((a, b) => (a.leftSec || 1e9) - (b.leftSec || 1e9));
+  const open = s.qOpen === undefined ? (qs[0] || {}).id : s.qOpen;
+  let h = '';
+  if (mode === 'rich') {
+    const k = d.observed.kaito, parts = k.sub.action.split('；');
+    h += '<section class="rs e"><h2>出错 <b>1</b></h2><article class="qi' + (s.errOpen ? ' open' : '') + '"><button class="qh" data-et aria-expanded="' + s.errOpen + '"><span class="chev"></span><span>' + esc(k.name) + ' 的 ' + esc(k.sub.name) + '：' + esc(k.sub.text) + '</span></button><div class="qm">' + esc(k.sub.since) + ' 起 · ' + esc(k.ownership) + '</div>' +
+      (s.errOpen ? '<div class="qb"><p><b>' + esc(parts[0]) + '</b></p><p>' + esc(parts[1]) + '</p>' +
+        (k.sub.braked ? '<p>已发刹车（mock）。</p>' : s.procOpen ? '<p>会停 ' + esc(k.sub.name) + ' 的本机进程树。键入「刹车」确认。</p><div class="verbs"><input id="typed" aria-label="键入 刹车" autocomplete="off"><button class="btn sm pri" id="typedGo" data-proc disabled>刹车</button></div>' :
+          '<div class="verbs"><button class="btn sm" data-act="proc">本机进程刹车</button><button class="link" data-goto="kaito/rg">在大纲里看</button></div>') + '</div>' : '') + '</article></section>';
+  } else {
+    const unk = d.observedMain.breakdown.find(x => x[0] === '状态未知')[1];
+    h += '<section class="rs"><h2>出错</h2><p class="muted">没有登记到。' + unk + ' 个会话状态未知，这不等于没事。</p></section>';
+  }
+  const locked = Date.now() < lockUntil;
+  h += '<section class="rs w"><h2>等你 <b>' + qs.length + '</b></h2>' + (qs.length ? qs.map(q => qItem(q, q.id === open, locked)).join('') : '<p class="muted">现在没有等你的事。</p>') + '</section>';
+  if (d.outsideQueue) h += '<section class="rs"><div class="oq">' + esc(d.outsideQueue.title) + '<br><span class="sub">不进队列 · ' + esc(d.outsideQueue.note) + '</span> <button class="link" data-goto="s4">在大纲里看</button></div></section>';
+  const rb = $('#railBody');
+  if (rb._h !== h) { const top = rb.scrollTop; rb.innerHTML = h; rb._h = h; rb.scrollTop = top; }
+}
+
+// ---------- 动作 ----------
+function select(k, see) { S().sel = k; if (see) wantSee = k; render(); pane.focus({ preventScroll: true }); }
+function setGear(g) {
+  const s = S();
+  if (g === gear) { s.over = {}; s.talk = {}; say('已清掉单独展开'); }
+  gear = g; render();
+}
+function toggleRow(n, chevOnly) {
+  const s = S(), o = s.over[n.key], cur = o !== undefined ? o : gear >= n.og;
+  const rich = n.body || n.view;
+  let v = !cur;
+  if (!chevOnly && cur && o === undefined && rich) v = true; // 档位打开的是摘要，再点一下才是全文
+  if (v === false && gear < n.og) delete s.over[n.key]; else s.over[n.key] = v;
+  if (n.own && n.w && v && !chevOnly) s.talk[n.key] = true;
+  if (n.own && !v) delete s.talk[n.key];
+}
+function clickRow(n, chevOnly) {
+  const s = S(); s.sel = n.key;
+  if (n.type === 'rest') { s.over[n.forKey] = true; s.sel = n.forKey; render(); return; }
+  if (n.talkOf) { s.talk[n.talkOf] = !s.talk[n.talkOf]; render(); return; }
+  if (n.jump) { select(n.jump, true); return; }
+  if (n.toQ && pendingQ(n.toQ)) { focusQ(n.toQ); render(); return; }
+  if (expandable(n)) toggleRow(n, chevOnly);
+  render();
+}
+function focusQ(id) {
+  S().qOpen = id; renderRail();
+  const el = document.getElementById('qi-' + id);
+  if (el) { el.scrollIntoView({ block: 'nearest' }); el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
+}
+function resolveQ(id, verb, text) {
+  const d = D(), s = S();
+  if (Date.now() < lockUntil) { say('列表刚变过，750 ms 内点批准无效'); return; }
+  const q = d.queue.find(x => x.id === id); if (!q) return;
+  if (q.kind === 'question' && !text) { say('先写回答，空的不算回答'); const a = $('#ans'); if (a) a.focus(); return; }
+  const w = d.workers.find(x => x.waitingOn.queueId === id || x.thread.some(t => t.queueId === id));
+  const yes = verb !== '拒绝' && verb !== '不拆';
+  if (q.kind === 'approval') {
+    w.thread.push({ t: NOW, who: 'worker', text: yes ? '你批准了，命令开始跑' : '你拒绝了这条命令' });
+    w.state = yes ? 'running' : 'idle'; w.stateText = yes ? '在跑' : '命令被你拒绝'; w.waitingOn = { kind: 'none', text: '不等谁' };
+  } else if (q.kind === 'dispatch') {
+    const task = q.title.split('：').slice(1).join('：');
+    if (yes) {
+      const mine = d.workers.length + 1, name = w ? 'Codex c-' + (mine + 4) : 'Codex 会话 ' + (d.workers.filter(x => x.harness === 'Codex').length + 1), id2 = 'nw' + mine;
+      d.workers.push({ id: id2, name, parent: w ? w.id : undefined, harness: 'Codex', model: 'gpt-5.5', ownership: '自有', project: q.scope, role: '', state: 'running', stateText: '在跑', waitingOn: { kind: 'none', text: '不等谁' }, task: w ? task : '你派的：' + task, dispatchId: null, since: NOW, confidence: 'real', lastLine: '刚派出', groups: [], thread: [{ t: NOW, who: 'dispatch', text: '应请求由你派出' }] });
+      if (w) w.thread.push({ t: NOW, who: 'request', fresh: true, text: '这条请求你已派出：' + name.replace('Codex ', ''), workerId: id2 });
+    } else if (w) w.thread.push({ t: NOW, who: 'worker', text: '派活请求被你拒绝' });
+  } else if (q.kind === 'question') {
+    w.thread.push({ t: NOW, who: 'you', text: '你答：' + (text || '（空）') });
+  } else {
+    d.router.thread.push({ t: NOW, who: 'router', text: '你' + (yes ? '拍板：拆成两条。' : '选了不拆。') + ' 已记下。' });
+  }
+  d.queue = d.queue.filter(x => x.id !== id);
+  if (s.qOpen === id) s.qOpen = undefined;
+  lockUntil = Date.now() + 750; setTimeout(renderRail, 760);
+  say(verb + '：' + q.title + ' · 等你还剩 ' + d.queue.length);
+  render();
+}
+function dropQ(w) { // 它停了，挂着的卡一起撤下，不留一张批了会把它救活的卡。要在清 waitingOn 之前调
+  const d = D(), s = S(), mine = q => w.waitingOn.queueId === q.id || w.thread.some(t => t.queueId === q.id);
+  const n = d.queue.filter(mine).length;
+  if (!n) return '';
+  d.queue = d.queue.filter(q => !mine(q));
+  if (s.qOpen !== undefined && !d.queue.some(q => q.id === s.qOpen)) s.qOpen = undefined;
+  lockUntil = Date.now() + 750; setTimeout(renderRail, 760);
+  return ' · 撤下 ' + n + ' 条等你，还剩 ' + d.queue.length;
+}
+function doBrake(key) {
+  const n = idx[key], s = S(); if (!n) return;
+  if (armed !== key) { armed = key; clearTimeout(doBrake.t); doBrake.t = setTimeout(() => { armed = null; els.get(key) && render(); }, 3000); render(); return; }
+  armed = null; delete s.panel[key]; const dq = dropQ(n.w); n.w.state = 'braked'; n.w.stateText = '被刹车'; n.w.waitingOn = { kind: 'none', text: '不等谁' };
+  say('已刹车 ' + n.w.name + '（mock，只改了这一行的状态）' + dq); render();
+}
+function ask(text) {
+  const d = D(), s = S(), r = d.router, t = (text || '').trim(); if (!t) return;
+  if (r.pending && (t === r.pending[0].text || /Ren/.test(t))) { r.thread.push(...r.pending); r.pending = null; s.miss = null; } else s.miss = t;
+  render();
+}
+function source(x) {
+  const m = /等你 #(\d+)/.exec(x);
+  if (m) { const q = D().queue[m[1] - 1]; if (q && q.id === 'q' + m[1]) focusQ(q.id); else say('这一条已经处理过了'); return; }
+  select(/账本/.test(x) ? 'wish' : /^Ren/.test(x) ? 'ren' : /Aiko/.test(x) ? 'aiko' : 'mio', true);
+}
+
+// ---------- 派活 ----------
+let cp = null;
+function openComp() { cp = { step: 'write', text: '', to: mode === 'rich' ? 'router' : 'new:Codex' }; drawComp(); $('#comp').hidden = false; $('#cpText').focus(); }
+function closeComp() { $('#comp').hidden = true; cp = null; pane.focus({ preventScroll: true }); }
+function drawComp() {
+  const d = D(), c = $('#comp'), rich = mode === 'rich';
+  if (cp.step === 'prop') {
+    c.innerHTML = '<h3>总台提议</h3><p class="pp">还没派出。你点「派出」才算数。</p>' + five({ by: '总台', to: cp.p.to, task: cp.p.task, why: cp.p.why, returns: cp.p.returns, now: '等你点派出' }) +
+      '<div class="acts"><button class="btn" data-cp="back">改一下</button><button class="btn" data-cp="close">不派</button><button class="btn pri" data-cp="send">派出</button></div>';
+    return;
+  }
+  const opts = (rich ? [['router', '走总台（默认）']] : []).concat(d.workers.filter(w => !w.parent || rich).map(w => [w.id, '指定 ' + w.name]), [['new:Codex', '新开 Codex 会话'], ['new:Claude', '新开 Claude 会话']]);
+  c.innerHTML = '<h3>派一件新活</h3>' + (rich ? '' : '<p class="pp">' + esc(d.routerNote) + '</p>') + '<textarea id="cpText" placeholder="要做什么，一句话">' + esc(cp.text) + '</textarea>' +
+    '<div class="f"><label for="cpTo">交给</label><select id="cpTo">' + opts.map(o => '<option value="' + o[0] + '"' + (o[0] === cp.to ? ' selected' : '') + '>' + esc(o[1]) + '</option>').join('') + '</select></div>' +
+    '<div class="acts"><button class="btn" data-cp="close">取消</button><button class="btn pri" data-cp="next">' + (cp.to === 'router' ? '交给总台' : '派出') + '</button></div>';
+}
+function compNext() {
+  const d = D(); cp.text = $('#cpText').value.trim(); cp.to = $('#cpTo').value;
+  if (!cp.text) { say('先写一句要派的活'); $('#cpText').focus(); return; }
+  if (cp.to === 'router') {
+    const pick = /接口|后端|api|流式/i.test(cp.text) ? 'ren' : /复核|QA/i.test(cp.text) ? 'mio' : 'aiko', w = d.workers.find(x => x.id === pick);
+    cp.p = { to: w.name, task: cp.text, why: w.role + '归 ' + w.name, returns: 'diff、测试日志', by: '总台' }; cp.step = 'prop'; drawComp(); return;
+  }
+  send();
+}
+function send() {
+  const d = D(), s = S(), rich = mode === 'rich'; let sel;
+  const fresh = (harness) => {
+    const n = d.workers.filter(x => x.harness === harness && !x.parent).length + 1, id = 'nw' + (d.workers.length + 1);
+    return { id, name: harness + (rich ? ' 新会话 ' : ' 会话 ') + n, harness, model: harness === 'Codex' ? 'gpt-5.5' : 'claude-sonnet-5-5', ownership: '自有', project: '未定', state: 'running', stateText: '在跑', waitingOn: { kind: 'none', text: '不等谁' }, task: '你派的：' + cp.text, dispatchId: null, since: NOW, confidence: 'real', lastLine: '刚派出', groups: [], thread: [{ t: NOW, who: 'dispatch', text: '你派的：' + cp.text }] };
+  };
+  if (rich) {
+    const id = 'd' + (d.dispatches.length + 1); let to, by = '你', why = null, ret = null;
+    if (cp.step === 'prop') { to = cp.p.to; by = '总台'; why = cp.p.why; ret = cp.p.returns; }
+    else if (cp.to.startsWith('new:')) { const w = fresh(cp.to.slice(4)); w.dispatchId = id; d.workers.push(w); to = w.name; }
+    else to = d.workers.find(x => x.id === cp.to).name;
+    d.dispatches.push({ id, by, to, at: NOW, task: cp.text, why, returns: ret, status: '刚派出，等接手', fresh: true });
+    d.router.thread.push({ t: NOW, who: 'receipt', dispatchId: id });
+    sel = 'd-' + id;
+  } else if (cp.to.startsWith('new:')) { const w = fresh(cp.to.slice(4)); d.workers.push(w); sel = w.id; }
+  else { const w = d.workers.find(x => x.id === cp.to); w.thread.push({ t: NOW, who: 'you', text: cp.text }); sel = w.id; }
+  say('已派出：' + cp.text); closeComp(); select(sel, true);
+}
+
+// ---------- 事件 ----------
+document.addEventListener('click', e => {
+  const t = e.target, c = q => t.closest(q); let x;
+  if ((x = c('[data-cp]'))) { const v = x.dataset.cp; if (v === 'close') closeComp(); if (v === 'next') compNext(); if (v === 'send') send(); if (v === 'back') { cp.step = 'write'; drawComp(); } return; }
+  if (c('[data-new]') || c('#newBtn')) { openComp(); return; }
+  if ((x = c('[data-gear]'))) { setGear(+x.dataset.gear); return; }
+  if ((x = c('[data-mode]'))) { if (x.dataset.mode !== mode) { if (cp) closeComp(); mode = x.dataset.mode; list.innerHTML = ''; els.clear(); gap = 0; setGap(); pane.scrollTop = 0; idx = {}; $('#railBody')._h = ''; say(''); render(); } return; }
+  if (c('#theme')) { const r = document.documentElement, dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme:dark)').matches; r.dataset.theme = dark ? 'light' : 'dark'; return; }
+  if ((x = c('[data-cr]'))) { select(x.dataset.cr || null, true); return; }
+  if ((x = c('[data-q]'))) { focusQ(x.dataset.q); return; }
+  if ((x = c('[data-goq]'))) { select(Object.entries(qSrc()).find(([k, v]) => v.includes(x.dataset.goq))[0], true); return; }
+  if ((x = c('[data-goto]'))) { select(x.dataset.goto, true); return; }
+  if ((x = c('[data-qt]'))) { const s = S(), id = x.dataset.qt, q0 = s.qOpen === undefined ? (D().queue[0] || {}).id : s.qOpen; s.qOpen = q0 === id ? '' : id; renderRail(); return; }
+  if (c('[data-et]')) { S().errOpen = !S().errOpen; renderRail(); return; }
+  if ((x = c('[data-verb]'))) { const a = $('#ans'); resolveQ(x.dataset.qid, x.dataset.verb, a && a.value.trim()); return; }
+  if ((x = c('[data-act]'))) { pathAct(x.dataset.act); return; }
+  if ((x = c('[data-brake]'))) { doBrake(x.dataset.brake); return; }
+  if ((x = c('[data-tier]'))) { const n = idx[x.closest('.row').dataset.key]; if (n && n.w) { const dq = dropQ(n.w); n.w.stateText = x.dataset.tier === '结束会话' ? '会话已结束' : '这一回合被中断'; n.w.state = 'braked'; n.w.waitingOn = { kind: 'none', text: '不等谁' }; delete S().panel[n.key]; say(x.dataset.tier + '：' + n.w.name + '（mock）' + dq); render(); } return; }
+  if ((x = c('[data-closep]'))) { delete S().panel[x.dataset.closep]; render(); return; }
+  if (c('[data-proc]')) { D().observed.kaito.sub.braked = true; say('已发刹车：Kaito 的 rg 子代理（mock）'); renderRail(); return; }
+  if ((x = c('[data-src]'))) { source(x.dataset.src); return; }
+  if (c('[data-chip]')) { ask(D().router.pending[0].text); return; }
+  if (c('.body') || c('.ask') || c('.entry') || c('.qa')) return;
+  if ((x = c('.row')) && x.parentNode === list) { const n = idx[x.dataset.key]; if (n && !n.block) { clickRow(n, !!c('[data-chev],.fold-chev')); pane.focus({ preventScroll: true }); } }
+});
+function pathAct(a) {
+  const s = S(), n = idx[s.sel];
+  if (a === 'proc') { s.errOpen = true; s.procOpen = true; renderRail(); const i = $('#typed'); if (i) i.focus(); return; }
+  if (!n || !n.w) return;
+  s.panel[n.key] = s.panel[n.key] === a ? undefined : a; if (!s.panel[n.key]) delete s.panel[n.key]; render();
+}
+document.addEventListener('submit', e => { e.preventDefault(); if (e.target.matches('[data-ask]')) { const i = $('#askIn'); ask(i.value); i.value = ''; } });
+document.addEventListener('input', e => { if (e.target.id === 'typed') $('#typedGo').disabled = e.target.value.trim() !== '刹车'; if (e.target.id === 'cpText' && cp) cp.text = e.target.value; });
+document.addEventListener('change', e => { if (e.target.id === 'cpTo') { cp.to = e.target.value; cp.text = $('#cpText').value; drawComp(); } });
+// 按住批准
+let holdT = null, holdEl = null, holdPid = null;
+const holdGo = (el, pid) => { if (Date.now() < lockUntil) { say('列表刚变过，750 ms 内点批准无效'); return; } holdEl = el; holdPid = pid; el.classList.add('ing'); holdT = setTimeout(() => { holdEl = null; resolveQ(el.dataset.hold, el.dataset.v); }, 1000); };
+const holdStop = () => { clearTimeout(holdT); if (holdEl) { holdEl.classList.remove('ing'); holdEl = null; say('没按够 1 秒，没有批准'); } };
+document.addEventListener('pointerdown', e => { const b = e.target.closest('[data-hold]'); if (b && e.button === 0) holdGo(b, e.pointerId); });
+document.addEventListener('pointermove', e => { if (!holdEl || e.pointerId !== holdPid) return; const r = holdEl.getBoundingClientRect(); if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) holdStop(); });
+document.addEventListener('pointerup', holdStop); document.addEventListener('pointercancel', holdStop); window.addEventListener('blur', holdStop);
+document.addEventListener('keydown', e => {
+  const b = e.target.closest && e.target.closest('[data-hold]');
+  if (b && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); if (!e.repeat) holdGo(b); return; }
+  const typing = /INPUT|TEXTAREA|SELECT/.test(e.target.tagName);
+  if (e.key === 'Escape') { if (cp) { closeComp(); return; } if (typing) { e.target.blur(); pane.focus(); return; } const s = S(); if (s.sel && s.panel[s.sel]) { delete s.panel[s.sel]; render(); return; } if (s.sel) { s.sel = null; render(); } return; }
+  if (typing || e.ctrlKey || e.metaKey || e.altKey || cp) return;
+  if (/^[1-4]$/.test(e.key)) { setGear(+e.key); return; }
+  if (e.key === 'n') { e.preventDefault(); openComp(); return; }
+  const s = S(), rows = flat(gear).filter(n => !n.block), n = idx[s.sel], i = rows.indexOf(rows.find(r => r.key === s.sel));
+  if (e.key === 'b') { if (n && n.own) pathAct('brake'); else if (n && n.proc) pathAct('proc'); return; }
+  if (e.key === 'Home') { e.preventDefault(); gap = 0; setGap(); pane.scrollTop = 0; return; }
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault(); const m = rows[i < 0 ? 0 : Math.max(0, Math.min(rows.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))]; if (m) select(m.key, true); return;
+  }
+  if (!n || e.target.closest('button,a,summary')) { return; }
+  if (e.key === 'Enter') { e.preventDefault(); clickRow(n); }
+  if (e.key === 'ArrowRight') { e.preventDefault(); const f = rows[i]; if (expandable(f) && !f.isOpen) clickRow(f, true); else if (rows[i + 1] && rows[i + 1].l > f.l) select(rows[i + 1].key, true); }
+  if (e.key === 'ArrowLeft') { e.preventDefault(); const f = rows[i]; if (f && expandable(f) && f.isOpen && !f.talkOf) clickRow(f, true); else { let p = n.parent; while (p && p.block) p = p.parent; if (p) select(p.key, true); } }
+});
+document.addEventListener('keyup', e => { if (e.key === ' ' || e.key === 'Enter') holdStop(); });
+render();
+})();
+</script>
+</body>
+</html>

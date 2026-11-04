@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>右推三栏</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="kit.css">
+<style>
+html,body{height:100%;overflow:hidden}
+#app{height:100vh;display:flex;flex-direction:column;min-width:0}
+b{font-weight:600}
+a{color:var(--act)}
+
+/* 顶栏 */
+.bar{flex:none;display:flex;align-items:center;gap:8px;height:42px;padding:0 10px;background:var(--panel);border-bottom:1px solid var(--line);position:relative;z-index:6}
+.bar .back{color:var(--ink-2);text-decoration:none;font-size:13px;white-space:nowrap}
+.bar .back:hover{color:var(--ink)}
+.bar .name{color:var(--ink-3);font-size:13px;white-space:nowrap}
+.sp{flex:1;min-width:0}
+.btn{border:1px solid var(--line-2);background:var(--panel);border-radius:6px;padding:3px 10px;cursor:pointer;white-space:nowrap;font-size:13px;position:relative;overflow:hidden}
+.btn:hover{background:var(--sunk)}
+.btn.pri{background:var(--act);border-color:var(--act);color:var(--act-ink)}
+.btn.pri:hover{filter:brightness(1.08);background:var(--act)}
+.btn.quiet{border-color:transparent;background:none;color:var(--ink-2)}
+.btn.quiet:hover{background:var(--sunk);color:var(--ink)}
+.btn.danger{border-color:var(--err);color:var(--err);background:none}
+.btn.danger:hover{background:var(--err-soft)}
+.btn[disabled]{opacity:.45;cursor:not-allowed}
+.btn.nope{animation:nope .22s}
+@keyframes nope{25%{transform:translateX(-3px)}75%{transform:translateX(3px)}}
+kbd{font:11px var(--code);border:1px solid currentColor;border-radius:3px;padding:0 3px;opacity:.75;margin-left:4px}
+.seg{display:inline-flex;border:1px solid var(--line-2);border-radius:6px;overflow:hidden}
+.seg button{border:0;background:none;padding:3px 9px;cursor:pointer;font-size:13px;color:var(--ink-2);white-space:nowrap}
+.seg button[aria-pressed=true]{background:var(--act-soft);color:var(--act);font-weight:600}
+
+/* 等你带：纵向占位，和横向的栏互不抢 */
+.band{flex:none;display:flex;align-items:stretch;min-height:36px;background:var(--panel);border-bottom:1px solid var(--line);position:relative;z-index:5}
+.band button{border:0;background:none;cursor:pointer;display:flex;align-items:center;gap:8px;padding:0 12px;min-width:0;text-align:left}
+.band button:hover{background:var(--sunk)}
+.bq{flex:1}
+.bq .c{color:var(--wait);font-weight:600;white-space:nowrap}
+.bq .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink-2)}
+.bq .p{color:var(--ink-3);font-size:12px;white-space:nowrap}
+@media (max-width:1179px){.bq .p{display:none}}
+.bq .l{color:var(--wait);font-variant-numeric:tabular-nums;white-space:nowrap;font-size:13px}
+.be{flex:none;border-left:1px solid var(--line)!important;color:var(--err);white-space:nowrap;font-size:13px}
+.band[data-open=queue] .bq .chev{transform:rotate(90deg)}
+.sheet{flex:none;display:grid;grid-template-rows:0fr;transition:grid-template-rows .2s ease-out;background:var(--panel);position:relative;z-index:4}
+.sheet.open{grid-template-rows:1fr;border-bottom:1px solid var(--line-2);box-shadow:0 6px 14px -12px rgba(0,0,0,.5)}
+.sheet>div{overflow:hidden;min-height:0;transition:visibility .2s}
+.sheet:not(.open)>div,.sheet:not(.open) .tw.open>.fbody>div{visibility:hidden}
+.sheetin{max-height:min(54vh,440px);overflow:auto;padding:6px 8px 10px}
+.sec{font-size:12px;color:var(--ink-3);padding:8px 8px 2px}
+.toast{position:absolute;right:12px;top:100%;margin-top:6px;background:var(--ink);color:var(--bg);padding:3px 10px;border-radius:6px;font-size:13px;opacity:0;transition:opacity .16s;pointer-events:none}
+.toast.on{opacity:1}
+
+/* 栏 */
+.cols{flex:1;min-height:0;display:flex;overflow:hidden;position:relative}
+.col{flex:none;height:100%;overflow:hidden;position:relative;border-right:1px solid var(--line);background:var(--panel);transition:width .22s cubic-bezier(.2,.7,.2,1)}
+.col:last-child{border-right:0}
+.pane{height:100%;display:flex;flex-direction:column;transition:opacity .16s}
+.col.is-strip .pane{opacity:0;pointer-events:none;visibility:hidden}
+.strip{position:absolute;inset:0;width:100%;border:0;background:var(--sunk);cursor:pointer;display:none;flex-direction:column;align-items:center;gap:8px;padding:8px 0;color:var(--ink-2)}
+.col.is-strip .strip{display:flex}
+.strip:hover{background:var(--line);color:var(--ink)}
+.vname{writing-mode:vertical-rl;font-size:13px;font-weight:600;letter-spacing:.04em;white-space:nowrap;max-height:60%;overflow:hidden;text-overflow:ellipsis}
+.strip .dotwrap{margin-top:auto}
+.smark{font-size:11px;line-height:1.3;border-radius:4px;padding:2px 3px;text-align:center;font-weight:600}
+.smark.w{background:var(--wait-soft);color:var(--wait)}
+.smark.e{background:var(--err-soft);color:var(--err)}
+.chd{flex:none;padding:8px 12px 7px;border-bottom:1px solid var(--line)}
+.chd .r1{display:flex;align-items:center;gap:8px;min-width:0}
+.chd h2{margin:0;font-size:15px;line-height:1.4;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.chd .x{margin-left:auto;border:0;background:none;color:var(--ink-3);cursor:pointer;border-radius:4px;padding:0 6px;font-size:13px;white-space:nowrap}
+.chd .x:hover{background:var(--sunk);color:var(--ink)}
+.chd .r2{color:var(--ink-3);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chain{display:none;font-size:12px;color:var(--ink-3);line-height:1.5}
+.col.last .chain{display:block}
+.chain button{border:0;background:none;padding:0;color:var(--ink-2);cursor:pointer;font-size:12px}
+.chain button:hover{color:var(--act);text-decoration:underline}
+.chain b{color:var(--ink)}
+.scroll{flex:1;min-height:0;overflow-y:auto;overflow-x:hidden;padding:8px}
+.foot{flex:none;border-top:1px solid var(--line);padding:8px}
+.empty{color:var(--ink-3);font-size:13px;padding:4px 8px}
+
+/* 折叠行：Claude Desktop 工具调用块的手感 */
+.tw{border-radius:6px;position:relative}
+.tmark{position:absolute;top:14px;right:36px;pointer-events:none;display:flex;gap:4px}
+.tw>.fold{max-width:none;margin:3px 0}
+.tw>.fold:hover{background:var(--sunk)}
+.tw.open>.fold{border-color:var(--line-2)}
+.frow{display:flex;align-items:center;gap:7px;width:100%;min-height:30px;padding:3px 8px;border:0;border-radius:6px;background:none;cursor:pointer;text-align:left;color:var(--ink-2);font-size:13px;transition:background .12s,color .12s}
+.frow:hover{background:var(--sunk);color:var(--ink)}
+.chev{flex:none;display:block;width:9px;height:10px;background:currentColor;opacity:.7;clip-path:polygon(15% 8%,90% 50%,15% 92%);transition:transform .16s ease-out}
+.tw.open>.frow{color:var(--ink);background:var(--sunk);border-radius:6px 6px 0 0}
+.tw.open>.frow>.chev{transform:rotate(90deg);opacity:1}
+.fh{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fm{flex:none;max-width:74%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink-3);font-size:12px;font-variant-numeric:tabular-nums;display:flex;gap:6px;align-items:center}
+.fbody{display:grid;grid-template-rows:0fr;transition:grid-template-rows .18s ease-out}
+.tw.open>.fbody{grid-template-rows:1fr}
+.fbody>div{overflow:hidden;min-height:0;visibility:hidden;opacity:0;transform:translateY(-3px);transition:opacity .16s,transform .18s,visibility .18s}
+.tw.open>.fbody>div{visibility:visible;opacity:1;transform:none}
+.tw:not(.open) .tw.open>.fbody>div,.col.is-strip .tw.open>.fbody>div{visibility:hidden}
+.fin{margin:0 0 6px 12px;padding:6px 0 4px 8px;border-left:1px solid var(--line-2);font-size:13px;min-width:0}
+
+/* 人行：点了向右推一栏 */
+.prow{display:flex;align-items:center;gap:7px;width:100%;min-height:30px;padding:3px 8px;border:0;border-radius:6px;background:none;cursor:pointer;text-align:left;font-size:13px;color:var(--ink)}
+.prow:hover{background:var(--sunk)}
+.prow.sel{background:var(--act-soft)}
+.prow .mid{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink-2)}
+.prow .go{flex:none;color:var(--ink-3);font-size:15px;line-height:1}
+.prow.sel .go{color:var(--act)}
+.prow .nm{flex:none;font-weight:600;white-space:nowrap}
+.prow.tall{display:grid;grid-template-columns:1fr auto;column-gap:8px;align-items:center;padding:6px 8px;border-bottom:1px solid var(--line);border-radius:0}
+.prow.tall:hover,.prow.tall.sel{border-radius:6px}
+.prow.tall .l1{display:flex;gap:8px;align-items:center;min-width:0}
+.prow.tall .l2,.prow.tall .l3{grid-column:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prow.tall .l2{color:var(--ink-2)}
+.prow.tall .l3{color:var(--ink-3);font-size:12px}
+.prow.tall .go{grid-column:2;grid-row:1/4}
+.line{display:flex;gap:7px;align-items:center;min-height:26px;padding:2px 8px;font-size:13px;color:var(--ink-2)}
+.line .mid{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+/* 状态：三种置信度三种画法 */
+.st{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;font-size:12px;color:var(--ink-2);flex:none}
+.dot{flex:none;display:inline-block;width:8px;height:8px;border-radius:50%;background:currentColor}
+.st.run{color:var(--run)}.st.wait{color:var(--wait)}.st.err{color:var(--err)}.st.rep,.st.idle{color:var(--ink-3)}
+.st.gs .dot{background:none;border:1.5px solid currentColor}
+.st.unk{color:var(--unk)}.st.unk .dot{background:none;border:1.5px dashed currentColor}
+.dotwrap .st{font-size:0;gap:0}
+.mk{flex:none;font-size:11px;line-height:1.5;padding:0 5px;border-radius:4px;font-weight:600;white-space:nowrap}
+.mk.w{background:var(--wait-soft);color:var(--wait)}
+.mk.e{background:var(--err-soft);color:var(--err)}
+.mk.o{background:var(--sunk);color:var(--ink-2);font-weight:400}
+.unkv{color:var(--unk);border-bottom:1px dashed var(--unk)}
+
+/* 派单：五件事 */
+.five{display:grid;grid-template-columns:72px 1fr;gap:1px 8px;margin:0;font-size:13px;line-height:1.55}
+.five dt{color:var(--ink-3)}
+.five dd{margin:0;min-width:0;overflow-wrap:anywhere}
+.card{border:1px solid var(--line);border-radius:8px;padding:7px 10px;margin:0 0 8px}
+.card>.cap{font-size:12px;color:var(--ink-3);margin-bottom:2px}
+.sum{font-size:13px}
+.quote{color:var(--ink-2);font-size:13px;margin-top:4px}
+.waitline{color:var(--ink-2);font-size:13px;padding:0 8px 6px}
+.waitline b{color:var(--ink)}
+
+/* 对话 */
+.msg{padding:4px 8px;font-size:14px}
+.msg .tm{color:var(--ink-3);font-size:11px;margin-right:6px;font-variant-numeric:tabular-nums}
+.msg.you{margin:6px 0 6px 18%;background:var(--sunk);border-radius:8px;padding:5px 10px}
+.msg.sys{color:var(--ink-3);font-size:13px}
+.rrow{display:flex;gap:7px;align-items:baseline;font-size:13px;color:var(--ink-2);padding:3px 8px}
+.chip{border:1px solid var(--line-2);background:none;border-radius:6px;padding:1px 9px;cursor:pointer;font-size:13px;color:var(--ink-2);margin:0 0 6px}
+.chip:hover{border-color:var(--act);color:var(--act)}
+.ask{display:flex;gap:6px}
+.ask input,.field{flex:1;min-width:0;background:var(--bg);color:var(--ink);border:1px solid var(--line-2);border-radius:6px;padding:4px 9px;font:inherit}
+.hint{color:var(--ink-3);font-size:12px;margin-top:4px;min-height:1.2em}
+
+/* 等你卡 */
+.qc{font-size:13px}
+.qc .tt{font-size:14px;color:var(--ink);margin-bottom:3px;overflow-wrap:anywhere}
+.qc .kv{color:var(--ink-2)}
+.qc .acts{display:flex;flex-wrap:wrap;gap:6px;margin-top:7px;align-items:center}
+.btn .fill{position:absolute;left:0;top:0;bottom:0;width:0;background:var(--wait-soft)}
+.btn.hold{border-color:var(--wait);color:var(--wait);background:none}
+.btn.hold .lb{position:relative}
+.btn.hold.holding .fill{width:100%;transition:width 1s linear}
+.typed{display:flex;gap:6px;margin-top:6px;align-items:center;flex-wrap:wrap}
+.typed input{width:120px;flex:none}
+
+/* 派活 */
+.cmp textarea{display:block;width:100%;min-height:62px;resize:vertical;background:var(--bg);color:var(--ink);border:1px solid var(--line-2);border-radius:6px;padding:6px 9px;font:inherit}
+.tg{display:flex;flex-wrap:wrap;gap:5px;margin:7px 0}
+.tg label{border:1px solid var(--line-2);border-radius:6px;padding:1px 9px;cursor:pointer;font-size:13px;color:var(--ink-2)}
+.tg input{position:absolute;opacity:0}
+.tg label:has(input:checked){background:var(--act-soft);color:var(--act);border-color:var(--act)}
+.tg label:has(input:focus-visible){outline:2px solid var(--act);outline-offset:1px}
+.none{font-size:15px;font-weight:600;margin:4px 8px 8px}
+
+/* 设计说明 */
+.note{position:absolute;right:10px;top:46px;width:min(400px,calc(100vw - 20px));max-height:calc(100vh - 60px);overflow:auto;background:var(--panel);border:1px solid var(--line-2);border-radius:8px;box-shadow:0 10px 30px -14px rgba(0,0,0,.45);padding:10px 14px;font-size:13px;z-index:9}
+.note h3{font-size:13px;margin:10px 0 2px}.note h3:first-child{margin-top:0}
+.note p{margin:0 0 4px;color:var(--ink-2)}
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="bar">
+    <a class="back" href="index.html">‹ 返回第二轮</a>
+    <span class="name">右推三栏</span>
+    <span class="sp"></span>
+    <button class="btn pri" id="newBtn" title="键盘 n">派活<kbd>n</kbd></button>
+    <button class="btn quiet" id="noteBtn" aria-expanded="false">设计说明</button>
+    <span class="seg" id="modeSeg"></span>
+    <button class="btn quiet" id="themeBtn">深浅</button>
+  </div>
+  <div class="band" id="band"></div>
+  <div class="sheet" id="sheet"><div><div class="sheetin" id="sheetIn"></div></div></div>
+  <main class="cols" id="cols"></main>
+  <aside class="note" id="note" hidden></aside>
+</div>
+<script src="scenario2.js"></script>
+<script src="foldcard.js"></script>
+<script>
+(function(){
+const R2=window.R2,NOW=R2.meta.now,SW=40;
+const $=s=>document.querySelector(s);
+const E=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const UNK='<span class="unkv">未知</span>';
+
+/* ---------- 状态：两份数据各一份副本，互不串 ---------- */
+function mk(m){
+  const D=structuredClone(R2[m]);D.mode=m;D.resolved={};D.seq=0;D.sub={};
+  (D.workers||[]).forEach(w=>(w.groups||[]).forEach(g=>g.members.forEach(x=>walk(D,x,'w:'+w.id,w))));
+  if(D.router){D.held=D.router.thread.splice(-2)}
+  return {D,path:['root','roster'],end:1,open:new Set(),sheet:null};
+}
+function walk(D,m,par,owner){D.sub[m.id]={m,par,owner};(m.children||[]).forEach(c=>walk(D,c,'s:'+m.id,owner))}
+const store={rich:mk('rich'),barren:mk('barren')};
+let mode='rich',lastChange=0,armed=null;
+const S=()=>store[mode],Dt=()=>S().D;
+
+/* ---------- 查询 ---------- */
+const wk=id=>Dt().workers.find(w=>w.id===id);
+const short=n=>String(n).replace(/^Codex (c-\d+)$/,'$1');
+const ownQ=n=>Dt().queue.filter(q=>q.path[q.path.length-1]===short(n));
+const subQ=n=>Dt().queue.filter(q=>q.path.includes(short(n)));
+const errs=()=>Dt().observed?[Dt().observed.kaito]:[];
+const byDeadline=()=>Dt().queue.slice().sort((a,b)=>(a.leftSec==null?1e9:a.leftSec)-(b.leftSec==null?1e9:b.leftSec));
+const leftTxt=q=>q.leftSec==null?'无期限':'剩 '+Math.floor(q.leftSec/60)+':'+String(q.leftSec%60).padStart(2,'0')+' 自动拒';
+const bd=a=>a.map(([k,n])=>n+' '+k).join(' · ');
+function tally(list){const m=new Map();list.forEach(x=>m.set(x.stateText,(m.get(x.stateText)||0)+1));return [...m].map(([k,n])=>[k,n])}
+function parts(key){const i=key.indexOf(':');return [key.slice(0,i),key.slice(i+1)]}
+function nameOf(key){
+  if(key==='root')return Dt().router?'总台':'派活';
+  if(key==='roster')return 'worker';
+  const [t,id]=parts(key),D=Dt();
+  if(t==='w')return wk(id).name;
+  if(t==='s')return D.sub[id].m.name;
+  if(t==='k')return D.observed.kaito.name;
+  if(t==='o')return D.sessions.find(s=>s.id===id).name;
+  if(t==='b')return 'subagent #'+id.split('.')[1];
+}
+function parentOf(key){
+  const [t,id]=parts(key);
+  if(t==='w'){const w=wk(id);return w.parent?'w:'+w.parent:null}
+  if(t==='s')return Dt().sub[id].par;
+  if(t==='b')return 'o:'+id.split('.')[0];
+  return null;
+}
+function lineage(key){const a=[];for(let k=key;k;k=parentOf(k))a.unshift(k);return a}
+const absPath=key=>['root','roster',...lineage(key)];
+function chain(key){
+  const L=lineage(key),head=Dt().router&&key[0]!=='k'?['总台']:[];
+  const segs=L.map((k,i)=>i===L.length-1?`<b>${E(short(nameOf(k)))}</b>`:`<button data-go="${k}">${E(short(nameOf(k)))}</button>`);
+  const pre=['<button data-openq="1" title="看等你的事">你</button>',...head.map(()=>'<button data-win="root">总台</button>')];
+  return `<div class="chain">${[...pre,...segs].join(' → ')}</div>`;
+}
+
+/* ---------- 小部件 ---------- */
+const CLS={running:'run',waitingYou:'wait',error:'err',unknown:'unk',guess:'gs',guessWaiting:'gs',idle:'idle',reported:'rep',waitingAgent:'rep'};
+const st=(s,t)=>`<span class="st ${CLS[s]||'rep'}"><i class="dot"></i>${E(t)}</span>`;
+const wMark=n=>n?`<span class="mk w">等你 ${n}</span>`:'';
+const eMark=n=>n?`<span class="mk e">出错 ${n}</span>`:'';
+const gMark=l=>wMark(l.filter(m=>m.state==='waitingYou').length)+eMark(l.filter(m=>m.state==='error').length);
+const prow=(key,nm,mid,right)=>`<button class="prow" data-go="${key}"><span class="nm">${E(nm)}</span><span class="mid">${mid||''}</span>${right||''}<span class="go">›</span></button>`;
+function fold(key,head,meta,body){
+  const on=S().open.has(key);
+  return `<div class="tw${on?' open':''}"><button class="frow" data-fold="${E(key)}" aria-expanded="${on}"><i class="chev"></i><span class="fh">${head}</span><span class="fm">${meta||''}</span></button><div class="fbody"><div><div class="fin">${body}</div></div></div></div>`;
+}
+function fcard(key,o,body,mark){
+  const on=S().open.has(key);
+  return `<div class="tw${on?' open':''}">${mark?`<span class="tmark">${mark}</span>`:''}${R2Fold.card({...o,id:key,open:on})}<div class="fbody"><div><div class="fin">${body}</div></div></div></div>`;
+}
+function five(o){
+  const v=x=>x?E(x):UNK;
+  return `<dl class="five"><dt>派给谁</dt><dd>${v(o.to)}${o.by?` <span style="color:var(--ink-3)">· ${E(o.by)}</span>`:''}</dd><dt>做什么</dt><dd>${v(o.task)}</dd><dt>为什么</dt><dd>${v(o.why)}</dd><dt>要交回什么</dt><dd>${v(o.returns)}</dd><dt>现在怎样</dt><dd>${v(o.status)}</dd></dl>`;
+}
+const raw=(ck,where)=>fold(ck+'/raw','原始记录','占位',`<div class="empty" style="padding:0">这里只放位置，不读全文。原始记录在 ${E(where)}。</div>`);
+
+/* ---------- 等你卡：队列和来源处是同一个对象 ---------- */
+function qCard(q){
+  const kv=[['来路',q.path.join(' → ')]];
+  if(q.claim)kv.push(['来源',q.claim]);if(q.model)kv.push(['模型',q.model]);if(q.scope)kv.push(['范围',q.scope]);if(q.risk)kv.push(['风险',q.risk]);
+  const hasSrc=q.src||srcKey(q);
+  const btn=v=>{
+    if(q.hold&&v.startsWith('按住'))return `<button class="btn hold" data-hold="${q.id}|${E(v)}"><span class="fill"></span><span class="lb">${E(v)}（1 秒）</span></button>`;
+    if(v==='回答')return `<input class="field" data-ans="${q.id}" placeholder="写你的回答" style="flex:1 1 160px"><button class="btn pri" data-act="${q.id}|回答">回答</button>`;
+    return `<button class="btn ${/拒|不/.test(v)?'':'pri'}" data-act="${q.id}|${E(v)}">${E(v)}</button>`;
+  };
+  return `<div class="qc"><div class="tt">${E(q.title)}</div>${q.prop?five(q.prop):''}<div class="kv">${kv.map(([k,v])=>`<div><span style="color:var(--ink-3)">${k}：</span>${E(v)}</div>`).join('')}</div><div class="acts">${q.verbs.map(btn).join('')}${hasSrc?`<button class="btn quiet" data-go="${srcKey(q)}">去来源 ›</button>`:q.via?'<span style="color:var(--ink-3)">来源会话没读入，这里点不进去</span>':''}</div></div>`;
+}
+function srcKey(q){
+  const n=q.path[q.path.length-1],w=(Dt().workers||[]).find(x=>short(x.name)===n);
+  return w?'w:'+w.id:'';
+}
+function qFold(q,ctx){return fold((ctx||'')+'q:'+q.id,`${E(q.title)}`,`<span>${E(q.path.join(' → '))}</span><span data-left="${q.id}" style="color:${q.leftSec!=null?'var(--wait)':'inherit'}">${leftTxt(q)}</span>`,qCard(q))}
+function errBody(e){
+  return `<div class="qc"><div class="tt">${E(e.sub.text)}</div><div class="kv"><div><span style="color:var(--ink-3)">来路：</span>你 → ${E(e.name)} → ${E(e.sub.name)}</div><div><span style="color:var(--ink-3)">归属：</span>${E(e.ownership)} · ${E(e.note)}</div><div><span style="color:var(--ink-3)">起于：</span>${E(e.sub.since)}</div></div><div class="kv" style="margin-top:6px;color:var(--ink)">去 Codex CLI 里处理。</div><div class="typed"><input class="field" data-typed="${e.id}" placeholder="键入 ${E(e.name)}" aria-label="键入名字确认刹车"><button class="btn danger" data-kbrake="${e.id}" disabled>本机进程层面刹车</button></div></div>`;
+}
+function stopBody(w){
+  const lines=blast(w);
+  const armedHere=armed===w.id;
+  return `<div class="line" style="padding-left:0"><button class="btn" data-tier="中断这一回合">中断这一回合</button><button class="btn" data-tier="结束会话">结束会话</button></div><div style="margin-top:6px"><div style="color:var(--ink-3);font-size:12px">刹车（停它整棵进程树）会波及</div>${lines.map(l=>`<div>${l}</div>`).join('')}<div class="acts" style="margin-top:6px"><button class="btn danger" data-brake="${w.id}">${armedHere?'3 秒内再点一次':'刹车'}</button></div></div>`;
+}
+function blast(w,deep){
+  const out=[];
+  const one=m=>{out.push(`${E(m.name)} · ${st(m.state,m.stateText)}`);(m.children||[]).forEach(one)};
+  (w.groups||[]).forEach(g=>{
+    if(g.members.length>1){out.push(`${g.total} 个 ${E(g.members[0].kind)} 里 ${g.breakdown.slice().reverse().map(([k,n])=>n+' 个'+E(k)).join('、')}`);g.members.forEach(m=>(m.children||[]).forEach(one))}
+    else g.members.forEach(one);
+  });
+  (Dt().workers||[]).filter(x=>x.parent===w.id).forEach(x=>{out.push(`${E(x.name)} · ${st(x.state,x.stateText)}`);blast(x,1).forEach(l=>out.push(l))});
+  if(!out.length&&!deep)out.push(Dt().router?'只有它自己，账本里没有下层':'看不到下层记录，波及范围<span class="unkv">未知</span>');
+  return out;
+}
+
+const byWho=id=>{const v=Dt().resolved[id]||'已处理';return /^超时/.test(v)?v:'你：'+v};
+
+/* ---------- 第 1 栏 ---------- */
+function rootCol(){
+  const D=Dt();
+  if(!D.router)return `<header class="chd"><div class="r1"><h2>派活</h2></div><div class="r2">今天的入口</div></header><div class="scroll"><div class="none">${E(D.routerNote)}</div><div style="padding:0 8px">${composer()}</div></div>`;
+  const r=D.router,wv=r.wish;
+  const ownReq=D.workers.flatMap(w=>(w.thread||[]).filter(x=>x.who==='request').map(x=>({t:x.t,x:w.name+' '+x.text})));
+  const hand=[...D.dispatches.filter(x=>x.at>=D.away.since&&!x.mine).map(x=>({t:x.at,x:`${x.by} → ${x.to}：${x.task}`})),...ownReq].sort((a,b)=>a.t<b.t?-1:1);
+  const away=fold('root/away',`你离开后（${E(D.away.since)} 起）`,`${D.away.reports} 条回报 · ${hand.length} 次交接`,
+    `<div class="sec" style="padding-left:0">回报 ${D.away.reports}</div>${D.away.reportsBreakdown.map(([k,n])=>`<div>${n} 条 · ${E(k)}</div>`).join('')}
+     <div class="sec" style="padding-left:0">交接 ${hand.length}</div>${hand.map(h=>`<div>${E(h.t)} · ${E(h.x)}</div>`).join('')}
+     <div class="sec" style="padding-left:0">其它</div><div>${E(D.away.wishMove)}</div><div>打回 ${D.away.bounces} 次：Mio 打回 Task 3</div><div>出错 ${D.away.errors} 条：Kaito 的 rg 子代理</div>`);
+  const wish=fold('root/wish',`${E(wv.id)} ${E(wv.title)}`,`<b style="color:var(--ink)">${wv.verified}/${wv.total} 已验证</b>`,`<div>${wv.verified}/${wv.total} 来自：${E(wv.source)}</div><div style="color:var(--ink-3)">这个数只来自复核和你的确认，不看 agent 自述。</div>`);
+  const body=r.thread.map(threadRow).join('');
+  const chip=D.held&&D.held.length?`<button class="chip" data-askq="1">${E(D.held[0].text)}</button>`:'';
+  return `<header class="chd"><div class="r1"><h2>总台</h2><span class="r2">${E(r.harness)} · ${E(r.model)} · ${E(r.project)}</span></div><div class="r2">${E(r.purity.note)}</div></header>
+  <div class="scroll">${wish}${away}<div style="height:6px"></div>${body}</div>
+  <div class="foot">${chip}<form class="ask" data-ask="1"><input placeholder="问总台（只问答，派活走上面的派活）" aria-label="问总台"><button class="btn">问</button></form><div class="hint" id="askHint"></div></div>`;
+}
+function threadRow(m,i){
+  const D=Dt(),tm=`<span class="tm">${E(m.t)}</span>`;
+  if(m.who==='you')return `<div class="msg you">${tm}${E(m.text)}</div>`;
+  if(m.who==='router')return `<div class="msg">${tm}${E(m.text)}${m.sources?fold('root/src'+m.t+i,`出处 ${m.sources.length}`,'',m.sources.map(srcRow).join('')):''}</div>`;
+  if(m.who==='report')return `<div class="rrow">${tm}<span style="flex:1"><b>${E(m.from)} 回报</b>：${E(m.text)}</span><span class="mk o">${E(m.status)}</span></div>`;
+  if(m.who==='receipt'){
+    const d=D.dispatches.find(x=>x.id===m.dispatchId),w=D.workers.find(x=>x.name===d.to);
+    return fold('root/'+d.id,`<b style="color:var(--ink)">派单 → ${E(d.to)}</b>　${E(d.task)}`,`${E(d.status)} · ${E(m.t)}`,
+      five({to:d.to,by:`${d.by}派 · ${d.at}`,task:d.task,why:d.why,returns:d.returns,status:d.status})+(w?`<div style="margin-top:4px">${prow('w:'+w.id,w.name,E(w.lastLine),st(w.state,w.stateText))}</div>`:''));
+  }
+  if(m.who==='proposal'){
+    const q=D.queue.find(x=>x.id===m.queueId);
+    return q?`<div class="card" style="margin:6px 0"><div class="cap">总台的提议，你点了才算数</div>${qCard(q)}</div>`:`<div class="msg sys">${tm}提议：你${E(D.resolved[m.queueId]||'已处理')}</div>`;
+  }
+  return '';
+}
+function srcRow(s){
+  const n=/等你 #(\d)/.exec(s);
+  if(n){const id='q'+n[1],q=Dt().queue.find(x=>x.id===id);return q?`<button class="prow" data-openq="${id}"><span class="mid">${E(s)}</span>${wMark(1)}<span class="go">›</span></button>`:`<div class="line">${E(s)}（已处理）</div>`}
+  const w=Dt().workers.find(x=>s.startsWith(x.name));
+  return w?`<button class="prow" data-go="w:${w.id}"><span class="mid">${E(s)}</span><span class="go">›</span></button>`:`<div class="line">${E(s)}</div>`;
+}
+
+/* ---------- worker 名册 ---------- */
+function rosterRow(w){
+  const subs=(w.groups||[]).map(g=>g.label),kids=Dt().workers.filter(x=>x.parent===w.id).map(x=>x.name);
+  const did=subs.concat(kids).length?'派了 '+subs.concat(kids).join('、'):w.parent?`应 ${wk(w.parent).name} 请求派出`:'';
+  const now=w.waitingOn&&w.waitingOn.kind==='agent'?`${w.waitingOn.text}（已等 ${w.waitingOn.minutes} 分）`:w.verdict?`${w.verdict.task} ${w.verdict.result}（${w.verdict.by}）· 打回 ${w.verdict.bounce}`:'';
+  const l3=[did,now].filter(Boolean).join(' · ');
+  return `<button class="prow tall" data-go="w:${w.id}"><span class="l1"><b>${E(w.name)}</b>${st(w.state,w.stateText)}${wMark(ownQ(w.name).length)}</span><span class="l2">${E(w.task)}</span>${l3?`<span class="l3">${E(l3)}</span>`:''}<span class="go">›</span></button>`;
+}
+function rosterCol(){
+  const D=Dt(),ws=D.workers;
+  if(D.router){
+    const k=D.observed.kaito,o=D.observed.others;
+    const rows=[];let n=0;o.breakdown.forEach(([t,c])=>{for(let i=0;i<c;i++){n++;const s=t==='在跑'?'running':t.startsWith('≈')?'guess':t==='空闲'?'idle':'unknown';rows.push(`<div class="line"><span class="mid">只读会话 ${n}</span>${st(s,t)}</div>`)}});
+    return `<header class="chd"><div class="r1"><h2>worker</h2></div><div class="r2">自有 ${ws.length} · 只读 ${o.total+1}</div></header><div class="scroll"><div class="sec">自有 ${ws.length}</div>${ws.map(rosterRow).join('')}<div class="sec" style="margin-top:6px">只读 ${o.total+1}</div>
+    <button class="prow tall" data-go="k:kaito"><span class="l1"><b>${E(k.name)}</b>${st(k.state,k.stateText)}<span class="mk o">只读</span></span><span class="l2">${E(k.sub.name)}：${E(k.sub.text)}</span><span class="go">›</span></button>
+    ${fold('roster/others',`其它只读会话 ${o.total}`,E(bd(o.breakdown)),`<div class="empty" style="padding:0 8px 4px">分布在 ${o.projects} 个项目。只能看。</div>${rows.join('')}`)}</div>`;
+  }
+  const om=D.observedMain,sg=D.subagents,withSub=D.sessions.filter(s=>s.subagents>0);
+  return `<header class="chd"><div class="r1"><h2>worker</h2></div><div class="r2">自有 ${ws.length} · 观察到的主会话 ${om.total}</div></header><div class="scroll"><div class="sec">自有 ${ws.length}</div>${ws.map(rosterRow).join('')}
+  <div class="sec" style="margin-top:6px">只读</div>
+  ${fold('roster/obs',`观察主会话 ${om.total}`,E(bd(om.breakdown)),D.sessions.map(s=>prow('o:'+s.id,s.name,E(s.project)+(s.subagents?` · subagent ${s.subagents}`:''),st(s.state,s.stateText))).join(''))}
+  ${fold('roster/subs',`subagent ${sg.total}`,`${sg.linkedToDispatch} 能对上派活 · ${sg.total-sg.linkedToDispatch} 只知道属于谁`,`<div class="empty" style="padding:0 8px 4px">其中 ${sg.unknown} 个状态未知。按所属会话折着，${withSub.length} 个会话的行数相加是 ${withSub.reduce((a,s)=>a+s.subagents,0)}。</div>`+withSub.map(s=>fcard('roster/sc:'+s.id,R2Fold.fromSession(s),subLead(s)+subRows(s))).join(''))}
+  <div class="sec" style="margin-top:6px">没读全的</div>
+  ${fold('roster/dsh',E(D.dsh.text),'DSH',`<div>DSH 磁盘上有 ${D.dsh.onDisk} 个会话，这次读入 ${D.dsh.read} 个，原因是快照上限。它们的状态和 subagent 都没进这页，不等于没有。</div>`)}
+  ${fold('roster/clip',`${sg.clipped} 个因上限未画出`,'subagent',`<div>快照有上限，超出的 ${sg.clipped} 个成员被裁掉，不算在上面的 ${sg.total} 个里，所以这里列不出来。单个主会话最多看到 ${sg.maxPerSession} 个，最深 ${sg.depthMax} 层。</div>`)}</div>`;
+}
+
+/* ---------- worker 栏 ---------- */
+function gFold(ck,g){
+  const m0=g.members[0],at=m0.dispatch&&m0.dispatch.at;
+  const shared=g.members.length>1?`<div class="empty" style="padding:0 8px 4px">为什么：${E(m0.dispatch.why)}。要交回：${E(m0.dispatch.returns)}。</div>`:'';
+  return fcard(ck+'/'+g.id,R2Fold.fromGroup(g),`<div class="empty" style="padding:0 8px 2px">${E(bd(g.breakdown))}${at?' · '+E(at)+' 派出':''}</div>`+shared+g.members.map(m=>prow('s:'+m.id,m.name,E(m.dispatch.task),st(m.state,m.stateText))).join(''),gMark(g.members));
+}
+function wThread(ck,w,m){
+  const D=Dt(),tm=`<span class="tm">${E(m.t)}</span>`;
+  if(m.who==='subgroup')return gFold(ck,w.groups.find(g=>g.id===m.groupId));
+  if(m.queueId){
+    const q=D.queue.find(x=>x.id===m.queueId);
+    if(q)return fold(ck+'/q:'+q.id,`<span class="mk w" style="margin-right:6px">等你</span>${E(m.text)}`,E(m.t),qCard(q));
+    return `<div class="msg sys">${tm}${E(m.text)}（${E(byWho(m.queueId))}）</div>`;
+  }
+  if(m.workerId){const c=wk(m.workerId);return `<div class="msg sys">${tm}${E(m.text)}</div>`+prow('w:'+c.id,c.name,E(c.task),st(c.state,c.stateText))}
+  if(m.who==='you')return `<div class="msg you">${tm}${E(m.text)}</div>`;
+  if(m.who==='dispatch'||m.who==='send'||m.who==='request')return `<div class="msg sys">${tm}${E(m.text)}</div>`;
+  return `<div class="msg">${tm}${E(m.text)}</div>`;
+}
+function wDispatch(w){
+  const D=Dt(),d=(D.dispatches||[]).find(x=>x.id===w.dispatchId);
+  if(d)return five({to:w.name,by:`${d.by}派 · ${d.at}`,task:d.task,why:d.why,returns:d.returns,status:w.stateText});
+  const firstLine=(w.thread||[]).find(x=>x.who==='dispatch');
+  return five({to:w.name,by:firstLine?(firstLine.text===w.task?firstLine.text.split('：')[0]:firstLine.text):'谁派的：账本里没有派单记录',task:w.task,status:w.stateText});
+}
+function workerCol(key,w){
+  const ck=key,subs=(w.groups||[]).map(g=>g.label).concat(Dt().workers.filter(x=>x.parent===w.id).map(x=>x.name));
+  const wait=w.waitingOn&&w.waitingOn.kind==='agent'?`<div class="waitline"><b>${E(w.waitingOn.text)}</b> · 已等 ${w.waitingOn.minutes} 分 · ${E(w.waitingOn.delivery)}</div>`:'';
+  const v=w.verdict?`<div class="card"><div class="cap">复核结论</div><div class="sum">${E(w.verdict.task)} ${E(w.verdict.result)}（${E(w.verdict.by)}）· 打回 ${E(w.verdict.bounce)} · 证据：${E(w.verdict.evidence)}</div></div>`:'';
+  return `<header class="chd"><div class="r1"><h2>${E(w.name)}</h2>${st(w.state,w.stateText)}${wMark(ownQ(w.name).length)}<button class="x" data-pop="${key}">收起</button></div><div class="r2">${E(w.harness)} · ${E(w.model)} · ${E(w.ownership)} · ${E(w.project)}${w.role?' · '+E(w.role):''}</div>${chain(key)}</header>
+  <div class="scroll"><div class="card"><div class="cap">派单</div>${wDispatch(w)}${subs.length?`<div class="sum" style="margin-top:3px"><span style="color:var(--ink-3)">它派了：</span>${E(subs.join('、'))}</div>`:''}</div>${wait}${v}
+  ${fold(ck+'/stop','停止','三档',stopBody(w))}<div style="height:6px"></div>
+  ${(w.thread||[]).map(m=>wThread(ck,w,m)).join('')}${raw(ck,E(w.harness)+' 会话文件里')}</div>
+  <div class="foot"><form class="ask" data-msg="${w.id}"><input placeholder="给 ${E(w.name)} 发消息" aria-label="给 ${E(w.name)} 发消息"><button class="btn">发</button></form></div>`;
+}
+
+/* ---------- subagent 栏 ---------- */
+function subCol(key,m){
+  const par=nameOf(parentOf(key));
+  const rep=m.summary?`<div class="card"><div class="cap">回报</div><div class="sum">${E(m.summary)}</div>${m.status?`<div class="kv" style="font-size:13px;margin-top:3px"><span style="color:var(--ink-3)">状态（守护进程填）：</span>${E(m.status)}</div>`:''}${m.truncated?`<div style="font-size:12px;color:var(--ink-3)">${E(m.truncated)}</div>`:''}${m.refs?fold(key+'/refs',`引用 ${m.refs.length}`,'',m.refs.map(r=>`<div class="line">${E(r)}</div>`).join('')):''}${m.quote?`<div class="quote">「${E(m.quote.text)}」——${E(m.quote.who)}</div>`:''}</div>`:'';
+  const steps=m.steps?m.steps.map((s,i)=>fold(key+'/st'+i,`<span style="color:var(--ink)">${E(s.tool)}</span>　${E(s.arg)}`,E(s.result),`<div><span style="color:var(--ink-3)">参数：</span><code>${E(s.arg)}</code></div><div><span style="color:var(--ink-3)">结果：</span>${E(s.result)}</div>`)).join(''):`<div class="line">${st('unknown','步骤状态未知')}<span class="mid">没有记录</span></div>`;
+  const ch=m.children||[];
+  const kids=ch.length?fcard(key+'/kids',{title:ch.length===1?ch[0].name:`它派了 ${ch.length} 个`,kind:'subagent',count:ch.length+' 个',elapsed:null,members:ch},ch.map(c=>prow('s:'+c.id,c.name,E(c.dispatch.task),st(c.state,c.stateText))).join(''),gMark(ch)):'';
+  return `<header class="chd"><div class="r1"><h2>${E(m.name)}</h2>${st(m.state,m.stateText)}<button class="x" data-pop="${key}">收起</button></div><div class="r2">subagent · ${E(par)} 派的 · 不能收消息</div>${chain(key)}</header>
+  <div class="scroll"><div class="card"><div class="cap">派单</div>${five({to:m.name,by:`${short(par)} 派 · ${m.dispatch.at}`,task:m.dispatch.task,why:m.dispatch.why,returns:m.dispatch.returns,status:m.stateText+(m.guessBasis?`（${m.guessBasis}）`:'')})}</div>${rep}
+  <div class="sec">步骤${m.steps?' '+m.steps.length:''}</div>${steps}${kids}${raw(key,'它所属会话的 subagent 记录里')}</div>`;
+}
+
+/* ---------- 只读 ---------- */
+const mins=t=>{const m=x=>{const [h,n]=x.split(':');return h*60+ +n};return (m(NOW)-m(t))+' 分'};
+function kaitoCol(key){
+  const k=Dt().observed.kaito;
+  return `<header class="chd"><div class="r1"><h2>${E(k.name)}</h2>${st(k.state,k.stateText)}<span class="mk o">只读</span><button class="x" data-pop="${key}">收起</button></div><div class="r2">${E(k.harness)} · ${E(k.project)} · ${E(k.note)}</div>${chain(key)}</header>
+  <div class="scroll">${fcard(key+'/sub',{title:k.sub.name,kind:'subagent',count:'1 个',elapsed:mins(k.sub.since),members:[{state:'error'}]},errBody(k),eMark(1))}${raw(key,E(k.harness)+' 会话文件里')}</div>`;
+}
+const subLead=s=>`<div class="empty" style="padding:0 8px 2px">${s.subagentsLinked?s.subagentsLinked+' 能对上派活 · ':''}${s.subagents-s.subagentsLinked} 只知道属于谁</div>`;
+const subRows=s=>{const r=[];for(let i=1;i<=s.subagents;i++)r.push(prow('b:'+s.id+'.'+i,'subagent #'+i,i<=s.subagentsLinked?'能对上派活':'只知道属于谁',i<=s.subagentsLinked?st('known','有记录'):st('unknown','状态未知')));return r.join('')};
+function sessionCol(key,s){
+  const n=s.subagents;
+  const fb=n?fcard(key+'/subs',R2Fold.fromSession(s),subLead(s)+subRows(s)):`<div class="line"><span class="mid">这次快照里 0 个 subagent（${Dt().subagents.clipped} 个被上限裁掉，可能有它的）</span></div>`;
+  return `<header class="chd"><div class="r1"><h2>${E(s.name)}</h2>${st(s.state,s.stateText)}<span class="mk o">只读</span><button class="x" data-pop="${key}">收起</button></div><div class="r2">${E(s.harness)} · ${E(s.project)} · ${s.inRegistry?'在 registry 里':'不在 registry 里'}</div>${chain(key)}</header>
+  <div class="scroll"><div class="card"><div class="cap">派单</div>${five({to:s.name,by:'Orchestra 没有派单记录',status:s.stateText})}</div><div class="line"><span class="mid">只能看。要动它，去它自己的界面处理。</span></div>${fb}${raw(key,E(s.harness)+' 会话文件里')}</div>`;
+}
+function bsubCol(key,id){
+  const [sid,i]=id.split('.'),s=Dt().sessions.find(x=>x.id===sid),linked=+i<=s.subagentsLinked;
+  return `<header class="chd"><div class="r1"><h2>subagent #${E(i)}</h2>${linked?st('known','有记录'):st('unknown','状态未知')}<button class="x" data-pop="${key}">收起</button></div><div class="r2">属于 ${E(s.name)} · 不能收消息</div>${chain(key)}</header>
+  <div class="scroll"><div class="card"><div class="cap">派单</div>${five({to:'subagent #'+i,by:linked?'能对上一次派活，mock 数据没带内容':'只知道属于 '+s.name,status:linked?null:'状态未知'})}</div><div class="sec">步骤</div><div class="line">${st('unknown','步骤状态未知')}<span class="mid">没有记录</span></div>${raw(key,'它所属会话的 subagent 记录里')}</div>`;
+}
+function colHTML(key){
+  if(key==='root')return rootCol();
+  if(key==='roster')return rosterCol();
+  const [t,id]=parts(key),D=Dt();
+  if(t==='w')return workerCol(key,wk(id));
+  if(t==='s')return subCol(key,D.sub[id].m);
+  if(t==='k')return kaitoCol(key);
+  if(t==='o')return sessionCol(key,D.sessions.find(s=>s.id===id));
+  if(t==='b')return bsubCol(key,id);
+}
+function stripHTML(key){
+  const D=Dt(),n=nameOf(key),[t,id]=key.includes(':')?parts(key):[key];
+  let q=0,e=0,state='';
+  if(key==='root')q=D.router?D.queue.length:0;
+  else if(key==='roster'){q=D.queue.filter(x=>srcKey(x)).length;e=errs().length}
+  else if(t==='k'){e=1;state=st('error','出错')}
+  else if(t==='w'){q=subQ(n).length;const w=wk(id);state=st(w.state,w.stateText)}
+  else if(t==='s'){const m=D.sub[id].m;state=st(m.state,m.stateText)}
+  else if(t==='o'){const s=D.sessions.find(x=>x.id===id);state=st(s.state,s.stateText)}
+  else if(t==='b'){const [sid,i]=id.split('.');state=+i<=D.sessions.find(x=>x.id===sid).subagentsLinked?st('known','有记录'):st('unknown','状态未知')}
+  const title=`回到 ${n}`+(q?`，这一层及以下等你 ${q} 件`:'')+(e?`，出错 ${e} 条`:'');
+  return `<button class="strip" data-strip="${key}" title="${E(title)}" aria-label="${E(title)}">${q?`<span class="smark w">等<br>${q}</span>`:''}${e?`<span class="smark e">错<br>${e}</span>`:''}<span class="vname">${E(short(n))}</span><span class="dotwrap">${state}</span></button>`;
+}
+
+/* ---------- 布局：往右推 ---------- */
+const host=$('#cols');
+const maxFull=()=>innerWidth>=1180?3:2;
+function colEl(key){return host.querySelector(`.col[data-key="${CSS.escape(key)}"]`)}
+function keepDraft(root){
+  const t=root.querySelector('.cmp textarea'),v=t?t.value:'',r=root.querySelector('input[name=tgt]:checked'),k=r&&r.value;
+  const ans=[...root.querySelectorAll('[data-ans]')].map(i=>[i.dataset.ans,i.value]);
+  return ()=>{
+    ans.forEach(([id,x])=>{const i=root.querySelector(`[data-ans="${id}"]`);if(i)i.value=x});
+    const t2=root.querySelector('.cmp textarea');if(!t||!t2)return;t2.value=v;
+    const r2=[...root.querySelectorAll('input[name=tgt]')].find(x=>x.value===k);
+    if(r2){r2.checked=true;root.querySelector('[data-cmpgo]').textContent=k==='router'?'交给总台提议':'派出'}
+  };
+}
+function paint(el){
+  const key=el.dataset.key,sc=el.querySelector('.scroll'),top=sc?sc.scrollTop:0,back=keepDraft(el);
+  const inp=el.querySelector('.foot input'),val=inp?inp.value:'';
+  el.innerHTML=stripHTML(key)+`<div class="pane">${colHTML(key)}</div>`;
+  const s2=el.querySelector('.scroll');if(s2)s2.scrollTop=top;
+  const i2=el.querySelector('.foot input');if(i2)i2.value=val;
+  back();
+}
+function layout(instant){
+  const s=S(),p=s.path,M=maxFull();
+  s.end=Math.max(Math.min(1,p.length-1),Math.min(s.end,p.length-1));
+  const start=Math.max(0,s.end-M+1);
+  [...host.children].forEach(el=>{if(!p.includes(el.dataset.key)&&!el.dataset.leaving){el.dataset.leaving=1;el.style.width='0px';setTimeout(()=>el.remove(),230)}});
+  p.forEach(k=>{let el=colEl(k);if(el&&el.dataset.leaving){el.remove();el=null}if(!el){el=document.createElement('section');el.className='col';el.dataset.key=k;el.style.width='0px';paint(el);host.appendChild(el);el.offsetWidth}else host.appendChild(el)});
+  const nFull=s.end-start+1,strips=p.length-nFull;
+  const avail=host.clientWidth-strips*SW;
+  const wt=k=>(k==='root'&&!Dt().router&&nFull<3)?.62:1;
+  const sum=p.slice(start,s.end+1).reduce((a,k)=>a+wt(k),0);
+  p.forEach((k,i)=>{
+    const el=colEl(k),full=i>=start&&i<=s.end;
+    el.classList.toggle('is-strip',!full);el.classList.toggle('last',i===s.end);
+    if(instant)el.style.transition='none';
+    if(full){const w=Math.floor(avail*wt(k)/sum);el.style.width=w+'px';el.querySelector('.pane').style.width=w+'px'}
+    else el.style.width=SW+'px';
+    if(instant){el.offsetWidth;el.style.transition=''}
+    const nxt=p[i+1];el.querySelectorAll('.prow[data-go]').forEach(b=>b.classList.toggle('sel',b.dataset.go===nxt));
+  });
+}
+function go(key){
+  const s=S(),i=s.path.indexOf(key);
+  if(i>=0)s.end=i;else{s.path=absPath(key);s.end=s.path.length-1}
+  closeSheet();layout();
+}
+function renderAll(){
+  [...host.children].forEach(el=>{if(!el.dataset.leaving)paint(el)});
+  renderBand();renderSheet();layout();
+}
+
+/* ---------- 等你带和抽屉 ---------- */
+function renderBand(){
+  const q=byDeadline(),e=errs(),s=S(),t=q[0];
+  $('#band').dataset.open=s.sheet||'';
+  $('#band').innerHTML=`<button class="bq" data-band="1" aria-expanded="${s.sheet==='queue'}"><i class="chev"></i><span class="c">等你 ${q.length}</span>${t?`<span class="t">${E(t.title)}</span><span class="p">${E(t.path.join(' → '))}</span><span class="l" data-left="${t.id}">${leftTxt(t)}</span>`:'<span class="t">队列是空的</span>'}</button>${e.map(x=>`<button class="be" data-erropen="${x.id}">出错 ${e.length} · ${E(x.name)} 的 ${E(x.sub.name)}</button>`).join('')}<span class="toast" id="toast" role="status"></span>`;
+}
+function renderSheet(){
+  const s=S(),D=Dt();
+  $('#sheet').classList.toggle('open',!!s.sheet);
+  const back=keepDraft($('#sheetIn'));
+  if(s.sheet==='new'){$('#sheetIn').innerHTML=`<div class="sec">派一件新活</div><div style="padding:2px 8px 0">${composer()}</div>`;back();return}
+  if(s.sheet!=='queue')return;
+  const q=byDeadline(),e=errs();
+  $('#sheetIn').innerHTML=`<div class="sec">等你 ${q.length} · 按离超时的远近排</div>${q.map(x=>qFold(x)).join('')||'<div class="empty">队列是空的</div>'}${e.length?`<div class="sec">出错 ${e.length} · 只读，不进队列</div>${e.map(x=>fold('e:'+x.id,`${E(x.name)} 的 ${E(x.sub.name)}：${E(x.sub.text)}`,'起于 '+E(x.sub.since),errBody(x)+`<div style="margin-top:6px">${prow('k:'+x.id,x.name,'看这个会话')}</div>`)).join('')}`:''}${D.outsideQueue?`<div class="sec">不在队列里</div><div class="line">${st('guessWaiting',D.outsideQueue.title)}<span class="mid">${E(D.outsideQueue.note)}</span></div>`:''}`;
+  back();
+}
+function closeSheet(){const s=S();if(s.sheet){s.sheet=null;$('#sheet').classList.remove('open');$('#band').dataset.open='';const b=$('.bq');if(b)b.setAttribute('aria-expanded','false')}}
+function openQueue(id){
+  const s=S(),q=byDeadline();const t=id&&id!=='1'?id:q[0]&&q[0].id;
+  s.sheet='queue';if(t)s.open.add('q:'+t);renderBand();renderSheet();
+}
+function toast(t){const el=$('#toast');if(!el)return;el.textContent=t;el.classList.add('on');clearTimeout(toast.t);toast.t=setTimeout(()=>{const x=$('#toast');if(x)x.classList.remove('on')},2600)}
+
+/* ---------- 处理等你的事 ---------- */
+function resolve(id,verb,extra){
+  const D=Dt(),q=D.queue.find(x=>x.id===id);if(!q)return;
+  const before=D.queue.length;
+  D.queue=D.queue.filter(x=>x!==q);D.resolved[id]=verb;lastChange=Date.now();
+  if(verb==='派出'&&q.prop){
+    const d=D.dispatches.find(x=>x.id===q.prop.id);d.status='刚派出';D.router.thread.push({t:NOW,who:'receipt',dispatchId:d.id});
+    const w=D.workers.find(x=>x.name===d.to);if(w)w.thread.push({t:NOW,who:'dispatch',text:'收到派单：'+d.task});
+  }else if(verb==='派出'&&q.kind==='dispatch'){
+    const n=++D.seq,par=D.router?'ren':null,task=q.title.split('：').slice(1).join('：');
+    D.workers.push({id:'nc'+n,name:'新 Codex '+n,parent:par||undefined,harness:'Codex',model:(q.model||'').split('（')[0]||'gpt-5.5',ownership:'自有',project:q.scope,state:'running',stateText:'刚派出',waitingOn:{kind:'none'},task,since:NOW,confidence:'real',lastLine:'你刚派出',groups:[],thread:[{t:NOW,who:'dispatch',text:'应请求由你派出'}]});
+  }else if(q.kind==='approval'){
+    const w=(D.workers||[]).find(x=>x.waitingOn&&x.waitingOn.queueId===id);
+    if(w){const ok=!/拒/.test(verb);w.state=ok?'running':'reported';w.stateText=ok?'在跑':verb==='拒绝'?'命令被你拒绝':'命令超时，已自动拒绝';w.waitingOn={kind:'none'};}
+  }else if(q.kind==='question'&&extra){wk('aiko').thread.push({t:NOW,who:'you',text:extra})}
+  else if(q.kind==='decision'&&D.router){D.router.thread.push({t:NOW,who:'you',text:verb+'：'+q.title})}
+  renderAll();toast(`${verb} · 等你 ${before} → ${D.queue.length}`);
+}
+function guarded(btn,fn){
+  if(Date.now()-lastChange<750){btn.classList.remove('nope');btn.offsetWidth;btn.classList.add('nope');toast('列表刚变过，0.75 秒内点击无效');return}
+  fn();
+}
+let holdT=null,holdB=null;
+function holdStart(b){holdEnd();holdB=b;b.classList.add('holding');holdT=setTimeout(()=>{const [id,v]=b.dataset.hold.split('|');holdB=null;guarded(b,()=>resolve(id,v))},1000)}
+function holdEnd(){clearTimeout(holdT);if(holdB){holdB.classList.remove('holding');holdB=null}}
+
+/* ---------- 派活 ---------- */
+function composer(){
+  const D=Dt();let opts;
+  if(D.router)opts=[['router','走总台（默认）'],...D.workers.map(w=>['w:'+w.id,w.name]),['new','新开会话']];
+  else opts=[...D.workers.map(w=>['w:'+w.id,w.name]),['new','新开会话']];
+  return `<form class="cmp" data-cmp="1"><textarea placeholder="要做什么" aria-label="要做什么"></textarea><div class="tg" role="radiogroup" aria-label="派给谁">${opts.map(([v,t],i)=>`<label><input type="radio" name="tgt" value="${E(v)}"${i?'':' checked'}>${E(t)}</label>`).join('')}</div><button class="btn pri" data-cmpgo="1">${D.router?'交给总台提议':'派出'}</button><div class="hint"></div></form>`;
+}
+function openNew(){
+  const s=S();
+  if(!Dt().router){closeSheet();s.end=Math.min(1,s.path.length-1);layout();const t=colEl('root').querySelector('textarea');if(t)t.focus();return}
+  s.sheet='new';renderBand();renderSheet();setTimeout(()=>{const t=$('#sheetIn textarea');if(t)t.focus()},40);
+}
+function submitNew(f){
+  const D=Dt(),s=S(),text=f.querySelector('textarea').value.trim(),tgt=f.querySelector('input[name=tgt]:checked').value;
+  if(!text){f.querySelector('.hint').textContent='先写要做什么。';return}
+  f.querySelector('textarea').value='';
+  const n=++D.seq;
+  if(tgt==='router'){
+    const to=/前端|按钮|页面|shop/i.test(text)?'Aiko':'Ren',id='dn'+n;
+    D.dispatches.push({id,by:'总台',to,at:NOW,task:text,why:'mock 按关键词挑的，不是模型算的',returns:'待你和 '+to+' 说定',status:'提议中',mine:true});
+    const prop={id,to,by:'总台提议',task:text,why:'mock 按关键词挑的，不是模型算的',returns:'待你和 '+to+' 说定',status:'提议中，等你点「派出」'};
+    const qid='qp'+n;D.queue.push({id:qid,kind:'decision',title:`总台提议：派给 ${to}`,left:null,path:['你','总台'],verbs:['派出','不派'],prop});
+    D.router.thread.push({t:NOW,who:'you',text},{t:NOW,who:'proposal',queueId:qid});
+    closeSheet();s.end=Math.min(s.end,maxFull()-1);renderAll();
+    const sc=colEl('root').querySelector('.scroll');sc.scrollTop=sc.scrollHeight;return;
+  }
+  let key;
+  if(tgt==='new'){
+    D.workers.push({id:'nw'+n,name:'新会话 '+n,harness:'Claude',model:'claude-sonnet-5-5',ownership:'自有',project:'未指定',state:'running',stateText:'刚派出',waitingOn:{kind:'none'},task:'你派的：'+text,since:NOW,confidence:'real',lastLine:'你刚派出',groups:[],thread:[{t:NOW,who:'dispatch',text:'你派的：'+text}]});
+    key='w:nw'+n;
+  }else{
+    const w=wk(tgt.slice(2));w.thread.push({t:NOW,who:'dispatch',text:'你派的：'+text});key=tgt;
+    if(D.router){const id='dn'+n;D.dispatches.push({id,by:'你',to:w.name,at:NOW,task:text,why:null,returns:null,status:'刚派出',mine:true});D.router.thread.push({t:NOW,who:'receipt',dispatchId:id})}
+  }
+  closeSheet();renderAll();go(key);toast('已派出 · '+nameOf(key));
+}
+
+/* ---------- 事件 ---------- */
+document.addEventListener('click',ev=>{
+  const t=ev.target,c=s=>t.closest(s);let b;
+  if(b=c('[data-fold]')){
+    const k=b.dataset.fold,f=b.parentElement,on=f.classList.toggle('open'),o=S().open;
+    on?o.add(k):o.delete(k);b.setAttribute('aria-expanded',on);
+    if(on)setTimeout(()=>f.scrollIntoView({block:'nearest',behavior:'smooth'}),200);
+    return;
+  }
+  if(b=c('[data-strip]')){
+    const s=S(),i=s.path.indexOf(b.dataset.strip),M=maxFull();
+    const start=Math.max(0,s.end-M+1);
+    s.end=i<start?Math.min(s.path.length-1,i+M-1):i;layout();return;
+  }
+  if(b=c('[data-win]')){const s=S();s.end=Math.min(maxFull()-1,s.path.length-1);layout();return}
+  if(b=c('[data-pop]')){const s=S(),i=s.path.indexOf(b.dataset.pop);s.path=s.path.slice(0,i);s.end=s.path.length-1;layout();return}
+  if(b=c('[data-go]')){go(b.dataset.go);return}
+  if(b=c('[data-openq]')){openQueue(b.dataset.openq);return}
+  if(b=c('[data-band]')){const s=S();if(s.sheet==='queue'){closeSheet()}else openQueue();return}
+  if(b=c('[data-erropen]')){const s=S();s.sheet='queue';s.open.add('e:'+b.dataset.erropen);renderBand();renderSheet();const box=$('#sheetIn'),f=box.querySelector(`[data-fold="e:${b.dataset.erropen}"]`);box.scrollTop+=f.getBoundingClientRect().top-box.getBoundingClientRect().top-28;return}
+  if(b=c('[data-act]')){
+    const [id,v]=b.dataset.act.split('|');
+    if(v==='回答'){const i=b.parentElement.querySelector('[data-ans]');if(!i.value.trim()){i.focus();return}guarded(b,()=>resolve(id,'回答',i.value.trim()));return}
+    guarded(b,()=>resolve(id,v));return;
+  }
+  if(b=c('[data-tier]')){toast(b.dataset.tier+' 已发出（mock，不改数据）');return}
+  if(b=c('[data-brake]')){
+    const id=b.dataset.brake;
+    if(armed===id){armed=null;b.textContent='刹车';toast('刹车已发出（mock，不改数据）');return}
+    armed=id;b.textContent='3 秒内再点一次';setTimeout(()=>{if(armed===id){armed=null;b.textContent='刹车'}},3000);return;
+  }
+  if(b=c('[data-kbrake]')){toast('本机进程层面刹车已发出（mock，不改数据）');return}
+  if(b=c('[data-askq]')){askRen();return}
+});
+document.addEventListener('submit',ev=>{
+  ev.preventDefault();const f=ev.target;
+  if(f.dataset.cmp){submitNew(f);return}
+  if(f.dataset.ask){
+    const i=f.querySelector('input'),v=i.value.trim();if(!v)return;
+    if(/ren|没动/i.test(v)&&Dt().held&&Dt().held.length){i.value='';askRen();return}
+    $('#askHint').textContent='mock 里只存了「Ren 为什么没动？」这一句的答案。';return;
+  }
+  if(f.dataset.msg){const i=f.querySelector('input'),v=i.value.trim();if(!v)return;i.value='';const w=wk(f.dataset.msg);w.thread.push({t:NOW,who:'you',text:v});paint(colEl('w:'+w.id));layout();const sc=colEl('w:'+w.id).querySelector('.scroll');sc.scrollTop=sc.scrollHeight}
+});
+function askRen(){
+  const D=Dt(),s=S();D.router.thread.push(...D.held);D.held=[];
+  s.end=Math.min(s.end,maxFull()-1);paint(colEl('root'));layout();
+  const sc=colEl('root').querySelector('.scroll');sc.scrollTo({top:sc.scrollHeight,behavior:'smooth'});
+}
+document.addEventListener('input',ev=>{
+  const t=ev.target;
+  if(t.dataset.typed){const b=t.parentElement.querySelector('[data-kbrake]');b.disabled=t.value.trim()!==Dt().observed.kaito.name}
+});
+document.addEventListener('change',ev=>{
+  const t=ev.target;if(t.name==='tgt'){const b=t.closest('form').querySelector('[data-cmpgo]');b.textContent=t.value==='router'?'交给总台提议':'派出'}
+});
+document.addEventListener('pointerdown',ev=>{const b=ev.target.closest('[data-hold]');if(b)holdStart(b)});
+['pointerup','pointercancel'].forEach(n=>document.addEventListener(n,holdEnd));
+document.addEventListener('pointerout',ev=>{if(holdB&&ev.target.closest('[data-hold]')===holdB&&!holdB.contains(ev.relatedTarget))holdEnd()});
+document.addEventListener('keydown',ev=>{
+  const a=document.activeElement,typing=a&&/INPUT|TEXTAREA/.test(a.tagName);
+  if(a&&a.dataset&&a.dataset.hold&&(ev.key===' '||ev.key==='Enter')){ev.preventDefault();if(!ev.repeat)holdStart(a);return}
+  if(ev.key==='Enter'&&a&&a.dataset&&a.dataset.ans){const b=a.parentElement.querySelector('[data-act$="|回答"]');if(b)b.click();return}
+  if(ev.key==='Escape'){
+    if(!$('#note').hidden){toggleNote();return}
+    if(S().sheet){closeSheet();return}
+    if(typing){a.blur();return}
+    const s=S();if(s.end>1){s.end--;layout()}return;
+  }
+  if(typing||ev.ctrlKey||ev.metaKey||ev.altKey)return;
+  if(ev.key==='n'){ev.preventDefault();openNew()}
+  if(ev.key==='ArrowLeft'){const s=S();if(s.end>1){s.end--;layout()}}
+  if(ev.key==='ArrowRight'){const s=S();if(s.end<s.path.length-1){s.end++;layout()}}
+});
+document.addEventListener('keyup',ev=>{if(ev.key===' '||ev.key==='Enter')holdEnd()});
+addEventListener('resize',()=>layout(true));
+$('#newBtn').onclick=openNew;
+function toggleNote(){const n=$('#note');n.hidden=!n.hidden;$('#noteBtn').setAttribute('aria-expanded',!n.hidden)}
+$('#noteBtn').onclick=toggleNote;
+$('#themeBtn').onclick=()=>{const r=document.documentElement,dark=r.dataset.theme?r.dataset.theme==='dark':matchMedia('(prefers-color-scheme:dark)').matches;r.dataset.theme=dark?'light':'dark'};
+function setMode(m){
+  mode=m;host.innerHTML='';
+  $('#modeSeg').innerHTML=['rich','barren'].map(k=>`<button data-m="${k}" aria-pressed="${k===m}">${E(R2[k].label)}</button>`).join('');
+  layout(true);renderBand();renderSheet();
+}
+$('#modeSeg').onclick=ev=>{const b=ev.target.closest('[data-m]');if(b&&b.dataset.m!==mode)setMode(b.dataset.m)};
+setInterval(()=>{
+  ['rich','barren'].forEach(m=>store[m].D.queue.forEach(q=>{if(q.leftSec!=null&&q.leftSec>0)q.leftSec--}));
+  Dt().queue.forEach(q=>document.querySelectorAll(`[data-left="${q.id}"]`).forEach(e=>e.textContent=leftTxt(q)));
+  const dead=Dt().queue.find(q=>q.leftSec===0);if(dead)resolve(dead.id,'超时自动拒');
+},1000);
+
+$('#note').innerHTML=`<h3>不乱又能看下去</h3><p>一栏一个人，一行一件事。换人才往右推一栏，同一个人的内容都在原地展开。层级只靠左右位置，不靠缩进，所以再深也不会往里挤。最左边退成细条，名字和等你标记留着。</p>
+<h3>两个手势</h3><p>折叠就地展开，右边带 › 的行推一栏。从回执到 subagent 的步骤一路只有这两种。subagent 用共用折叠卡，其余折叠是一行。</p>
+<h3>F1 总台只问答</h3><p>第 1 栏只有你的话、回答、派单回执、回报摘要。工具调用和 diff 只在右边的栏里出现。今天没有总台，这一栏就是派活入口。</p>
+<h3>F2 派发一眼看清</h3><p>回执点开和每一栏的顶部都是同一张五件事卡片，写不出来的留「未知」。名册上每个 worker 直接写「派了谁」。</p>
+<h3>F3 subagent 默认折叠</h3><p>worker 栏里每组 subagent 一张折叠卡：名字，类型、数量、耗时，一人一个点。运行中不自动展开。等你和出错另走顶上的等你带，细条上也带标记。</p>
+<h3>等你队列放哪</h3><p>放顶上，占纵向。三栏只占横向，所以两者不抢位置。抽屉打开时栏变矮，但不变窄。</p>
+<h3>1024 px</h3><p>同时只留两个完整栏，第三栏退成细条。三栏挤到 300 px，派单卡片读不下去。第 5 层时是四条细条加两栏，来路一行写全，不横向滚动。</p>
+<h3>退回不丢路</h3><p>点左边细条，窗口往左滑，更深的栏退到右边变细条，再点又回来。键盘 ← → 一样，Esc 退一层。</p>
+<h3>最弱的一点</h3><p>「worker」名册占了一个栏位，但它不是一层祖先，所以细条的顺序和「你 → 总台 → Ren」差这一格，只能靠来路那一行写全。其次，两个手势比一个手势多学一次，竖排的英文名也不如横排好读。</p>`;
+setMode('rich');
+})();
+</script>
+</body>
+</html>
