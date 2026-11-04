@@ -43,6 +43,7 @@ button{font:inherit;color:inherit}
 .fold-chev{align-self:center;grid-row:1/span 2;grid-column:2;width:8px;height:8px;border-right:1.5px solid var(--ink-3);border-top:1.5px solid var(--ink-3);transform:rotate(45deg);transition:transform .15s}
 .fold[aria-expanded="true"] .fold-chev{transform:rotate(135deg)}
 .fold-meta{grid-column:1;display:flex;flex-wrap:wrap;gap:0 14px;font-size:12.5px;color:var(--ink-2)}
+.fold-flag{font-weight:600}.fold-flag-wait{color:var(--wait)}.fold-flag-err{color:var(--err)}
 .fold-dots,.fold-bar{grid-column:1/-1;margin-top:8px}
 .fold-dots{display:flex;flex-wrap:wrap;gap:4px}
 .fd{width:8px;height:8px;border-radius:2px;background:currentColor}

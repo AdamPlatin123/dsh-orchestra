@@ -43,7 +43,7 @@
       ]
     },
     dispatches: [
-      { id: 'd0', by: '总台', to: 'Sora', at: '09:40', task: '把 W12 写成验收条款和 Task 列表', why: '总台不做规划；规划者不接 Task，也不判定完成', returns: '验收条款和 Task 列表，交你确认', status: '已回报' },
+      { id: 'd0', by: '总台', to: 'Sora', at: '09:40', task: '把 W12 写成验收条款和 Task 列表', why: '总台不做规划；规划者不接 Task，也不判定是否通过', returns: '验收条款和 Task 列表，交你确认', status: '已回报' },
       { id: 'd1', by: '总台', to: 'Aiko', at: '09:44', task: 'Task 1：导出入口设计', why: '前端归 Aiko', returns: '方案和改动清单', status: '已回报' },
       { id: 'd2', by: '总台', to: 'Ren', at: '09:44', task: 'Task 2：/orders/export 接口约定', why: '后端归 Ren', returns: '接口文档和测试', status: '复核通过（Mio）' },
       { id: 'd3', by: '总台', to: 'Mio', at: '09:45', task: '复核 W12 每一条 Task', why: '作者不能判自己', returns: '复核结论和证据', status: '在跑' },
@@ -127,7 +127,7 @@
         lastLine: '提议把 Task 5 拆成两条',
         thread: [
           { t: '09:40', who: 'dispatch', text: '收到派单：把 W12 写成验收条款和 Task 列表' },
-          { t: '09:43', who: 'worker', text: '验收 7 条和 Task 列表写好了，交你确认。我只规划，不接 Task，也不判定完成。' },
+          { t: '09:43', who: 'worker', text: '验收 7 条和 Task 列表写好了，交你确认。我只规划，不接 Task，也不判定是否通过。' },
           { t: '14:15', who: 'ask', text: '提议：Task 5 拆成两条（导出 / 邮件发送）', queueId: 'q4' }
         ],
         groups: []

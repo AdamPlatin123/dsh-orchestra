@@ -1,5 +1,5 @@
 ﻿// 第二轮共用折叠卡。样式在 kit.css 的 .fold 一节。用法见 BRIEF.md 第 1.1 节。
-// R2Fold.card({ id, title, kind, count, elapsed, members, open }) 返回一段 HTML 字符串。
+// R2Fold.card({ id, title, kind, count, elapsed, members, open, flags }) 返回一段 HTML 字符串。flags 是 [{ tone: 'wait' | 'err', text }]，写在第二行末尾，用来标「等你」「出错」。
 // R2Fold.fromGroup(group, { kind, open }) 把 scenario2.js 里的 group 转成上面的参数。
 // R2Fold.fromSession(session) 把今天的真实形状里的一个观察会话转成上面的参数（抽样只给了数量，没给状态：能对上派活的画成「有记录」，其余画成状态未知）。
 // 点击展开由页面自己接：监听 .fold 的 click，切 aria-expanded，并显示自己的详情区。
@@ -15,7 +15,7 @@
     if (m.state === 'running') return 'run';
     if (m.state === 'guess') return 'guess';
     if (m.state === 'reported') return 'done';
-    if (m.state === 'known') return 'known';
+    if (m.state === 'known' || m.state === 'idle' || m.state === 'waitingAgent') return 'known';
     return 'unk';
   }
 
@@ -33,7 +33,8 @@
 
   function card(o) {
     const m = marks(o.members || []);
-    const meta = [o.kind, o.count, o.elapsed == null ? '耗时未知' : o.elapsed].filter(Boolean).map((x) => '<span>' + esc(x) + '</span>').join('');
+    const meta = [o.kind, o.count, o.elapsed == null ? '耗时未知' : o.elapsed].filter(Boolean).map((x) => '<span>' + esc(x) + '</span>').join('') +
+      (o.flags || []).map((f) => '<span class="fold-flag fold-flag-' + esc(f.tone) + '">' + esc(f.text) + '</span>').join('');
     return '<button type="button" class="fold" aria-expanded="' + (o.open ? 'true' : 'false') + '"' + (o.id ? ' data-fold="' + esc(o.id) + '"' : '') + '>' +
       '<span class="fold-title">' + esc(o.title) + '</span>' +
       '<span class="fold-chev" aria-hidden="true"></span>' +
