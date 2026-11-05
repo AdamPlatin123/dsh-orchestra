@@ -128,7 +128,9 @@ test('the front desk at 派前问你: the call is answered at once and the card 
   assert.equal(r.ok, true);
   assert.match(r.text, /^Proposed/);
   const card = pendingOf(fx)[0]!;
+  assert.ok(r.text.includes(card.requestId), 'status orders lists it by this id');
   assert.deepEqual([card.reason, card.returns, card.auto, fx.started.length], ['it is short', 'the word', false, 0]);
+  assert.deepEqual([card.tainted, card.fromDesk, card.askWhy], [true, true, null], 'it read what others wrote; no level said otherwise');
   assert.deepEqual(fx.notes.at(-1), { state: 'worker-asked', ref: card.requestId, text: null });
   c.cancel();
   assert.equal(pendingOf(fx).length, 1, 'no turn holds it, so a stop takes nothing back');
@@ -145,6 +147,7 @@ test('the front desk at 派前问你: the call is answered at once and the card 
   assert.equal(fx.notes.at(-1)!.state, 'worker-sent');
   assert.equal(fx.d.view('c'.repeat(20)).level, 'ask', 'nothing it sent inherits a level');
   assert.equal(fx.d.view('c'.repeat(20)).depth, 1);
+  assert.equal(fx.d.view('c'.repeat(20)).byDesk, true);
 });
 
 test('the front desk at 直接派出: no card, and the order says why and what comes back; away it goes back to a card, answered at once too', async () => {
@@ -155,7 +158,11 @@ test('the front desk at 直接派出: no card, and the order says why and what c
   assert.match(r.text, /^Dispatched/);
   const made = fx.requests.list().find((x) => x.auto)!;
   assert.deepEqual([made.reason, made.returns], ['a', 'b']);
+  assert.deepEqual([made.tainted, made.fromDesk], [true, true]);
   assert.deepEqual(kinds(fx).filter((k) => k === 'auto'), ['auto']);
+  assert.deepEqual([fx.started[0]!.tainted, fx.started[0]!.origin.kind], [true, 'desk-dispatch'], '直接派出 still goes out at once, and the worker is held tight');
+  assert.equal(fx.d.view(made.ownedId!).byDesk, true);
+  assert.equal(fx.d.view(W).tainted, false, 'the desk is no tainted session: its level goes on working');
   fx.state.presence = 'away';
   const away = await fx.d.call(W, CALL, fx.say).reply;
   assert.match(away.text, /^Proposed/);
@@ -173,6 +180,7 @@ test('直接派出: no card, a session, an `auto` record and a route of mode aut
   const child = 'b'.repeat(19) + '1';
   const r = fx.requests.list()[0]!;
   assert.deepEqual([r.state, r.auto, r.ownedId, r.tainted], ['dispatched', true, child, false]);
+  assert.deepEqual([fx.started[0]!.tainted, fx.started[0]!.origin.kind, r.fromDesk, fx.d.view(child).byDesk], [false, 'worker-dispatch', false, false], 'a clean worker\'s child is clean');
   assert.deepEqual(fx.started[0]!.origin, { kind: 'worker-dispatch', requestId: r.requestId, requester: W, label: 'the worker' });
   assert.deepEqual(kinds(fx), ['route', 'auto']);
   assert.ok(!kinds(fx).some((k) => k.startsWith('human')), 'a level is no person\'s click');

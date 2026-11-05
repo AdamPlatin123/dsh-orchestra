@@ -4,6 +4,7 @@ import type { ClockHub, Fired } from '../runtime/clock.ts';
 import type { DispatchPort } from '../route/dispatch.ts';
 import type { StatusPort } from '../route/front-desk.ts';
 import type { Answer, AnswerCause, ApprovalKind, ApprovalOrigin, ApprovalRisk, Approvals } from './approvals.ts';
+import { taintedOrigin } from './approvals.ts';
 import type { PathJudge } from './codex-session.ts';
 import type { FeedInput, FeedTokens } from './feed.ts';
 import type { MemberBase, MemberRun, SessionMember } from './members.ts';
@@ -271,10 +272,10 @@ function endOf(reason: string): ClaudeEndReason {
 
 /** Starts an owned Claude session; the host is running when this returns ok, the session starting. */
 export function startClaudeSession(opts: ClaudeSessionOptions, first: { text: string; uuid: string } | null = null): ClaudeStartResult {
-  // A session a seat request started is tainted even if the caller left tainted out (r4 §8.5): its host and its
+  // A session a seat request or the front desk started is tainted even if the caller left tainted out (r4 §8.5): its host and its
   // cards agree, and the owned contract (such an origin only on a tainted entry) never fails the whole list over it.
   // A worker's dispatch is no unbound sender: its session is tainted only when the caller says so (that worker is).
-  if (opts.origin?.kind === 'agent-request' && opts.tainted !== true) opts = { ...opts, tainted: true };
+  if (taintedOrigin(opts.origin) && opts.tainted !== true) opts = { ...opts, tainted: true };
   if (!isClaudeModel(opts.model)) return { ok: false, reason: 'model-refused', detail: String(opts.model) };
   let pipe: HostPipe;
   try {

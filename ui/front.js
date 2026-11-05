@@ -1,12 +1,12 @@
 // @ts-check
 // The front desk's talk (src/route/front-desk.ts; 第二轮简报 F1, F2), on the home page alone: the old page has no way to it. Pure
 // descriptors, as ui/owned.js, whose guards and buttons they share: a click on an order is the click on its card in 「等你」.
-import { MSG, btn, busy, describeOwned, entry, join, off, on, reqActs, reqWhat, reqWhy, requestModel, tk, workerName } from './owned.js';
+import { MSG, btn, busy, describeOwned, entry, join, off, on, reqActs, reqWhat, reqWhere, reqWhy, requestModel, tk, workerName } from './owned.js';
 import { fmtLeft, t } from './view.js';
 
-/** What an order's 现在怎样 says, from the request (null: orchestrad no longer holds it) and what the feed said of a call that made none. */
+/** What an order's 现在怎样 says, from the request (null: orchestrad no longer holds it) and what the feed said of a call that made none, or of one that came to nothing. */
 function orderNow(r, refused, g) {
-  if (r === null) return refused === null ? t('front.now.unknown') : t('front.now.refused', { t: tk('dispwhy', refused, 'dispwhy.other') });
+  if (r === null) return refused === null || refused === 'gone' ? t('front.now.unknown') : t('front.now.refused', { t: tk('dispwhy', refused, 'dispwhy.other') });
   if (r.state === 'pending') return join([t('front.now.pending', { t: fmtLeft(Math.max(0, r.expiresAt - g.nowWall)) }), r.askWhy != null && tk('askwhy', r.askWhy, 'askwhy.other')], 'sep.notes');
   if (r.state === 'done') return r.report === null ? t('front.now.noReport') : t('front.now.report', { t: r.report });
   if (r.state === 'failed') return t('front.now.failed', { t: reqWhy(r.why) });
@@ -14,7 +14,7 @@ function orderNow(r, refused, g) {
 }
 
 /**
- * An order (F2): its five things, each 未知 when nothing says it (T1), how it went out, and what it can do now. The same
+ * An order (F2): its six things, each 未知 when nothing says it (T1), how it went out, and what it can do now. The same
  * buttons as its card in 「等你」, so a click here is that click.
  */
 function orderRow(key, r, refused, list, g) {
@@ -29,6 +29,7 @@ function orderRow(key, r, refused, list, g) {
     key, tpl: 'tpl-order', data: { kind: 'order', state: r?.state ?? 'unknown' },
     slots: {
       who: { text: r === null ? none : join([t(`harness.${r.harness}`), o?.model ?? requestModel(r).model]) },
+      where: { text: r === null ? none : reqWhere(r) },
       what: { text: r?.text ?? none }, why: { text: r?.reason ?? none }, back: { text: r?.returns ?? none },
       now: { text: orderNow(r, refused, g) },
       how: { text: r === null || r.state === 'pending' || r.ownedId === null ? '' : t(r.auto ? 'front.via.grant' : 'front.via.person') },
@@ -52,6 +53,9 @@ function sourcesOf(reads, list, fmt) {
  * The desk's talk (F1): your words, its answers each with where it came from, the orders. Nothing else of the feed: a read is
  * no row (it comes back as the answer's source), and no tool, no note, no lifecycle line shows. A report is on its order, so
  * no model call stands behind it. What went wrong with a turn goes to the note over the talk, never left out (T1).
+ *
+ * A turn's reads end with the turn, not with your next words: what you say while it runs queues behind it, and its answer
+ * still comes from what it read. The sentence the page sent for the click on 开启 is no word of yours, so it is said as what happened.
  */
 export function describeFrontChat(feed, list, g, fmt) {
   if (feed === undefined) return { kids: [], note: t('detail.loading') };
@@ -62,19 +66,25 @@ export function describeFrontChat(feed, list, g, fmt) {
   let lastAnswer = null;
   let failed = null;
   const fates = new Map(feed.events.filter((e) => e.kind === 'note' && MSG.test(e.state ?? '')).map((e) => [e.ref, e]));
+  const opening = feed.events.find((e) => e.kind === 'you' && e.text === t('front.opening'));
+  /** What the feed says became of an order that was refused: the request may be gone by now. */
+  const ends = new Map(feed.events.filter((e) => e.kind === 'note' && e.state === 'worker-refused' && e.ref !== null).map((e) => [e.ref, e.text ?? '']));
+  /** Orders orchestrad forgot and nothing yet ended: a person's 派出 of one of them says only its session, and it is one of these rows, all alike. */
+  let forgotten = 0;
   const order = (key, r, refused = null) => {
     if (orders.has(key)) return;
     orders.add(key);
     kids.push(orderRow(key, r, refused, list, g));
   };
+  const byId = (id) => list?.requests?.find((r) => r.requestId === id) ?? null;
   const bySent = (ref) => list?.requests?.find((r) => `n:${r.ownedId}` === ref) ?? null;
   for (const e of feed.events) {
     if (e.kind === 'you') {
       const f = fates.get(e.uuid);
-      reads = [];
       lastAnswer = null;
       failed = null;
-      kids.push({ key: `y${e.seq}`, tpl: 'tpl-msg', data: { kind: 'you', live: '0' }, slots: { who: { text: join([t('chat.you'), f && tk('msgst', f.state, 'msgst.other', { t: f.text ?? '' })]) }, tx: { text: e.text ?? '' } } });
+      if (e === opening) kids.push({ key: `y${e.seq}`, tpl: 'tpl-msg', data: { kind: 'life', live: '0' }, slots: { who: { text: '' }, tx: { text: t('front.openedNote') } } });
+      else kids.push({ key: `y${e.seq}`, tpl: 'tpl-msg', data: { kind: 'you', live: '0' }, slots: { who: { text: join([t('chat.you'), f && tk('msgst', f.state, 'msgst.other', { t: f.text ?? '' })]) }, tx: { text: e.text ?? '' } } });
     } else if (e.kind === 'text') {
       const src = sourcesOf(reads, list, fmt);
       if (lastAnswer !== null && lastAnswer.ref === e.ref && kids[kids.length - 1] === lastAnswer.node) {
@@ -86,12 +96,19 @@ export function describeFrontChat(feed, list, g, fmt) {
       kids.push(node);
       lastAnswer = { ref: e.ref, node };
     } else if (e.kind === 'note' && e.state === 'desk-read') reads.push(e);
-    else if (e.kind === 'note' && e.state === 'worker-asked') order(`o${e.ref}`, list?.requests?.find((r) => r.requestId === e.ref) ?? null);
-    else if (e.kind === 'note' && (e.state === 'worker-sent' || e.state === 'worker-sent-grant')) {
+    else if (e.kind === 'note' && e.state === 'worker-asked') {
+      const r = byId(e.ref);
+      if (r === null && !ends.has(e.ref)) forgotten += 1;
+      order(`o${e.ref}`, r, ends.get(e.ref) ?? null);
+    } else if (e.kind === 'note' && (e.state === 'worker-sent' || e.state === 'worker-sent-grant')) {
       const r = bySent(e.ref);
-      order(r === null ? `o${e.ref}` : `o${r.requestId}`, r);
-    } else if (e.kind === 'note' && e.state === 'worker-refused' && e.ref === null) order(`x${e.seq}`, null, e.text ?? '');
-    else if (e.kind === 'lifecycle' && /^turn-(?!ended$|started$)/.test(e.state ?? '')) failed = e.state;
+      if (r === null && e.state === 'worker-sent' && forgotten > 0) forgotten -= 1;
+      else order(r === null ? `o${e.ref}` : `o${r.requestId}`, r);
+    } else if (e.kind === 'note' && e.state === 'worker-refused') order(e.ref === null ? `x${e.seq}` : `o${e.ref}`, byId(e.ref), e.text ?? '');
+    else if (e.kind === 'lifecycle' && /^turn-/.test(e.state ?? '')) {
+      reads = [];
+      if (!/^turn-(?:ended|started)$/.test(e.state ?? '')) failed = e.state;
+    }
   }
   const shown = kids.slice(-200);
   const note = join([shown.length === 0 && t('chat.none'), failed !== null && tk('life', failed, 'chat.life'), feed.clipped && t('chat.clipped')], 'sep.notes');

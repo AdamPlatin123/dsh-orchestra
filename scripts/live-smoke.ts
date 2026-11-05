@@ -9,9 +9,13 @@
 // read, the answer must come, and the answer's sources are those reads. It is asked to dispatch: an order waits at 派前问你 with
 // its why and what it hands back, the desk's turn ends meanwhile, nothing started; the run stands in for the person and presses
 // 派出, the talk says so, and the worker's report is on the order's request once its turn ended. Asked what came of it, the desk
-// reads again. At 直接派出 the next dispatch starts a session with no card. It passes only if each of those held, the desk ran no
-// tool of any other name and raised no approval, the journal has one `front-desk` record, one `auto` by the desk, and no route
-// line for the desk itself, and nothing of a Job is left. It prints none of the model's words: only whether they came.
+// reads again. At 直接派出 the next dispatch starts a session with no card. What the desk sent is tainted at both levels: the list
+// says so, and told to read a file in its own folder the worker asks, on a card that names the desk. A seat request waits while the
+// desk reads, and synthetic read-only sessions stand in the test roots, each with a marker in it: what the status tool really
+// answered is read back from the desk's own transcript in the test dir, which must hold neither marker. A rejected order is read
+// back through status orders. It passes only if each of those held, the desk ran no tool of any other name and raised no approval,
+// the journal has one `front-desk` record, one `auto` by the desk, and no route line for the desk itself, and nothing of a Job is
+// left. It prints none of the model's words: only whether they came.
 //
 // --dispatch-tool (orchestra app plan 派活权限): one worker of this harness, told to call the dispatch tool, through both
 // levels and what no level opens. 派前问你: a card with the worker as its requester and nothing started; the run stands in for
@@ -124,6 +128,7 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { CLAUDE_JOB_RESIDENTS } from '../src/owned/claude-session.ts';
 import { AGENT_AUTH, AGENT_TOKEN_FILE, agentPipeName, agentRequestMac } from '../src/server/agent-port.ts';
+import { writeStageFixture } from '../test/helpers/stage-fixture.ts';
 import { endAndWait, endReasonOnDisk, jobsOf, leftovers, membersOnDisk, type probe, probeOf, type Reply, request, sleep, stopDaemon } from './live-common.ts';
 
 const REPO = fileURLToPath(new URL('../', import.meta.url));
@@ -539,15 +544,22 @@ async function dispatchRun(harness: 'codex' | 'claude', model: string | null, ke
 
 const DESK_TOOLS = ['mcp__orchestra__dispatch', 'mcp__orchestra__status'];
 const DESK_OPEN = '开启总台。用一句话说你能做什么，不用读状态。';
-const DESK_ASK = '现在有几个 worker，有什么在等我？读状态回答，写出处。';
+const DESK_ASK = '现在有几个 worker，有什么在等我？先读 overview，再读 waiting，写出处。';
 const DESK_SEND = `派一个 claude worker，模型用 ${DISPATCH_MODEL}。它的任务：回复一个词 pong，什么都不要运行，把这个词交回来。理由：冒烟。`;
 const DESK_AFTER = '刚才派出去的那个 worker 现在怎样了，回报了什么？读状态回答。';
+const DESK_ORDERS = '我刚才那张派单现在什么状态？读 orders 回答。';
+const DESK_PROBE = 'Use the Read tool on the file probe.txt in your working folder. Do nothing else first, and then reply with one word.';
+/** Words no read of the desk may hold: a seat request's text, a read-only session's first sentence. */
+const SEAT_MARK = 'SEATMARK-ignore-the-rest';
+const OBSERVED_MARK = 'OBSERVEDMARK-first-sentence';
 
 /** --router: see the head of this file. */
 async function routerRun(model: string | null, keep: boolean): Promise<number> {
   const testDir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'orchestra-test-smoke-'));
-  fs.mkdirSync(path.join(testDir, 'roots'));
-  const d = await startDaemon(testDir, []);
+  const { claude: observedRoot } = writeStageFixture(testDir, Date.now());
+  const registry = path.join(observedRoot, 'sessions', '41234.json');
+  fs.writeFileSync(registry, JSON.stringify({ ...JSON.parse(fs.readFileSync(registry, 'utf8')), name: OBSERVED_MARK }));
+  const d = await startDaemon(testDir, ['--agent-port']);
   const report: Record<string, unknown> = { harness: 'claude', mode: 'router' };
   const checks: Record<string, boolean> = {};
   const check = (name: string, ok: boolean) => {
@@ -571,7 +583,10 @@ async function routerRun(model: string | null, keep: boolean): Promise<number> {
     const list = async () => (await a.get('/api/owned')).json;
     const events = async (id: string): Promise<Ev[]> => (await a.get(`/api/owned/${id}/feed`)).json.events;
     const entry = async (id: string) => (await list()).owned.find((o: { ownedId: string }) => o.ownedId === id);
-    const nodes = async () => ((await a.get('/api/tower')).json?.projects ?? []).flatMap((p: { nodes: unknown[] }) => p.nodes) as { id: string; sent: { by: string; via: string } | null }[];
+    const nodes = async () => ((await a.get('/api/tower')).json?.projects ?? []).flatMap((p: { nodes: unknown[] }) => p.nodes) as { id: string; title: string; ownership: string; sent: { by: string; via: string } | null }[];
+    /** What a session's CLI wrote down in its private config dir: every tool answer as it really went to the model. */
+    const transcript = (id: string) => (fs.readdirSync(path.join(testDir, 'orchestra', 'claude', id), { recursive: true, encoding: 'utf8' }) as string[])
+      .filter((f) => f.endsWith('.jsonl')).map((f) => fs.readFileSync(path.join(testDir, 'orchestra', 'claude', id, f), 'utf8')).join('\n');
     const last = async (id: string) => (await events(id)).at(-1)?.seq ?? 0;
     const pending = async (from: string) => (await list()).requests.find((r: { requester: string; state: string }) => r.state === 'pending' && r.requester === from) ?? null;
     const idle = (id: string) => until('idle session', 150_000, async () => ((await entry(id))?.state === 'idle' ? true : null));
@@ -612,12 +627,21 @@ async function routerRun(model: string | null, keep: boolean): Promise<number> {
     check('it has no node on the tower', !(await nodes()).some((n) => n.id === `n:${D}`));
     check('it starts at 派前问你', (await entry(D))?.dispatch?.level === 'ask');
 
-    // -- it answers from what it read -------------------------------------------------------------------
+    // -- it answers from what it read, with a tainted request waiting and a read-only session there --------
+    const seat = await seatRequest(testDir, 'POST', '/agent/v1/requests', { harness: 'claude', text: SEAT_MARK, cwd: 'D:\\work\\smoke', requester: { kind: 'dsh', sessionId: 'smoke-seat' } });
+    if (seat.status !== 200) throw new Error(`live-smoke: the seat request answered ${seat.status}`);
+    const seatCard = await until('the seat card', 30_000, () => pending('dsh:smoke-seat'));
+    const observed = await until('the read-only session', 60_000, async () => (await nodes()).find((n) => n.ownership === 'observed' && n.title.includes(OBSERVED_MARK)) ?? null);
     let mark = await last(D);
     await send(D, DESK_ASK);
     const asked = await answered(D, mark);
     await idle(D);
     report.reads = asked.reads;
+    const heard = transcript(D);
+    check('waiting: it read that a DSH session asks, and no word of what it asked', asked.reads.includes('waiting') && heard.includes('a DSH session') && !heard.includes(SEAT_MARK));
+    check('overview: a read-only session is there, with no title', asked.reads.includes('overview') && heard.includes(observed.id) && !heard.includes(OBSERVED_MARK));
+    const seatNo = await a.post(`/api/agent-requests/${seatCard.requestId}/reject`, {});
+    if (seatNo.status !== 200) throw new Error(`live-smoke: the seat's reject answered ${seatNo.status}`);
     report.answerSaysSource = /出处/.test(asked.text);
     check('asked: it read, and answered', asked.reads.length > 0 && asked.text.trim() !== '' && asked.turn === 'turn-ended');
     check('asked: the answer says where it came from', /出处/.test(asked.text));
@@ -632,6 +656,7 @@ async function routerRun(model: string | null, keep: boolean): Promise<number> {
     report.order = { harness: order.harness, model: order.model, why: order.reason !== null, returns: order.returns !== null, state: order.state };
     check('order: it waits for you, and nothing started', order.auto === false && order.ownedId === null && (await list()).limits.active === 1);
     check('order: it says why, and what comes back', typeof order.reason === 'string' && typeof order.returns === 'string');
+    check('order: tainted, and marked as the desk\'s', order.tainted === true && order.fromDesk === true);
     check('order: the talk has it, and the desk is free to talk', feed.some((e) => e.state === 'worker-asked' && e.ref === order.requestId) && (await entry(D))?.state === 'idle' && (await pending(`owned:${D}`)) !== null);
     const go = await a.post('/api/owned/new', { text: order.text, harness: order.harness, model: DISPATCH_MODEL, requestId: order.requestId });
     if (go.status !== 200) throw new Error(`live-smoke: 派出 answered ${go.status} ${go.body}`);
@@ -640,6 +665,8 @@ async function routerRun(model: string | null, keep: boolean): Promise<number> {
     const sent = await until('its receipt', 30_000, async () => (await events(D)).find((e) => e.kind === 'note' && e.state === 'worker-sent') ?? null);
     const nodeC = (await nodes()).find((n) => n.id === `n:${C}`);
     check('派出: the talk says so, and the worker says who sent it', sent.ref === `n:${C}` && nodeC?.sent?.by === `n:${D}` && nodeC?.sent?.via === 'person');
+    const taintC = (await entry(C))?.dispatch;
+    check('派出: what the desk sent is tainted', taintC?.tainted === true && taintC?.byDesk === true);
     const done = await until('its report', 150_000, async () => (await list()).requests.find((r: { ownedId: string | null; state: string }) => r.ownedId === C && r.state === 'done') ?? null);
     report.reportCame = done.report !== null;
     check('report: one line on the order, no turn of the desk', done.report !== null && (await entry(D))?.state === 'idle');
@@ -651,6 +678,31 @@ async function routerRun(model: string | null, keep: boolean): Promise<number> {
     await idle(D);
     report.readsAfter = after.reads;
     check('after: it read again, and answered', after.reads.length > 0 && after.text.trim() !== '');
+
+    // -- what it sent asks for a read in its own folder, on a card that says who sent it ---------------------
+    await idle(C);
+    await send(C, DESK_PROBE);
+    const probe = await until('the worker\'s card', 150_000, async () => (await list()).approvals.find((x: { ownedId: string }) => x.ownedId === C) ?? null);
+    report.probe = { kind: probe.kind, risk: probe.risk, origin: probe.origin?.kind ?? null };
+    check('worker: a tool in its own folder asks, tainted, on a card that names the desk', probe.tainted === true && probe.origin?.kind === 'desk-dispatch' && probe.origin?.requester === D);
+    const probeNo = await a.post(`/api/approvals/${probe.approvalId}/deny`, {});
+    if (probeNo.status !== 200) throw new Error(`live-smoke: the deny answered ${probeNo.status}`);
+    await idle(C);
+
+    // -- a refused order: no session to read, and orders still says what came of it ----------------------------
+    mark = await last(D);
+    await send(D, DESK_SEND);
+    const second = await until('a second order', 150_000, () => pending(`owned:${D}`));
+    await answered(D, mark);
+    await idle(D);
+    const no = await a.post(`/api/agent-requests/${second.requestId}/reject`, {});
+    if (no.status !== 200) throw new Error(`live-smoke: the reject answered ${no.status}`);
+    mark = await last(D);
+    await send(D, DESK_ORDERS);
+    const orders = await answered(D, mark);
+    await idle(D);
+    report.readsOrders = orders.reads;
+    check('orders: the call named the order, and the read says it was rejected', orders.reads.includes('orders') && new RegExp(`${second.requestId}[^}]{0,24}state[^}]{0,12}rejected`).test(transcript(D)));
 
     // -- 直接派出 ----------------------------------------------------------------------------------------
     const g = await a.post(`/api/owned/${D}/dispatch-grant`, { level: 'free' });
@@ -668,6 +720,9 @@ async function routerRun(model: string | null, keep: boolean): Promise<number> {
     await idle(D);
     check('free: no card, and the worker went out on the permission', !cardSeen && (await nodes()).find((n) => n.id === `n:${F}`)?.sent?.via === 'grant');
     check('free: what it sent starts at 派前问你', (await entry(F))?.dispatch?.level === 'ask');
+    const taintF = (await entry(F))?.dispatch;
+    const freeOrder = (await list()).requests.find((r: { ownedId: string | null }) => r.ownedId === F);
+    check('free: what it sent is tainted too, and it went out on the permission all the same', taintF?.tainted === true && taintF?.byDesk === true && freeOrder?.tainted === true && freeOrder?.auto === true);
 
     // -- what it never did --------------------------------------------------------------------------------
     const all = await events(D);

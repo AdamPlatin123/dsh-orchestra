@@ -63,12 +63,12 @@ async function fixture(t: TestContext, withClaude = false): Promise<Fx> {
     observe: () => ({ state: 'starting', endReason: null, feed: { since: () => ({ clipped: false, events: [] }) } }), endOwned: () => false,
   });
   const presence = makePresence({ nowMono: () => clock.nowMono() });
+  let open: string | null = null;
   const dispatch = makeDispatcher({
-    requests, desk, log, presence: () => presence.state(), session: (id) => { const s = held.get(id); return s === undefined ? null : { title: titleOf(id), tainted: s.tainted, over: over.has(id) }; },
+    requests, desk, log, presence: () => presence.state(), session: (id) => { const s = held.get(id); return s === undefined ? null : { title: titleOf(id), tainted: s.tainted, over: over.has(id), frontDesk: id === open }; },
     on: () => true, full: () => false, start: () => ({ ok: false, reason: 'spawn-refused', detail: 'not here' }), end: () => {}, judgeCwd: () => null, cwdRecord: () => [], commit: (r) => void store.commit(r), nowWall: () => clock.nowWall(),
   });
   // A stand-in of ClaudeOwned for what the route reads of a desk.
-  let open: string | null = null;
   const claude = {
     create(req: Record<string, unknown>) {
       made.push(req);
@@ -209,7 +209,7 @@ test('the page sees the level: a session over has none, and a page never heard i
   fx.over.add(T);
   const list = (await request(fx, 'GET', '/api/owned', h)).json;
   assert.equal(validateOwnedList(list).ok, true, validateOwnedList(list).errors.join(' | '));
-  assert.deepEqual(list.owned.find((o: { ownedId: string }) => o.ownedId === W).dispatch, { level: 'ask', grantAt: null, depth: 0, tainted: false });
+  assert.deepEqual(list.owned.find((o: { ownedId: string }) => o.ownedId === W).dispatch, { level: 'ask', grantAt: null, depth: 0, tainted: false, byDesk: false });
   assert.equal(list.owned.find((o: { ownedId: string }) => o.ownedId === T).dispatch, null);
   assert.equal(list.presence, 'away', 'heard, and no action yet');
 });
@@ -231,6 +231,24 @@ test('a clean worker\'s request, dispatched by a person: not tainted, its cards 
   const child = String(go.json.ownedId);
   assert.deepEqual(fx.dispatch.sentOf(child), { by: W, via: 'person', grantAt: null });
   assert.equal(fx.dispatch.view(child).level, 'ask');
+});
+
+test('the front desk\'s order, dispatched by a person: its worker starts tainted, and its cards say the desk sent it', async (t) => {
+  const fx = await fixture(t, true);
+  const h = await unlocked(fx);
+  const open = await request(fx, 'POST', '/api/owned/new', h, JSON.stringify({ actionId: uuid(), text: 'open', harness: 'claude', frontDesk: true }));
+  assert.equal(open.status, 200, open.body);
+  const D = String(open.json.ownedId);
+  await fx.dispatch.call(D, { task: 'reply pong', harness: 'codex', model: 'zcode/GLM-5.3' }, say).reply;
+  const r = fx.requests.list()[0]!;
+  assert.deepEqual([r.state, r.tainted, r.fromDesk], ['pending', true, true]);
+  const go = await request(fx, 'POST', '/api/owned/new', h, JSON.stringify({ actionId: uuid(), text: r.text, harness: 'codex', requestId: r.requestId }));
+  assert.equal(go.status, 200, go.body);
+  const worker = fx.made.at(-1)!;
+  assert.equal(worker.tainted, true);
+  assert.equal((worker.origin as { kind: string }).kind, 'desk-dispatch');
+  const child = String(go.json.ownedId);
+  assert.deepEqual({ ...fx.dispatch.view(child) }, { level: 'ask', grantAt: null, depth: 1, tainted: true, byDesk: true });
 });
 
 test('a worker with a title too long for a label, dispatched by a person: its cards name it by the cut label', async (t) => {

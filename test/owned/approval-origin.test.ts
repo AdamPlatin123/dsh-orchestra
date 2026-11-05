@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ChildPipe } from '../../src/os/child-pipe.ts';
 import { VirtualClock, oneShot } from '../../src/runtime/clock.ts';
-import { Approvals, type ApprovalOrigin } from '../../src/owned/approvals.ts';
+import { Approvals, taintedOrigin, type ApprovalOrigin } from '../../src/owned/approvals.ts';
 import { CodexOwned } from '../../src/owned/codex-owned.ts';
 import { DEFAULT_CLAUDE_MODEL } from '../../src/owned/models.ts';
 import { makeDispatcher } from '../../src/route/dispatch.ts';
@@ -353,6 +353,41 @@ test('CodexOwned.create (review fix): an origin alone makes the session tainted:
   assert.deepEqual(validateOwnedList(list).errors, []);
   assert.deepEqual([list.approvals.length, list.approvals[0]?.tainted], [1, true]);
   owned.endAll();
+});
+
+test('the front desk\'s worker: its card says the desk sent it and why it is held so; a worker further down the chain names that worker, and no DSH session it never had', () => {
+  const desk = { kind: 'desk-dispatch', requestId: REQ, requester: 'a'.repeat(20), label: '总台' };
+  const card = describeCard(approval(desk), G) as any;
+  assert.ok(card.slots.kind.text.startsWith(TOWER_TEXT['appr.originDesk']!));
+  assert.ok(card.slots.note.text.includes(TOWER_TEXT['appr.taintedDeskHigh']!));
+  assert.ok((describeCard({ ...approval(desk), high: false, risk: 'read' }, G) as any).slots.note.text.includes(TOWER_TEXT['appr.taintedDeskNote']!));
+  assert.deepEqual(pinOf(approval(desk)).hint, { text: TOWER_TEXT['appr.originDesk'] });
+  for (const k of ['appr.taintedDeskNote', 'appr.taintedDeskHigh']) for (const re of [/总台派的/, /不可信来源/, /工具都要你批/]) assert.match(TOWER_TEXT[k]!, re, k);
+  const further = describeCard(approval({ ...desk, kind: 'worker-dispatch', label: '翻译' }), G) as any;
+  assert.ok(further.slots.note.text.includes(TOWER_TEXT['appr.taintedWorkerHigh']!));
+  assert.doesNotMatch(further.slots.note.text, /DSH/);
+  assert.deepEqual(validateOwnedList(listWith(desk)).errors, []);
+  assert.ok(validateOwnedList(listWith(desk, false)).errors.some((e) => e.includes('front desk')), 'never on an entry that is not tainted');
+});
+
+test('whoever forgot to say tainted: an origin of the front desk makes its session and its cards tainted all the same', async (t) => {
+  assert.equal(taintedOrigin({ kind: 'desk-dispatch', requestId: REQ, requester: 'a'.repeat(20), label: null }), true);
+  assert.equal(taintedOrigin(ORIGIN), true);
+  assert.equal(taintedOrigin({ kind: 'worker-dispatch', requestId: REQ, requester: 'a'.repeat(20), label: null }), false);
+  assert.equal(taintedOrigin(null), false);
+  const r = claudeRig(t);
+  const made = r.owned.create({ text: 'write a.txt', uuid: U(1), origin: { kind: 'desk-dispatch', requestId: REQ, requester: 'a'.repeat(20), label: '总台' } });
+  assert.ok(made.ok, JSON.stringify(made));
+  assert.equal(made.session.tainted, true);
+});
+
+test('the contract: the desk\'s request is tainted and owned, and only then goes out on its permission tainted; any other tainted one never does', () => {
+  const entry = (over: Record<string, unknown>) => ({ requestId: 'e'.repeat(20), harness: 'claude', label: null, text: 't', cwd: '', runIn: null, runInWhy: 'no-roots', requester: `owned:${'d'.repeat(20)}`, tainted: true, fromDesk: true, model: null, askWhy: null, auto: true, reason: null, returns: null, report: null, state: 'dispatched', createdAt: 1, expiresAt: 2, ownedId: 'c'.repeat(20), why: null, fetched: false, suggestion: null, suggesting: 'none', ...over });
+  const errs = (over: Record<string, unknown>) => validateOwnedList({ ...listWith(null, false), requests: [entry(over)] }).errors;
+  assert.deepEqual(errs({}), []);
+  assert.ok(errs({ fromDesk: false }).some((e) => e.includes('.auto')));
+  assert.ok(errs({ tainted: false }).some((e) => e.includes('.fromDesk')));
+  assert.ok(errs({ requester: 'dsh:x', auto: false }).some((e) => e.includes('.fromDesk')));
 });
 
 test('the page: no origin and not tainted, no chain; tainted with no origin says only that a DSH session asked', () => {

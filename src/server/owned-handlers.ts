@@ -73,7 +73,8 @@ import { makeOwnedHandlers } from './owned.ts';
 //                                       card said: the request's runIn (its cwd, inside a project root), else
 //                                       its own ORCHESTRA_HOME\work\<id>; the spawn gate holds either to its table.
 //                                       A request of an owned session (its dispatch tool) goes the same way, but is tainted
-//                                       only when that session is, and its cards name it (origin worker-dispatch).
+//                                       only when that session is, and its cards name it (origin worker-dispatch); the
+//                                       front desk's always is (origin desk-dispatch: it read what others wrote).
 //                                       Else its session is tainted wherever it runs (r4 §8.5: the request came from an
 //                                       unbound sender): Claude asks for every tool call, reads in cwd too; Codex
 //                                       starts with the untrusted approval policy, echoed or policy-mismatch.
@@ -145,7 +146,7 @@ function feedEntry(e: FeedEvent) {
 export function requestEntry(r: AgentRequest) {
   const g = r.suggestion;
   return {
-    requestId: r.requestId, harness: r.harness, label: r.label, text: r.text, cwd: r.cwd, runIn: r.runIn, runInWhy: r.runInWhy, requester: requesterName(r.requester), tainted: r.tainted, model: r.model, askWhy: r.askWhy, auto: r.auto, reason: r.reason, returns: r.returns, report: reportLine(r), state: r.state,
+    requestId: r.requestId, harness: r.harness, label: r.label, text: r.text, cwd: r.cwd, runIn: r.runIn, runInWhy: r.runInWhy, requester: requesterName(r.requester), tainted: r.tainted, fromDesk: r.fromDesk, model: r.model, askWhy: r.askWhy, auto: r.auto, reason: r.reason, returns: r.returns, report: reportLine(r), state: r.state,
     createdAt: r.createdWall, expiresAt: r.expiresWall, ownedId: r.ownedId, why: r.why, fetched: r.fetched,
     suggestion: g === null ? null : { routeId: g.routeId, router: g.router, models: g.models.map((m) => ({ ...m })), pick: g.pick },
     suggesting: r.suggesting,
@@ -324,11 +325,12 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     // so every turn of its session is tainted, wherever it runs (a project root or its own work dir): a Claude
     // session asks for every tool call, reads in cwd too (host-core.mjs judge); a Codex one starts its thread
     // with the untrusted approval policy and ends as policy-mismatch unless thread/start echoes it.
-    // A request of an owned session is tainted only when that session is (the same project's clean musicians are clean, trust agent: r4 §8.5).
+    // A request of an owned session is tainted only when that session is (the same project's clean musicians are clean, trust agent: r4 §8.5),
+    // or when the front desk made it: dispatch.ts marked it so.
     const tainted = asked !== null && asked.tainted;
     // r4 §8.5: the source chain its cards show at the top (display only; a DSH requester's id is its own word, null when it named none).
     const origin = asked === null ? null : asked.requester.kind === 'owned'
-      ? { kind: 'worker-dispatch' as const, requestId: asked.requestId, requester: asked.requester.sessionId, label: dispatch?.labelOf(asked.requester.sessionId) ?? null }
+      ? { kind: asked.fromDesk ? 'desk-dispatch' as const : 'worker-dispatch' as const, requestId: asked.requestId, requester: asked.requester.sessionId, label: dispatch?.labelOf(asked.requester.sessionId) ?? null }
       : { kind: 'agent-request' as const, requestId: asked.requestId, requester: asked.requester.sessionId, label: asked.label };
     const model = typeof body.model === 'string' ? body.model : asked?.model ?? null;
     const made = manager.create({

@@ -14,12 +14,19 @@ import { headUtf8, shown } from '../owned/text.ts';
 // view_image and three goal tools, and no frame lists a thread's tools, so nothing could be checked at its start.
 //
 // This module is what the read may say. A session's title, a task and a report are text other programs and agents wrote, so
-// the prompt calls them data, each is cut short, and a prompt injection in one is the reason the desk starts at 派前问你. Never
-// here: a conversation, a command, its output, a tool call of any session. `activity` on a tower node is left out on purpose: it
-// is the session's newest line, which may be a command or its words. What is read goes through the redactor as it leaves.
+// the prompt calls them data, each is cut short, and a prompt injection in one is the reason the desk starts at 派前问你, and why
+// whatever it dispatches runs tainted at both levels (src/route/dispatch.ts). Never here: a conversation, a command, its output, a
+// tool call of any session. `activity` on a tower node is left out on purpose: it is the session's newest line, which may be a
+// command or its words. What is read goes through the redactor as it leaves.
+//
+// What leaves here goes to the model's provider through magpie, so the default is narrow. A session Orchestra only observes is
+// the person's own work elsewhere: its title is its first sentence, so the read gives an id, a harness, a state and the project
+// folder's name and nothing it said. A request from a tainted source gives no words at all, only who and which harness: what the
+// desk never read it cannot pass on.
 //
 // Nothing wakes the desk. A worker's turn ending tells it nothing: it sees what the read shows when you ask, and the only
 // report it can pass on is the first line a request's session handed back (r4 D20's spirit: no loop that burns money unseen).
+// `orders` is how it learns the fate of what it proposed, as a call at 派前问你 never tells it: a refused one has no session to read.
 
 export const FRONT_DESK_LIMITS = frozen({
   /** Sessions an overview lists; `more` counts the rest. */
@@ -37,13 +44,13 @@ export const FRONT_DESK_TITLE = '总台';
 /** The read tool as Orchestra gives it (hosts/claude/host-core.mjs STATUS_TOOL restates it; a test holds the two equal). */
 export const STATUS_TOOL = frozen({
   name: 'orchestra_status',
-  description: 'Read the state of Orchestra itself: what sessions there are, what waits for the person, one session. It never holds a conversation or the output of a command. Read it before you say anything about a session, a count or a wait.',
+  description: 'Read the state of Orchestra itself: what sessions there are, what waits for the person, one session, the orders you sent. It never holds a conversation or the output of a command. Read it before you say anything about a session, a count, a wait or an order.',
   inputSchema: {
     type: 'object',
     additionalProperties: false,
     required: ['what'],
     properties: {
-      what: { type: 'string', enum: ['overview', 'waiting', 'session'], description: 'overview: every session and its state; waiting: what waits for the person; session: one session.' },
+      what: { type: 'string', enum: ['overview', 'waiting', 'session', 'orders'], description: 'overview: every session and its state; waiting: what waits for the person; session: one session; orders: the orders you sent and what came of each.' },
       session: { type: 'string', description: 'With what=session: its id, as overview lists it.' },
     },
   },
@@ -54,7 +61,7 @@ export const FRONT_DESK_SYSTEM = [
   'You are the front desk (总台) of Orchestra, a local tool that runs coding-agent sessions, called workers, on this computer. A person talks to you on a page.',
   'You do three things and nothing else: answer the person, send work out to a worker, and pass on what a worker reported, in one sentence.',
   'You never do the work. You have no shell, no files, no web and no sub-agents. Planning is work too: acceptance criteria, task lists, designs and code go to a worker. Ask for one with the dispatch tool.',
-  'status reads Orchestra itself. Read it before you say anything about a session, a count or a wait, and only say what it says.',
+  'status reads Orchestra itself. Read it before you say anything about a session, a count, a wait or an order, and only say what it says. status orders lists what you sent and what came of each, refused and expired ones too. A session Orchestra only observes has no title there and a request from an untrusted source has no text: that is on purpose, so never guess them.',
   'dispatch sends a worker. task must stand alone: the worker sees nothing of this talk, so say in it what to do and what to hand back. Always give why and returns too: the person reads them on the order. harness: codex for changing code and running commands, claude for reading, explaining and writing.',
   'After a dispatch say, in one sentence, what its answer says: proposed (it waits for the person on the page and nothing went out yet), sent, or refused. Never say work is finished or passed: a worker only reports, and only the person judges.',
   'Keep answers short, in the language of the person. Say where an answer comes from, like 出处：overview. If status does not say, say you do not know; never guess.',
@@ -63,10 +70,10 @@ export const FRONT_DESK_SYSTEM = [
 ].join('\n');
 
 /** What the read answers: the tool's text, and what the feed keeps of it (never its text): which read, of which session. */
-export type StatusRead = { readonly ok: boolean; readonly text: string; readonly source: 'overview' | 'waiting' | 'session' | 'refused'; readonly ref: string | null };
+export type StatusRead = { readonly ok: boolean; readonly text: string; readonly source: 'overview' | 'waiting' | 'session' | 'orders' | 'refused'; readonly ref: string | null };
 
 /** A request as the read sees it (requestEntry of src/server/owned-handlers.ts). */
-type RequestSeen = { requestId: string; harness: string; text: string; label: string | null; requester: string; state: string; expiresAt: number; ownedId: string | null; report: string | null };
+type RequestSeen = { requestId: string; harness: string; text: string; label: string | null; requester: string; tainted: boolean; fromDesk: boolean; state: string; expiresAt: number; ownedId: string | null; report: string | null };
 /** What of GET /api/owned the read takes. */
 export type OwnedSeen = {
   owned: readonly { ownedId: string; harness: string; model: string; title: string; state: string; endReason: string | null; frontDesk: boolean }[];
@@ -100,11 +107,11 @@ export function makeStatusLink(): { port: StatusPort; bind(p: StatusPort): void 
 }
 
 /** A call's arguments as the tool's schema has them, or null: the harness checks nothing of this for us. */
-export function statusArgs(raw: unknown): { what: 'overview' | 'waiting' } | { what: 'session'; node: string } | null {
+export function statusArgs(raw: unknown): { what: 'overview' | 'waiting' | 'orders' } | { what: 'session'; node: string } | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
   if (!Object.keys(o).every((k) => k === 'what' || k === 'session')) return null;
-  if (o.what === 'overview' || o.what === 'waiting') return o.session === undefined ? { what: o.what } : null;
+  if (o.what === 'overview' || o.what === 'waiting' || o.what === 'orders') return o.session === undefined ? { what: o.what } : null;
   if (o.what !== 'session' || typeof o.session !== 'string') return null;
   const m = /^(?:n:)?([0-9a-f]{20})$/.exec(o.session);
   return m === null ? null : { what: 'session', node: `n:${m[1]!}` };
@@ -124,20 +131,29 @@ export function makeFrontDesk(deps: FrontDeskDeps): StatusPort {
   const rootsOf = (snap: TowerSnapshot) => snap.projects.flatMap((p) => p.nodes.filter((n) => n.parent === null).map((n) => ({ n, project: p.name })));
   const isOwned = (n: { ownership: string }) => n.ownership === 'owned';
 
-  const row = (x: ReturnType<typeof rootsOf>[number]) => ({
-    id: x.n.id, title: said(x.n.title), harness: x.n.harness, owned: isOwned(x.n), state: x.n.state, waiting: x.n.waiting?.kind ?? null, lastSeenSecondsAgo: seconds(x.n.ageMs), project: said(x.project),
+  /** A session of Orchestra's own in full; one it only observes as little as says it is there. */
+  const row = (x: ReturnType<typeof rootsOf>[number]) => (isOwned(x.n) ? {
+    id: x.n.id, title: said(x.n.title), harness: x.n.harness, owned: true, state: x.n.state, waiting: x.n.waiting?.kind ?? null, lastSeenSecondsAgo: seconds(x.n.ageMs), project: said(x.project),
     subagents: x.n.counts.children,
-  });
+  } : { id: x.n.id, harness: x.n.harness, owned: false, state: x.n.state, project: said(x.project) });
 
   const waitingList = (snap: TowerSnapshot, list: OwnedSeen) => {
     const name = (ownedId: string) => said(list.owned.find((o) => o.ownedId === ownedId)?.title ?? '');
+    /** A tainted request has no words here but the desk's own, which it wrote itself: all that is left of it is who and which harness. */
+    const order = (r: RequestSeen) => {
+      const owned = r.requester.startsWith('owned:');
+      const open = !r.tainted || r.fromDesk;
+      return { type: 'order', from: !owned ? 'a DSH session' : open ? name(r.requester.slice(6)) : 'a session of an untrusted source', harness: r.harness, ...(open ? { what: said(r.label ?? r.text) } : {}), leftSeconds: left(r.expiresAt) };
+    };
     return [
-      ...list.requests.filter((r) => r.state === 'pending').map((r) => ({ type: 'order', from: r.requester.startsWith('owned:') ? name(r.requester.slice(6)) : 'a DSH session', harness: r.harness, what: said(r.label ?? r.text), leftSeconds: left(r.expiresAt) })),
+      ...list.requests.filter((r) => r.state === 'pending').map(order),
       ...list.approvals.map((a) => ({ type: 'approval', session: `n:${a.ownedId}`, title: name(a.ownedId), kind: a.kind, risk: a.risk, leftSeconds: left(a.deadline) })),
       // What only a session's own harness can answer: those of Orchestra's own are the approvals above.
       ...snap.waitingBar.filter((e) => e.source !== 'orchestra').map((e) => ({ type: 'elsewhere', session: e.node, kind: e.kind, sure: e.source === 'native' })),
     ];
   };
+
+  const reportOf = (r: RequestSeen) => (r.report === null ? null : said(r.report));
 
   const overview = (): StatusRead => {
     const snap = deps.tower();
@@ -166,22 +182,27 @@ export function makeFrontDesk(deps: FrontDeskDeps): StatusPort {
     const o = list.owned.find((e) => e.ownedId === ownedId);
     if (x === undefined && o === undefined) return json('session', { id: node, known: false }, node);
     const r = list.requests.find((q) => q.ownedId === ownedId);
-    const fromDesk = r !== undefined && list.owned.find((e) => `owned:${e.ownedId}` === r.requester)?.frontDesk === true;
     return json('session', {
       known: true, ...(x === undefined ? { id: node, title: said(o!.title), harness: o!.harness, owned: true, state: o!.state } : row(x)),
       ...(o === undefined ? {} : { model: o.model, endReason: o.endReason, lastDid: deps.recent(ownedId) }),
       sentBy: x?.n.sent?.by ?? null,
       // Only what it sent out itself: of any other session a line of its words is more than a state.
-      report: fromDesk ? { requestState: r.state, line: r.report === null ? null : said(r.report) } : null,
+      report: r?.fromDesk === true ? { requestState: r.state, line: reportOf(r) } : null,
     }, node);
   };
+
+  /** What it sent and what came of each, by the id its call answered; what orchestrad no longer holds is not here, and that is said (T1). */
+  const orders = (): StatusRead => json('orders', {
+    items: deps.list().requests.filter((r) => r.fromDesk).map((r) => ({ id: r.requestId, state: r.state, session: r.ownedId === null ? null : `n:${r.ownedId}`, report: reportOf(r) })),
+    older: 'unknown: Orchestra keeps only the newest requests, and none over a restart',
+  });
 
   return Object.freeze({
     status(raw: unknown): StatusRead {
       const a = statusArgs(raw);
-      if (a === null) return refused('Not read: the call needs what (overview, waiting or session), and with session its id as overview lists it.');
+      if (a === null) return refused('Not read: the call needs what (overview, waiting, session or orders), and with session its id as overview lists it.');
       try {
-        return a.what === 'overview' ? overview() : a.what === 'waiting' ? waiting() : session(a.node);
+        return a.what === 'overview' ? overview() : a.what === 'waiting' ? waiting() : a.what === 'orders' ? orders() : session(a.node);
       } catch {
         return refused(NOT_YET);
       }

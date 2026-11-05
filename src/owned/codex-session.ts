@@ -3,6 +3,7 @@ import type { ChildPipe } from '../os/child-pipe.ts';
 import type { JobOutcome } from '../os/procguard.ts';
 import type { ClockHub } from '../runtime/clock.ts';
 import type { Answer, AnswerCause, ApprovalKind, ApprovalOrigin, ApprovalRisk, Approvals } from './approvals.ts';
+import { taintedOrigin } from './approvals.ts';
 import type { DispatchPort } from '../route/dispatch.ts';
 import { DISPATCH_TOOL } from '../route/dispatch.ts';
 import type { RpcClient, RpcExit, RpcId, RpcStats } from './codex-rpc.ts';
@@ -366,10 +367,10 @@ const stopReaches = (m: Member) => m.state !== 'unknown' && (memberLive(m) || me
 
 /** Starts an owned Codex session; the child is running when this returns ok, the thread starting. */
 export function startCodexSession(opts: CodexSessionOptions): StartResult {
-  // A session a seat request started is tainted even if the caller left tainted out (r4 §8.5): its policy and its
+  // A session a seat request or the front desk started is tainted even if the caller left tainted out (r4 §8.5): its policy and its
   // cards agree, and the owned contract (such an origin only on a tainted entry) never fails the whole list over it.
   // A worker's dispatch is no unbound sender: its session is tainted only when the caller says so (that worker is).
-  if (opts.origin?.kind === 'agent-request' && opts.tainted !== true) opts = { ...opts, tainted: true };
+  if (taintedOrigin(opts.origin) && opts.tainted !== true) opts = { ...opts, tainted: true };
   if (!isOwnedModel(opts.model)) return { ok: false, reason: 'model-refused', detail: String(opts.model) };
   let pipe: ChildPipe;
   try {

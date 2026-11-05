@@ -89,13 +89,13 @@ export const DISPATCH_TOOL_ID = `mcp__${DISPATCH_SERVER}__${DISPATCH_TOOL.name}`
  */
 export const STATUS_TOOL = Object.freeze({
   name: 'status',
-  description: 'Read the state of Orchestra itself: what sessions there are, what waits for the person, one session. It never holds a conversation or the output of a command. Read it before you say anything about a session, a count or a wait.',
+  description: 'Read the state of Orchestra itself: what sessions there are, what waits for the person, one session, the orders you sent. It never holds a conversation or the output of a command. Read it before you say anything about a session, a count, a wait or an order.',
   inputSchema: {
     type: 'object',
     additionalProperties: false,
     required: ['what'],
     properties: {
-      what: { type: 'string', enum: ['overview', 'waiting', 'session'], description: 'overview: every session and its state; waiting: what waits for the person; session: one session.' },
+      what: { type: 'string', enum: ['overview', 'waiting', 'session', 'orders'], description: 'overview: every session and its state; waiting: what waits for the person; session: one session; orders: the orders you sent and what came of each.' },
       session: { type: 'string', description: 'With what=session: its id, as overview lists it.' },
     },
   },

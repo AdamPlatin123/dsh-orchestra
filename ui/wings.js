@@ -316,7 +316,7 @@ export function describeGrant(id, list, ctx) {
   const says = !ctx.unlocked ? [t('grant.locked')] : d === null ? [t(none)] : [
     d.grantAt === null ? t('grant.default') : t('grant.since', { at: ctx.fmt(d.grantAt) }),
     o?.frontDesk === true && t(d.level === 'free' ? 'grant.frontFree' : 'grant.frontAsk'),
-    d.tainted === true && t('grant.tainted'),
+    d.tainted === true && t(d.byDesk === true ? 'grant.taintedDesk' : 'grant.tainted'),
     d.depth >= ctx.maxDepth && t('grant.depth', { d: d.depth }),
     here,
   ];
@@ -338,7 +338,7 @@ export function describeFrontTile(list, ctx) {
   const over = d === null || d.endReason === null || d.endReason === 'you-ended' ? null : t(`life.${d.endReason}`);
   const l2 = !ctx.unlocked ? t('front.locked') : f === null ? t('front.unread') : live !== null ? `${live.model}${t('sep.parts')}${t(`state.${live.state}`)}`
     : !f.on ? t('front.off') : over !== null ? t('front.lastOver', { why: over }) : t('front.closed');
-  const note = !ctx.unlocked ? t('front.noteLocked') : live !== null ? t('front.noteOpen', { n: max, l: t(`grant.level.${live.dispatch?.level ?? 'ask'}`) }) : `${t('home.noRouter')}${f?.on === true ? t('front.what', { n: max }) : ''}`;
+  const note = !ctx.unlocked ? t('front.noteLocked') : live !== null ? t('front.noteOpen', { n: max, l: t(`grant.level.${live.dispatch?.level ?? 'ask'}`) }) : `${t('home.noRouter')}${f?.on === true ? `${t('front.what', { n: max })}${t('front.sends')}` : ''}`;
   const pick = closed && f.on === true;
   return {
     tile: { data: { on: ctx.on ? '1' : '0', open: live !== null ? '1' : '0' } },
@@ -357,14 +357,17 @@ export function describeFrontTile(list, ctx) {
  * @param {any} list @returns {Paint}
  */
 export function describeFrontHead(d, list) {
-  if (d === null) return { data: { mode: 'empty' }, slots: { empty: { text: t('front.pick') } } };
+  // No way to open it is no reason to point at the way (T1); a list not read yet says nothing either way.
+  if (d === null) return { data: { mode: 'empty' }, slots: { empty: { text: t(list == null ? 'front.unread' : list.frontDesk?.on === true ? 'front.pick' : 'front.off') } } };
   const kv = (/** @type {string} */ k, /** @type {string} */ v) => ({ key: k, tpl: 'tpl-kv', slots: { k: { text: t(k) }, v: { text: v } } });
-  const tools = list?.frontDesk?.ownedId === d.ownedId ? list.frontDesk.tools : null;
+  // The list names only the tools of the one that runs: of one that ended, no check is still to come.
+  const running = list?.frontDesk?.ownedId === d.ownedId;
+  const tools = running ? list.frontDesk.tools : null;
   return {
     data: { mode: 'front', state: '', harness: 'claude', src: '' },
     slots: {
       title: { text: t('front.name') }, sub: { text: t('front.sub', { m: d.model }) }, empty: { text: '' },
-      facts: { kids: [kv('front.factTools', tools === null ? t('front.factToolsNone') : tools.join(t('sep.parts'))), kv('front.factCwd', d.cwd?.path ?? t('front.unknown')), kv('front.factPlace', t('front.factPlaceV'))] },
+      facts: { kids: [kv('front.factTools', tools !== null ? tools.join(t('sep.parts')) : t(running ? 'front.factToolsNone' : 'front.factToolsOver')), kv('front.factCwd', d.cwd?.path ?? t('front.unknown')), kv('front.factPlace', t('front.factPlaceV')), kv('front.factSends', t('front.sends'))] },
     },
   };
 }

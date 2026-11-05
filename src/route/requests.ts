@@ -137,8 +137,10 @@ export type AgentRequest = {
   readonly runIn: string | null;
   readonly runInWhy: RunInWhy | null;
   readonly requester: Requester;
-  /** r4 §8.5: its text comes from a tainted source: a DSH session always, an owned session when that session is tainted. What it dispatches is tainted too. */
+  /** r4 §8.5: its text comes from a tainted source: a DSH session always, an owned session when that session is tainted, the front desk always (it read what others wrote). What it dispatches is tainted too. */
   readonly tainted: boolean;
+  /** The front desk asked (src/route/dispatch.ts): orchestrad knows that, as it knows which session called. */
+  readonly fromDesk: boolean;
   /** The model an owned session named for it, checked; null when it named none (the card's suggestion or default). */
   readonly model: string | null;
   /** Why it waits for you though its session may dispatch freely; null when that is no question. */
@@ -180,7 +182,7 @@ export type Observed = {
  */
 export type NewRequest = {
   harness: RouteHarness; text: string; cwd: string; label: string | null; requester: Requester; runIn?: string | null; runInWhy?: RunInWhy | null;
-  tainted?: boolean; model?: string | null; askWhy?: AskWhy | null; auto?: boolean; reason?: string | null; returns?: string | null;
+  tainted?: boolean; fromDesk?: boolean; model?: string | null; askWhy?: AskWhy | null; auto?: boolean; reason?: string | null; returns?: string | null;
 };
 
 export type RequestRefusal = 'full' | 'rate' | 'stopped' | 'requester-full' | 'text-too-long' | 'cwd-too-long';
@@ -406,7 +408,7 @@ export function makeRequests(deps: RequestsDeps): Requests {
         : { runIn: null, runInWhy: req.runInWhy ?? 'no-roots' };
       const m: Mut = {
         requestId, harness: req.harness, text: text.text, label,
-        cwd: cwd.text, ...placed, requester: Object.freeze({ ...req.requester }), tainted: req.tainted ?? true, model: req.model ?? null, askWhy: req.askWhy ?? null, auto: req.auto === true, reason: lineOf(req.reason), returns: lineOf(req.returns),
+        cwd: cwd.text, ...placed, requester: Object.freeze({ ...req.requester }), tainted: req.tainted ?? true, fromDesk: req.fromDesk === true, model: req.model ?? null, askWhy: req.askWhy ?? null, auto: req.auto === true, reason: lineOf(req.reason), returns: lineOf(req.returns),
         state: 'pending', createdWall: deps.nowWall(),
         expiresWall: deps.nowWall() + ttl, expiresMono: now + ttl, ownedId: null, output: null, truncated: false, cuts: [], fetched: false, why: null,
         suggestion: null, suggesting: deps.suggest === undefined || req.auto === true ? 'no-desk' : 'asking',

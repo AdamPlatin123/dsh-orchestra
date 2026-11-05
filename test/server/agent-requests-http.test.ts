@@ -109,7 +109,7 @@ test('a pending request is a card in GET /api/owned, with the desk\'s suggestion
   assert.equal(list.json.requests.length, 1);
   const r = list.json.requests[0];
   assert.deepEqual({ ...r, createdAt: 0, expiresAt: 0, suggestion: null }, {
-    requestId: made.request.requestId, harness: 'codex', label: null, text: ASK.text, cwd: ASK.cwd, runIn: null, runInWhy: 'no-roots', requester: 'dsh:sess-1', tainted: true, model: null, askWhy: null, auto: false, reason: null, returns: null, report: null, state: 'pending',
+    requestId: made.request.requestId, harness: 'codex', label: null, text: ASK.text, cwd: ASK.cwd, runIn: null, runInWhy: 'no-roots', requester: 'dsh:sess-1', tainted: true, fromDesk: false, model: null, askWhy: null, auto: false, reason: null, returns: null, report: null, state: 'pending',
     createdAt: 0, expiresAt: 0, ownedId: null, why: null, fetched: false, suggestion: null, suggesting: 'ready',
   });
   // No --project-root: no root listed, and the request runs in the work dir (the card says why).

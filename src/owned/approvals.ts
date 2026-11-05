@@ -45,12 +45,18 @@ export type ApprovalRisk = (typeof APPROVAL_RISKS)[number];
  * The chain stops at the requester: what it read or where its own words came from, Orchestra does not know.
  */
 export type ApprovalOrigin = {
-  /** agent-request: a seat request; worker-dispatch: an owned session sent this one out (src/route/dispatch.ts): requester is its ownedId, as orchestrad knows it, and label its title. */
-  readonly kind: 'agent-request' | 'worker-dispatch';
+  /**
+   * agent-request: a seat request; worker-dispatch: an owned session sent this one out (src/route/dispatch.ts): requester is its ownedId, as orchestrad
+   * knows it, and label its title; desk-dispatch: the front desk did, the same but for what taintedOrigin says.
+   */
+  readonly kind: 'agent-request' | 'worker-dispatch' | 'desk-dispatch';
   readonly requestId: string;
   readonly requester: string | null;
   readonly label: string | null;
 };
+
+/** Whether this origin alone makes a session tainted: an unbound sender's, or the front desk's, which read what others wrote. A worker's only as that worker is. */
+export const taintedOrigin = (o: ApprovalOrigin | null | undefined): boolean => o?.kind === 'agent-request' || o?.kind === 'desk-dispatch';
 
 export type Answer = { readonly decision: 'accept' } | { readonly decision: 'decline' } | { readonly decision: 'text'; readonly text: string };
 
@@ -167,10 +173,10 @@ export class Approvals {
     const view: ApprovalView = Object.freeze({
       approvalId, ownedId: input.ownedId, kind: input.kind, title, preview, tooLong: !whole, redactions: input.redactions,
       digest: canonicalDigest({ approvalId, kind: input.kind, title, preview }),
-      // A seat request's source chain is an unbound sender's: an entry with one is tainted whoever forgot to say so (r4 §8.5;
-      // the contract refuses that origin on an untainted entry, and would turn the whole list into a 500). A worker's
-      // dispatch is tainted only as its session is: the same project's clean musicians are clean.
-      risk, high, tainted: input.tainted === true || input.origin?.kind === 'agent-request', origin: input.origin == null ? null : Object.freeze({ ...input.origin }), rev: this.#rev + 1, canAccept: whole && input.canAccept, canText: whole && input.canText,
+      // A seat request's source chain is an unbound sender's, the front desk's holds what it read: an entry with one is tainted whoever
+      // forgot to say so (r4 §8.5; the contract refuses those origins on an untainted entry, and would turn the whole list into a 500).
+      // A worker's dispatch is tainted only as its session is: the same project's clean musicians are clean.
+      risk, high, tainted: input.tainted === true || taintedOrigin(input.origin), origin: input.origin == null ? null : Object.freeze({ ...input.origin }), rev: this.#rev + 1, canAccept: whole && input.canAccept, canText: whole && input.canText,
       deadlineMono, deadlineWall: this.#clock.nowWall() + this.#timeoutMs,
     });
     const timerId = `deadline:${approvalId}:0`;

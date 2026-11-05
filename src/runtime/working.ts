@@ -593,7 +593,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
           start: (r) => {
             const m = managerOf(r.harness);
             if (m === null) return { ok: false, reason: 'spawn-refused', detail: 'harness off' };
-            const made = m.create({ text: r.text, uuid: r.uuid, model: r.model, origin: r.origin, ...(r.cwd === null ? {} : { cwd: r.cwd }) });
+            const made = m.create({ text: r.text, uuid: r.uuid, model: r.model, origin: r.origin, ...(r.tainted ? { tainted: true } : {}), ...(r.cwd === null ? {} : { cwd: r.cwd }) });
             return made.ok ? { ok: true, ownedId: made.ownedId, model: made.session.model } : made;
           },
           end: (id) => held(id)?.end(),

@@ -28,6 +28,7 @@ import { ROUTE_HARNESSES, ROUTE_MODELS } from './rules.ts';
 //
 // What no permission opens:
 //   - a tainted session's calls go back to ask whatever its level, and what they dispatch is tainted too (r4 §8.5);
+//   - what the front desk dispatches is tainted at both levels: it read titles, tasks and reports other programs wrote;
 //   - while you are away or nobody knows (presence.ts), a free session's calls go back to ask (r4 D20);
 //   - what a session dispatched starts at ask: no level is inherited, so nothing multiplies by itself (r4 A17);
 //   - the chain of dispatches is at most DISPATCH_LIMITS.depth deep, for both levels;
@@ -42,10 +43,13 @@ import { ROUTE_HARNESSES, ROUTE_MODELS } from './rules.ts';
 // What a tool call gets back is fixed text of this module, never another session's words. What comes of the dispatched
 // session does not come back to the worker: the person sees it (its row, its card, its own talk).
 //
-// The front desk (src/route/front-desk.ts) dispatches through this very tool, at the same levels; ask is its default too. One
-// thing differs: at ask its call is answered at once and the card goes on by itself, so a question you put while an order
-// waits is not held behind that order for ten minutes. Its call therefore reports the card as proposed, never its fate:
-// that goes to its talk (the feed notes), and to the model only when you ask and it reads.
+// The front desk (src/route/front-desk.ts) dispatches through this very tool, at the same levels; ask is its default too. Two
+// things differ. At ask its call is answered at once and the card goes on by itself, so a question you put while an order
+// waits is not held behind that order for ten minutes: its call reports the card as proposed, by its id, never its fate. That
+// goes to its talk (the feed notes), and to the model only when you ask and it reads status orders, which lists a refused,
+// expired or withdrawn order too. And the desk itself is no tainted session, so its level still works, but what it sends is:
+// it read text nobody vouches for, so dispatching stays open and the session it starts is held tight (the request is tainted,
+// the worker starts as a seat request's does, origin desk-dispatch).
 
 export const DISPATCH_TOOL = frozen({
   name: 'orchestra_dispatch',
@@ -104,8 +108,8 @@ const REFUSED: Readonly<Record<DispatchRefusal, string>> = frozen({
   'cwd-too-long': 'Not dispatched: the folder name is too long.',
 });
 
-/** What a front desk's call answers at 派前问你: the card stands and the talk goes on. */
-const PROPOSED = 'Proposed: the order waits for the person on the page, and nothing went out yet. Say so in one sentence and end your turn; read status when you are asked what came of it.';
+/** What a front desk's call answers at 派前问你: the card stands and the talk goes on. `id` is what status orders lists it by. */
+const proposed = (id: string) => `Proposed as order ${id}: it waits for the person on the page, and nothing went out yet. Say so in one sentence and end your turn; read status orders when you are asked what came of it.`;
 
 /** What the session's talk says of a call: a note of its feed, for the driver to push. */
 export type DispatchNote = { readonly state: 'worker-sent' | 'worker-sent-grant' | 'worker-asked' | 'worker-refused'; readonly ref: string | null; readonly text: string | null };
@@ -132,13 +136,15 @@ export type DispatchView = {
   readonly grantAt: number | null;
   readonly depth: number;
   readonly tainted: boolean;
+  /** The front desk sent it: why it is tainted, as the panel says. */
+  readonly byDesk: boolean;
 };
 
-/** frontDesk: it is the front desk (src/route/front-desk.ts): its calls at ask do not wait on the card. */
+/** frontDesk: it is the front desk (src/route/front-desk.ts): its calls at ask do not wait on the card, and what it sends is tainted. */
 export type DispatchSession = { readonly title: string; readonly tainted: boolean; readonly over: boolean; readonly frontDesk?: boolean };
 /** r4 §8.5: the source chain the cards of what was dispatched show: which session sent it, by which request. */
-export type DispatchOrigin = { readonly kind: 'worker-dispatch'; readonly requestId: string; readonly requester: string; readonly label: string | null };
-export type DispatchStart = { harness: RouteHarness; model: string; text: string; uuid: string; cwd: string | null; origin: DispatchOrigin };
+export type DispatchOrigin = { readonly kind: 'worker-dispatch' | 'desk-dispatch'; readonly requestId: string; readonly requester: string; readonly label: string | null };
+export type DispatchStart = { harness: RouteHarness; model: string; text: string; uuid: string; cwd: string | null; tainted: boolean; origin: DispatchOrigin };
 
 export type DispatchDeps = {
   requests: Requests;
@@ -221,7 +227,7 @@ export function makeDispatcher(deps: DispatchDeps): Dispatcher {
   const { requests, log } = deps;
   const levels = new Map<string, { level: DispatchLevel; at: number; actionId: string }>();
   /** Sessions a dispatch started: who sent them, and how far from a person's own they are. */
-  const lines = new Map<string, SentBy & { depth: number }>();
+  const lines = new Map<string, SentBy & { depth: number; byDesk: boolean }>();
   const depthOf = (ownedId: string) => lines.get(ownedId)?.depth ?? 0;
   const levelOf = (ownedId: string): DispatchLevel => levels.get(ownedId)?.level ?? 'ask';
   const labelOf = (ownedId: string): string | null => requests.label(deps.session(ownedId)?.title ?? '');
@@ -244,7 +250,7 @@ export function makeDispatcher(deps: DispatchDeps): Dispatcher {
     return { ok: true, at: deps.placeCwd?.(cwd) ?? none };
   };
 
-  const direct = (ownedId: string, a: Args, say: (n: DispatchNote) => void): DispatchReply => {
+  const direct = (ownedId: string, a: Args, desk: boolean, say: (n: DispatchNote) => void): DispatchReply => {
     const grant = levels.get(ownedId)!;
     const model = a.model ?? ROUTE_MODELS[a.harness][0]!;
     if (!takes(a.harness, model)) return refused(ownedId, 'model-refused', say);
@@ -253,7 +259,7 @@ export function makeDispatcher(deps: DispatchDeps): Dispatcher {
     // No card to say where it would run instead: a folder it named and may not have is a refusal.
     if (a.cwd !== null && placed.at.runIn === null) return refused(ownedId, 'cwd-outside', say);
     if (deps.full(a.harness)) return refused(ownedId, 'owned-limit', say);
-    const made = requests.create({ harness: a.harness, text: a.task, cwd: a.cwd ?? '', label: null, requester: { kind: 'owned', sessionId: ownedId }, runIn: placed.at.runIn, runInWhy: placed.at.why, tainted: false, model, auto: true, reason: a.why, returns: a.returns });
+    const made = requests.create({ harness: a.harness, text: a.task, cwd: a.cwd ?? '', label: null, requester: { kind: 'owned', sessionId: ownedId }, runIn: placed.at.runIn, runInWhy: placed.at.why, tainted: desk, fromDesk: desk, model, auto: true, reason: a.why, returns: a.returns });
     if (!made.ok) return refused(ownedId, made.why, say);
     const r = made.request;
     if (a.cwd !== null && r.runIn === null) {
@@ -261,7 +267,7 @@ export function makeDispatcher(deps: DispatchDeps): Dispatcher {
       return refused(ownedId, 'cwd-outside', say);
     }
     const actionId = crypto.randomUUID();
-    const started = deps.start({ harness: a.harness, model, text: r.text, uuid: actionId, cwd: r.runIn, origin: { kind: 'worker-dispatch', requestId: r.requestId, requester: ownedId, label: labelOf(ownedId) } });
+    const started = deps.start({ harness: a.harness, model, text: r.text, uuid: actionId, cwd: r.runIn, tainted: desk, origin: { kind: desk ? 'desk-dispatch' : 'worker-dispatch', requestId: r.requestId, requester: ownedId, label: labelOf(ownedId) } });
     if (!started.ok) {
       requests.fail(r.requestId, 'start-failed');
       log.warn('dispatch-start-failed', { ownedId, harness: a.harness, reason: started.reason, detail: started.detail });
@@ -270,7 +276,7 @@ export function makeDispatcher(deps: DispatchDeps): Dispatcher {
     const child = started.ownedId;
     requests.bind(r.requestId, child);
     const depth = depthOf(ownedId) + 1;
-    lines.set(child, { by: ownedId, via: 'grant', grantAt: grant.at, depth });
+    lines.set(child, { by: ownedId, via: 'grant', grantAt: grant.at, depth, byDesk: desk });
     const decision = deps.desk?.auto(r.text, { actionId, ownedId: child, harness: a.harness, model: started.model }) ?? null;
     const decisionId = decision === null ? null : String((decision.body as { decisionId: unknown }).decisionId);
     try {
@@ -290,13 +296,13 @@ export function makeDispatcher(deps: DispatchDeps): Dispatcher {
     return sent(child, started.model, a.harness, 'worker-sent-grant', say);
   };
 
-  const ask = (ownedId: string, a: Args, tainted: boolean, why: AskWhy | null, say: (n: DispatchNote) => void, detached: boolean): DispatchCall => {
+  const ask = (ownedId: string, a: Args, tainted: boolean, why: AskWhy | null, say: (n: DispatchNote) => void, desk: boolean): DispatchCall => {
     const done = (reply: DispatchReply): DispatchCall => ({ reply: Promise.resolve(reply), cancel: () => {} });
     if (a.model !== null && !takes(a.harness, a.model)) return done(refused(ownedId, 'model-refused', say));
     const placed = place(a.cwd);
     if (!placed.ok) return done(refused(ownedId, placed.why, say));
     const made = requests.create({
-      harness: a.harness, text: a.task, cwd: a.cwd ?? '', label: null, requester: { kind: 'owned', sessionId: ownedId }, runIn: placed.at.runIn, runInWhy: placed.at.why, tainted, model: a.model, askWhy: why, reason: a.why, returns: a.returns,
+      harness: a.harness, text: a.task, cwd: a.cwd ?? '', label: null, requester: { kind: 'owned', sessionId: ownedId }, runIn: placed.at.runIn, runInWhy: placed.at.why, tainted: tainted || desk, fromDesk: desk, model: a.model, askWhy: why, reason: a.why, returns: a.returns,
     });
     if (!made.ok) return done(refused(ownedId, made.why, say));
     const id = made.request.requestId;
@@ -314,7 +320,7 @@ export function makeDispatcher(deps: DispatchDeps): Dispatcher {
       }
     })();
     // What came of it still goes to the feed through `say`; no turn is held for it, and a stop leaves the card standing.
-    if (detached) return done({ ok: true, text: PROPOSED });
+    if (desk) return done({ ok: true, text: proposed(id) });
     return {
       reply,
       cancel() {
@@ -332,7 +338,8 @@ export function makeDispatcher(deps: DispatchDeps): Dispatcher {
     if (depthOf(ownedId) >= DISPATCH_LIMITS.depth) return done(refused(ownedId, 'depth', say));
     if (!deps.on(a.harness)) return done(refused(ownedId, 'harness-off', say));
     const gate = gateOf(levelOf(ownedId), s.tainted, deps.presence());
-    return gate.go ? done(direct(ownedId, a, say)) : ask(ownedId, a, s.tainted, gate.why, say, s.frontDesk === true);
+    const desk = s.frontDesk === true;
+    return gate.go ? done(direct(ownedId, a, desk, say)) : ask(ownedId, a, s.tainted, gate.why, say, desk);
   };
 
   return Object.freeze({
@@ -346,11 +353,11 @@ export function makeDispatcher(deps: DispatchDeps): Dispatcher {
     },
     view(ownedId: string): DispatchView {
       const g = levels.get(ownedId);
-      return Object.freeze({ level: g?.level ?? 'ask', grantAt: g?.at ?? null, depth: depthOf(ownedId), tainted: deps.session(ownedId)?.tainted === true });
+      return Object.freeze({ level: g?.level ?? 'ask', grantAt: g?.at ?? null, depth: depthOf(ownedId), tainted: deps.session(ownedId)?.tainted === true, byDesk: lines.get(ownedId)?.byDesk === true });
     },
     adopted(r: AgentRequest, ownedId: string): void {
       if (r.requester.kind !== 'owned') return;
-      lines.set(ownedId, { by: r.requester.sessionId, via: 'person', grantAt: null, depth: depthOf(r.requester.sessionId) + 1 });
+      lines.set(ownedId, { by: r.requester.sessionId, via: 'person', grantAt: null, depth: depthOf(r.requester.sessionId) + 1, byDesk: r.fromDesk });
     },
     labelOf,
     presence: () => deps.presence(),

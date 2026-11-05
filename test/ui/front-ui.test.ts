@@ -21,9 +21,9 @@ const fmt = (ms: number) => `t${ms}`;
 const fill = (k: string, a: Record<string, string | number>) => Object.entries(a).reduce((s, [x, v]) => s.replaceAll(`{${x}}`, String(v)), TOWER_TEXT[k]!);
 const g = { unlocked: true, settle: '', hold: null, busy: false, nowWall: 1000 };
 
-const desk = (over: Json = {}) => ({ ownedId: D, harness: 'claude', model: 'zcode/GLM-5.3-Flash', title: '总台', state: 'idle', endReason: null, frontDesk: true, queued: 0, waiting: null, stoppable: false, cwd: { path: 'C:\\w\\d', kind: 'work' }, dispatch: { level: 'ask', grantAt: null, depth: 0, tainted: false }, ...over });
-const worker = (over: Json = {}) => ({ ownedId: C, harness: 'claude', model: 'zcode/GLM-5.3', title: '翻译', state: 'running', endReason: null, frontDesk: false, queued: 0, waiting: null, stoppable: false, dispatch: { level: 'ask', grantAt: null, depth: 1, tainted: false }, ...over });
-const request = (over: Json = {}) => ({ requestId: R, harness: 'claude', label: null, text: '翻译 README', cwd: '', runIn: null, runInWhy: 'no-roots', requester: `owned:${D}`, tainted: false, model: 'zcode/GLM-5.3', askWhy: null, auto: false, reason: '要英文版', returns: '译文', report: null, state: 'pending', createdAt: 0, expiresAt: 61_000, ownedId: null, why: null, fetched: false, suggestion: null, suggesting: 'no-desk', ...over });
+const desk = (over: Json = {}) => ({ ownedId: D, harness: 'claude', model: 'zcode/GLM-5.3-Flash', title: '总台', state: 'idle', endReason: null, frontDesk: true, queued: 0, waiting: null, stoppable: false, cwd: { path: 'C:\\w\\d', kind: 'work' }, dispatch: { level: 'ask', grantAt: null, depth: 0, tainted: false, byDesk: false }, ...over });
+const worker = (over: Json = {}) => ({ ownedId: C, harness: 'claude', model: 'zcode/GLM-5.3', title: '翻译', state: 'running', endReason: null, frontDesk: false, queued: 0, waiting: null, stoppable: false, dispatch: { level: 'ask', grantAt: null, depth: 1, tainted: true, byDesk: true }, ...over });
+const request = (over: Json = {}) => ({ requestId: R, harness: 'claude', label: null, text: '翻译 README', cwd: '', runIn: null, runInWhy: 'no-roots', requester: `owned:${D}`, tainted: true, fromDesk: true, model: 'zcode/GLM-5.3', askWhy: null, auto: false, reason: '要英文版', returns: '译文', report: null, state: 'pending', createdAt: 0, expiresAt: 61_000, ownedId: null, why: null, fetched: false, suggestion: null, suggesting: 'no-desk', ...over });
 const listOf = (over: Json = {}) => ({ owned: [desk()], approvals: [], requests: [] as Json[], requestedGone: [], sentGone: [], limits: { maxOwned: 3, active: 0 }, presence: 'present', frontDesk: { on: true, ownedId: D, model: 'zcode/GLM-5.3-Flash', tools: ['mcp__orchestra__dispatch', 'mcp__orchestra__status'] }, ...over });
 let seq = 0;
 const ev = (kind: string, state: string | null, text: string | null, ref: string | null = null, over: Json = {}) => ({ seq: ++seq, at: seq, kind, ref, uuid: null, text, state, redactions: 0, live: false, exitCode: null, tokens: null, batch: null, ...over });
@@ -33,7 +33,7 @@ const chat = (list: Json, ...events: Json[]) => describeFrontChat(feedOf(...even
 test('the page has the tile over the workers, and the templates of the talk; the old page has neither', () => {
   for (const s of ['data-act="front"', 'data-act="front-open"', 'id="front-model"', 'id="tpl-order"', 'id="tpl-fa"']) assert.ok(HTML.includes(s), s);
   assert.ok(HTML.indexOf('id="desk"') < HTML.indexOf('id="rail"'), 'the tile comes first');
-  for (const k of ['who', 'what', 'why', 'back', 'now']) assert.ok(HTML.includes(`data-t="front.order.${k}"`), k);
+  for (const k of ['who', 'where', 'what', 'why', 'back', 'now']) assert.ok(HTML.includes(`data-t="front.order.${k}"`), k);
   assert.equal(fs.readFileSync(path.join(REPO, 'ui/tower.html'), 'utf8').includes('tpl-order'), false);
 });
 
@@ -48,6 +48,11 @@ test('tile: locked it does not know (T1); off says so; not open it says what it 
   const closed = describeFrontTile(listOf({ owned: [], frontDesk: { on: true, ownedId: null, model: 'zcode/GLM-5.3-Flash', tools: null } }), { unlocked: true, on: false, busy: false }) as Json;
   assert.equal(closed.l2.text, TOWER_TEXT['front.closed']);
   assert.ok(closed.note.text.startsWith(TOWER_TEXT['home.noRouter']!));
+  assert.ok(closed.note.text.includes(TOWER_TEXT['front.sends']!), 'beside the button: what goes to the model\'s provider');
+  assert.match(TOWER_TEXT['front.sends']!, /magpie/);
+  assert.match(TOWER_TEXT['front.sends']!, /标题/);
+  assert.match(TOWER_TEXT['front.sends']!, /模型提供方/);
+  assert.ok(closed.note.text.includes('跑一次模型'), 'opening itself runs the model once');
   assert.ok(closed.note.text.includes(fill('front.what', { n: 3 })), 'it says it takes no place');
   assert.equal(closed.openBox.data.hide, '0');
   assert.equal(closed.model.kids[0].key, 'zcode/GLM-5.3-Flash', 'the default first');
@@ -84,10 +89,10 @@ test('the talk holds four things: your words, answers, orders, and a report on i
   assert.equal(c.note, '');
 });
 
-test('an answer lists what orchestrad saw read in its turn, not what the model says; none read is said; a new question starts over', () => {
+test('an answer lists what orchestrad saw read in its turn, not what the model says; none read is said; a new turn starts over', () => {
   const list = listOf({ owned: [desk(), worker()] });
   const c = chat(list,
-    ev('you', null, 'q1'), ev('note', 'desk-read', 'overview', null, { at: 5 }), ev('note', 'desk-read', 'overview', null, { at: 6 }), ev('note', 'desk-read', 'session', `n:${C}`, { at: 7 }), ev('text', 'final', 'part one ', 'm1'), ev('text', 'final', 'part two', 'm1'),
+    ev('you', null, 'q1'), ev('note', 'desk-read', 'overview', null, { at: 5 }), ev('note', 'desk-read', 'overview', null, { at: 6 }), ev('note', 'desk-read', 'session', `n:${C}`, { at: 7 }), ev('text', 'final', 'part one ', 'm1'), ev('text', 'final', 'part two', 'm1'), ev('lifecycle', 'turn-ended', null),
     ev('you', null, 'q2'), ev('text', 'final', 'hello', 'm2'),
   );
   const answers = c.kids.filter((k) => k.tpl === 'tpl-fa');
@@ -98,7 +103,34 @@ test('an answer lists what orchestrad saw read in its turn, not what the model s
   assert.equal(answers[1]!.slots.src.text, TOWER_TEXT['front.srcNone']);
 });
 
-test('an order: five things, 未知 for what nobody said (T1); waiting it has the same buttons as its card, and says it is refused at the end of its time', () => {
+test('a question you put while a turn runs queues behind it: that turn\'s answer keeps its reads, the next one has only its own, and a turn that failed ends its reads too', () => {
+  const list = listOf({ owned: [desk(), worker()] });
+  const src = (kids: Json[]) => kids.filter((k) => k.tpl === 'tpl-fa').map((k) => k.slots.src.text);
+  const queued = chat(list,
+    ev('you', null, 'q1'), ev('note', 'desk-read', 'overview', null, { at: 5 }), ev('you', null, 'q2'), ev('text', 'final', 'answer one', 'm1'), ev('lifecycle', 'turn-ended', null),
+    ev('text', 'final', 'answer two', 'm2'), ev('lifecycle', 'turn-ended', null),
+  );
+  assert.deepEqual(src(queued.kids), [fill('front.src', { t: fill('front.src.overview', { at: 't5' }) }), TOWER_TEXT['front.srcNone']]);
+  const own = chat(list,
+    ev('you', null, 'q1'), ev('you', null, 'q2'), ev('text', 'final', 'answer one', 'm1'), ev('lifecycle', 'turn-ended', null),
+    ev('note', 'desk-read', 'waiting', null, { at: 9 }), ev('text', 'final', 'answer two', 'm2'),
+  );
+  assert.deepEqual(src(own.kids), [TOWER_TEXT['front.srcNone'], fill('front.src', { t: fill('front.src.waiting', { at: 't9' }) })]);
+  const failed = chat(list, ev('you', null, 'q1'), ev('note', 'desk-read', 'overview', null, { at: 5 }), ev('lifecycle', 'turn-failed', null), ev('you', null, 'q2'), ev('text', 'final', 'hello', 'm2'));
+  assert.deepEqual(src(failed.kids), [TOWER_TEXT['front.srcNone']]);
+  assert.equal(fill('front.src.orders', { at: 't1' }).includes('t1'), true);
+});
+
+test('the sentence the page sent for 开启 is no word of yours: it is said as what happened, and it says the model ran; your own words stay yours', () => {
+  const c = chat(listOf(), ev('you', null, TOWER_TEXT['front.opening']!), ev('text', 'final', '我是总台', 'm1'), ev('lifecycle', 'turn-ended', null), ev('you', null, TOWER_TEXT['front.opening']!));
+  assert.deepEqual(c.kids.map((k) => k.data.kind), ['life', 'agent', 'you']);
+  assert.equal(c.kids[0]!.slots.who.text, '');
+  assert.equal(c.kids[0]!.slots.tx.text, TOWER_TEXT['front.openedNote']);
+  assert.match(TOWER_TEXT['front.openedNote']!, /跑了模型/);
+  assert.equal(c.kids[2]!.slots.who.text, TOWER_TEXT['chat.you'], 'only the first one is the button\'s');
+});
+
+test('an order: six things, 未知 for what nobody said (T1); waiting it has the same buttons as its card, and says it is refused at the end of its time', () => {
   const r = request({ reason: null, returns: null, askWhy: 'away' });
   const o = chat(listOf({ requests: [r] }), ev('note', 'worker-asked', 'away', R)).kids[0]!;
   assert.equal(o.tpl, 'tpl-order');
@@ -108,6 +140,15 @@ test('an order: five things, 未知 for what nobody said (T1); waiting it has th
   assert.ok(o.slots.now.text.includes(TOWER_TEXT['askwhy.away']!));
   assert.deepEqual(o.slots.acts.kids.map((b: Json) => [b.data.act, b.data.req]), [['req-no', R], ['req-go', R]]);
   assert.equal(o.slots.how.text, '');
+});
+
+test('an order says where it would work, as its card does, and that the desk\'s worker is held tight; 未知 once orchestrad forgot it', () => {
+  const own = chat(listOf({ requests: [request()] }), ev('note', 'worker-asked', null, R)).kids[0]!;
+  assert.ok(own.slots.where.text.includes(TOWER_TEXT['req.workerWork']!));
+  assert.ok(own.slots.where.text.includes(TOWER_TEXT['req.deskTainted']!));
+  const root = chat(listOf({ requests: [request({ cwd: 'D:\\p', runIn: 'D:\\p', runInWhy: null })] }), ev('note', 'worker-asked', null, R)).kids[0]!;
+  assert.ok(root.slots.where.text.includes(fill('req.workerRoot', { cwd: 'D:\\p', run: 'D:\\p' })));
+  assert.equal(chat(listOf(), ev('note', 'worker-asked', null, R)).kids[0]!.slots.where.text, TOWER_TEXT['front.unknown']);
 });
 
 test('an order after your click: one row from asked to sent, what it does now, how it went out; the report is the worker\'s word, never done (T2)', () => {
@@ -140,6 +181,21 @@ test('an order on the permission says so; a call refused before any order says w
   }
 });
 
+test('an order orchestrad forgot stays one row: 派出 of it folds into its asked row, a refusal says why, an unknown fate stays 未知 (T1); a grant\'s dispatch is a row of its own', () => {
+  const sent = chat(listOf(), ev('note', 'worker-asked', null, R), ev('note', 'worker-sent', '翻译', `n:${C}`)).kids;
+  assert.equal(sent.length, 1, 'one order, one row');
+  assert.equal(sent[0]!.slots.now.text, TOWER_TEXT['front.now.unknown']);
+  const rejected = chat(listOf(), ev('note', 'worker-asked', null, R), ev('note', 'worker-refused', 'you-rejected', R)).kids;
+  assert.equal(rejected.length, 1);
+  assert.equal(rejected[0]!.slots.now.text, fill('front.now.refused', { t: TOWER_TEXT['dispwhy.you-rejected']! }));
+  assert.equal(chat(listOf(), ev('note', 'worker-asked', null, R), ev('note', 'worker-refused', 'gone', R)).kids[0]!.slots.now.text, TOWER_TEXT['front.now.unknown']);
+  const R2 = 'f'.repeat(20);
+  const two = chat(listOf(), ev('note', 'worker-asked', null, R), ev('note', 'worker-refused', 'expired', R), ev('note', 'worker-asked', null, R2), ev('note', 'worker-sent', '翻译', `n:${C}`), ev('note', 'worker-sent-grant', '另一个', `n:${'b'.repeat(20)}`)).kids;
+  assert.deepEqual(two.map((k) => k.key), [`o${R}`, `o${R2}`, `on:${'b'.repeat(20)}`]);
+  const clipped = chat(listOf(), ev('note', 'worker-refused', 'expired', R)).kids;
+  assert.deepEqual([clipped.length, clipped[0]!.slots.now.text], [1, fill('front.now.refused', { t: TOWER_TEXT['dispwhy.expired']! })], 'its asked note fell out of the feed');
+});
+
 test('a turn that went wrong is said over the talk (T1); an interrupted one too', () => {
   const c = chat(listOf(), ev('you', null, 'q'), ev('lifecycle', 'turn-failed', null));
   assert.equal(c.note, TOWER_TEXT['life.turn-failed']);
@@ -155,18 +211,36 @@ test('what a screen reader hears leaves the reads out, and the page has the desk
   const h = describeFrontHead(desk(), listOf()) as Json;
   assert.equal(h.data.mode, 'front');
   assert.ok(h.slots.facts.kids[0].slots.v.text.includes('mcp__orchestra__status'));
-  assert.equal((describeFrontHead(null, null) as Json).slots.empty.text, TOWER_TEXT['front.pick']);
+  assert.equal(h.slots.facts.kids.at(-1).slots.v.text, TOWER_TEXT['front.sends'], '资料: what goes to the model\'s provider');
+  assert.match(TOWER_TEXT['front.factPlaceV']!, /跑一次模型/);
+});
+
+test('the desk\'s head never points at a way that is not there and never says a check is coming for a desk that ended', () => {
+  const empty = (l: Json | null) => (describeFrontHead(null, l) as Json).slots.empty.text;
+  assert.equal(empty(listOf({ owned: [], frontDesk: { on: true, ownedId: null, model: 'zcode/GLM-5.3-Flash', tools: null } })), TOWER_TEXT['front.pick']);
+  assert.equal(empty(listOf({ owned: [], frontDesk: { on: false, ownedId: null, model: 'zcode/GLM-5.3-Flash', tools: null } })), TOWER_TEXT['front.off']);
+  assert.equal(empty(null), TOWER_TEXT['front.unread']);
+  const ended = describeFrontHead(desk({ state: 'ended', endReason: 'you-ended', dispatch: null }), listOf({ frontDesk: { on: true, ownedId: null, model: 'zcode/GLM-5.3-Flash', tools: null } })) as Json;
+  assert.equal(ended.slots.facts.kids[0].slots.v.text, TOWER_TEXT['front.factToolsOver']);
+  const starting = describeFrontHead(desk(), listOf({ frontDesk: { on: true, ownedId: D, model: 'zcode/GLM-5.3-Flash', tools: null } })) as Json;
+  assert.equal(starting.slots.facts.kids[0].slots.v.text, TOWER_TEXT['front.factToolsNone']);
 });
 
 test('资料: the permission panel of the desk says the risk at both levels, the free level\'s note points at it; 派活权限 counts workers only (T3)', () => {
   const panel = (d: Json) => describeGrant(D, listOf({ owned: [d] }), { unlocked: true, fmt, maxDepth: 2 }) as Json;
   assert.ok(panel(desk()).slots.st.text.includes(TOWER_TEXT['grant.frontAsk']!));
-  const free = panel(desk({ dispatch: { level: 'free', grantAt: 5, depth: 0, tainted: false } }));
+  const free = panel(desk({ dispatch: { level: 'free', grantAt: 5, depth: 0, tainted: false, byDesk: false } }));
   assert.ok(free.slots.st.text.includes(TOWER_TEXT['grant.frontFree']!));
   assert.equal(free.slots.lv.kids[1].slots.note.text, TOWER_TEXT['grant.note.freeFront']);
   assert.match(TOWER_TEXT['grant.frontFree']!, /不可信/);
   assert.match(TOWER_TEXT['grant.frontFree']!, /提示词注入/);
-  assert.equal(grantsLine(listOf({ owned: [desk({ dispatch: { level: 'free', grantAt: 5, depth: 0, tainted: false } })] }), true), TOWER_TEXT['home.grantsNone']);
+  for (const k of ['grant.frontAsk', 'grant.frontFree']) for (const re of [/标题/, /任务/, /回报/, /工具都要你批/]) assert.match(TOWER_TEXT[k]!, re, k);
+  const sent = describeGrant(C, listOf({ owned: [desk(), worker()] }), { unlocked: true, fmt, maxDepth: 2 }) as Json;
+  assert.ok(sent.slots.st.text.includes(TOWER_TEXT['grant.taintedDesk']!), 'the worker\'s panel says who sent it and why it is held so');
+  assert.ok(!sent.slots.st.text.includes(TOWER_TEXT['grant.tainted']!));
+  const seat = describeGrant(C, listOf({ owned: [desk(), worker({ dispatch: { level: 'ask', grantAt: null, depth: 0, tainted: true, byDesk: false } })] }), { unlocked: true, fmt, maxDepth: 2 }) as Json;
+  assert.ok(seat.slots.st.text.includes(TOWER_TEXT['grant.tainted']!));
+  assert.equal(grantsLine(listOf({ owned: [desk({ dispatch: { level: 'free', grantAt: 5, depth: 0, tainted: false, byDesk: false } })] }), true), TOWER_TEXT['home.grantsNone']);
   assert.equal(grantsLine(listOf({ owned: [desk(), worker()] }), true), fill('home.grants', { free: 0, ask: 1 }));
 });
 

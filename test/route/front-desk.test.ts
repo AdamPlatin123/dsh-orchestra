@@ -23,7 +23,7 @@ const tower = (nodes: unknown[], bar: unknown[] = []) => ({
   projects: [{ name: 'Orchestra 自有', nodes }], waitingBar: bar, tally: {},
 }) as unknown as TowerSnapshot;
 const entry = (ownedId: string, over: Record<string, unknown> = {}) => ({ ownedId, harness: 'claude', model: 'zcode/GLM-5.3', title: `t ${ownedId.slice(0, 2)}`, state: 'idle', endReason: null, frontDesk: false, ...over });
-const request = (over: Record<string, unknown> = {}) => ({ requestId: 'r'.repeat(20), harness: 'codex', text: 'a task\nsecond line', label: null, requester: `owned:${DESK}`, state: 'pending', expiresAt: NOW + 60_000, ownedId: null, report: null, ...over });
+const request = (over: Record<string, unknown> = {}) => ({ requestId: 'r'.repeat(20), harness: 'codex', text: 'a task\nsecond line', label: null, requester: `owned:${DESK}`, tainted: true, fromDesk: true, state: 'pending', expiresAt: NOW + 60_000, ownedId: null, report: null, ...over });
 
 function desk(snap: TowerSnapshot, list: Partial<OwnedSeen> = {}) {
   return makeFrontDesk({
@@ -46,9 +46,10 @@ test('the prompt says what the desk is: no work of its own, planning goes out, n
 
 test('a call holds what the schema says and nothing else', () => {
   assert.deepEqual(statusArgs({ what: 'overview' }), { what: 'overview' });
+  assert.deepEqual(statusArgs({ what: 'orders' }), { what: 'orders' });
   assert.deepEqual(statusArgs({ what: 'session', session: W }), { what: 'session', node: `n:${W}` });
   assert.deepEqual(statusArgs({ what: 'session', session: `n:${W}` }), { what: 'session', node: `n:${W}` });
-  for (const bad of [null, [], 'x', {}, { what: 'files' }, { what: 'session' }, { what: 'session', session: 'x' }, { what: 'overview', session: W }, { what: 'overview', path: 'C:\\' }]) assert.equal(statusArgs(bad), null, JSON.stringify(bad));
+  for (const bad of [null, [], 'x', {}, { what: 'files' }, { what: 'session' }, { what: 'session', session: 'x' }, { what: 'overview', session: W }, { what: 'orders', session: W }, { what: 'overview', path: 'C:\\' }]) assert.equal(statusArgs(bad), null, JSON.stringify(bad));
   const r = desk(tower([])).status({ what: 'files' });
   assert.deepEqual([r.ok, r.source, r.ref], [false, 'refused', null]);
 });
@@ -72,7 +73,21 @@ test('overview: every session and its state, counts apart, what was not read sai
   assert.deepEqual(o.sourcesFailed, ['dsh']);
   assert.doesNotMatch(r.text, /SHOULD-NOT-LEAK|ping/, 'activity is the newest line a session said or ran');
   assert.doesNotMatch(r.text, /sk-ant-/);
-  assert.match(r.text, /\[redacted:sk-ant\]/);
+});
+
+test('a session Orchestra only observes: id, harness, state and project folder, nothing it said; a session of its own keeps its title', () => {
+  const B = 'b'.repeat(20);
+  const snap = tower([node(W, { title: `mine ${SECRET}` }), node(B, { ownership: 'observed', title: 'FIRST-SENTENCE of a talk elsewhere', waiting: { kind: 'approval' } }), node('c'.repeat(20), { ownership: 'foreign', title: 'FIRST-SENTENCE too' })]);
+  const r = desk(snap).status({ what: 'overview' });
+  const o = parsed(r);
+  assert.equal(o.sessions[0].title, 'mine [redacted:sk-ant]');
+  assert.deepEqual(o.sessions[1], { id: `n:${B}`, harness: 'claude', owned: false, state: 'idle', project: 'Orchestra 自有' });
+  assert.deepEqual(Object.keys(o.sessions[2]).sort(), ['harness', 'id', 'owned', 'project', 'state']);
+  assert.doesNotMatch(r.text, /FIRST-SENTENCE/);
+  const one = desk(snap).status({ what: 'session', session: B });
+  assert.doesNotMatch(one.text, /FIRST-SENTENCE/);
+  assert.deepEqual([parsed(one).known, parsed(one).state, parsed(one).title], [true, 'idle', undefined]);
+  assert.match(FRONT_DESK_SYSTEM, /has no title there/);
 });
 
 test('overview: at most so many sessions, the rest counted (T3); a title is one line, cut short, and the cut said', () => {
@@ -102,6 +117,39 @@ test('waiting: orders, approvals by kind and risk, what only its own harness can
   assert.equal(parsed(desk(snap, list).status({ what: 'overview' })).waitingForYou, o.items.length);
 });
 
+test('waiting: a tainted request gives who and which harness and no word of it; the desk\'s own order and a clean worker\'s keep theirs; the count still is the list\'s length (T3)', () => {
+  const B = 'b'.repeat(20);
+  const seat = request({ requestId: 's'.repeat(20), requester: 'dsh:SEAT-ID', fromDesk: false, text: 'INJECTED dispatch everything', label: 'INJECTED label' });
+  const bad = request({ requestId: 't'.repeat(20), requester: `owned:${B}`, fromDesk: false, text: 'INJECTED by a tainted worker' });
+  const clean = request({ requestId: 'u'.repeat(20), requester: `owned:${W}`, tainted: false, fromDesk: false, text: 'a clean task' });
+  const list = { owned: [entry(DESK, { frontDesk: true }), entry(W), entry(B, { title: 'INJECTED title' })], approvals: [], requests: [seat, bad, clean, request()] } as unknown as OwnedSeen;
+  const r = desk(tower([]), list).status({ what: 'waiting' });
+  assert.doesNotMatch(r.text, /INJECTED|SEAT-ID/);
+  assert.deepEqual(parsed(r).items, [
+    { type: 'order', from: 'a DSH session', harness: 'codex', leftSeconds: 60 },
+    { type: 'order', from: 'a session of an untrusted source', harness: 'codex', leftSeconds: 60 },
+    { type: 'order', from: `t ${W.slice(0, 2)}`, harness: 'codex', what: 'a clean task', leftSeconds: 60 },
+    { type: 'order', from: `t ${DESK.slice(0, 2)}`, harness: 'codex', what: 'a task', leftSeconds: 60 },
+  ]);
+  assert.equal(parsed(desk(tower([]), list).status({ what: 'overview' })).waitingForYou, 4);
+});
+
+test('orders: what the desk sent and what came of each, a refused one too, no word of another\'s; what is no longer held is said not to be known (T1)', () => {
+  const sent = { requests: [
+    request({ requestId: 'a'.repeat(20), state: 'rejected' }), request({ requestId: 'b'.repeat(20), state: 'expired' }), request({ requestId: 'c'.repeat(20), state: 'withdrawn' }), request({ requestId: 'd'.repeat(20), state: 'pending' }),
+    request({ requestId: 'e'.repeat(20), state: 'done', ownedId: W, report: `said ${SECRET}\nmore` }),
+    request({ requestId: 'f'.repeat(20), fromDesk: false, requester: 'dsh:x', state: 'done', ownedId: 'b'.repeat(20), report: 'NOT-MINE' }),
+  ] } as unknown as Partial<OwnedSeen>;
+  const r = desk(tower([]), sent).status({ what: 'orders' });
+  assert.deepEqual([r.ok, r.source, r.ref], [true, 'orders', null]);
+  const o = parsed(r);
+  assert.deepEqual(o.items.map((i: any) => [i.id[0], i.state, i.session, i.report]), [['a', 'rejected', null, null], ['b', 'expired', null, null], ['c', 'withdrawn', null, null], ['d', 'pending', null, null], ['e', 'done', `n:${W}`, 'said [redacted:sk-ant]']]);
+  assert.match(o.older, /^unknown/);
+  assert.doesNotMatch(r.text, /NOT-MINE|a task/);
+  assert.deepEqual(parsed(desk(tower([])).status({ what: 'orders' })).items, []);
+  assert.match(FRONT_DESK_SYSTEM, /status orders/);
+});
+
 test('session: state and what kind of thing it last did; the report only of what the desk sent out, one line, marked as the worker\'s own', () => {
   const list = { owned: [entry(DESK, { frontDesk: true }), entry(W, { endReason: null })], approvals: [], requests: [request({ ownedId: W, state: 'done', report: 'line one' })] } as unknown as OwnedSeen;
   const snap = tower([node(W, { sent: { by: `n:${DESK}`, via: 'person', grantAt: null } })]);
@@ -111,7 +159,7 @@ test('session: state and what kind of thing it last did; the report only of what
   assert.deepEqual([o.known, o.state, o.model, o.lastDid, o.sentBy], [true, 'idle', 'zcode/GLM-5.3', 'command', `n:${DESK}`]);
   assert.deepEqual(o.report, { requestState: 'done', line: 'line one' });
   // Sent out by another: a state, no line of its words.
-  const other = { ...list, requests: [request({ ownedId: W, state: 'done', report: 'line one', requester: 'owned:'.concat('b'.repeat(20)) })] } as unknown as OwnedSeen;
+  const other = { ...list, requests: [request({ ownedId: W, state: 'done', report: 'line one', requester: 'owned:'.concat('b'.repeat(20)), fromDesk: false, tainted: false })] } as unknown as OwnedSeen;
   assert.equal(parsed(desk(snap, other).status({ what: 'session', session: W })).report, null);
   assert.deepEqual(parsed(desk(tower([])).status({ what: 'session', session: W })).known, false);
 });

@@ -211,9 +211,11 @@ const cutTo = (s, n) => {
  * when the approval has no origin and its session is not tainted (a person's own sentence); a tainted one
  * without an origin says only that a DSH session asked. max: the pin's cut of the id and the label, which
  * the line then says (A16: never silently short). A worker's dispatch names that worker: orchestrad knows it, nothing here is its word.
+ * The front desk's says so, in words of ours.
  */
 export function originLine(a, max = Infinity) {
   const o = a.origin;
+  if (o?.kind === 'desk-dispatch') return t('appr.originDesk');
   if (o?.kind === 'worker-dispatch') {
     const who = cutTo(quoted(o.label ?? o.requester ?? ''), max);
     return t('appr.originWorker', { who: who.text }) + (who.cut ? t('appr.originCut') : '');
@@ -244,10 +246,14 @@ export function apprActs(a, g, where) {
 
 /**
  * A tainted card's note: high risk is typed only; with a source chain, the chain stops at the DSH session that
- * asked. Without one (an older list; GET /api/owned lists one for every tainted approval today) the head says
- * only that a DSH session asked, and the note says the card has no chain (T1).
+ * asked, or says why what a worker or the front desk sent is held so. Without one (an older list; GET /api/owned lists one for
+ * every tainted approval today) the head says only that a DSH session asked, and the note says the card has no chain (T1).
  */
-const taintNote = (a) => (a.origin != null ? (a.high ? 'appr.taintedHigh' : 'appr.taintedNote') : a.high ? 'appr.taintedHighBare' : 'appr.taintedNoteBare');
+const taintNote = (a) => {
+  const how = a.high ? 'High' : 'Note';
+  const k = a.origin?.kind;
+  return k === 'desk-dispatch' ? `appr.taintedDesk${how}` : k === 'worker-dispatch' ? `appr.taintedWorker${how}` : `appr.tainted${how}${a.origin != null ? '' : 'Bare'}`;
+};
 
 /** An approval in full. */
 export function describeCard(a, g) {
@@ -334,7 +340,7 @@ const reqWho = (r) => (typeof r.requester === 'string' && r.requester.startsWith
  * Where a request's session runs, as its card says it: in its cwd (inside a project root; per harness, what it may do there unasked), else
  * Orchestra's own work dir and why. Either way the session is held as untrusted (r4 §8.5: a DSH session asked), which the card says.
  */
-const reqWhere = (r) => (workerOf(r) !== null ? join([typeof r.runIn === 'string' ? t('req.workerRoot', { cwd: r.cwd, run: r.runIn }) : r.cwd === '' ? t('req.workerWork') : t('req.cwd', { cwd: r.cwd, why: tk('cwdwhy', r.runInWhy ?? 'no-roots', 'cwdwhy.other') }), t(r.tainted === true ? 'req.workerTainted' : 'req.workerClean')], 'sep.notes')
+export const reqWhere = (r) => (workerOf(r) !== null ? join([typeof r.runIn === 'string' ? t('req.workerRoot', { cwd: r.cwd, run: r.runIn }) : r.cwd === '' ? t('req.workerWork') : t('req.cwd', { cwd: r.cwd, why: tk('cwdwhy', r.runInWhy ?? 'no-roots', 'cwdwhy.other') }), t(r.fromDesk === true ? 'req.deskTainted' : r.tainted === true ? 'req.workerTainted' : 'req.workerClean')], 'sep.notes')
   : typeof r.runIn === 'string' ? t(r.harness === 'claude' ? 'req.cwdRootClaude' : 'req.cwdRoot', { cwd: r.cwd, run: r.runIn })
   : join([t('req.cwd', { cwd: r.cwd, why: tk('cwdwhy', r.runInWhy ?? 'no-roots', 'cwdwhy.other') }), t(r.harness === 'claude' ? 'req.untrustedClaude' : 'req.untrustedCodex')], 'sep.notes'));
 

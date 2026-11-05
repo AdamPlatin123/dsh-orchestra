@@ -59,8 +59,8 @@ export const OWNED_ENUMS = frozen({
    * place, a link on it, not there, not a directory, not known to be a directory (stat-refused: the read gate
    * would not look, or the lookup failed otherwise; T1, not "not there"), or hidden in part by the redactor.
    */
-  /** Where an approval's turns came from (r4 §8.5 source chain): a seat request, or an owned session that sent this one out. */
-  originKind: ['agent-request', 'worker-dispatch'],
+  /** Where an approval's turns came from (r4 §8.5 source chain): a seat request, an owned session that sent this one out, or the front desk. */
+  originKind: ['agent-request', 'worker-dispatch', 'desk-dispatch'],
   /** A session's dispatch permission (src/route/dispatch.ts): 派前问你 or 直接派出. 你不在也派 is none: r4 D20. */
   grantLevel: ['ask', 'free'],
   /** Whether you are here (src/route/presence.ts, r4 Q-P3); unknown: no page was heard. */
@@ -195,7 +195,7 @@ export function holdsControl(s) {
  * @typedef {{ input: number, cachedInput: number, output: number, total: number }} Tokens
  * @typedef {{
  *   requestId: string, harness: 'codex' | 'claude', label: string | null, text: string, cwd: string,
- *   runIn: string | null, runInWhy: string | null, requester: string, state: string,
+ *   runIn: string | null, runInWhy: string | null, requester: string, fromDesk: boolean, state: string,
  *   createdAt: number, expiresAt: number, ownedId: string | null, why: string | null, fetched: boolean,
  *   reason: string | null, returns: string | null, report: string | null,
  *   suggestion: { routeId: string | null, router: string, models: { model: string, source: string, rule: string | null, reason: string | null }[], pick: number | null } | null,
@@ -210,19 +210,20 @@ export function holdsControl(s) {
  *   (its cwd, resolved, inside a project root); null: in Orchestra's own work dir, and runInWhy says why.
  *   reason, returns: an owned session's order, why this worker and what it is to hand back; null: it said none (T1).
  *   report: the first line of what its run handed back, the worker's own word; null: none yet, or it said nothing.
+ *   fromDesk: the front desk asked; such a request is tainted always, as the desk read what others wrote.
  * @typedef {{
  *   approvalId: string, ownedId: string, kind: string, title: string, preview: string, tooLong: boolean, redactions: number,
  *   digest: string, risk: string, high: boolean, tainted: boolean, origin: ApprovalOrigin | null, rev: number, canAccept: boolean, canText: boolean, deadline: number,
  * }} ApprovalEntry
  *   high: r4 §10.9's high risk (a shell, the network, a protected path or a write outside the work dir,
  *   a grant, a hidden secret): the page asks to hold or type before it sends an allow.
- *   tainted: r4 §8.5, the session runs a seat request (an unbound sender): the card has a red bar and says
- *   where the request came from, and a high-risk allow takes the typed word only (no hold).
+ *   tainted: r4 §8.5, the session runs a seat request (an unbound sender) or the front desk's order: the card has a red
+ *   bar and says where the request came from, and a high-risk allow takes the typed word only (no hold).
  *   origin: r4 §8.5's source chain, which the card and the pin write at the top: the seat request the session
- *   runs, or the worker that dispatched it (null: a person's own sentence). Display only (outside the digest;
- *   nothing allows by it); a seat request's is only on a tainted entry, a worker's on either, as that worker is.
+ *   runs, or the worker or front desk that dispatched it (null: a person's own sentence). Display only (outside the digest;
+ *   nothing allows by it); a seat request's and the desk's are only on a tainted entry, a worker's on either, as that worker is.
  *   deadline: the wall time (epoch ms) the queue declines it at (D8: a timeout is a refusal).
- * @typedef {{ kind: 'agent-request' | 'worker-dispatch', requestId: string, requester: string | null, label: string | null }} ApprovalOrigin
+ * @typedef {{ kind: 'agent-request' | 'worker-dispatch' | 'desk-dispatch', requestId: string, requester: string | null, label: string | null }} ApprovalOrigin
  *   requester: the DSH session id the request named itself by, its own word (the page says 自称, 未核实), or
  *   null when it named none (the page says 未知, T1); of a worker's dispatch, that session's ownedId, as orchestrad
  *   knows it. label: the request's label as its card showed it, or that worker's title (one line, a cut ends in
@@ -384,12 +385,14 @@ export function validateOwnedList(x) {
     if (over && o.stoppable === true) c.bad(`${at}.stoppable`, 'a session that is over has nothing to stop');
     // Its dispatch permission: null when it has no dispatch tool (none here, or it is over).
     if (o.dispatch !== null) {
-      const d = c.obj(o.dispatch, `${at}.dispatch`, ['level', 'grantAt', 'depth', 'tainted']);
+      const d = c.obj(o.dispatch, `${at}.dispatch`, ['level', 'grantAt', 'depth', 'tainted', 'byDesk']);
       if (d !== null) {
         c.en(d.level, `${at}.dispatch.level`, OWNED_ENUMS.grantLevel);
         if (d.grantAt !== null) c.int(d.grantAt, `${at}.dispatch.grantAt`);
         c.int(d.depth, `${at}.dispatch.depth`);
         c.bool(d.tainted, `${at}.dispatch.tainted`);
+        c.bool(d.byDesk, `${at}.dispatch.byDesk`);
+        if (d.byDesk === true && d.tainted !== true) c.bad(`${at}.dispatch.tainted`, 'what the front desk sent is tainted');
         if (d.level === 'free' && d.grantAt === null) c.bad(`${at}.dispatch.grantAt`, 'only a person opens 直接派出, and that has a time');
       }
       if (over) c.bad(`${at}.dispatch`, 'a session that is over dispatches nothing');
@@ -433,6 +436,7 @@ export function validateOwnedList(x) {
     checkOrigin(c, a.origin, `${at}.origin`);
     // A source chain from an agent request is an unbound sender's: its session is tainted (r4 §8.5). One from a clean owned session is not.
     if (/** @type {any} */ (a.origin)?.kind === 'agent-request' && a.tainted !== true) c.bad(`${at}.origin`, 'a source chain from an agent request on an entry that is not tainted');
+    if (/** @type {any} */ (a.origin)?.kind === 'desk-dispatch' && a.tainted !== true) c.bad(`${at}.origin`, 'a source chain from the front desk on an entry that is not tainted');
     c.int(a.rev, `${at}.rev`, 1);
     if (typeof a.rev === 'number' && typeof s.rev === 'number' && a.rev > s.rev) c.bad(`${at}.rev`, `${a.rev}, after the list's own ${s.rev}`);
     c.bool(a.canAccept, `${at}.canAccept`);
@@ -526,7 +530,7 @@ function checkRequests(c, v) {
   const ids = new Set();
   c.arr(v, '$.requests').forEach((e, i) => {
     const at = `$.requests[${i}]`;
-    const r = c.obj(e, at, ['requestId', 'harness', 'label', 'text', 'cwd', 'runIn', 'runInWhy', 'requester', 'tainted', 'model', 'askWhy', 'auto', 'reason', 'returns', 'report', 'state', 'createdAt', 'expiresAt', 'ownedId', 'why', 'fetched', 'suggestion', 'suggesting']);
+    const r = c.obj(e, at, ['requestId', 'harness', 'label', 'text', 'cwd', 'runIn', 'runInWhy', 'requester', 'tainted', 'fromDesk', 'model', 'askWhy', 'auto', 'reason', 'returns', 'report', 'state', 'createdAt', 'expiresAt', 'ownedId', 'why', 'fetched', 'suggestion', 'suggesting']);
     if (r === null) return;
     c.re(r.requestId, `${at}.requestId`, REQUEST_ID_RE, 'request id');
     if (ids.has(r.requestId)) c.bad(`${at}.requestId`, `${String(r.requestId)} listed twice`);
@@ -544,12 +548,15 @@ function checkRequests(c, v) {
     if ((r.runIn === null) === (r.runInWhy === null)) c.bad(`${at}.runInWhy`, 'set exactly when runIn is null');
     c.re(r.requester, `${at}.requester`, REQUESTER_RE, 'requester');
     c.bool(r.tainted, `${at}.tainted`);
+    c.bool(r.fromDesk, `${at}.fromDesk`);
+    if (r.fromDesk === true && (typeof r.requester !== 'string' || !r.requester.startsWith('owned:') || r.tainted !== true)) c.bad(`${at}.fromDesk`, 'the front desk is an owned session, and what it asks is tainted');
     if (r.model !== null) c.re(r.model, `${at}.model`, OWNED_MODEL_NAME_RE, 'model of the owned list');
     if (r.askWhy !== null) c.en(r.askWhy, `${at}.askWhy`, OWNED_ENUMS.askWhy);
     c.bool(r.auto, `${at}.auto`);
     for (const k of /** @type {const} */ (['reason', 'returns', 'report'])) if (r[k] !== null) c.text(r[k], `${at}.${k}`, OWNED_BOUNDS.requestNoteBytes);
     // Only a session's own call goes out on its permission: a DSH session's request never does, and a tainted one never does.
-    if (r.auto === true && (typeof r.requester !== 'string' || !r.requester.startsWith('owned:') || r.tainted === true)) c.bad(`${at}.auto`, 'only a clean owned session dispatches on its permission');
+    // The front desk's is tainted for what it read, not for how it started: its permission still counts, and the worker is held tight.
+    if (r.auto === true && (typeof r.requester !== 'string' || !r.requester.startsWith('owned:') || (r.tainted === true && r.fromDesk !== true))) c.bad(`${at}.auto`, 'only a clean owned session or the front desk dispatches on its permission');
     if (typeof r.requester === 'string' && r.requester.startsWith('dsh') && r.tainted !== true) c.bad(`${at}.tainted`, 'a DSH session is an unbound sender (r4 §8.5)');
     c.en(r.state, `${at}.state`, OWNED_ENUMS.requestState);
     c.int(r.createdAt, `${at}.createdAt`);
