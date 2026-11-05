@@ -28,6 +28,12 @@ const on = { data: { hide: '0' } };
 const entry = (list, id) => list?.owned.find((x) => x.ownedId === id);
 const busy = (g) => (g.busy ? 'true' : null);
 
+/** The list says this session takes no more messages: gone from it, ended, or unknown since a restart. Locked, nothing says so. */
+export const closedTo = (list, id) => {
+  const o = entry(list, id);
+  return list != null && (o === undefined || o.state === 'unknown' || o.state === 'ended' || o.state === 'failed');
+};
+
 /** The owned session a node is; a sub-agent under one is none (its id is a hash, and it takes no message). */
 export const ownedIdOf = (n) => (n?.ownership === 'owned' && n.layer !== 'subagent' && /^n:[0-9a-f]{20}$/.test(n.id) ? n.id.slice(2) : null);
 export const isOwnedList = (b) => b?.kind === 'owned-list' && Array.isArray(b.owned) && Array.isArray(b.approvals) && Number.isSafeInteger(b.rev);
@@ -60,8 +66,11 @@ export function mergeFeed(had, page) {
 
 const MSG = /^msg-/;
 
-/** The chat, the last 200: a command folds with its output; your messages say their fate (msg-*). */
-export function describeChat(feed) {
+/**
+ * The chat, the last 200: a command folds with its output; your messages say their fate (msg-*). `over`: the list
+ * knows the session ended, so the line a restart leaves does not say its state is not known (T1 both ways).
+ */
+export function describeChat(feed, over = false) {
   if (feed === undefined) return { kids: [], note: t('detail.loading') };
   /** @type {Desc[]} */
   const kids = [];
@@ -109,7 +118,7 @@ export function describeChat(feed) {
     else if (e.kind === 'answer') msg(t('chat.you'), tk('chat', e.state, 'chat.answered'), 'answer');
     // An automatic refusal says its reason; one this page has no words for says its code, never "timed out" (T1).
     else if (e.kind === 'auto-denied') msg('', tk('chat', e.state, 'chat.autoOther', { t: tx }), 'auto');
-    else if (e.kind === 'lifecycle') msg('', join([tk('life', e.state, 'chat.life'), tx]), 'life');
+    else if (e.kind === 'lifecycle') msg('', join([tk('life', over && e.state === 'daemon-restart' ? 'daemon-restart-over' : e.state, 'chat.life'), tx]), 'life');
     else if (e.kind === 'note' && e.state !== 'tokens') msg('', tk('fnote', e.state, 'fnote.other', { t: tx }), 'note');
   }
   const shown = kids.slice(-200);
@@ -351,7 +360,7 @@ export function describeOwned(id, list, feed, g) {
     return { ownBox: on, evBox: off, ownSt: { text: t(!g.unlocked ? 'own.locked' : list === null ? 'detail.loading' : 'own.missing') }, ownActs: { kids: g.unlocked ? [] : [lockBtn()] }, cardsH: off, cards: { kids: [] }, chatBox: off };
   }
   const mine = list.approvals.filter((a) => a.ownedId === id);
-  const chat = describeChat(feed);
+  const chat = describeChat(feed, o.state === 'ended' || o.state === 'failed');
   return {
     ownBox: on, evBox: off, ownActs: { kids: [] }, chatBox: on, chatNote: { text: chat.note }, chat: { kids: chat.kids },
     ownSt: {
@@ -373,7 +382,7 @@ export function describeOwned(id, list, feed, g) {
  */
 export function describeOwnedDock(to, list, g, held, armed, brakeArmed = false) {
   const o = entry(list, to?.id);
-  const note = to === null ? 'dock.readonly' : !g.unlocked ? 'dock.locked' : o === undefined ? 'own.missing'
+  const note = to === null ? (g.unlocked ? 'dock.readonlyOpen' : 'dock.readonly') : !g.unlocked ? 'dock.locked' : o === undefined ? 'own.missing'
     : o.state === 'unknown' ? 'dock.unknown' : o.state === 'ended' || o.state === 'failed' ? 'dock.ended' : '';
   if (note === 'dock.ended' && o?.brake === true) {
     return {
@@ -392,7 +401,7 @@ export function describeOwnedDock(to, list, g, held, armed, brakeArmed = false) 
     btns: {
       kids: [
         btn('send', t(run && o.queued === 0 ? 'dock.sendSteer' : 'dock.send'), { act: 'send' }, { 'aria-disabled': b }),
-        btn('int', t('dock.interrupt'), { act: 'interrupt' }, { 'aria-disabled': run || o.queued > 0 ? b : 'true' }),
+        btn('int', t('dock.interrupt'), { act: 'interrupt' }, { 'aria-disabled': run || o.queued > 0 || o.stoppable === true ? b : 'true' }),
         btn('end', t(armed ? 'dock.endSure' : 'dock.end'), { act: 'end', armed: armed ? '1' : '0' }, { 'aria-disabled': b }),
         ...(o.brake ? [btn('brake', t(brakeArmed ? 'dock.brakeSure' : 'dock.brake'), { act: 'brake', armed: brakeArmed ? '1' : '0' }, { 'aria-disabled': b })] : []),
       ],

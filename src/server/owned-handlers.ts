@@ -40,8 +40,9 @@ import { makeOwnedHandlers } from './owned.ts';
 //                                       which (via), and the uuid of the message in the feed is the
 //                                       actionId of its human record (its fate follows as msg-* notes).
 //   POST /api/owned/:id/interrupt       declines the session's open approvals, withdraws its waiting
-//                                       messages, then sends the turn's interrupt (not awaited: its
-//                                       outcome is the feed's).
+//                                       messages, then sends the turn's interrupt and, with a turn of the
+//                                       root or without one, its sub-agents' (not awaited: the outcome of
+//                                       each is the feed's).
 //   POST /api/owned/:id/end             declines the open approvals, then stops the child.
 //   POST /api/owned/:id/brake           r4 D4/D8: the session's whole Job (its child and every process
 //                                       under it) ended now through procguard, its open approvals declined,
@@ -197,6 +198,8 @@ export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'code
       waiting: first === null ? null : first.approvalId, queued: FINAL(s) ? 0 : s.queued, tokens: s.tokens === null ? null : { ...s.tokens },
       // An ending session whose child has not closed yet can still be braked (its stop order may hang).
       lastSeq: s.feed.lastSeq, createdAt: meta?.createdAt ?? 0, brake: s.state !== 'unknown' && s.jobbed, cwd: cwdEntry(s.cwd, roots),
+      // A root gone idle still has something to stop while a sub-agent of its is live, or over with a command open.
+      stoppable: !FINAL(s) && 'stoppable' in s && s.stoppable,
     };
   });
   const enabled = ownedEnabled(deps);

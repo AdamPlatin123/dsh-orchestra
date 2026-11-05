@@ -265,7 +265,7 @@ export function projectOf(lane: Lane): Project {
       activity: ((a) => (a === null ? null : clipCp(a, TOWER_BOUNDS.activityCp)))(activityOf(p, lane)),
       state, basis, waiting,
       counts: { children: 0, errors: 0, waiting: 0 }, groups: [],
-      ageMs: p.live.ageMs, durationMs: null, model: null, agentType: p.agentType,
+      ageMs: p.live.ageMs, durationMs: null, model: null, agentType: p.agentType, mark: null,
     };
     nodes.set(n.id, n);
   }
@@ -329,6 +329,7 @@ function memberNode(seat: OwnedSeat, m: OwnedMember, nowWall: number): TowerNode
     durationMs: m.startedAt === null || end === null || end < m.startedAt ? null : end - m.startedAt,
     model: m.model === null ? null : clipCp(m.model, TOWER_BOUNDS.textCp),
     agentType: null,
+    mark: m.asking !== null && m.asking !== '' ? 'asks' : state === 'ended' && m.why === 'failed' ? 'failed' : null,
   };
 }
 
@@ -361,7 +362,7 @@ function ownedTree(seat: OwnedSeat, nowWall: number): { root: TowerNode; kids: T
     title: clipCp(title, TOWER_BOUNDS.titleCp), activity: activity === null ? null : clipCp(activity, TOWER_BOUNDS.activityCp),
     state, basis: state === 'unknown' ? 'none' : 'owned', waiting,
     counts: { children: kids.length, errors: 0, waiting: 0 }, groups: foldSiblings(kids),
-    ageMs: seat.lastAt === null ? null : Math.max(0, nowWall - seat.lastAt), durationMs: null, model: null, agentType: null,
+    ageMs: seat.lastAt === null ? null : Math.max(0, nowWall - seat.lastAt), durationMs: null, model: null, agentType: null, mark: null,
   };
   return { root, kids };
 }

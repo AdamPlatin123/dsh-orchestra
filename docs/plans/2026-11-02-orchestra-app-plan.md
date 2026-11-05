@@ -173,6 +173,18 @@
 - **等你**：成员节点不进等你。这条审批的等待留在会话节点上，成员的活动写「在等你审批：……」。原因是等你栏的卡挂在会话节点上，一个会话只出最早的一条，两边都挂就是一条审批算两次（T3：计数等于它链接的列表长度）。契约里加了这条。
 - **配置**：`codex-home.ts` 没加开关。实测不需要，也没找到能在默认模型上关掉它的开关。子代理不算进 3 个并发上限，已写进 `codex-home.ts` 和 `codex-owned.ts`。
 - **页面**：没改布局。`ownedIdOf` 不再把成员当会话（否则页面会拿哈希当会话 id 去发消息）。详情多一行「耗时」，用量那行写明只算主线程。
+- **停止（2026-11-04 补）**：你点停止时，根 turn 照旧打断，每个还活着的成员再各发两步：先 `turn/interrupt`（它的线程 id 加它的 turn id），再 `thread/backgroundTerminals/clean`（它的线程 id）。根 turn 已经结束也一样发，所以 `GET /api/owned` 的条目多了 `stoppable`（有成员还活着，或者成员已结束但回合或命令还开着、上次停止没确认），页面的停止按钮看它，不再只看根线程。已回报或已结束的成员只要命令的 `item/started` 之后没等到 `item/completed`，或者上次 `clean` 或 `list` 没确认，也算在内：只发 `clean` 再读 `list`，所以被别的原因打断的成员和这次没停完的成员都还能再按。停止途中新冒出来的成员不会漏：读完结果重新看一遍成员，有新的再跑一轮，最后的计数把它们算进去。发出去不算停：成员状态只跟回来的事件走。对话流先写「已发出，还没确认」，2 秒后读 `thread/backgroundTerminals/list`，再写「N 个停下了」和「N 个没确认停下」。这三条对话流提示共用 ref `members-stop`：页面手里的实时提示只有等到同 ref 的事件才替换，`feed.since` 不告诉读者有事件被删。会话在停止途中结束时写一条同 ref 的 `members-stop-unanswered`（发出了，结束前没等到确认）。没确认的包括没回应、回合还开着、还有后台命令、状态未知和超出列表的，后面这几种本来就停不到。被清掉的命令要在回合结束后才回来（`failed`，退出码 -1）：这不算它失败的步骤，问过的也不算没来问就跑，所以被打断的回合不清「问过」的记录。`initialize` 多带 `capabilities.experimentalApi`，没有它 `backgroundTerminals` 三个方法直接被拒。
+
+  实测（codex-cli 0.165.0，2026-11-04，真实运行 3 次、不调模型的干跑 2 次，只录方法名和状态）。第 2 次的命令 260 ms 就退出码 1，没测到东西；上一轮 real3 也是这样，所以才「没测成」。原因像是提示词里命令后面的「 .」被抄进了命令，这是推断，探测只录了输出长度。第 3 次把命令放进反引号后没再出现：
+
+  | 动作 | 回来的事件 | 进程 |
+  |---|---|---|
+  | 根 `turn/interrupt`（子代理在跑 ping，根在 `wait`） | 回 `{}`，根 idle，根 `turn/completed interrupted`。子线程什么也没来 | 12 s 后 ping 还在 Job 里，子 turn 还开着 |
+  | 子线程 `turn/interrupt` | 回 `{}`，子 idle，子 `turn/completed interrupted`。没有 `subAgentActivity`，命令的 `item/completed` 也没来 | 10 s 后 ping 和 powershell 还在 Job 里 |
+  | 子线程 `thread/backgroundTerminals/list` | 1 条（`osPid` 是 null）。根线程的列表是空的：终端按线程算 | 还在 |
+  | 子线程 `thread/backgroundTerminals/clean` | 回 `{}`，5 ms 后 `item/completed failed`，退出码 -1 | powershell 马上没了，ping 250 ms 内没了 |
+
+  `turn/interrupt` 的 schema 只要 `threadId` 和 `turnId`，没写只能发给根线程，实测子线程也接受。接完后 `node scripts/live-smoke.ts --harness codex --subagent-stop` 跑了一次，测试 profile，走 magpie，退出码 0：根在等子代理和根已 idle 两种情况各停了一次，都是约 280 ms 后 ping 按 pid 加创建时间查不到、Job 里没有 PING.EXE，节点在跑 → 已结束，对话流写 `members-stopped=1`，会话本身还是 idle，收尾后 Job 里什么也不剩。
 
 实测依据：codex-cli 0.165.0，3 次真实运行和 11 次干跑（2026-11-04）。事件序列抄进了 `test/fixtures/codex-subagent-frames.ts`，只有字段和状态。接完后 `node scripts/live-smoke.ts --harness codex --subagent` 两个模型各跑了两次，测试 profile，走 magpie，退出码都是 0。下表是最后一次：
 
@@ -185,7 +197,7 @@
 
 - **关不掉**：默认模型上子代理没有开关，自有会话随时能派。现在靠 Codex 自己的系统指令（用户或 AGENTS.md 没要求就不派）。
 - **模型白名单**：`spawn_agent` 的 `model` 参数不经过 `isOwnedModel`。实测都继承父模型，没测过模型自己换型号。不拦，但 `subAgentActivity` 里报的型号记在成员上：详情写型号（没报写未知），名单外的型号写进节点活动和对话流。
-- **停止**：`turn/interrupt` 只发给根线程。根 turn 被打断时子代理会怎样没测成。根 idle 时停止什么也发不出去，所以停止时对话流写还有几个在跑，要全停用刹车。
+- **停止管不到的**：① 根线程自己的长命令有同样的毛病（实测：打断后 5 s 还在 Job 里，`clean` 根线程才退），这次没改，根线程的停止行为照旧；要改还得处理 `turn/completed` 清掉「问过」记录后迟到的 `item/completed`，否则会误报没来问就跑。② 已回报或已结束的成员，只有命令 item 还开着或上次停止没确认才清；item 已结束但进程还留在后台的看不到，也不清。③ 超出 32 个列表的成员没记 turn id，发不了，只计数。④ 成员状态是 `running` 但 turn 还没听到时（`turn/started` 之前的几十毫秒）发不了打断，写没确认停下，再按一次或用刹车。⑤ `backgroundTerminals` 是实验接口，只在 0.165.0 上测过；Codex 版本一变，`CODEX_VERSIONS` 会先让会话结束。⑥ 只测了 `codex/gpt-6.1-sol`（v2 模型），`zcode/GLM-5.3`（v1 模型）的停止没跑过。⑦ 命令自己用 `Start-Process` 放出去的进程，`clean` 管不管得到没测过，推断是管不到，那种要刹车。
 - **没测到的状态**：回合失败、`errored`、`interrupted`、`shutdown`、`notFound`、`interacted` 只在类型里见过，映射是读类型定的。嵌套子代理也没测过，现在平铺在会话下面。
 - **没来问就跑的命令**：根线程的 `ran-unasked` 提示带命令文字，子线程的文字不进对话流，所以子代理走单独的计数：成员上记 `ranUnasked`，节点活动写「其中 N 步没来问就跑了」，对话流写总数，都不带命令文字。
 - **受污染会话的子代理**（seat 请求开的会话，r4 §8.5）：`thread/start` 传 `untrusted`，`config.toml` 写 `on-request`，子代理跟哪个还是未知。2026-11-04 在测试 profile 补测 8 次（scratch 副本里把会话强制成 untrusted，根线程和子代理、两种策略都跑；`Get-ChildItem` 和 apply_patch）：全部出卡，没有一次没来问就跑。这里 on-request 下也没找到不问的命令（`echo`、`dir`、`git --version`、`Get-Date` 都问），所以分不开两种策略，不算证明。发现成员时对话流写一句，没来问就跑的步数照常记。
@@ -304,3 +316,24 @@
 5. 路由派活台（规则 + magpie 模型 + Route to? 卡）。
 6. 端到端：真实数据 + magpie 实跑一遍；交接。
 7. DSH 只读插件（有余力再做）。
+
+## 新首页：第三轮方案 22「左 worker，右 team」（2026-11-04）
+
+用户选定第三轮方案 22，做成应用真实的首页。`/` 现在是新页面（`ui/home.html`），旧的塔留在 `/tower`，新页面右上角有一个「旧页面」链接。两个地址走同样的配对和 CSP 检查，未配对时都是配对表单。
+
+**做了什么**
+
+- 左半边：worker 列表，Orchestra 自有会话在前，只读会话折叠成一组并写总数；行的第二行写在做什么或等谁；头像是名字首字色块带角标。选中自有 worker 显示 `/api/owned/:id/feed` 的真实对话和输入框；只读会话只有事件和「打开完整记录」，没有批准、发消息、中断。
+- 右半边：当前 worker 的 subagent 用折叠卡（`ui/fold.js`，从 `round2/foldcard.js` 和 `kit.css` 移植；CSP 不许 `innerHTML` 和 style 属性，所以改成描述符，分段条是每个成员一格）。默认折叠，运行中不自动展开。点开是成员列表和状态、耗时、型号。卡按 agentType 分：一个类型一张，成员派的 subagent 算进同一张。
+- 等你和出错：输入框上方两个胶囊，数字直接取展开后的列表长度（T3，计数等于它链接的列表长度）。
+- 没有总台、没有 team、没有 bot 能派活，三处都写清楚，没有假开关。派活台、解锁、批准、停止、结束、刹车全走现有路由。键盘 `n` 开派活台。
+- `ui/drive.js`：把 `ui/app.js` 里解锁、批准、派活、发消息、停止这些动作原样抽出来，两个页面共用一份。这样新页面放宽不了按住、键入确认的规则（D8：批准、拒绝、拍板、刹车只有人在配对页上能做，超时即拒；r4 §8.5：受污染会话的高风险只能键入）。
+
+**残余**
+
+1. **线没有画。** 方案 22 的「从对话那一行拉一条线到卡」今天一条也画不出来：Codex 派 subagent 的 `collabAgentToolCall` 只更新成员状态，不进对话流，对话里没有那一行。按「对不上就不画，不编」，页面写明了不拉线，只留新卡出现时滑入一次（尊重减少动效）。要画线，得先让 `src/owned/codex-session.ts` 把派发写成一条对话事件，并带上它派出的成员。
+2. 折叠卡的分组是按 agentType 分的，不是真实的「一次派发」：数据里没有派发批次。Codex 成员的 agentType 都是空，所以一个会话只有一张卡，标题用第一个成员的名字。
+3. Claude 自有会话的 subagent 还没接进塔，右半边写了「这里空着，不等于它没派」。
+4. 派发的五件事（派给谁、做什么、为什么、要交回什么、现在怎样）没有做：真实数据里写不全。
+5. 「关于数据」只在旧页面有；新页面的上限提示指向那里。`/session` 页的返回链接文字还写「回到塔」，实际回 `/`。
+6. 新页面用合成数据和页面真实 CSP 在浏览器里看过（1024 宽无横向滚动，浅深色）；没有在测试 profile 的 orchestrad 上走过一遍真实配对、解锁和批准，这几步只有假 DOM 测试和 HTTP 测试。屏幕阅读器没测过。

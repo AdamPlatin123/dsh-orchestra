@@ -66,7 +66,7 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
   let list: Record<string, any> = {
     v: 1, kind: 'owned-list', rev: 3, enabled: true, disabledWhy: null, brakeWhy: null, harnesses: { codex: true, claude: false },
     owned: [
-      { ownedId: ID.a, harness: 'codex', model: 'codex/gpt-6.1-sol', title: 'fix the css', state: 'running', endReason: null, waiting: AP.a, queued: 0, tokens: { input: 1, cachedInput: 0, output: 1, total: 2 }, lastSeq: 7, createdAt: 1, brake: true },
+      { ownedId: ID.a, harness: 'codex', model: 'codex/gpt-6.1-sol', title: 'fix the css', state: 'running', endReason: null, waiting: AP.a, queued: 0, tokens: { input: 1, cachedInput: 0, output: 1, total: 2 }, lastSeq: 7, createdAt: 1, brake: true, stoppable: false, stoppable: false },
       { ownedId: ID.b, harness: 'codex', model: 'codex/gpt-6.1-sol', title: 'run tests', state: 'idle', endReason: null, waiting: AP.b, queued: 0, tokens: null, lastSeq: 1, createdAt: 2 },
       { ownedId: ID.c, harness: 'codex', model: 'zcode/GLM-5.3', title: 'refactor', state: 'idle', endReason: null, waiting: AP.c, queued: 0, tokens: null, lastSeq: 1, createdAt: 3 },
     ],
@@ -703,6 +703,10 @@ test('owned descriptors (review fixes): words for notes and fates, unknown outco
   const dock = describeOwnedDock({ id: o.ownedId }, list, { ...g, busy: true }, false, false) as any;
   assert.deepEqual(dock.btns.kids.map((b: any) => [b.data.act, b.attr.disabled, b.attr['aria-disabled']]), [['send', undefined, 'true'], ['interrupt', undefined, 'true'], ['end', undefined, 'true']]);
   assert.ok(dock.st.text.startsWith(TOWER_TEXT['dock.afterQueue']!));
+  // The stop: with the root idle and nothing waiting it has nothing to reach, unless a sub-agent is live.
+  const stopBtn = (x: Record<string, unknown>) => (describeOwnedDock({ id: o.ownedId }, { ...list, owned: [{ ...o, state: 'idle', queued: 0, ...x }] }, g, false, false) as any).btns.kids.find((b: any) => b.data.act === 'interrupt').attr['aria-disabled'];
+  assert.equal(stopBtn({ stoppable: false }), 'true');
+  assert.notEqual(stopBtn({ stoppable: true }), 'true');
   const deny = apprActs(approval(AP.a, ID.a, { rev: 1 }) as Approval, { ...g, busy: true }, 'card')[0]!;
   assert.deepEqual([deny.attr!.disabled, deny.attr!['aria-disabled']], [undefined, 'true']);
   // No brake without a Job of its own: the note says why, in words (procguard's state, from the list).
@@ -758,6 +762,10 @@ test('the chat (live run fixes): a command told again moves below its approval; 
   assert.equal(chunks.kids[0]!.key, partial);
   assert.equal(chatNews({ clipped: false, events: [ev(9, 'text', 'm1', 'final', 'first half, '), ev(10, 'text', 'm1', 'final', 'second half')] }, 0).split(TOWER_TEXT['sep.notes']!).length, 1, 'heard as one');
   // An automatic refusal this page has no words for says its code, never "timed out" (T1).
+  // The line a restart leaves: not known unless the list knows the session ended (T1 both ways).
+  const restart = [ev(11, 'lifecycle', null, 'daemon-restart', null)];
+  assert.equal(describeChat({ clipped: false, events: restart }).kids[0]!.slots.tx.text, TOWER_TEXT['life.daemon-restart']);
+  assert.equal(describeChat({ clipped: false, events: restart }, true).kids[0]!.slots.tx.text, TOWER_TEXT['life.daemon-restart-over']);
   const odd = describeChat({ clipped: false, events: [ev(12, 'auto-denied', 'toolu_9', 'host', 'Write'), ev(13, 'auto-denied', 'toolu_8', 'ending', 'Write')] }).kids.map((k: any) => k.slots.tx.text);
   assert.ok(!odd[0].includes(TOWER_TEXT['chat.clock']!) && odd[0].includes('host'), odd[0]);
   assert.equal(odd[1], TOWER_TEXT['chat.ending']!.replace('{t}', 'Write'));

@@ -31,6 +31,7 @@ const BASE = 1_793_560_000_000;
 const asset = (type: string, body: string): UiAsset => ({ type, etag: `"${createHash('sha256').update(body).digest('hex').slice(0, 32)}"`, hex: Buffer.from(body).toString('hex') });
 const PAGE: Record<string, UiAsset> = {
   'ui/tower.html': asset('text/html; charset=utf-8', '<!doctype html><title>tower</title><script type="module" src="/assets/ui/app.js"></script>'),
+  'ui/home.html': asset('text/html; charset=utf-8', '<!doctype html><title>home</title><script type="module" src="/assets/ui/home.js"></script>'),
   'ui/app.js': asset('text/javascript; charset=utf-8', 'export const app = 1;\n'),
   'shared/frozen.js': asset('text/javascript; charset=utf-8', 'export const f = 1;\n'),
 };
@@ -132,16 +133,16 @@ test('session detail: 400 on a malformed id, 404 on an unknown one, else the con
   }
 });
 
-test('the tower page and its assets: UI CSP, ETag with no-cache, 304 on a match, 404 off the whitelist', async (t) => {
+test('the two pages and their assets: UI CSP, ETag with no-cache, 304 on a match, 404 off the whitelist', async (t) => {
   const fx = await fixture(t);
   const cookie = await paired(fx);
-  for (const p of ['/', '/tower']) {
+  for (const [p, name] of [['/', 'ui/home.html'], ['/tower', 'ui/tower.html']] as const) {
     const page = await request(fx, 'GET', p, { cookie });
     assert.equal(page.status, 200, p);
     assert.equal(page.headers['content-security-policy'], UI_CSP, p);
     assert.equal(page.headers['content-type'], 'text/html; charset=utf-8', p);
     assert.equal(page.headers['cache-control'], 'no-store', p);
-    assert.equal(page.body, Buffer.from(PAGE['ui/tower.html']!.hex, 'hex').toString('utf8'), p);
+    assert.equal(page.body, Buffer.from(PAGE[name]!.hex, 'hex').toString('utf8'), p);
   }
   const js = await request(fx, 'GET', '/assets/ui/app.js');
   assert.equal(js.headers['content-security-policy'], UI_CSP);
@@ -151,20 +152,25 @@ test('the tower page and its assets: UI CSP, ETag with no-cache, 304 on a match,
   const again = await request(fx, 'GET', '/assets/ui/app.js', { 'if-none-match': PAGE['ui/app.js']!.etag });
   assert.deepEqual([again.status, again.body], [304, '']);
   assert.equal((await request(fx, 'GET', '/assets/shared/frozen.js')).status, 200);
-  // Only .js and .css by exact name: the page itself is /, behind the cookie.
-  for (const p of ['/assets/ui/tower.html', '/assets/ui/missing.js', '/assets/ui/APP.js', '/assets/ui/..%2Fui/app.js', '/assets/ui%2Fapp.js', '/assets/src/server/http.ts', '/assets/', '/assets/ui/app.js/x']) {
+  // Only .js and .css by exact name: the pages themselves are / and /tower, behind the cookie.
+  for (const p of ['/assets/ui/tower.html', '/assets/ui/home.html', '/assets/ui/missing.js', '/assets/ui/APP.js', '/assets/ui/..%2Fui/app.js', '/assets/ui%2Fapp.js', '/assets/src/server/http.ts', '/assets/', '/assets/ui/app.js/x']) {
     const r = await request(fx, 'GET', p, { cookie });
     assert.equal(r.status, 404, p);
   }
 });
 
-test('the real embedded page: / serves ui/tower.html, and every file it loads is there under the UI CSP', async (t) => {
+test('the real embedded pages: / serves ui/home.html, /tower ui/tower.html, and every file they load is there under the UI CSP', async (t) => {
   const fx = await fixture(t, UI_ASSETS);
   const cookie = await paired(fx);
-  const page = await request(fx, 'GET', '/', { cookie });
+  const page = await request(fx, 'GET', '/tower', { cookie });
   assert.equal(page.status, 200);
   assert.match(page.body, /<script type="module" src="\/assets\/ui\/app\.js"><\/script>/);
   assert.match(page.body, /role="tree"/);
+  const home = await request(fx, 'GET', '/', { cookie });
+  assert.equal(home.status, 200);
+  assert.match(home.body, /<script type="module" src="\/assets\/ui\/home\.js"><\/script>/);
+  assert.match(home.body, /<a class="legacy" href="\/tower"/);
+  assert.equal(home.body.includes('role="tree"'), false);
   for (const name of Object.keys(UI_ASSETS).filter((n) => !n.endsWith('.html'))) {
     const r = await request(fx, 'GET', `/assets/${name}`);
     assert.equal(r.status, 200, name);
@@ -172,12 +178,14 @@ test('the real embedded page: / serves ui/tower.html, and every file it loads is
   }
 });
 
-test('without an embedded page / answers 503 ui-not-embedded', async (t) => {
+test('without an embedded page / and /tower answer 503 ui-not-embedded', async (t) => {
   const fx = await fixture(t, {});
   const cookie = await paired(fx);
-  const r = await request(fx, 'GET', '/', { cookie });
-  assert.deepEqual([r.status, r.body], [503, 'ui-not-embedded\n']);
-  assert.equal(r.headers['content-security-policy'], UI_CSP);
+  for (const p of ['/', '/tower']) {
+    const r = await request(fx, 'GET', p, { cookie });
+    assert.deepEqual([r.status, r.body], [503, 'ui-not-embedded\n'], p);
+    assert.equal(r.headers['content-security-policy'], UI_CSP, p);
+  }
 });
 
 test('the old stage page is gone: /stage redirects to /, paired or not, and only for GET', async (t) => {

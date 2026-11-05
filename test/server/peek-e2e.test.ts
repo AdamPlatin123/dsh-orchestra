@@ -60,7 +60,10 @@ test('a test-profile orchestrad with --peek-port serves both harnesses after pai
   const cookie = String(paired.headers['set-cookie']).split(';')[0]!;
   const home = await request(port, 'GET', '/', { cookie });
   assert.equal(home.status, 200);
-  assert.match(home.body, /role="tree"/);
+  assert.match(home.body, /assets\/ui\/home\.js/);
+  const old = await request(port, 'GET', '/tower', { cookie });
+  assert.equal(old.status, 200);
+  assert.match(old.body, /role="tree"/);
   const tower = JSON.parse((await request(port, 'GET', '/api/tower', { cookie })).body) as { meta: { profile: string }; projects: { name: string; nodes: { harness: string; session: string | null }[] }[] };
   assert.deepEqual(validateTower(tower).errors, []);
   assert.equal(tower.meta.profile, 'test');
@@ -93,7 +96,7 @@ test('the tower end to end over the stage fixture (the demo data): pair, then th
   assert.deepEqual(snap.lanes.map((l) => [l.name, l.players.length]), [['shop', 11]], '5 Claude, 3 DSH, 3 Codex');
   assert.equal(snap.podium.fermatas.length, 1);
   assert.equal(r.body.includes(STAGE_CANARY), false);
-  const page = await request(port, 'GET', '/', { cookie });
+  const page = await request(port, 'GET', '/tower', { cookie });
   assert.equal(page.status, 200);
   assert.match(page.body, /role="tree"/);
   const tw = await request(port, 'GET', '/api/tower', { cookie });

@@ -122,3 +122,16 @@ export const V1_FROM_APPROVAL: readonly Frame[] = [
   statusOf('notLoaded'),
   collab('completed', 'closeAgent', T0 + 22_505, [CHILD], { [CHILD]: { status: 'completed', message: CHILD_WORDS } }),
 ];
+
+/**
+ * A stop (2026-11-04, three more runs, stop run 3 for these times; a member in a long command). turn/interrupt on
+ * its thread is answered {}, these two follow in the same millisecond, and no subAgentActivity comes; the command
+ * is still running then, and still in the Job.
+ */
+export const STOP_INTERRUPTED: readonly Frame[] = [
+  statusOf('idle'),
+  childTurn('turn/completed', { status: 'interrupted', completedAt: SECS0 + 10, durationMs: 10_061 }),
+];
+
+/** What thread/backgroundTerminals/clean brings, 5 ms after its {}: the command's end, under the turn that already ended. */
+export const STOP_CLEANED: readonly Frame[] = [childCommand('completed', T0 + 12_500, 'failed', -1)];

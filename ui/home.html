@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="auto" data-ready="0">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Orchestra</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23EEF1EF'/%3E%3Cpath d='M9 7v18M9 12h8M9 20h8M17 9v6M17 17v6' stroke='%231C2530' stroke-width='2' fill='none'/%3E%3Ccircle cx='23' cy='12' r='3' fill='%2358636F'/%3E%3Ccircle cx='23' cy='20' r='3' fill='%2358636F'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="/assets/ui/home.css">
+<script type="module" src="/assets/ui/home.js"></script>
+</head>
+<body>
+<header id="top" class="top">
+  <h1 class="brand" data-t="bar.brand"></h1>
+  <span class="test" data-slot="test" data-hide="1" data-t="bar.test"></span>
+  <span class="sp"></span>
+  <p class="fresh" data-slot="fresh" data-fresh="none"></p>
+  <button type="button" class="tb" data-act="unlock" data-slot="unlock"></button>
+  <button type="button" class="tb" data-act="theme" data-slot="theme"></button>
+  <a class="legacy" href="/tower" data-t="home.legacy" aria-describedby="legacy-hint"></a><span id="legacy-hint" class="sr" data-t="home.legacyHint"></span>
+</header>
+<p id="alert" class="alert" role="alert" data-hide="1"></p>
+<p id="note" class="note" role="status" data-hide="1"></p>
+<p id="lost" class="lost" role="status" data-hide="1"></p>
+<p id="live" class="sr" aria-live="polite"></p>
+
+<main class="wings">
+<section class="left" aria-labelledby="left-h">
+  <h2 id="left-h" class="sr" data-t="home.leftH"></h2>
+  <p id="desk" class="desk"><span class="desk-t" data-t="home.noRouter"></span><button type="button" class="tb desk-go" data-act="new" data-slot="new"></button></p>
+  <nav id="rail" class="rail" aria-labelledby="rail-h">
+    <h3 id="rail-h" class="sr" data-t="home.railH"></h3>
+    <p class="rs" data-slot="ownH"></p>
+    <ul class="wks" data-slot="own"></ul>
+    <p class="rail-note" data-slot="noOwn" data-hide="1" data-t="home.noOwned"></p>
+    <button type="button" class="ro-b" data-act="ro" aria-expanded="false" data-slot="roB" data-hide="1"><span class="fold-chev" aria-hidden="true"></span><span class="ro-t" data-slot="roH"></span><span class="fold-flag fold-flag-wait" data-slot="roW" data-hide="1"></span><span class="fold-flag fold-flag-err" data-slot="roE" data-hide="1"></span></button>
+    <ul class="wks" data-slot="ro" data-hide="1"></ul>
+  </nav>
+  <div class="conv">
+    <section id="detail" class="detail" aria-labelledby="dt-title" data-mode="empty">
+      <header class="ch">
+        <span class="av" aria-hidden="true" data-slot="hav" data-hide="1"><span data-slot="ch"></span><i class="bd" data-slot="bd"></i></span>
+        <span class="ico" aria-hidden="true" data-slot="ico"></span>
+        <div class="who"><h3 id="dt-title" tabindex="-1" data-slot="title"></h3><p class="dt-sub" data-slot="sub"></p></div>
+      </header>
+      <p class="dt-gone" data-slot="gone" data-hide="1"></p>
+      <p class="dt-empty" data-slot="empty"></p>
+      <details class="facts-box"><summary data-t="home.facts"></summary><dl class="facts" data-slot="facts"></dl></details>
+      <section class="dt-sec" data-slot="actBox" data-hide="1"><h4 data-t="detail.activity"></h4><p class="dt-act" data-slot="act"></p></section>
+      <section class="dt-sec own" data-slot="ownBox" data-hide="1">
+        <p class="own-st" data-slot="ownSt"></p><p class="acts" data-slot="ownActs"></p>
+        <h4 data-slot="cardsH" data-hide="1"></h4><ol class="cards" data-slot="cards"></ol>
+        <section class="chat-box" data-slot="chatBox" data-hide="1"><h4 id="chat-h" class="sr" data-t="own.title"></h4><p class="ev-note" data-slot="chatNote"></p><ol class="chat" data-slot="chat" tabindex="0" aria-labelledby="chat-h"></ol><p class="sr" aria-live="polite" data-slot="chatSay"></p></section>
+      </section>
+      <section class="dt-sec ev-box" data-slot="evBox" data-hide="1"><h4 data-t="detail.events"></h4><p class="ev-note" data-slot="evNote"></p><ol class="events" data-slot="events"></ol><p class="dt-full"><button type="button" class="link" data-act="full" data-slot="full" data-t="detail.full"></button></p></section>
+    </section>
+    <div id="isl" class="isl">
+      <p class="caps">
+        <button type="button" class="cap" id="cap-wait" data-act="island" aria-expanded="false" aria-controls="pins" data-slot="capW" data-zero="1"><b data-slot="capWn" data-t="home.capUnknown"></b><span class="cap-t" data-slot="capWt"></span></button>
+        <button type="button" class="cap cap-e" data-act="island" aria-expanded="false" data-slot="capE" data-hide="1"><b data-slot="capEn"></b></button>
+        <span class="cap-hint" data-slot="hint"></span>
+      </p>
+      <section id="pins" class="pins" aria-labelledby="pins-h" data-hide="1">
+        <h4 id="pins-h" class="pins-h"><span data-t="pin.title"></span><span class="pins-n" data-slot="n"></span><span class="pins-note" data-slot="note"></span></h4>
+        <ol class="pin-list" data-slot="list"></ol>
+      </section>
+      <ol class="pin-list errs" data-slot="errs" data-hide="1"></ol>
+    </div>
+    <div id="dock" class="dock" aria-disabled="true">
+      <p class="dock-to" id="dock-to" data-slot="to"></p>
+      <p class="dock-st" data-slot="st"></p>
+      <textarea id="dock-in" class="dock-in" rows="2" aria-labelledby="dock-to" data-slot="in" data-hide="1"></textarea>
+      <p class="acts" data-slot="btns"></p>
+      <p class="dock-note" data-slot="note"></p>
+    </div>
+  </div>
+</section>
+
+<section class="right" aria-labelledby="right-h">
+  <h2 id="right-h" class="sr" data-t="home.rightH"></h2>
+  <div class="team">
+    <h3 class="lb" data-t="home.team"></h3>
+    <p class="empty"><b data-t="home.noTeamH"></b><span data-t="home.noTeam"></span></p>
+  </div>
+  <section id="subs" class="subs" aria-labelledby="subs-h">
+    <h3 id="subs-h" class="lb"><span class="lb-t" data-slot="head" data-t="home.subsPlain"></span><span class="lb-n" data-slot="n"></span></h3>
+    <p class="subs-note" data-slot="note" data-t="home.subsPick"></p>
+    <ol class="fold-list" data-slot="list"></ol>
+  </section>
+  <p class="rbar" data-t="home.grants"></p>
+</section>
+</main>
+
+<dialog id="unlock-dlg" class="dlg" aria-labelledby="ul-h">
+  <h2 id="ul-h" data-t="unlock.title"></h2>
+  <p class="dlg-p" data-t="unlock.how"></p>
+  <input id="ul-code" class="dlg-in" inputmode="numeric" autocomplete="one-time-code" maxlength="8" aria-labelledby="ul-h">
+  <p class="dlg-msg" data-slot="msg" role="status"></p>
+  <p class="acts"><button type="button" class="btn" data-act="unlockGo" data-t="unlock.go"></button><button type="button" class="btn" data-act="close" data-t="dlg.cancel"></button></p>
+</dialog>
+<dialog id="new-dlg" class="dlg" aria-labelledby="nw-h">
+  <h2 id="nw-h" data-t="new.title"></h2>
+  <label class="dlg-l" for="nw-text" data-t="new.task"></label>
+  <textarea id="nw-text" class="dlg-in" rows="3"></textarea>
+  <p class="acts"><button type="button" class="btn" data-act="suggest" data-slot="ask"></button></p>
+  <section class="route-card" data-slot="card" data-hide="1" aria-labelledby="rt-h">
+    <h3 id="rt-h" data-t="route.title"></h3>
+    <p class="rt-title" data-slot="rtTitle"></p>
+    <p class="dlg-p" data-slot="rtNote" role="status"></p>
+    <ol class="cands" data-slot="cands"></ol>
+    <p class="dlg-p" data-slot="rtPick"></p>
+  </section>
+  <label class="dlg-l" for="nw-harness" data-t="new.harness"></label>
+  <select id="nw-harness" class="dlg-in"><option value="codex" data-slot="hCodex" data-t="harness.codex"></option><option value="claude" data-slot="hClaude" data-t="harness.claude"></option></select>
+  <p class="dlg-p" data-slot="why"></p>
+  <label class="dlg-l" for="nw-model" data-t="new.model"></label>
+  <select id="nw-model" class="dlg-in" data-slot="model"></select>
+  <div data-slot="cwdBox" data-hide="1"><label class="dlg-l" for="nw-cwd" data-t="new.cwdLabel"></label>
+  <select id="nw-cwd" class="dlg-in" data-slot="cwdSel"></select></div>
+  <p class="dlg-p" data-slot="cwdNote"></p>
+  <p class="dlg-p" data-slot="note"></p>
+  <p class="dlg-msg" data-slot="msg" role="status"></p>
+  <p class="acts"><button type="button" class="btn" data-act="dispatch" data-slot="go"></button><button type="button" class="btn" data-act="close" data-t="dlg.cancel"></button></p>
+</dialog>
+
+<template id="tpl-btn"><button type="button" class="btn"></button></template>
+<template id="tpl-opt"><option></option></template>
+<template id="tpl-cand"><li class="cand"><button type="button" class="cand-b" data-act="pick" aria-pressed="false" data-slot="b"><span class="cand-rank" data-slot="rank"></span><span class="cand-hm" data-slot="hm"></span><span class="cand-src" data-slot="src"></span><span class="cand-why" data-slot="why"></span></button></li></template>
+<template id="tpl-card"><li class="card" data-waiting="1"><p class="card-h"><span data-slot="kind"></span><span data-slot="left"></span></p><p class="card-t" data-slot="title"></p><pre class="pv" data-slot="pv"></pre><p class="card-note" data-slot="note"></p><p class="acts" data-slot="acts"></p></li></template>
+<template id="tpl-msg"><li class="msg"><span class="msg-who" data-slot="who"></span><span class="msg-tx" data-slot="tx"></span></li></template>
+<template id="tpl-tool"><li class="msg"><details><summary data-slot="sum"></summary><pre class="pv" data-slot="body"></pre></details></li></template>
+<template id="tpl-req"><li class="pin req" data-waiting="1"><p class="pin-go req-h"><span class="ico" aria-hidden="true" data-t="icon.route"></span><span class="pin-kind" data-slot="kind"></span><span class="pin-path" data-slot="what"></span><span class="pin-clock" data-slot="clock"></span></p><pre class="pv req-pv" data-slot="pv"></pre><span class="pin-hint" data-slot="meta"></span><span class="pin-acts" data-slot="acts"></span></li></template>
+<template id="tpl-pin"><li class="pin"><button type="button" class="pin-go"><span class="ico" aria-hidden="true" data-slot="ico"></span><span class="pin-kind" data-slot="kind"></span><span class="pin-path" data-slot="path"></span><span class="pin-clock" data-slot="clock"></span><span class="pin-hint" data-slot="hint"></span></button><span class="pin-pv" data-slot="pv"></span><span class="pin-acts" data-slot="acts"></span></li></template>
+<template id="tpl-kv"><div class="kv"><dt data-slot="k"></dt><dd data-slot="v"></dd></div></template>
+<template id="tpl-ev"><li class="ev"><span class="ev-at" data-slot="at"></span><span class="ev-ty" data-slot="ty"></span><span class="ev-tx" data-slot="tx"></span></li></template>
+<template id="tpl-wk"><li class="wk"><button type="button" class="rr" data-act="worker" data-slot="b"><span class="av" aria-hidden="true" data-slot="av"><span data-slot="ch"></span><i class="bd" data-slot="bd"></i></span><span class="tx"><b data-slot="name"></b><small data-slot="l2"></small></span></button></li></template>
+<template id="tpl-fold"><li class="cw"><button type="button" class="fold" data-act="fold" aria-expanded="false" data-slot="b"><span class="fold-title" data-slot="title"></span><span class="fold-chev" aria-hidden="true"></span><span class="fold-meta"><span data-slot="kind"></span><span data-slot="n"></span><span data-slot="took"></span><span class="fold-flag fold-flag-wait" data-slot="fw" data-hide="1"></span><span class="fold-flag fold-flag-err" data-slot="fe" data-hide="1"></span></span><span class="fold-dots" role="img" data-slot="dots" data-hide="1"></span><span class="fold-bar" role="img" data-slot="bar" data-hide="1"></span></button><ul class="fold-body" data-slot="body" data-hide="1"></ul></li></template>
+<template id="tpl-fd"><i class="fd"></i></template>
+<template id="tpl-mem"><li class="mem"><i class="fd" aria-hidden="true" data-slot="dot"></i><span class="mem-n" data-slot="name"></span><span class="mem-st" data-slot="st"></span><span class="mem-t" data-slot="took"></span><span class="mem-m" data-slot="model"></span><span class="mem-a" data-slot="act"></span></li></template>
+</body>
+</html>

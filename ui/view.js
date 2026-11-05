@@ -54,7 +54,7 @@ export function fmtLeft(ms) {
 /** @param {string} h */
 const harnessName = (h) => t(`harness.${h}`);
 /** A state read off a log or guessed from a write carries ≈ (T1). @param {Node} n */
-const guessed = (n) => n.basis === 'log' || n.basis === 'mtime';
+export const guessed = (n) => n.basis === 'log' || n.basis === 'mtime';
 
 /** The row's icon: what it waits on, else its state. @param {Node} n */
 export function iconOf(n) {

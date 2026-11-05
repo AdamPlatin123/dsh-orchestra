@@ -217,8 +217,10 @@ test('narrow screens: one column, rows 44px tall, the node page full screen, not
   assert.ok(rules.some((r) => r.sel === '.ab-table' && /overflow-x: auto/.test(r.body)), 'the about table scrolls inside itself');
 });
 
-test('what the browser loads for / stays within budget: ui/ itself and the shared modules it imports', () => {
-  const ui = fs.readdirSync(path.join(REPO, 'ui')).map((f) => `ui/${f}`);
+test('what the browser loads for /tower stays within budget: its ui/ files and the shared modules it imports', () => {
+  // The home page's own files have their own budget (test/ui/home-page.test.ts).
+  const HOME_ONLY = ['ui/home.html', 'ui/home.css', 'ui/home.js', 'ui/wings.js', 'ui/fold.js'];
+  const ui = fs.readdirSync(path.join(REPO, 'ui')).map((f) => `ui/${f}`).filter((f) => !HOME_ONLY.includes(f));
   const seen = new Set<string>();
   const walk = (rel: string) => {
     if (seen.has(rel)) return;

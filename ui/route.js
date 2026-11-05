@@ -41,7 +41,7 @@ export function go(r, replace = false) {
   else location.hash = h;
 }
 
-/** Leaves for the full record of a session (the server-rendered /session page). @param {string} id */
+/** Leaves for the full record of a session (the server-rendered /session page); its link back leads to the page it came from. @param {string} id */
 export function openFull(id) {
-  if (TOWER_HEX20_RE.test(id)) location.href = '/session?id=' + id;
+  if (TOWER_HEX20_RE.test(id)) location.href = '/session?id=' + id + (location.pathname === '/tower' ? '&from=tower' : '');
 }

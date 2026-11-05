@@ -101,7 +101,7 @@ test('CodexOwned.create hands the origin down: the approval its session raises l
 function listWith(origin: unknown, tainted = true) {
   return {
     v: 1, kind: 'owned-list', rev: 1, enabled: true, disabledWhy: null, brakeWhy: null, harnesses: { codex: true, claude: false }, roots: [],
-    owned: [{ ownedId: 'a'.repeat(20), harness: 'codex', model: 'codex/gpt-6.1-sol', title: 't', state: 'running', endReason: null, waiting: 'b'.repeat(32), queued: 0, tokens: null, lastSeq: 1, createdAt: 1, brake: false, cwd: null }],
+    owned: [{ ownedId: 'a'.repeat(20), harness: 'codex', model: 'codex/gpt-6.1-sol', title: 't', state: 'running', endReason: null, waiting: 'b'.repeat(32), queued: 0, tokens: null, lastSeq: 1, createdAt: 1, brake: false, stoppable: false, cwd: null }],
     approvals: [{
       approvalId: 'b'.repeat(32), ownedId: 'a'.repeat(20), kind: 'command', title: 'npm test', preview: 'command: npm test', tooLong: false, redactions: 0,
       digest: 'c'.repeat(64), risk: 'shell', high: true, tainted, origin, rev: 1, canAccept: true, canText: false, deadline: 5,

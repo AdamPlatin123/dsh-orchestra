@@ -17,7 +17,8 @@
 // - Basis owned only on an owned node; one owned project, of owned nodes only. An owned node that waits
 //   waits on Orchestra's own queue (source orchestra), never on a native or inferred wait, and only a
 //   session waits: a sub-agent's approval waits on its session's node, the one the card hangs on, so one
-//   approval is one waiting node (T3).
+//   approval is one waiting node (T3). A sub-agent says so by its mark instead, and its failed turn too:
+//   the mark flags its card and counts as nothing else (only a sub-agent of an owned session has one).
 // - T3: every count equals the length of the list it links to: tally against the nodes, a group's
 //   count against its ids, a node's subtree counts against its descendants, the waiting bar against
 //   the nodes that wait, clipped sessions against total - shown per source.
@@ -56,6 +57,8 @@ export const TOWER_ENUMS = frozen({
   state: ['waiting', 'error', 'running', 'unknown', 'returned', 'idle', 'ended'],
   /** registry: reported; log: read off its events; mtime: guessed from the last write; none: unknown; owned: its driver knows. */
   basis: ['registry', 'log', 'mtime', 'none', 'owned'],
+  /** A sub-agent of an owned session: its approval waits on its session; codex said its turn failed. */
+  mark: ['asks', 'failed'],
   waitingKind: ['approval', 'question', 'route'],
   /** orchestra: Orchestra's own queue (owned sessions, with a deadline); native: the harness says so; inferred: a guess. */
   waitingSource: ['orchestra', 'native', 'inferred'],
@@ -139,12 +142,15 @@ export const TOWER_BOUNDS = frozen({
  *   counts: { children: number, errors: number, waiting: number },
  *   groups: Group[],
  *   ageMs: number | null, durationMs: number | null, model: string | null, agentType: string | null,
+ *   mark: 'asks' | 'failed' | null,
  * }} Node
  *   counts: over the node's whole subtree below it (not itself): descendants, those in error, those
  *   that wait on you. groups: the folded rows among its children.
  *   durationMs: how long a sub-agent of an owned session took, or runs so far; null when that cannot be
  *   told (T1), and on every other node. model: the model codex said such a sub-agent runs on; null when it
  *   did not say (T1), and on every other node. session is null on owned nodes (no file the stage reads).
+ *   mark: what such a sub-agent's card must flag though its state cannot (it runs while it asks, it ended
+ *   when it failed); null otherwise, and on every other node.
  * @typedef {{ kind: 'approval' | 'question' | 'route', source: 'orchestra' | 'native' | 'inferred', deadline: number | null }} Waiting
  *   deadline: epoch ms when Orchestra's queue denies it by itself; null for a native or inferred wait
  *   (no timer of ours runs on it).
@@ -268,7 +274,7 @@ function checkGroupShape(c, v, at) {
 
 /** @param {Checker} c @param {unknown} v @param {string} at */
 function checkNode(c, v, at) {
-  const n = c.obj(v, at, ['id', 'session', 'harness', 'ownership', 'layer', 'parent', 'depth', 'title', 'activity', 'state', 'basis', 'waiting', 'counts', 'groups', 'ageMs', 'durationMs', 'model', 'agentType']);
+  const n = c.obj(v, at, ['id', 'session', 'harness', 'ownership', 'layer', 'parent', 'depth', 'title', 'activity', 'state', 'basis', 'waiting', 'counts', 'groups', 'ageMs', 'durationMs', 'model', 'agentType', 'mark']);
   if (n === null) return null;
   c.re(n.id, `${at}.id`, NODE_ID_RE, 'node id');
   if (n.session !== null) c.re(n.session, `${at}.session`, TOWER_HEX20_RE, 'Hex20');
@@ -316,6 +322,10 @@ function checkNode(c, v, at) {
     if (!member) c.bad(`${at}.model`, 'only a sub-agent of an owned session has a model');
   }
   if (n.agentType !== null) c.text(n.agentType, `${at}.agentType`, TOWER_BOUNDS.textCp);
+  if (n.mark !== null) {
+    c.en(n.mark, `${at}.mark`, TOWER_ENUMS.mark);
+    if (!member) c.bad(`${at}.mark`, 'only a sub-agent of an owned session has a mark');
+  }
   return { n, groups };
 }
 

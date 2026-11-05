@@ -13,6 +13,7 @@ import { guardedPlace } from './guarded.ts';
 import { Feed } from './feed.ts';
 import { isOwnedModel } from './models.ts';
 import { REGISTRY_LIMITS, memberLive } from './registry.ts';
+import { oneShot } from '../runtime/clock.ts';
 import { OWNED_TEXT_LIMITS, liveTail, shown, splitUtf8 } from './text.ts';
 import { frozen } from '../../shared/frozen.js';
 
@@ -21,14 +22,17 @@ const win = path.win32;
 // One owned Codex session over `codex app-server` (orchestra app plan §2; protocol measured on
 // codex-cli 0.165.0, shapes from its generated JSON Schema):
 //
-//   start:     initialize {clientInfo} -> notification initialized -> thread/start {cwd, model,
-//              approvalPolicy:'on-request', sandbox:'workspace-write'}. The reply must echo on-request and
+//   start:     initialize {clientInfo, capabilities} -> notification initialized -> thread/start {cwd, model,
+//              approvalPolicy:'on-request', sandbox:'workspace-write'}. capabilities asks for experimentalApi,
+//              which thread/backgroundTerminals/* need (without it codex refuses them; with it, measured, the
+//              replies to initialize and thread/start carry the same keys). The reply must echo on-request and
 //              a workspace-write (or read-only) sandbox, else the session ends as policy-mismatch. A tainted
 //              session (a seat request, r4 §8.5) asks for 'untrusted' instead, and its reply must echo that.
 //   a message: turn/start while no turn runs; turn/steer {expectedTurnId} while one does; while the
 //              thread is still starting, or a turn/start is in flight, it waits here (at most 5).
 //   stop:      every open approval of the session is declined first, the waiting messages withdrawn,
-//              then turn/interrupt (sent as soon as the turn has an id, if it had none yet).
+//              then turn/interrupt (sent as soon as the turn has an id, if it had none yet), then the
+//              sub-agents, whether or not the root still has a turn (see Sub-agents below).
 //   end:       open approvals declined, then the child is stopped (stdin closed, then killed). Started
 //              inside a procguard Job (pipe.job), the child is procguard and its end closes the Job, so
 //              what codex's commands started dies with it (r4 D4); once it closed, the Job is checked
@@ -39,7 +43,8 @@ const win = path.win32;
 //              the open approvals are declined, the session ends as braked, then the child's handle
 //              goes; the feed says how many processes the Job held and whether any is left.
 //   deadlines: initialize and thread/start get 60 s (then start-failed), turn/start and turn/steer 60 s
-//              (then the message is msg-unsure: sent, its fate unknown), turn/interrupt 10 s.
+//              (then the message is msg-unsure: sent, its fate unknown), turn/interrupt and
+//              thread/backgroundTerminals/* 10 s each; a stop reads its sub-agents' outcome 2 s after those answered.
 //
 // Each message of yours carries the uuid of its human record, and its fate is a feed note with that
 // uuid as ref: msg-queued (live) while it waits here, then msg-sent (handed to codex), msg-not-sent
@@ -92,8 +97,20 @@ const win = path.win32;
 // ended with that reason, whatever said otherwise before. Its own steps can fail and its turn still
 // complete (measured: exit code 1, turn and activity completed), so those are counted apart (failed).
 // When the session goes, a member still live turns unknown (T1), never running: the root going idle says
-// nothing about one (measured: an approval came from a member after the root turn had ended), and a stop
-// reaches the root thread only, so the feed says how many still run; the brake ends them with the Job.
+// nothing about one (measured: an approval came from a member after the root turn had ended).
+// A stop (measured 2026-11-04, one member in a long command): turn/interrupt on the root leaves the member's
+// turn and command running. turn/interrupt on the member's thread with its turn id is answered, its turn
+// completes interrupted (no subAgentActivity comes), and its command runs on: no item/completed, the process
+// still in the Job 10 s later. thread/backgroundTerminals/clean on its thread ends it (the list is per
+// thread, osPid null): item/completed failed with exit code -1, after the turn's end, the process gone within
+// 250 ms. So each live member gets both, in that order, and so does one over whose turn or command is still
+// open or whose last stop was not confirmed: its state says it ended, not that its command did. The same goes
+// for one that comes up while a stop is on its way (the root's interrupt cancels no spawn, measured), in a
+// round of its own. Sending says nothing: its state moves only on what comes back, and the feed says
+// members-stopping (live), then members-stopped (no turn open and no background terminal left) and
+// members-not-stopped (the rest, those of unknown state and those past the bound); the brake ends them all
+// with the Job. The final notes carry the live one's ref, as members-stop-unanswered does when the session goes
+// first: a page keeps a live event until one of its ref comes, and the feed never says one was taken out.
 // More members than the bound are counted (members-over), never dropped in silence. A request from a
 // member says which on its card, inside what the digest covers; a file change it announced is kept for that
 // card apart from the session's own items, whose end is the root turn's, and a member outlives that (measured).
@@ -151,7 +168,7 @@ export function codexVersionOf(userAgent: unknown): string | null {
 /** The JSON-RPC error code a server request Orchestra does not answer gets: method not found. */
 export const UNANSWERED_REQUEST_CODE = -32601;
 
-export const CODEX_DEADLINES = frozen({ startMs: 60_000, turnMs: 60_000, interruptMs: 10_000 });
+export const CODEX_DEADLINES = frozen({ startMs: 60_000, turnMs: 60_000, interruptMs: 10_000, stopSettleMs: 2_000 });
 
 /** unknown: a session an earlier orchestrad started (its registry entry outlived a restart); nobody here holds its child. */
 export type CodexSessionState = 'starting' | 'idle' | 'running' | 'ended' | 'failed' | 'unknown';
@@ -254,6 +271,8 @@ export type CodexSession = {
   readonly membersOver: number;
   /** Moves whenever what the registry keeps of the members changes. */
   readonly membersRev: number;
+  /** A stop has a member to reach: one live, or one over with something that may still run. */
+  readonly stoppable: boolean;
   readonly feed: Feed;
   /** Settles true once the thread started, false when the session ended or failed before that. */
   readonly ready: Promise<boolean>;
@@ -288,9 +307,23 @@ type Member = { -readonly [K in Exclude<keyof CodexMember, 'asks'>]: CodexMember
   asks: string[];
   /** The turn codex last said ended, so a turn/started read after it does not revive the member. */
   endedTurn: string | null;
+  /** The turn codex said started and not yet ended: what a stop interrupts. */
+  turn: string | null;
+  /** Its commands announced and not yet ended: they outlive an interrupted turn (measured). */
+  commands: Set<string>;
+  /** The last stop that reached it did not end with its list empty and its turn over. */
+  stopLeft: boolean;
   /** thread/read was asked for its name (once). */
   nameAsked: boolean;
 };
+
+/** The ref of a stop's notes, live and final. */
+const STOP_REF = 'members-stop';
+
+/** Something of its may still run, whatever its state says. */
+const memberBusy = (m: Member) => m.state === 'running' || m.turn !== null || m.commands.size > 0 || m.stopLeft;
+/** A stop has something to send it. Of one in an unknown state no turn is known (T1). */
+const stopReaches = (m: Member) => m.state !== 'unknown' && (memberLive(m) || memberBusy(m));
 
 /** Starts an owned Codex session; the child is running when this returns ok, the thread starting. */
 export function startCodexSession(opts: CodexSessionOptions): StartResult {
@@ -355,6 +388,10 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   const memberAsked = new Set<string>();
   /** Steps of sub-agents, listed or only counted, that ran though codex never asked. */
   let memberUnasked = 0;
+  /** A stop is on its way to the sub-agents: another press adds nothing to it. */
+  let membersStopping = false;
+  /** The timer of a stop's wait, made at the first stop. */
+  let stopAfter: ((ms: number, fn: () => void) => () => void) | null = null;
 
   let settleReady!: (ok: boolean) => void;
   const ready = new Promise<boolean>((r) => {
@@ -409,6 +446,11 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   const note = (stateName: string, text: string | null = null) => {
     const s = text === null ? null : shownFeed(text, 'head');
     feed.push({ kind: 'note', ref: null, text: s?.text ?? null, state: stateName, redactions: s?.redactions ?? 0 });
+  };
+  /** A stop's final word: it takes the place of the live note, in the feed and on a page that holds it. */
+  const stopSaid = (stateName: string, text: string | null) => {
+    feed.settle(STOP_REF);
+    feed.push({ kind: 'note', ref: STOP_REF, text, state: stateName });
   };
   /** Takes a command's announcement out of the feed while a card about it is open. */
   const hideTool = (iid: string | null) => {
@@ -467,7 +509,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     }
     // Measured under on-request only: whether it takes this thread's untrusted or the config's on-request nobody knows.
     if (members.size === 0 && opts.tainted === true) note('members-untrusted');
-    const m: Member = { threadId: tid, name: null, model: null, state: 'unknown', why: null, startedAt: null, endedAt: null, failed: 0, ranUnasked: 0, lastAt: null, asks: [], endedTurn: null, nameAsked: false };
+    const m: Member = { threadId: tid, name: null, model: null, state: 'unknown', why: null, startedAt: null, endedAt: null, failed: 0, ranUnasked: 0, lastAt: null, asks: [], endedTurn: null, turn: null, commands: new Set(), stopLeft: false, nameAsked: false };
     members.set(tid, m);
     membersRev++;
     return m;
@@ -521,6 +563,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   };
   /** The session is gone: nobody can hear a member again, so one still live is unknown, never running (T1). */
   const loseMembers = () => {
+    const stopping = feed.last((e) => e.live && e.ref === STOP_REF);
+    if (stopping !== null) stopSaid('members-stop-unanswered', stopping.text);
     askMember.clear();
     for (const m of members.values()) {
       m.asks = [];
@@ -672,6 +716,73 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     } catch (e) {
       if (!terminal()) note('interrupt-failed', errText(e));
     }
+  };
+
+  /** A request of a stop to a member's thread: its reply, or null when codex refused it or never answered. */
+  const memberCall = async (method: string, params: Obj): Promise<Obj | null> => {
+    try {
+      return obj(await rpc.request(method, params, D.interruptMs));
+    } catch {
+      return null;
+    }
+  };
+
+  /** Its turn first, then what that leaves running: an interrupted turn does not end its command (measured). */
+  const stopMember = async (m: Member) => {
+    if (m.turn !== null) await memberCall('turn/interrupt', { threadId: m.threadId, turnId: m.turn });
+    await memberCall('thread/backgroundTerminals/clean', { threadId: m.threadId });
+  };
+
+  /** Only an answer with an empty list says none is left (T1). */
+  const noTerminals = async (m: Member) => {
+    const r = await memberCall('thread/backgroundTerminals/list', { threadId: m.threadId });
+    return r !== null && Array.isArray(r.data) && r.data.length === 0;
+  };
+
+  const stopPause = () => new Promise<void>((r) => {
+    if (opts.hub === undefined) {
+      r();
+      return;
+    }
+    stopAfter ??= oneShot(opts.hub, `codex-stop-${/^[0-9a-f]{1,40}$/.test(ownedId) ? ownedId : 'c'}`);
+    stopAfter(D.stopSettleMs, r);
+  });
+
+  /**
+   * The stop reaches what it can; what it did is read afterwards, from what came back. Each round takes the
+   * members no round took yet, so one that came up on the way gets the same, and the last read finds none new.
+   * `busy` are those it says it stopped or not (an idle one has no turn, only what it may have left).
+   */
+  const stopMembers = async () => {
+    membersStopping = true;
+    /** Each member reached, and whether its list said none is left. */
+    const heard = new Map<Member, boolean>();
+    const busy = new Set<Member>();
+    for (;;) {
+      const round = [...members.values()].filter((m) => stopReaches(m) && !heard.has(m));
+      if (round.length === 0) break;
+      for (const m of round) if (memberBusy(m)) busy.add(m);
+      if (busy.size > 0) feed.upsert(STOP_REF, { kind: 'note', ref: STOP_REF, text: `${busy.size}`, state: 'members-stopping' });
+      await Promise.all(round.map(stopMember));
+      await stopPause();
+      if (terminal()) break;
+      const clean = await Promise.all(round.map(noTerminals));
+      round.forEach((m, i) => heard.set(m, clean[i]!));
+    }
+    membersStopping = false;
+    // The session went meanwhile: its end says what became of them.
+    if (terminal()) return;
+    const left = [...heard].filter(([m, clean]) => !clean || m.state === 'running' || m.state === 'unknown' || m.turn !== null).map(([m]) => m);
+    for (const m of heard.keys()) {
+      m.stopLeft = left.includes(m);
+      if (!m.stopLeft) m.commands.clear();
+    }
+    const stopped = [...busy].filter((m) => !left.includes(m)).length;
+    // Of one in an unknown state, or past the bound, no turn is known (T1).
+    const unsure = [...members.values()].filter((m) => m.state === 'unknown' && !heard.has(m)).length + overIds.size;
+    if (stopped > 0) stopSaid('members-stopped', `${stopped}`);
+    if (left.length + unsure > 0) stopSaid('members-not-stopped', `${left.length + unsure}`);
+    changed();
   };
 
   // --- what codex tells ------------------------------------------------------------------------------
@@ -874,6 +985,12 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     const type = str(item.type);
     if (iid === null || (type !== 'commandExecution' && type !== 'fileChange')) return;
     const key = memberKey(tid, iid);
+    if (m !== null && type === 'commandExecution') {
+      if (done) m.commands.delete(iid);
+      else m.commands.add(iid);
+      if (m.commands.size > L.memberChanges) m.commands.delete(m.commands.values().next().value!);
+      changed();
+    }
     if (!done) {
       const changes = type === 'fileChange' ? changesOf(item.changes) : null;
       if (changes === null) return;
@@ -904,7 +1021,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       memberItem(p, method === 'item/completed');
       memberStep(method === 'item/completed', obj(p.item), tid, m);
     }
-    if (method === 'turn/completed') memberTurnOver(tid);
+    // An interrupted turn's command ends after it, once a stop cleans it up: what was asked about it is still needed then.
+    if (method === 'turn/completed' && str(obj(p.turn).status) !== 'interrupted') memberTurnOver(tid);
     if (m === null) return;
     m.lastAt = opts.now();
     switch (method) {
@@ -921,6 +1039,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
         const turn = obj(p.turn);
         const t = id(turn.id);
         if (t !== null && t === m.endedTurn) return;
+        m.turn = t;
         moveMember(m, 'running');
         m.endedAt = null;
         memberStart(m, atSecs(turn.startedAt));
@@ -932,6 +1051,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
         const status = str(turn.status);
         const at = atSecs(turn.completedAt);
         m.endedTurn = id(turn.id);
+        if (m.endedTurn === null || m.endedTurn === m.turn) m.turn = null;
         memberStart(m, atSecs(turn.startedAt));
         if (status === 'completed') memberReturned(m, at);
         else if (status === 'interrupted') memberEnded(m, 'interrupted', at);
@@ -940,7 +1060,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
         return;
       }
       case 'item/completed':
-        if (str(obj(p.item).status) === 'failed') {
+        // A command a stop ended comes back failed after the interrupted turn (measured): not a step of its that failed.
+        if (str(obj(p.item).status) === 'failed' && m.why !== 'interrupted') {
           m.failed++;
           membersRev++;
         }
@@ -1260,7 +1381,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
 
   void (async () => {
     try {
-      const init = obj(await rpc.request('initialize', { clientInfo: { ...CODEX_CLIENT_INFO } }, D.startMs));
+      const init = obj(await rpc.request('initialize', { clientInfo: { ...CODEX_CLIENT_INFO }, capabilities: { experimentalApi: true, requestAttestation: false } }, D.startMs));
       if (terminal()) return;
       const version = codexVersionOf(init.userAgent);
       if (version === null || !CODEX_VERSIONS.includes(version)) {
@@ -1323,13 +1444,16 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       return queue.length;
     },
     get members() {
-      return Object.freeze([...members.values()].map(({ endedTurn: _t, nameAsked: _n, asks, ...m }) => Object.freeze({ ...m, asks: Object.freeze([...asks]) })));
+      return Object.freeze([...members.values()].map(({ endedTurn: _t, turn: _u, commands: _c, stopLeft: _l, nameAsked: _n, asks, ...m }) => Object.freeze({ ...m, asks: Object.freeze([...asks]) })));
     },
     get membersOver() {
       return overIds.size;
     },
     get membersRev() {
       return membersRev;
+    },
+    get stoppable() {
+      return [...members.values()].some(stopReaches);
     },
     feed,
     ready,
@@ -1353,14 +1477,10 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       const withdrawn = withdrawAll();
       if (turnId !== null) void sendInterrupt(turnId);
       else if (turnStarting) interruptWanted = true;
-      // turn/interrupt goes to the root thread only. What it does to a sub-agent was not measured, and with
-      // the root idle nothing goes at all: said, so a stop is not taken for the end of them. Only one codex
-      // said runs is counted as running: an idle one is not, and of one past the bound nothing is known (T1).
-      const listed = [...members.values()];
-      const running = listed.filter((m) => m.state === 'running').length;
-      const others = listed.filter((m) => m.state === 'idle').length + overIds.size;
-      if (running > 0) note('members-running', `${running}`);
-      if (others > 0) note('members-not-stopped', `${others}`);
+      // Its sub-agents, with the root's turn or without one (a root that went idle leaves them running, measured).
+      // Sent is not stopped: the outcome is the feed's. What it cannot reach is said too.
+      const anyToSay = overIds.size > 0 || [...members.values()].some((m) => m.state === 'unknown' || stopReaches(m));
+      if (!membersStopping && anyToSay) void stopMembers();
       changed();
       return { withdrawn, denied };
     },

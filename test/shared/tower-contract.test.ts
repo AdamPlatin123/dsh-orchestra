@@ -56,6 +56,9 @@ test('shapes and grammars: ids, enums, missing and unknown keys, text bounds', (
   broken(golden, (s) => { s.projects[0].nodes[0].basis = 'guess'; }, 'nodes[0].basis');
   broken(golden, (s) => { delete s.projects[0].nodes[0].agentType; }, 'missing agentType');
   broken(golden, (s) => { s.projects[0].nodes[0].extra = 1; }, 'unknown key extra');
+  broken(golden, (s) => { delete s.projects[0].nodes[0].mark; }, 'missing mark');
+  broken(golden, (s) => { s.projects[0].nodes[0].mark = 'asks'; }, 'only a sub-agent of an owned session has a mark');
+  broken(withMember, (s) => { s.projects[0].nodes[1].mark = 'waits'; }, 'nodes[1].mark');
   broken(golden, (s) => { s.projects[0].nodes[0].title = 'x'.repeat(61); }, 'at most 60');
   broken(golden, (s) => { s.projects[0].nodes[0].activity = 'a‮b'; }, 'control or bidi');
   broken(golden, (s) => { s.meta.sources.codex.registry = 2; }, 'Codex has no registry');

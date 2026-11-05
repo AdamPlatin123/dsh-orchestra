@@ -110,6 +110,16 @@ export function endReasonOnDisk(testDir: string, ownedId: string): { state: stri
   }
 }
 
+/** What the record on disk counts of each sub-agent of a session, or null when it cannot be read. Never a name. */
+export function membersOnDisk(testDir: string, ownedId: string): { failed: number; ranUnasked: number }[] | null {
+  try {
+    const o = JSON.parse(fs.readFileSync(path.join(testDir, 'orchestra', 'owned', `${ownedId}.json`), 'utf8')) as { members?: { failed: number; ranUnasked: number }[] };
+    return o.members === undefined ? null : o.members.map((m) => ({ failed: m.failed, ranUnasked: m.ranUnasked }));
+  } catch {
+    return null;
+  }
+}
+
 /** The image a start without a Job runs under: only ever counted, never ended by its pid (see leftovers). */
 const IMAGE: Readonly<Record<string, string>> = { 'claude-host': 'node.exe', 'codex-app-server': 'codex.exe', procguard: 'procguard.exe' };
 

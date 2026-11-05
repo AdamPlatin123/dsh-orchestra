@@ -294,7 +294,7 @@ export function restoredSession(r: OwnedRecord, now: () => number): CodexSession
   const endReason = r.endReason as CodexEndReason | null;
   const members: readonly CodexMember[] = Object.freeze((r.members ?? []).map((m) => Object.freeze({ ...m, lastAt: null, asks: Object.freeze([]) })));
   return Object.freeze({
-    ownedId: r.ownedId, model: r.model, cwd: '', state, endReason, threadId: null, turnId: null, tokens: null, queued: 0, members, membersOver: r.membersOver ?? 0, membersRev: 0, feed,
+    ownedId: r.ownedId, model: r.model, cwd: '', state, endReason, threadId: null, turnId: null, tokens: null, queued: 0, members, membersOver: r.membersOver ?? 0, membersRev: 0, stoppable: false, feed,
     ready: Promise.resolve(false),
     send: () => ({ ok: false as const, reason: 'ended' as const }),
     interrupt: async () => ({ withdrawn: 0, denied: 0 }),

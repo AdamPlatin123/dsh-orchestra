@@ -199,7 +199,8 @@
           "ageMs": 0,
           "durationMs": null,
           "model": null,
-          "agentType": null
+          "agentType": null,
+          "mark": null
         },
         {
           "id": "n:ecc2087bd3bea225d48c",
@@ -223,7 +224,8 @@
           "ageMs": 0,
           "durationMs": null,
           "model": null,
-          "agentType": "explorer"
+          "agentType": "explorer",
+          "mark": null
         },
         {
           "id": "n:ff3bc5e0efd65107263a",
@@ -247,7 +249,8 @@
           "ageMs": 0,
           "durationMs": null,
           "model": null,
-          "agentType": "worker"
+          "agentType": "worker",
+          "mark": null
         },
         {
           "id": "n:432a4c806b9d285085e0",
@@ -275,7 +278,8 @@
           "ageMs": 0,
           "durationMs": null,
           "model": null,
-          "agentType": null
+          "agentType": null,
+          "mark": null
         },
         {
           "id": "n:f0da593cb7e018d87617",
@@ -299,7 +303,8 @@
           "ageMs": 0,
           "durationMs": null,
           "model": null,
-          "agentType": "code-reviewer"
+          "agentType": "code-reviewer",
+          "mark": null
         },
         {
           "id": "n:d6fd0ebf29854932a86f",
@@ -323,7 +328,8 @@
           "ageMs": 0,
           "durationMs": null,
           "model": null,
-          "agentType": "general-purpose"
+          "agentType": "general-purpose",
+          "mark": null
         },
         {
           "id": "n:4ed5663bc35e36685b4c",
@@ -347,7 +353,8 @@
           "ageMs": 0,
           "durationMs": null,
           "model": null,
-          "agentType": "Explore"
+          "agentType": "Explore",
+          "mark": null
         },
         {
           "id": "n:23d4685c6441a51ab6aa",
@@ -371,7 +378,8 @@
           "ageMs": 0,
           "durationMs": null,
           "model": null,
-          "agentType": "Explore"
+          "agentType": "Explore",
+          "mark": null
         },
         {
           "id": "n:e8523ae68da21e111627",
@@ -395,7 +403,8 @@
           "ageMs": 0,
           "durationMs": null,
           "model": null,
-          "agentType": null
+          "agentType": null,
+          "mark": null
         },
         {
           "id": "n:1e53d9e5cf74b7dff31e",
@@ -419,7 +428,8 @@
           "ageMs": 0,
           "durationMs": null,
           "model": null,
-          "agentType": "worker"
+          "agentType": "worker",
+          "mark": null
         },
         {
           "id": "n:b69d912394efe22b30f4",
@@ -443,7 +453,8 @@
           "ageMs": 0,
           "durationMs": null,
           "model": null,
-          "agentType": "reviewer"
+          "agentType": "reviewer",
+          "mark": null
         }
       ],
       "groups": []

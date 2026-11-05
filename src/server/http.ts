@@ -33,9 +33,9 @@ import { frozen } from '../../shared/frozen.js';
 // CSRF token because nothing but pairing changes state. Step 4 replaces this module's routes with the
 // route table of server/routes.ts and step 5 replaces the pages.
 //
-// The tower page (orchestra app plan §5) is the one place with a script: once paired, GET / and
-// GET /tower serve the embedded ui/tower.html, /assets/ui/* and /assets/shared/* serve the embedded
-// modules and styles it loads (src/server/ui-assets.ts, by map lookup only, no cookie: they hold no
+// The two pages (orchestra app plan §5, 第三轮方案 22) are the one place with a script: once paired, GET / serves
+// the embedded ui/home.html and GET /tower the old ui/tower.html, under the same checks; /assets/ui/* and
+// /assets/shared/* serve the embedded modules and styles they load (src/server/ui-assets.ts, by map lookup only, no cookie: they hold no
 // session data), and /api/tower and /api/peek/session answer its polls with JSON. Those routes carry
 // UI_CSP: script and connections to self only, trusted types on with no policy, so the page writes the
 // DOM through textContent and attributes alone. Every other route keeps the scriptless CSP: the pairing
@@ -189,11 +189,11 @@ function eventRow(e: PeekEvent): string {
   return `<tr><td class="n">${Number.isFinite(ms) ? escapeHtml(local(ms)) : ''}</td><td class="n">${escapeHtml(e.type)}</td><td class="t">${escapeHtml(e.text)}</td></tr>`;
 }
 
-function sessionPage(profile: 'real' | 'test', v: PeekView): string {
+function sessionPage(profile: 'real' | 'test', v: PeekView, fromTower: boolean): string {
   const s = v.session;
   const note = v.note === null ? '' : `<p class="note">${escapeHtml(NOTES[v.note])}</p>`;
   const unparsed = v.unparsed > 0 ? `<p class="sub">${v.unparsed} 行不是 JSON 对象，没显示。</p>` : '';
-  return page(`Orchestra · ${s.project}`, profile, `<p><a href="/">← 回到塔</a></p><h1>${escapeHtml(s.project)}</h1>
+  return page(`Orchestra · ${s.project}`, profile, `<p>${fromTower ? '<a href="/tower">← 回到塔</a>' : '<a href="/">← 回到首页</a>'}</p><h1>${escapeHtml(s.project)}</h1>
 <p class="sub">${s.harness} · ${kib(s.size)} · 修改于 ${local(s.mtimeMs)}（本机时间） · 最后 ${v.events.length} 条事件（上限 ${PEEK_LIMITS.events}）</p>${note}${unparsed}
 <table><thead><tr><th>时间（本机）</th><th>类型</th><th>内容</th></tr></thead><tbody>${v.events.map(eventRow).join('\n')}</tbody></table>`);
 }
@@ -332,21 +332,21 @@ export async function startPeekServer(opts: PeekServerOptions): Promise<PeekServ
       res.setHeader('Location', '/');
       return plain(res, 301, 'moved to /');
     }
-    const towerPage = url.pathname === '/' || url.pathname === '/tower';
+    const pageName = url.pathname === '/' ? 'ui/home.html' : url.pathname === '/tower' ? 'ui/tower.html' : null;
     if (!paired) {
-      if (towerPage) return html(res, 200, pairPage(profile, null, pairing.open));
+      if (pageName !== null) return html(res, 200, pairPage(profile, null, pairing.open));
       return plain(res, 403, 'not paired');
     }
     try {
-      if (towerPage) {
-        const page = assets.get('ui/tower.html');
+      if (pageName !== null) {
+        const page = assets.get(pageName);
         if (page === undefined) return plain(res, 503, 'ui-not-embedded', UI_HEADERS);
         return send(res, 200, page.type, page.body, UI_HEADERS);
       }
       if (url.pathname === '/session') {
         const s = findSession(gate, roots, redact, url.searchParams.get('id') ?? '');
         if (s === null) return plain(res, 404, 'no such session');
-        return html(res, 200, sessionPage(profile, readSession(gate, s, redact)));
+        return html(res, 200, sessionPage(profile, readSession(gate, s, redact), url.searchParams.get('from') === 'tower'));
       }
       if (url.pathname === '/api/peek/stage') return json(res, 200, stage.snapshot());
       if (url.pathname === '/api/tower') {

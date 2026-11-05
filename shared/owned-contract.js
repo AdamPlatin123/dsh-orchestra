@@ -172,10 +172,11 @@ export function holdsControl(s) {
  *   still end it; an ended or failed session still stopping (its child not closed yet) has one too.
  * @typedef {{
  *   ownedId: string, harness: 'codex' | 'claude', model: string, title: string, state: string, endReason: string | null,
- *   waiting: string | null, queued: number, tokens: Tokens | null, lastSeq: number, createdAt: number, brake: boolean,
+ *   waiting: string | null, queued: number, tokens: Tokens | null, lastSeq: number, createdAt: number, brake: boolean, stoppable: boolean,
  *   cwd: { path: string, kind: 'project-root' | 'work' } | null,
  * }} OwnedEntry
  *   title: the first line of its first message, shown (possibly empty); waiting: an approvalId.
+ *   stoppable: a sub-agent of it is live (running or idle), or over with a turn or command still open or its last stop unconfirmed, so the stop has something to reach even with no turn of its own running.
  *   cwd: where it works, a project root (or a folder in one) or its own work dir; null when not known (T1).
  * @typedef {{ input: number, cachedInput: number, output: number, total: number }} Tokens
  * @typedef {{
@@ -334,7 +335,7 @@ export function validateOwnedList(x) {
   const sessions = new Map();
   c.arr(s.owned, '$.owned').forEach((e, i) => {
     const at = `$.owned[${i}]`;
-    const o = c.obj(e, at, ['ownedId', 'harness', 'model', 'title', 'state', 'endReason', 'waiting', 'queued', 'tokens', 'lastSeq', 'createdAt', 'brake', 'cwd']);
+    const o = c.obj(e, at, ['ownedId', 'harness', 'model', 'title', 'state', 'endReason', 'waiting', 'queued', 'tokens', 'lastSeq', 'createdAt', 'brake', 'cwd', 'stoppable']);
     if (o === null) return;
     c.re(o.ownedId, `${at}.ownedId`, OWNED_ID_RE, 'owned id');
     if (sessions.has(o.ownedId)) c.bad(`${at}.ownedId`, `${String(o.ownedId)} listed twice`);
@@ -358,6 +359,9 @@ export function validateOwnedList(x) {
     // Nothing of a session an earlier orchestrad left runs here: there is no tree to brake. An ended or
     // failed one may still be stopping (its child not closed yet), and the brake still reaches it.
     if (o.state === 'unknown' && o.brake === true) c.bad(`${at}.brake`, 'a session an earlier orchestrad left has no tree to brake');
+    c.bool(o.stoppable, `${at}.stoppable`);
+    // Nothing can reach a sub-agent of a session that is over.
+    if (over && o.stoppable === true) c.bad(`${at}.stoppable`, 'a session that is over has nothing to stop');
     // Where it works; null when not known (a session an earlier orchestrad left: the registry keeps no path).
     if (o.cwd !== null) {
       const w = c.obj(o.cwd, `${at}.cwd`, ['path', 'kind']);

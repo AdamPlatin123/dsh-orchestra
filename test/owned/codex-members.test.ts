@@ -8,16 +8,18 @@ import type { Frame } from '../fixtures/codex-subagent-frames.ts';
 import { VirtualClock } from '../../src/runtime/clock.ts';
 import { Approvals } from '../../src/owned/approvals.ts';
 import { CodexOwned, memberSeats, recentOf, restoredSession } from '../../src/owned/codex-owned.ts';
-import { CODEX_SESSION_LIMITS, startCodexSession } from '../../src/owned/codex-session.ts';
+import { CODEX_DEADLINES, CODEX_SESSION_LIMITS, startCodexSession } from '../../src/owned/codex-session.ts';
 import { DEFAULT_CODEX_MODEL } from '../../src/owned/models.ts';
 import { REGISTRY_LIMITS, afterRestart, makeOwnedRegistry, parseOwnedRecord } from '../../src/owned/registry.ts';
 import { restoredOwned } from '../../src/owned/restored.ts';
+import { ownedList } from '../../src/server/owned-handlers.ts';
 import { memberNodeId, ownedNode, ownedProject, towerFromStage } from '../../src/sources/tower.ts';
+import { validateOwnedList } from '../../shared/owned-contract.js';
 import { validateTower } from '../../shared/tower-contract.js';
-import { ownedIdOf } from '../../ui/owned.js';
+import { describeChat, mergeFeed, ownedIdOf } from '../../ui/owned.js';
 import { busyStage } from '../helpers/tower-fixture.ts';
 import {
-  CHILD, CHILD_TURN, CHILD_WORDS, ROOT, ROOT_TURN, SECS0, T0, V1_FROM_APPROVAL, V1_TO_APPROVAL, V2_FROM_APPROVAL, V2_TO_APPROVAL,
+  CHILD, CHILD_TURN, CHILD_WORDS, ROOT, ROOT_TURN, SECS0, STOP_CLEANED, STOP_INTERRUPTED, T0, V1_FROM_APPROVAL, V1_TO_APPROVAL, V2_FROM_APPROVAL, V2_TO_APPROVAL,
   activity, childApproval, childCommand, childTurn, collab, resolved, statusOf,
 } from '../fixtures/codex-subagent-frames.ts';
 
@@ -108,6 +110,53 @@ const ran = (threadId: string, itemId: string, status = 'completed', command = C
   { method: 'item/completed', params: { threadId, turnId: 't', item: { type: 'commandExecution', id: itemId, command, status, aggregatedOutput: CHILD_WORDS, exitCode: 0 } } },
 ];
 
+/** What a stop sends, in order, as [method, threadId, turnId]. */
+const stopSent = (m: ReturnType<typeof memPipe>) => m.sent().filter((x) => /^(turn\/interrupt|thread\/backgroundTerminals\/)/.test(x.method ?? '')).map((x) => [x.method, x.params.threadId, x.params.turnId]);
+const CLEAN = 'thread/backgroundTerminals/clean';
+const LIST = 'thread/backgroundTerminals/list';
+
+/** The stop requests already answered, per session: a stop of two rounds is played twice. */
+const answered = new WeakMap<object, Set<unknown>>();
+
+/**
+ * Plays codex's side of a stop already pressed: each request answered as measured, or refused when its method is
+ * in `refuse` and it is a member's; `interrupted` comes after the interrupts, `cleaned` after the cleans; `terminals`
+ * says how many a thread's list holds. No list may go out before the pause is over.
+ */
+async function codexStops(x: Awaited<ReturnType<typeof session>>, o: { interrupted?: readonly Frame[]; cleaned?: readonly Frame[]; terminals?: (threadId: string) => number; refuse?: readonly string[] } = {}) {
+  const done = answered.get(x) ?? new Set<unknown>();
+  answered.set(x, done);
+  const lists = () => stopSent(x.m).filter((r) => r[0] === LIST).length;
+  const listed = lists();
+  const answer = async () => {
+    await settle();
+    for (const r of x.m.sent()) {
+      if (done.has(r.id) || !/^(turn\/interrupt|thread\/backgroundTerminals\/)/.test(r.method ?? '')) continue;
+      done.add(r.id);
+      if (o.refuse?.includes(r.method) && r.params.threadId !== ROOT) x.m.send({ id: r.id, error: { code: -32600, message: 'refused' } });
+      else x.m.send({ id: r.id, result: r.method === LIST ? { data: Array.from({ length: o.terminals?.(r.params.threadId) ?? 0 }, () => ({ itemId: 'exec-child', processId: '1', osPid: null })), nextCursor: null } : {} });
+    }
+    await settle();
+  };
+  await answer();
+  await x.play(o.interrupted ?? []);
+  await answer();
+  await x.play(o.cleaned ?? []);
+  x.clock.advanceBy(CODEX_DEADLINES.stopSettleMs - 1);
+  await answer();
+  assert.equal(lists(), listed, 'the list is read once the pause is over, not before');
+  x.clock.advanceBy(1);
+  await answer();
+}
+
+/** Whether the list offers the stop for this session, read as the page reads it. */
+const stoppable = (x: Awaited<ReturnType<typeof session>>) => {
+  const list = ownedList({ codex: { list: () => [x.s], meta: () => null, approvals: x.approvals, maxActive: 3 } as unknown as CodexOwned, claude: null, codexOff: 'on' });
+  assert.deepEqual(validateOwnedList(list).errors, []);
+  return list.owned[0]!.stoppable;
+};
+const ROOT_IDLE: Frame = { method: 'turn/completed', params: { threadId: ROOT, turn: { id: 'turn-root', status: 'completed' } } };
+
 test('v2, as measured: subAgentActivity builds the member, its command asks on a card that names it, and it ends as returned', async () => {
   const { m, s, approvals, clock, play } = await session();
   await play(V2_TO_APPROVAL);
@@ -197,37 +246,407 @@ test('a sub-agent that fails: a step that fails is counted and the report still 
   assert.deepEqual([only(d.s).state, only(d.s).why], ['ended', 'failed']);
 });
 
-test('a stop counts as running only what codex said runs: one idle, and one past the bound, are said apart', async () => {
-  const { s, play } = await session();
-  await play([activity('started', 'started', T0), childTurn('turn/started'), activity('started', 'started', T0, 'thread-two', '/root/two'), statusOf('idle', 'thread-two')]);
+test('a stop, as measured: the member gets its interrupt, then the clean; sent is not stopped, and the state moves only on what comes back', async () => {
+  const x = await session();
+  const { m, s, approvals, play } = x;
+  await play(V2_TO_APPROVAL);
+  m.send(childApproval(0));
+  await settle();
+  assert.equal(approvals.deny(approvals.list()[0]!.approvalId), 'ok');
+  await play([resolved(0), statusOf('active', CHILD, [])]);
   await s.interrupt();
-  assert.deepEqual(noteStates(s), ['members-running=1', 'members-not-stopped=1']);
+  await settle();
+  // Nothing has come back: it runs, and the feed says only that the stop went out.
+  assert.equal(only(s).state, 'running');
+  assert.deepEqual(noteStates(s), ['members-stopping=1']);
+  assert.deepEqual(stopSent(m), [['turn/interrupt', ROOT, ROOT_TURN], ['turn/interrupt', CHILD, CHILD_TURN]]);
 
+  await codexStops(x, { interrupted: STOP_INTERRUPTED, cleaned: STOP_CLEANED });
+  assert.deepEqual(stopSent(m), [['turn/interrupt', ROOT, ROOT_TURN], ['turn/interrupt', CHILD, CHILD_TURN], [CLEAN, CHILD, undefined], [LIST, CHILD, undefined]]);
+  assert.deepEqual([only(s).state, only(s).why, only(s).endedAt], ['ended', 'interrupted', (SECS0 + 10) * 1000]);
+  // Its command's end comes after the turn's: not a failed step of its, and it was asked about.
+  assert.deepEqual([only(s).failed, only(s).ranUnasked], [0, 0]);
+  assert.deepEqual(noteStates(s), ['members-stopped=1'], 'the live note went, and nothing says it ran unasked');
+  assert.equal(s.state, 'running', 'what the root\'s turn does is its own');
+  assert.equal(feedText(s).includes(CHILD_WORDS), false);
+  assert.equal(towerOf([seatOf(s)]).projects[0]!.nodes[1]!.activity, '已结束：被打断了，没有回报');
+});
+
+test('a command nobody asked about that a stop ended still counts as run unasked; only its failure is the stop\'s', async () => {
+  const x = await session();
+  await x.play([activity('started', 'started', T0), childTurn('turn/started'), childCommand('started', T0 + 1, 'inProgress')]);
+  await x.s.interrupt();
+  await codexStops(x, { interrupted: STOP_INTERRUPTED, cleaned: STOP_CLEANED });
+  assert.deepEqual([only(x.s).failed, only(x.s).ranUnasked], [0, 1]);
+  assert.deepEqual(noteStates(x.s), ['members-ran-unasked=1', 'members-stopped=1']);
+});
+
+test('with the root idle a stop still reaches the member, and no interrupt goes to the root', async () => {
+  const x = await session();
+  const { m, s, approvals, play } = x;
+  await play(V2_TO_APPROVAL);
+  await play([{ method: 'turn/completed', params: { threadId: ROOT, turn: { id: 'turn-root', status: 'completed' } } }]);
+  assert.equal(s.state, 'idle');
+  assert.equal(only(s).state, 'running');
+  m.send(childApproval(0));
+  await settle();
+  assert.equal(approvals.list().length, 1);
+  const r = await s.interrupt();
+  assert.equal(r.denied, 1);
+  assert.deepEqual(only(s).asks, []);
+  await codexStops(x, { interrupted: STOP_INTERRUPTED });
+  assert.deepEqual(stopSent(m), [['turn/interrupt', CHILD, CHILD_TURN], [CLEAN, CHILD, undefined], [LIST, CHILD, undefined]]);
+  assert.deepEqual([only(s).state, only(s).why, s.state], ['ended', 'interrupted', 'idle']);
+  assert.deepEqual(noteStates(s), ['members-stopped=1']);
+});
+
+test('the list says a stop has something to reach while a member is live, with the root idle too, and never once the session is over', async () => {
+  const x = await session();
+  assert.equal(stoppable(x), false);
+  await x.play([activity('started', 'started', T0), childTurn('turn/started'), ROOT_IDLE]);
+  assert.equal(x.s.state, 'idle');
+  assert.equal(stoppable(x), true);
+  await x.play(STOP_INTERRUPTED);
+  assert.equal(stoppable(x), false);
+  await x.play([childTurn('turn/started', { id: 'turn-child-2' })]);
+  assert.equal(stoppable(x), true);
+  // Ended with a command open: the end of the session is then the only thing that says no.
+  await x.play([childCommand('started', T0 + 1, 'inProgress'), childTurn('turn/completed', { id: 'turn-child-2', status: 'interrupted' })]);
+  assert.equal(only(x.s).state, 'ended');
+  assert.equal(stoppable(x), true);
+  x.s.end();
+  assert.equal(stoppable(x), false);
+});
+
+test('the contract refuses a stop offered on a session that is over', async () => {
+  const x = await session();
+  const list = ownedList({ codex: { list: () => [x.s], meta: () => null, approvals: x.approvals, maxActive: 3 } as unknown as CodexOwned, claude: null, codexOff: 'on' });
+  const over = (stop: boolean) => validateOwnedList({ ...list, limits: { ...list.limits, active: 0 }, owned: [{ ...list.owned[0]!, state: 'ended', endReason: 'you-ended', queued: 0, stoppable: stop }] }).errors;
+  assert.deepEqual(over(false), []);
+  assert.ok(over(true).some((e: string) => e.includes('stoppable')));
+});
+
+test('what did not stop is said and counted: a refused interrupt, a terminal left, an answer that never says none', async () => {
+  // Refused: its turn runs on, and it stays running.
+  const a = await session();
+  await a.play([activity('started', 'started', T0), childTurn('turn/started')]);
+  await a.s.interrupt();
+  await codexStops(a, { refuse: ['turn/interrupt'] });
+  assert.equal(only(a.s).state, 'running');
+  assert.deepEqual(noteStates(a.s), ['members-not-stopped=1']);
+
+  // Its turn ended, its command did not: the turn's end alone is not a stop.
   const b = await session();
-  await b.play([statusOf('idle')]);
+  await b.play([activity('started', 'started', T0), childTurn('turn/started')]);
   await b.s.interrupt();
-  assert.deepEqual(noteStates(b.s), ['members-not-stopped=1'], 'an idle one is not said to run');
+  await codexStops(b, { interrupted: STOP_INTERRUPTED, terminals: () => 1 });
+  assert.deepEqual([only(b.s).state, only(b.s).why], ['ended', 'interrupted']);
+  assert.deepEqual(noteStates(b.s), ['members-not-stopped=1']);
 
+  // The list refused: nothing says none is left (T1).
+  const c = await session();
+  await c.play([activity('started', 'started', T0), childTurn('turn/started')]);
+  await c.s.interrupt();
+  await codexStops(c, { interrupted: STOP_INTERRUPTED, refuse: [LIST] });
+  assert.deepEqual(noteStates(c.s), ['members-not-stopped=1']);
+
+  // One of two: each count is its own.
+  const d = await session();
+  await d.play([activity('started', 'started', T0), childTurn('turn/started'), activity('started', 'started', T0, 'thread-two', '/root/two'), childTurn('turn/started', { id: 'turn-two' }, 'thread-two')]);
+  await d.s.interrupt();
+  await codexStops(d, { interrupted: [...STOP_INTERRUPTED, childTurn('turn/completed', { id: 'turn-two', status: 'interrupted' }, 'thread-two')], terminals: (t) => (t === 'thread-two' ? 1 : 0) });
+  assert.deepEqual(noteStates(d.s), ['members-stopped=1', 'members-not-stopped=1']);
+});
+
+test('a stop counts what it cannot reach: past the bound, of unknown state; one idle has no turn to interrupt and is cleaned, without a word', async () => {
   const c = await session();
   const L = CODEX_SESSION_LIMITS.members;
   const threads = Array.from({ length: L + 8 }, (_, i) => `thread-${i}`);
   await c.play(threads.map((t) => childTurn('turn/started', {}, t)));
   await c.s.interrupt();
-  assert.deepEqual(noteStates(c.s), ['members-over=8', `members-running=${L}`, 'members-not-stopped=8']);
-  // Nothing to say: every member reported.
+  await codexStops(c, { interrupted: threads.map((t) => childTurn('turn/completed', { status: 'interrupted' }, t)) });
+  assert.deepEqual(noteStates(c.s), ['members-over=8', `members-stopped=${L}`, 'members-not-stopped=8']);
+  assert.equal(stopSent(c.m).filter((r) => r[0] === 'turn/interrupt').length, L + 1, 'the root, and each listed one: of one past the bound no turn is kept');
+
+  const b = await session();
+  await b.play([statusOf('idle')]);
+  await b.s.interrupt();
+  await codexStops(b);
+  assert.deepEqual(stopSent(b.m), [['turn/interrupt', ROOT, ROOT_TURN], [CLEAN, CHILD, undefined], [LIST, CHILD, undefined]]);
+  assert.deepEqual(noteStates(b.s), [], 'it was not running, so it is not said to have stopped');
+  const left = await session();
+  await left.play([statusOf('idle')]);
+  await left.s.interrupt();
+  await codexStops(left, { terminals: () => 1 });
+  assert.deepEqual(noteStates(left.s), ['members-not-stopped=1'], 'what it left is');
+
+  const u = await session();
+  await u.play([{ method: 'thread/tokenUsage/updated', params: { threadId: CHILD } }]);
+  await u.s.interrupt();
+  await codexStops(u);
+  assert.deepEqual(noteStates(u.s), ['members-not-stopped=1'], 'unknown is not stopped');
+  assert.deepEqual(stopSent(u.m), [['turn/interrupt', ROOT, ROOT_TURN]]);
+
+  // Nothing to say and nothing to send: every member reported.
   const d = await session();
   await d.play([activity('started', 'started', T0), childTurn('turn/started'), childTurn('turn/completed')]);
   await d.s.interrupt();
+  await settle();
   assert.deepEqual(noteStates(d.s), []);
+  assert.deepEqual(stopSent(d.m), [['turn/interrupt', ROOT, ROOT_TURN]]);
 });
 
-test('a sub-agent interrupted while it runs: ended with that reason; a new turn revives it; a stop says it reaches the root only', async () => {
-  const { m, s, play } = await session();
-  await play([activity('started', 'started', T0), childTurn('turn/started')]);
-  await s.interrupt();
+test('a second press while a stop is on its way adds nothing; a press after it starts over', async () => {
+  const x = await session();
+  await x.play([activity('started', 'started', T0), childTurn('turn/started')]);
+  await x.s.interrupt();
+  await x.s.interrupt();
   await settle();
-  assert.deepEqual(noteStates(s), ['members-running=1']);
-  assert.deepEqual(m.sent().filter((x) => x.method === 'turn/interrupt').map((x) => x.params.threadId), [ROOT], 'nothing is sent to its thread');
+  assert.equal(stopSent(x.m).filter((r) => r[1] === CHILD).length, 1);
+  await codexStops(x, { refuse: ['turn/interrupt'] });
+  assert.deepEqual(noteStates(x.s), ['members-not-stopped=1']);
+  await x.s.interrupt();
+  await settle();
+  assert.equal(stopSent(x.m).filter((r) => r[0] === 'turn/interrupt' && r[1] === CHILD).length, 2, 'it still runs: the next stop goes to it again');
+});
+
+test('the session goes while a stop is on its way: its end says the stop went unanswered, and the stop adds nothing, past every deadline of its own', async () => {
+  const x = await session();
+  await x.play([activity('started', 'started', T0), childTurn('turn/started')]);
+  await x.s.interrupt();
+  await settle();
+  x.s.end();
+  await settle();
+  // Its interrupt, then its clean, each unanswered to the deadline, then the pause.
+  for (const ms of [CODEX_DEADLINES.interruptMs, CODEX_DEADLINES.interruptMs, CODEX_DEADLINES.stopSettleMs]) {
+    x.clock.advanceBy(ms);
+    await settle();
+  }
+  assert.ok(stopSent(x.m).some((r) => r[0] === CLEAN), 'it got as far as its clean');
+  assert.equal(stopSent(x.m).some((r) => r[0] === LIST), false, 'nobody reads a list of a session that went');
+  assert.deepEqual(noteStates(x.s), ['members-stop-unanswered=1', 'children-may-remain']);
+  assert.equal(only(x.s).state, 'unknown');
+
+  // Gone while the list is out: its answer says nothing any more.
+  const z = await session();
+  await z.play([activity('started', 'started', T0), childTurn('turn/started')]);
+  await z.s.interrupt();
+  await settle();
+  const answerAll = async (method: string) => {
+    for (const r of z.m.sent().filter((q) => q.method === method)) z.m.send({ id: r.id, result: method === LIST ? { data: [], nextCursor: null } : {} });
+    await settle();
+  };
+  await answerAll('turn/interrupt');
+  await answerAll(CLEAN);
+  z.clock.advanceBy(CODEX_DEADLINES.stopSettleMs);
+  await settle();
+  assert.equal(stopSent(z.m).filter((r) => r[0] === LIST).length, 1);
+  z.s.end();
+  await answerAll(LIST);
+  assert.deepEqual(noteStates(z.s), ['members-stop-unanswered=1', 'children-may-remain']);
+});
+
+test('a page that polled between the press and the result ends up with what a page that opens later reads', async () => {
+  /** What the chat shows of the stop: its words, and whether they stand as live. */
+  const said = (f: ReturnType<typeof mergeFeed>) => describeChat(f).kids.filter((k: any) => k.data?.kind === 'note').map((k: any) => [k.slots.tx.text, k.data.live]);
+  const press = async () => {
+    const x = await session();
+    await x.play([activity('started', 'started', T0), childTurn('turn/started')]);
+    await x.s.interrupt();
+    const f = mergeFeed(undefined, x.s.feed.since(0));
+    assert.deepEqual(said(f), [['已对 1 个子代理发出停止，还没确认', '1']]);
+    return { x, f };
+  };
+
+  const a = await press();
+  await codexStops(a.x, { interrupted: STOP_INTERRUPTED, cleaned: STOP_CLEANED });
+  const stopped = mergeFeed(a.f, a.x.s.feed.since(a.f.to));
+  assert.deepEqual(said(stopped).filter(([tx]) => !tx.includes('没来问')), [['1 个子代理停下了：回合结束，后台命令清掉了', '0']]);
+  assert.deepEqual(said(stopped), said(mergeFeed(undefined, a.x.s.feed.since(0))));
+
+  const b = await press();
+  await codexStops(b.x, { interrupted: STOP_INTERRUPTED, terminals: () => 1 });
+  const left = mergeFeed(b.f, b.x.s.feed.since(b.f.to));
+  assert.equal(said(left).length, 1);
+  assert.deepEqual(said(left), said(mergeFeed(undefined, b.x.s.feed.since(0))));
+
+  // The session goes in the middle of it, by its end or by the child's.
+  for (const go of [(x: typeof a.x) => x.s.end(), (x: typeof a.x) => x.m.close(1)]) {
+    const c = await press();
+    go(c.x);
+    await settle();
+    const gone = mergeFeed(c.f, c.x.s.feed.since(c.f.to));
+    assert.equal(said(gone).some(([tx]) => tx.includes('还没确认')), false);
+    assert.deepEqual(said(gone), said(mergeFeed(undefined, c.x.s.feed.since(0))));
+  }
+});
+
+test('a stop that did not finish can be pressed again: what the clean or the list left stays offered, and the press says how it went', async () => {
+  // The clean refused: its turn ended, its command runs on, and the root is idle.
+  const x = await session();
+  await x.play([activity('started', 'started', T0), childTurn('turn/started'), ROOT_IDLE]);
+  await x.s.interrupt();
+  await codexStops(x, { interrupted: STOP_INTERRUPTED, refuse: [CLEAN], terminals: () => 1 });
+  assert.deepEqual(noteStates(x.s), ['members-not-stopped=1']);
+  assert.deepEqual([only(x.s).state, only(x.s).why], ['ended', 'interrupted']);
+  assert.equal(stoppable(x), true);
+
+  const sent = stopSent(x.m).length;
+  await x.s.interrupt();
+  await codexStops(x, { refuse: [CLEAN], terminals: () => 1 });
+  assert.deepEqual(stopSent(x.m).slice(sent), [[CLEAN, CHILD, undefined], [LIST, CHILD, undefined]], 'no turn of its is open: only the clean goes again');
+  assert.deepEqual(noteStates(x.s), ['members-not-stopped=1', 'members-not-stopped=1']);
+  assert.equal(stoppable(x), true);
+
+  await x.s.interrupt();
+  await codexStops(x);
+  assert.deepEqual(noteStates(x.s), ['members-not-stopped=1', 'members-not-stopped=1', 'members-stopped=1']);
+  assert.equal(stoppable(x), false, 'its list said none is left: nothing more to offer');
+  const quiet = stopSent(x.m).length;
+  await x.s.interrupt();
+  await settle();
+  assert.equal(stopSent(x.m).length, quiet);
+
+  // A list that was refused leaves the same.
+  const y = await session();
+  await y.play([activity('started', 'started', T0), childTurn('turn/started')]);
+  await y.s.interrupt();
+  await codexStops(y, { interrupted: STOP_INTERRUPTED, refuse: [LIST] });
+  assert.equal(stoppable(y), true);
+});
+
+test('a member over with a command still open stays in the stop\'s reach, however it got there', async () => {
+  const open = [activity('started', 'started', T0), childTurn('turn/started'), childCommand('started', T0 + 1, 'inProgress'), ROOT_IDLE];
+  // Interrupted by something other than this stop: the root's own interrupt_agent would come this way (not measured).
+  const a = await session();
+  await a.play([...open, ...STOP_INTERRUPTED]);
+  assert.deepEqual([only(a.s).state, a.s.state], ['ended', 'idle']);
+  assert.equal(stoppable(a), true, 'the button is not grey over a command that runs');
+  await a.s.interrupt();
+  assert.deepEqual(noteStates(a.s), ['members-stopping=1']);
+  await codexStops(a, { cleaned: STOP_CLEANED });
+  assert.deepEqual(stopSent(a.m), [[CLEAN, CHILD, undefined], [LIST, CHILD, undefined]]);
+  assert.deepEqual(noteStates(a.s), ['members-ran-unasked=1', 'members-stopped=1']);
+  assert.equal(stoppable(a), false);
+
+  // Its list says none is left though no end of the command ever came: the list is what counts.
+  const g = await session();
+  await g.play([...open, ...STOP_INTERRUPTED]);
+  await g.s.interrupt();
+  await codexStops(g);
+  assert.deepEqual(noteStates(g.s), ['members-stopped=1']);
+  assert.equal(stoppable(g), false);
+
+  // It reported, its command open.
+  const b = await session();
+  await b.play([...open, childTurn('turn/completed')]);
+  assert.equal(only(b.s).state, 'returned');
+  assert.equal(stoppable(b), true);
+  await b.s.interrupt();
+  await codexStops(b, { terminals: () => 1 });
+  assert.deepEqual(noteStates(b.s), ['members-not-stopped=1']);
+
+  // Its command came to an end, however it ended: nothing left to reach.
+  for (const status of ['completed', 'failed', 'declined']) {
+    const c = await session();
+    await c.play([...open, childCommand('completed', T0 + 2, status, 0), childTurn('turn/completed')]);
+    assert.equal(stoppable(c), false, status);
+  }
+
+  // However many it leaves open, what is kept of them stands still, and none of it reaches the record.
+  const f = await session();
+  await f.play([...open, ...Array.from({ length: CODEX_SESSION_LIMITS.memberChanges + 8 }, (_, i) => ran(CHILD, `i${i}`)[0]!), childTurn('turn/completed')]);
+  assert.deepEqual(Object.keys(only(f.s)).sort(), ['asks', 'endedAt', 'failed', 'lastAt', 'model', 'name', 'ranUnasked', 'startedAt', 'state', 'threadId', 'why']);
+  assert.equal(stoppable(f), true);
+});
+
+test('a member that came up while a stop was on its way gets the stop too, and is in the count', async () => {
+  const x = await session();
+  await x.play([activity('started', 'started', T0), childTurn('turn/started')]);
+  await x.s.interrupt();
+  await x.play([activity('started', 'started', T0, 'thread-two', '/root/two'), childTurn('turn/started', { id: 'turn-two' }, 'thread-two')]);
+  await x.s.interrupt();
+  await codexStops(x, { interrupted: STOP_INTERRUPTED });
+  // The first round was read, the next went out: nothing final yet, and the live note says both.
+  assert.deepEqual(noteStates(x.s), ['members-stopping=2']);
+  assert.deepEqual(stopSent(x.m).filter((r) => r[1] === 'thread-two').map((r) => r[0]), ['turn/interrupt']);
+  await codexStops(x, { interrupted: [childTurn('turn/completed', { id: 'turn-two', status: 'interrupted' }, 'thread-two')] });
+  assert.deepEqual(stopSent(x.m).filter((r) => r[1] === 'thread-two').map((r) => r[0]), ['turn/interrupt', CLEAN, LIST]);
+  assert.equal(stopSent(x.m).filter((r) => r[1] === CHILD).length, 3, 'the first is not stopped twice');
+  assert.deepEqual(noteStates(x.s), ['members-stopped=2']);
+
+  // One it cannot reach is in the count too: none goes unsaid (T1).
+  const y = await session();
+  await y.play([activity('started', 'started', T0), childTurn('turn/started')]);
+  await y.s.interrupt();
+  await y.play([{ method: 'thread/tokenUsage/updated', params: { threadId: 'thread-two' } }]);
+  await codexStops(y, { interrupted: STOP_INTERRUPTED });
+  assert.deepEqual(noteStates(y.s), ['members-stopped=1', 'members-not-stopped=1']);
+  assert.equal(stopSent(y.m).some((r) => r[1] === 'thread-two'), false);
+
+  // One that went unknown during the stop is not called stopped, and counts once.
+  const z = await session();
+  await z.play([activity('started', 'started', T0), childTurn('turn/started')]);
+  await z.s.interrupt();
+  await codexStops(z, { interrupted: [statusOf('notLoaded')] });
+  assert.equal(only(z.s).state, 'unknown');
+  assert.deepEqual(noteStates(z.s), ['members-not-stopped=1']);
+  // The same with no turn left open: only its state says it.
+  const w = await session();
+  await w.play([activity('started', 'started', T0), childTurn('turn/started')]);
+  await w.s.interrupt();
+  await codexStops(w, { interrupted: [childTurn('turn/completed', { status: 'brand-new' })] });
+  assert.equal(only(w.s).state, 'unknown');
+  assert.deepEqual(noteStates(w.s), ['members-not-stopped=1']);
+
+  // Unknown from the start of a stop, a turn of its still on record: nothing goes to it, and nothing offers it (T1).
+  const u = await session();
+  await u.play([activity('started', 'started', T0), childTurn('turn/started'), statusOf('notLoaded'), ROOT_IDLE]);
+  assert.equal(only(u.s).state, 'unknown');
+  assert.equal(stoppable(u), false);
+  await u.s.interrupt();
+  await codexStops(u);
+  assert.deepEqual(stopSent(u.m), []);
+  assert.deepEqual(noteStates(u.s), ['members-not-stopped=1']);
+});
+
+test('what says a member did not stop, each on its own: no turn id yet, a turn still open; an old turn\'s end takes no new turn\'s id', async () => {
+  // Heard to run, no turn/started yet: nothing to interrupt, so an empty list does not make it stopped.
+  const a = await session();
+  await a.play([activity('started', 'started', T0), statusOf('active', CHILD, [])]);
+  assert.equal(only(a.s).state, 'running');
+  await a.s.interrupt();
+  await codexStops(a);
+  assert.deepEqual(stopSent(a.m).filter((r) => r[1] === CHILD), [[CLEAN, CHILD, undefined], [LIST, CHILD, undefined]]);
+  assert.deepEqual(noteStates(a.s), ['members-not-stopped=1']);
+
+  // Idle by its status, its turn never ended, the interrupt refused: the open turn is what says no.
+  const b = await session();
+  await b.play([activity('started', 'started', T0), childTurn('turn/started'), statusOf('idle')]);
+  assert.equal(only(b.s).state, 'idle');
+  await b.s.interrupt();
+  assert.deepEqual(noteStates(b.s), ['members-stopping=1'], 'a turn still open is a turn to stop');
+  await codexStops(b, { refuse: ['turn/interrupt'] });
+  assert.deepEqual(noteStates(b.s), ['members-not-stopped=1']);
+
+  // The same one, stopped this time: it is counted, though its status said idle.
+  const c = await session();
+  await c.play([activity('started', 'started', T0), childTurn('turn/started'), statusOf('idle')]);
+  await c.s.interrupt();
+  await codexStops(c, { interrupted: [childTurn('turn/completed', { status: 'interrupted' })] });
+  assert.deepEqual(noteStates(c.s), ['members-stopped=1']);
+
+  // An older turn's end read after the next turn started: the next stop still has the new turn.
+  const d = await session();
+  await d.play([activity('started', 'started', T0), childTurn('turn/started'), childTurn('turn/started', { id: 'turn-child-2' }), childTurn('turn/completed')]);
+  await d.s.interrupt();
+  await settle();
+  assert.deepEqual(stopSent(d.m).find((r) => r[1] === CHILD), ['turn/interrupt', CHILD, 'turn-child-2']);
+});
+
+test('a sub-agent interrupted while it runs: ended with that reason; a new turn revives it', async () => {
+  const { s, play } = await session();
+  await play([activity('started', 'started', T0), childTurn('turn/started')]);
   await play([childTurn('turn/completed', { status: 'interrupted', completedAt: SECS0 + 3 })]);
   assert.deepEqual([only(s).state, only(s).why, only(s).endedAt], ['ended', 'interrupted', (SECS0 + 3) * 1000]);
   assert.equal(towerOf([seatOf(s)]).projects[0]!.nodes[1]!.activity, '已结束：被打断了，没有回报');
@@ -241,7 +660,7 @@ test('a sub-agent interrupted while it runs: ended with that reason; a new turn 
   assert.deepEqual([only(b.s).state, only(b.s).why, only(b.s).startedAt, only(b.s).endedAt], ['ended', 'shutdown', null, T0 + 9]);
 });
 
-test('the root idle is not the end of a sub-agent: its approval still comes, as measured, and a stop then sends no interrupt at all', async () => {
+test('the root idle is not the end of a sub-agent: its approval still comes, as measured, and its completion comes under the root turn that already ended', async () => {
   const { m, s, approvals, play } = await session();
   await play(V2_TO_APPROVAL);
   await play([{ method: 'turn/completed', params: { threadId: ROOT, turn: { id: 'turn-root', status: 'completed' } } }]);
@@ -250,13 +669,6 @@ test('the root idle is not the end of a sub-agent: its approval still comes, as 
   m.send(childApproval(0));
   await settle();
   assert.equal(approvals.list().length, 1);
-  const r = await s.interrupt();
-  await settle();
-  assert.equal(r.denied, 1);
-  assert.deepEqual(m.sent().filter((x) => x.method === 'turn/interrupt'), []);
-  assert.deepEqual(noteStates(s), ['members-running=1']);
-  assert.deepEqual(only(s).asks, []);
-  // Measured too: its completion comes on the root thread under the root turn that already ended.
   await play(V2_FROM_APPROVAL);
   assert.equal(only(s).state, 'returned');
 });

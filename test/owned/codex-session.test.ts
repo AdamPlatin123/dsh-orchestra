@@ -149,6 +149,7 @@ test('handshake: initialize, then initialized, then thread/start with the cwd, t
     assert.equal(protocol[0]!.id, 1);
     assert.equal(protocol[0]!.jsonrpc, undefined, 'codex app-server lines carry no jsonrpc member');
     assert.deepEqual(protocol[0]!.params.clientInfo, { name: 'orchestra', title: 'Orchestra', version: '0.2.0' });
+    assert.deepEqual(protocol[0]!.params.capabilities, { experimentalApi: true, requestAttestation: false }, 'thread/backgroundTerminals/* need it');
     assert.ok(!Object.hasOwn(protocol[1]!, 'id'), 'initialized is a notification');
     assert.deepEqual(protocol[2]!.params, { cwd: s.cwd, model: DEFAULT_CODEX_MODEL, approvalPolicy: 'on-request', sandbox: 'workspace-write' });
     assert.equal(path.dirname(s.cwd), r.workRoot);

@@ -82,7 +82,7 @@ test('a request card says where its session runs: in its cwd inside a root, else
 });
 
 test('a session page names where it works: a project root, Orchestra\'s own dir, or unknown from before a restart', () => {
-  const o = { ownedId: 'a'.repeat(20), harness: 'codex', model: 'codex/gpt-6.1-sol', title: 't', state: 'idle', endReason: null, waiting: null, queued: 0, tokens: null, lastSeq: 0, createdAt: 0, brake: true };
+  const o = { ownedId: 'a'.repeat(20), harness: 'codex', model: 'codex/gpt-6.1-sol', title: 't', state: 'idle', endReason: null, waiting: null, queued: 0, tokens: null, lastSeq: 0, createdAt: 0, brake: true, stoppable: false };
   const st = (cwd: unknown) => (describeOwned(o.ownedId, { ...LIST, roots: [ROOT], requests: [], requestedGone: [], owned: [{ ...o, cwd }] }, undefined, g) as any).ownSt.text as string;
   assert.ok(st({ path: ROOT, kind: 'project-root' }).includes(fill('own.cwdRoot', { d: ROOT })));
   // A folder below a root is not itself a root the person named: the page says it lies in one.
