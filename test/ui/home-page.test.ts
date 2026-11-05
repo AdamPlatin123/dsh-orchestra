@@ -9,7 +9,8 @@ import { busyStage } from '../helpers/tower-fixture.ts';
 import { makePatcher } from '../../ui/dom.js';
 import { MAX_DOTS, describeFold, toneOf } from '../../ui/fold.js';
 import { openFull } from '../../ui/route.js';
-import { describeErrs, describeIsland, describeLost, describeRail, describeSubs, railList, rootOf, subCards, workersOf } from '../../ui/wings.js';
+import { describeErrs, describeIsland, describeLost, describeRail, describeSubs, describeWires, railList, rootOf, subCards, wireRows, workersOf } from '../../ui/wings.js';
+import { describeChat, sentText } from '../../ui/owned.js';
 import { TOWER_TEXT } from '../../shared/strings.js';
 import { validateTower } from '../../shared/tower-contract.js';
 import { towerFromStage, type OwnedMember, type OwnedSeat } from '../../src/sources/tower.ts';
@@ -34,7 +35,7 @@ let serial = 0;
 const node = (over: Json = {}): Json => ({
   id: `n:${(++serial).toString(16).padStart(20, '0')}`, session: null, harness: 'codex', ownership: 'owned', layer: 'subagent', parent: 'n:'.padEnd(22, 'a'), depth: 1,
   title: `m${serial}`, activity: null, state: 'running', basis: 'owned', waiting: null, counts: { children: 0, errors: 0, waiting: 0 }, groups: [],
-  ageMs: 0, durationMs: null, model: null, agentType: null, mark: null, ...over,
+  ageMs: 0, durationMs: null, model: null, agentType: null, batch: null, mark: null, ...over,
 });
 const WORKER = 'n:'.padEnd(22, 'a');
 /** A snapshot of one owned worker and its members; only what the descriptors read. */
@@ -300,6 +301,92 @@ test('the full record\'s way back: opened from the old page, it says so; from th
   }
 });
 
+const disp = (seq: number, batch: number, ref: string, text: string | null): Json => ({ seq, at: 1, kind: 'note', ref, uuid: null, text, state: 'dispatch', redactions: 0, live: false, exitCode: null, tokens: null, batch });
+
+test('a card is one dispatch: its batch\'s members, count and time, in the order they went out; those no batch names stay as they were', () => {
+  const a = node({ title: 'zed', batch: 2, durationMs: 4_000 });
+  const b = node({ title: 'amy', batch: 2, durationMs: 9_000, state: 'returned' });
+  const c = node({ title: 'bob', batch: 1, durationMs: null });
+  const loose = node({ title: 'nobody announced it' });
+  const s = snapOf([a, b, c, loose]);
+  const cards = subCards(s, WORKER);
+  assert.deepEqual(cards.map((k) => [k.batch, k.members.map((m) => m.node.title)]), [[1, ['bob']], [2, ['amy', 'zed']], [null, ['nobody announced it']]]);
+  const p = page();
+  p.dom.paintId('subs', describeSubs(s, WORKER, { open: new Set(), fresh: new Set() }) as any);
+  const shown = p.doc.getElementById('subs')!.querySelectorAll('.cw').map((w) => ['title', 'kind', 'n', 'took'].map((k) => w.querySelector(`[data-slot=${k}]`)!.textContent));
+  assert.deepEqual(shown, [
+    ['bob', 'subagent', '1 个', '耗时未知'],
+    ['amy 等 2 个', 'subagent', '2 个', '最长 9 秒'],
+    ['nobody announced it', 'subagent', '1 个', '耗时未知'],
+  ]);
+  // A read-only session's nodes carry no batch: its cards go by agent type as before, and say why they have no wire.
+  const ro = snapOf([node({ ownership: 'observed', basis: 'log', agentType: 'Explore' }), node({ ownership: 'observed', basis: 'log', agentType: 'Explore' })], { ownership: 'observed', basis: 'log' });
+  assert.deepEqual(subCards(ro, WORKER).map((k) => [k.label, k.batch, k.members.length]), [['Explore', null, 2]]);
+  const note = (describeSubs(ro, WORKER, { open: new Set(), fresh: new Set() }) as any).slots.note.text;
+  assert.ok(note.includes(TOWER_TEXT['home.noWireRo']!), note);
+});
+
+test('the talk\'s dispatch: one row a batch, a name told again in its place; on the home page a button that opens the card and says what it holds (T3)', () => {
+  const events = [disp(1, 1, 'n:a', null), disp(2, 1, 'n:b', 'bee'), disp(3, 2, 'n:c', 'cee'), disp(4, 1, 'n:a', 'ay')];
+  const chat = describeChat({ clipped: false, events });
+  assert.deepEqual(chat.kids.map((k: any) => [k.key, k.data.kind, k.data.batch, k.slots.tx.text]), [['d1', 'disp', '1', '派出 ay 等 2 个'], ['d2', 'disp', '2', '派出 cee']]);
+  assert.equal(describeChat({ clipped: false, events: [disp(1, 1, 'n:a', null)] }).kids[0].slots.tx.text, '派出 名字未知', 'a name not known is said (T1)');
+  assert.equal(sentText(['a']), TOWER_TEXT['fnote.dispatch']!.replace('{t}', 'a'));
+
+  const s = snapOf([node({ title: 'x', batch: 1 }), node({ title: 'y', batch: 1 }), node({ title: 'w', batch: 1 })]);
+  const cards = subCards(s, WORKER);
+  const rows: any[] = wireRows(chat.kids, cards, new Set([cards[0]!.key]));
+  assert.equal(rows[0].tpl, 'tpl-disp');
+  assert.equal(rows[0].slots.tx.text, '派出 w 等 3 个', 'the card\'s count, not the feed\'s: the row opens that list');
+  assert.deepEqual(rows[0].slots.b, { data: { fold: cards[0]!.key }, attr: { 'aria-expanded': 'true', disabled: null, title: null } });
+  // Its card not in this snapshot: said, and nothing to click.
+  assert.deepEqual(rows[1].slots.b, { data: { fold: '' }, attr: { 'aria-expanded': null, disabled: '', title: TOWER_TEXT['home.wireNoCard'] } });
+  assert.equal(rows[1].slots.tx.text, '派出 cee');
+  const other = { key: 'k', tpl: 'tpl-msg', data: { kind: 'note' } };
+  assert.equal(wireRows([other], cards, new Set())[0], other);
+
+  const p = page();
+  p.dom.paint(p.doc.getElementById('detail')!.querySelector('[data-slot=chat]') as any, { kids: rows });
+  const b = p.doc.getElementById('detail')!.querySelector('.dr')!;
+  assert.equal(b.tagName, 'BUTTON');
+  assert.equal(b.getAttribute('data-act'), 'fold');
+});
+
+test('the right side says why a card has no wire: the talk locked, not read yet, or no row for it; a card with a row needs no word', () => {
+  const s = snapOf([node({ batch: 1 })]);
+  const key = subCards(s, WORKER)[0]!.key;
+  const note = (rows: Set<string>, read: boolean, locked = false) => (describeSubs(s, WORKER, { open: new Set(), fresh: new Set(), rows, read, locked }) as any).slots.note.text;
+  assert.equal(note(new Set([key]), true), '');
+  assert.equal(note(new Set(), true), TOWER_TEXT['home.noWire']);
+  assert.equal(note(new Set(), false, true), TOWER_TEXT['home.noWireLocked']);
+  // Unlocked and still not read (on its way, or the feed failed): it must not tell a person who unlocked to unlock (T1).
+  assert.equal(note(new Set(), false), TOWER_TEXT['home.noWireUnread']);
+});
+
+test('a wire: only between a row and a card both in view; hot and new are data, its geometry attributes', () => {
+  const r = (top: number, height: number, left = 0, right = 0) => ({ top, bottom: top + height, height, left, right }) as DOMRect;
+  const box = { chat: r(100, 400), frame: r(0, 800), subs: r(60, 500), x: 700 };
+  const end = (row: DOMRect, card: DOMRect, over: Json = {}) => ({ key: 'k', hot: false, grow: false, row, card, ...over });
+  const one = (describeWires([end(r(200, 30, 10, 500), r(100, 100))], box).kids as any[])[0];
+  assert.deepEqual(one.data, { hot: '0', grow: '0' });
+  assert.equal(one.slots.p.attr.d, 'M504 215C611.8 215 611.8 130 700 130');
+  assert.deepEqual(one.slots.c.attr, { cx: '700', cy: '130' });
+  assert.deepEqual(((describeWires([end(r(200, 30), r(100, 40), { hot: true, grow: true })], box).kids as any[])[0]).data, { hot: '1', grow: '1' });
+  // Either end scrolled out takes the wire in, hot or not; nothing laid out has none.
+  for (const e of [end(r(40, 30), r(100, 40), { hot: true }), end(r(600, 30), r(100, 40)), end(r(200, 30), r(10, 40), { hot: true }), end(r(200, 30), r(600, 40))]) assert.deepEqual(describeWires([e], box).kids, []);
+  assert.deepEqual(describeWires([end(r(0, 0), r(0, 0))], { chat: r(0, 0), frame: r(0, 0), subs: r(0, 0), x: 0 }).kids, []);
+  // In a low window the talk keeps its least height and runs past its pane: a row in the talk's box, cut off by the pane, has no wire.
+  const cut = { ...box, chat: r(215, 72), frame: r(0, 216) };
+  assert.deepEqual(describeWires([end(r(240, 30), r(100, 40))], cut).kids, []);
+  assert.equal(describeWires([end(r(200, 30), r(100, 40))], cut).kids!.length, 1, 'its centre at 215, still in the pane');
+  // The geometry paints through the patcher's list, with no style attribute.
+  const p = page();
+  p.dom.paintId('wires', describeWires([end(r(200, 30, 10, 500), r(100, 100))], box) as any);
+  const w = p.doc.getElementById('wires')!.querySelector('.wire')!;
+  assert.equal(w.querySelector('path')!.getAttribute('d'), one.slots.p.attr.d);
+  assert.equal(w.hasAttribute('style'), false);
+});
+
 test('home.html: nothing inline, one module script, one stylesheet, one plain link, no word of its own, every template', () => {
   assert.equal([...HTML.matchAll(/<script\b/g)].length, 1);
   assert.match(HTML, /<script type="module" src="\/assets\/ui\/home\.js"><\/script>/);
@@ -347,7 +434,8 @@ test('home.css: the kit\'s tokens in both themes, motion only without a reduced-
   assert.doesNotMatch(head, /\banimation\b/);
   assert.doesNotMatch(head, /\btransition\b/);
   for (const m of body.matchAll(/@keyframes [\w-]+ \{((?:[^{}]*\{[^}]*\})*)[^}]*\}/g)) {
-    for (const d of m[1]!.matchAll(/([\w-]+):/g)) assert.ok(['opacity', 'transform'].includes(d[1]!), d[1]);
+    // stroke-dashoffset: a wire drawing itself, the one thing that is not a move of a whole element.
+    for (const d of m[1]!.matchAll(/([\w-]+):/g)) assert.ok(['opacity', 'transform', 'stroke-dashoffset'].includes(d[1]!), d[1]);
   }
   for (const m of body.matchAll(/font-size: ([\d.]+)px/g)) assert.ok(Number(m[1]) >= 12, m[0]);
   // The right half stays; at 1024 the left list goes down to the avatars and the talk keeps its 420px.
@@ -382,8 +470,8 @@ test('what the browser loads for / stays within its own budget, all of it embedd
   const own = ['ui/home.html', 'ui/home.css', 'ui/home.js', 'ui/wings.js', 'ui/fold.js'].reduce((n, f) => n + Buffer.byteLength(read(f)), 0);
   const total = all.reduce((n, f) => n + Buffer.byteLength(read(f)), 0);
   // The page's own files, and everything it loads with what it shares with the old page.
-  assert.ok(own <= 72 * 1024, `the home page's own files are ${own} bytes`);
-  assert.ok(total <= 240 * 1024, `the home page loads ${total} bytes`);
+  assert.ok(own <= 80 * 1024, `the home page's own files are ${own} bytes`);
+  assert.ok(total <= 248 * 1024, `the home page loads ${total} bytes`);
 });
 
 const OBSERVED = towerFromStage(busyStage()).meta.observedAt;
@@ -392,7 +480,7 @@ const CSRF = 'A'.repeat(43);
 const ID = { a: 'a'.repeat(20), b: 'b'.repeat(20), c: 'c'.repeat(20) };
 const AP = { a: '1'.repeat(32), b: '2'.repeat(32) };
 const EVIL = '<img src=x onerror=alert(1)>';
-const member = (i: number, over: Partial<OwnedMember> = {}): OwnedMember => ({ threadId: `t${i}`, name: `sub ${i}`, model: null, state: 'running', why: null, startedAt: null, endedAt: null, lastAt: null, failed: 0, ranUnasked: 0, asking: null, ...over });
+const member = (i: number, over: Partial<OwnedMember> = {}): OwnedMember => ({ threadId: `t${i}`, name: `sub ${i}`, model: null, state: 'running', why: null, startedAt: null, endedAt: null, lastAt: null, failed: 0, ranUnasked: 0, batch: null, asking: null, ...over });
 const seat = (ownedId: string, title: string, over: Partial<OwnedSeat> = {}): OwnedSeat => ({ ownedId, harness: 'codex', title, state: 'running', endReason: null, lastAt: OBSERVED, waiting: null, ...over });
 const approval = (id: string, ownedId: string, over: Json) => ({
   approvalId: id, ownedId, kind: 'command', title: 'req', preview: 'command: npm test', tooLong: false, redactions: 0, digest: id.slice(0, 1).repeat(64),
@@ -423,9 +511,10 @@ test('the page boots: worker, talk and cards from the fetched data; only a perso
     ],
     approvals: [approval(AP.a, ID.a, { deadline: OBSERVED + 10 * MIN }), approval(AP.b, ID.b, { tainted: true })],
   };
+  let sent: Json[] = [];
   const feed = (id: string) => ({
-    v: 1, kind: 'owned-feed', ownedId: id, from: 0, to: 1, clipped: false,
-    events: [{ seq: 1, at: 1, kind: 'text', ref: 'm1', uuid: null, text: `said ${EVIL}`, state: 'final', redactions: 0, live: false, exitCode: null, tokens: null }],
+    v: 1, kind: 'owned-feed', ownedId: id, from: 0, to: 1 + sent.length, clipped: false,
+    events: [{ seq: 1, at: 1, kind: 'text', ref: 'm1', uuid: null, text: `said ${EVIL}`, state: 'final', redactions: 0, live: false, exitCode: null, tokens: null, batch: null }, ...sent],
   });
   let barEmpty = false;
   const tower = () => { const s = towerFromStage(busyStage(), { seats, nowWall: OBSERVED }); return barEmpty ? { ...s, waitingBar: [] } : s; };
@@ -445,9 +534,12 @@ test('the page boots: worker, talk and cards from the fetched data; only a perso
   Object.assign(doc, { hidden: false, addEventListener: (t: string, fn: (e: any) => void) => on(doc, t, fn) });
   (FakeElement.prototype as any).addEventListener = function (this: object, t: string, fn: (e: any) => void) { on(this, t, fn); };
   const g = globalThis as any;
-  const keys = ['document', 'location', 'window', 'fetch', 'performance', 'requestAnimationFrame', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Element', 'Node', 'localStorage', 'sessionStorage'];
+  const keys = ['document', 'location', 'window', 'fetch', 'performance', 'requestAnimationFrame', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Element', 'Node', 'localStorage', 'sessionStorage', 'ResizeObserver'];
   const saved = Object.fromEntries(keys.map((k) => [k, Object.getOwnPropertyDescriptor(g, k)]));
   const define = (k: string, v: unknown) => Object.defineProperty(g, k, { configurable: true, writable: true, value: v });
+  /** What the page watches for a new size, by element. */
+  const resized = new Map<object, () => void>();
+  define('ResizeObserver', class { fn: () => void; constructor(fn: () => void) { this.fn = fn; } observe(el: object) { resized.set(el, this.fn); } });
   define('document', doc);
   define('location', loc);
   define('window', { addEventListener: (t: string, fn: (e: any) => void) => on(win, t, fn), matchMedia: () => ({ matches: false }), prompt: (m: string) => { prompts.push(m); return promptAnswer; } });
@@ -468,7 +560,7 @@ test('the page boots: worker, talk and cards from the fetched data; only a perso
     if (url === '/api/tower') return reply(tower());
     if (url === '/api/owned') return reply(list);
     const m = /^\/api\/owned\/([0-9a-f]{20})\/feed/.exec(url);
-    if (m !== null) return reply(url.endsWith('after=0') ? feed(m[1]!) : { ...feed(m[1]!), from: 1, events: [] });
+    if (m !== null) return reply(url.endsWith('after=0') ? feed(m[1]!) : { ...feed(m[1]!), from: 1, events: sent.filter((e) => e.seq > Number(/after=(\d+)/.exec(url)?.[1])) });
     if (url.startsWith('/api/peek/session')) return reply({ session: { id: url.slice(-20) }, events: [{ at: null, type: 'assistant', text: EVIL }], unparsed: 0, note: null });
     return reply({ accepted: true });
   });
@@ -515,6 +607,86 @@ test('the page boots: worker, talk and cards from the fetched data; only a perso
     assert.equal(doc.querySelectorAll('img').length, 0);
     assert.equal([...doc.walk()].some((e) => e.hasAttribute('onerror')), false);
 
+    // A dispatch row comes in the talk: a button that opens its card, with a wire between them that stands out once.
+    const talk = byId('detail').querySelector('[data-slot=chat]')!;
+    const rects = (ch: FakeElement, rowEl: FakeElement, cardEl: FakeElement) => {
+      const r = (top: number, height: number, left = 0, right = 0) => ({ top, bottom: top + height, height, left, right });
+      ch.rect = r(100, 400);
+      byId('detail').rect = r(40, 600);
+      byId('subs').rect = r(50, 500);
+      byId('subs').querySelector('[data-slot=list]')!.rect = r(50, 500, 700, 1000);
+      rowEl.querySelector('.dr')!.rect = r(200, 30, 200, 600);
+      cardEl.querySelector('.fold')!.rect = r(120, 80, 700, 1000);
+    };
+    seats = [{ ...seats[0]!, members: [member(1, { name: EVIL, batch: 1 }), member(2, { state: 'returned', batch: 1 }), member(3, { name: 'later', batch: 2 })] }, ...seats.slice(1)];
+    const nodeIds = towerFromStage(busyStage(), { seats, nowWall: OBSERVED }).projects[0]!.nodes.filter((n) => n.layer === 'subagent');
+    const idOf = (name: string) => nodeIds.find((n) => n.title === name)!.id;
+    sent = [disp(2, 1, idOf(EVIL), EVIL), disp(3, 1, idOf('sub 2'), 'sub 2')];
+    await tick();
+    const dr = () => talk.querySelector('.dr')!;
+    assert.equal(dr().textContent, `派出 ${EVIL} 等 2 个`);
+    assert.equal(talk.querySelectorAll('img').length, 0, 'a name in a row stays text');
+    const cardsNow = () => byId('subs').querySelectorAll('.cw');
+    assert.equal(cardsNow().length, 2, 'one card a batch');
+    assert.equal(byId('subs').querySelector('[data-slot=note]')!.textContent, TOWER_TEXT['home.noWire'], 'the second card has no row yet, and says so');
+    rects(talk, dr().parentNode as FakeElement, cardsNow()[0]!);
+    fire(byId('subs'), 'scroll');
+    await flush();
+    const wires = () => byId('wires').querySelectorAll('.wire');
+    assert.equal(wires().length, 1);
+    assert.equal(wires()[0]!.getAttribute('data-hot'), '1', 'a new wire stands out');
+    assert.equal(wires()[0]!.getAttribute('data-grow'), '1');
+    assert.equal(dr().focused || cardsNow()[0]!.querySelector('.fold')!.focused, false, 'and takes no focus');
+    mono += 3000;
+    await tick();
+    assert.equal(wires()[0]!.getAttribute('data-hot'), '0', 'then it goes back to faint');
+    assert.equal(wires()[0]!.getAttribute('data-grow'), '0');
+    // The pointer on the row or the card makes it stand out, and leaving takes that back.
+    fire(talk, 'pointerover', { type: 'pointerover', target: dr() });
+    await flush();
+    assert.equal(wires()[0]!.getAttribute('data-hot'), '1');
+    assert.equal(cardsNow()[0]!.getAttribute('data-hot'), '1');
+    fire(talk, 'pointerleave', { type: 'pointerleave', target: talk });
+    await flush();
+    assert.equal(wires()[0]!.getAttribute('data-hot'), '0');
+    // A click on the row opens the card, and an open card keeps its wire lit; a second click folds it.
+    assert.equal(cardsNow()[0]!.querySelector('.fold')!.getAttribute('aria-expanded'), 'false');
+    await click(dr());
+    assert.equal(cardsNow()[0]!.querySelector('.fold')!.getAttribute('aria-expanded'), 'true');
+    assert.equal(dr().getAttribute('aria-expanded'), 'true');
+    assert.equal(wires()[0]!.getAttribute('data-hot'), '1');
+    await click(dr());
+    assert.equal(cardsNow()[0]!.querySelector('.fold')!.getAttribute('aria-expanded'), 'false');
+    // Scrolled out, its wire is taken in; back, it is drawn again.
+    talk.rect = { ...talk.rect, top: 300, bottom: 320, height: 20 };
+    fire(talk, 'scroll');
+    await flush();
+    assert.equal(wires().length, 0);
+    talk.rect = { ...talk.rect, top: 100, bottom: 500, height: 400 };
+    fire(win, 'resize');
+    await flush();
+    // A command folding open moves the rows with no scroll and no new size: the wire follows on the next frame.
+    assert.equal(wires().length, 1);
+    const moved = dr().rect;
+    dr().rect = { ...moved, top: 900, bottom: 930 };
+    fire(talk, 'toggle');
+    await flush();
+    assert.equal(wires().length, 0);
+    dr().rect = moved;
+    fire(talk, 'toggle');
+    await flush();
+    // An open card whose row left the talk (pushed out of the last 200) keeps no lit border: it has no wire to stand out for.
+    await click(dr());
+    assert.equal(cardsNow()[0]!.getAttribute('data-hot'), '1');
+    sent = [...sent, ...Array.from({ length: 201 }, (_, i) => ({ seq: 4 + i, at: 1, kind: 'text', ref: 'f' + i, uuid: null, text: 'x', state: 'final', redactions: 0, live: false, exitCode: null, tokens: null, batch: null }))];
+    await tick();
+    assert.equal(talk.querySelectorAll('.dr').length, 0);
+    assert.equal(cardsNow()[0]!.querySelector('.fold')!.getAttribute('aria-expanded'), 'true');
+    assert.equal(cardsNow()[0]!.getAttribute('data-hot'), '0');
+    sent = [];
+    seats = [{ ...seats[0]!, members: [member(1, { name: EVIL }), member(2, { state: 'returned' })] }, ...seats.slice(1)];
+    await tick();
+
     // Folded unless clicked; a poll does not open or close it.
     const fold = () => byId('subs').querySelector('.fold')!;
     assert.equal(fold().getAttribute('aria-expanded'), 'true');
@@ -530,6 +702,7 @@ test('the page boots: worker, talk and cards from the fetched data; only a perso
     const chatEl = byId('detail').querySelector('[data-slot=chat]')! as any;
     Object.defineProperty(chatEl, 'clientHeight', { configurable: true, get: () => (hidden(byId('pins')) ? 500 : 440) });
     Object.assign(chatEl, { scrollHeight: 1000, scrollTop: 500 });
+    fire(chatEl, 'scroll');
 
     // The capsule's number is the length of the list it opens; the way there is whole.
     const n = () => Number(/\d+/.exec(byId('isl').querySelector('[data-slot=capWn]')!.textContent)![0]);
@@ -538,6 +711,28 @@ test('the page boots: worker, talk and cards from the fetched data; only a perso
     await click(byId('cap-wait'));
     assert.equal(byId('cap-wait').getAttribute('aria-expanded'), 'true');
     assert.equal(chatEl.scrollTop, 1000, 'it follows');
+
+    // The window grows shorter between two frames: a chat at its end stays there, or it would not follow again; one read further up stays put.
+    const shrink = (h: number) => { Object.defineProperty(chatEl, 'clientHeight', { configurable: true, value: h }); resized.get(chatEl)!(); };
+    Object.assign(chatEl, { scrollHeight: 1400, scrollTop: 960 });
+    await tick();
+    Object.assign(chatEl, { scrollTop: 960 }); // as far as a real one goes: this fake takes any number
+    shrink(400);
+    assert.equal(chatEl.scrollTop, 1400, 'the end stays in view');
+    // The same, with the frame first (a frame's callbacks run before a new size is told): the render does not take the shorter chat for a reader who left.
+    Object.assign(chatEl, { scrollTop: 1000 });
+    Object.defineProperty(chatEl, 'clientHeight', { configurable: true, value: 350 });
+    await tick();
+    assert.equal(chatEl.scrollTop, 1400, 'it follows through a frame too');
+    Object.assign(chatEl, { scrollTop: 200 });
+    fire(chatEl, 'scroll');
+    await tick();
+    shrink(330);
+    assert.equal(chatEl.scrollTop, 200, 'a reader further up is left there');
+    Object.assign(chatEl, { scrollHeight: 1000, scrollTop: 560 });
+    Object.defineProperty(chatEl, 'clientHeight', { configurable: true, get: () => (hidden(byId('pins')) ? 500 : 440) });
+    fire(chatEl, 'scroll');
+    await tick();
     const pins = () => byId('pins').querySelectorAll('.pin');
     assert.equal(pins().length, n());
     const pinOf = (id: string) => pins().find((p) => p.getAttribute('data-node') === `n:${id}`)!;
@@ -589,6 +784,7 @@ test('the page boots: worker, talk and cards from the fetched data; only a perso
 
     // A chat read further up is left there when the list closes.
     chatEl.scrollTop = 100;
+    fire(chatEl, 'scroll');
     await click(byId('cap-wait'));
     assert.equal(chatEl.scrollTop, 100);
 

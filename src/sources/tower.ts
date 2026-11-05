@@ -42,6 +42,8 @@ import { frozen } from '../../shared/frozen.js';
 // would count one approval twice (T3); the member's activity says it is the one asking. Nested sub-agents
 // (not measured) stand beside the others under the session.
 // durationMs is from a member's start to its end, or to now while it runs; null when codex gave no time.
+// batch is the dispatch of its session it came with (src/owned/codex-session.ts); null when no spawn of the root
+// named it, and on every node that is not such a sub-agent, so no read-only card claims to be one dispatch.
 // model is the one codex said it runs on, null when it did not say (a v1 model, T1). Its activity says first
 // what the person should not miss: a model outside the owned list (nothing stopped it), and how many of its
 // steps ran though codex never asked (a count: their words stay out, as everything of its thread does).
@@ -69,6 +71,7 @@ export type TowerNode = {
   /** The model a sub-agent of an owned session runs on; null when codex did not say (T1), and on every other node. */
   model: string | null;
   agentType: string | null;
+  batch: number | null;
 };
 export type TowerSrc = { state: 'ok' | 'empty' | 'error'; total: number; shown: number; registry: number | null; error: string | null };
 export type Project = { id: string; name: string; basis: 'cwd' | 'slug' | 'owned'; nodes: TowerNode[]; groups: Group[] };
@@ -90,6 +93,8 @@ export type OwnedMember = {
   failed: number;
   /** Its commands and file changes that ran though codex never asked. */
   ranUnasked: number;
+  /** The dispatch of the root it came with; null when no spawn of the root named it. */
+  batch: number | null;
   /** The title of its oldest open approval, or null. */
   asking: string | null;
 };
@@ -110,7 +115,7 @@ export type OwnedSeat = {
   /** Wall ms of the session's last feed event; null before any. */
   lastAt: number | null;
   /** The newest thing it said or did that a person reads (shown text already); null or absent when none. */
-  recent?: { kind: 'text' | 'command' | 'file-change' | 'you' | 'auto-denied'; text: string } | null;
+  recent?: { kind: 'text' | 'command' | 'file-change' | 'you' | 'auto-denied' | 'interrupted'; text: string } | null;
   /** Its sub-agents; absent for a harness that does not report them. */
   members?: readonly OwnedMember[];
   /** Sub-agents past the driver's bound, counted and not listed. */
@@ -265,7 +270,7 @@ export function projectOf(lane: Lane): Project {
       activity: ((a) => (a === null ? null : clipCp(a, TOWER_BOUNDS.activityCp)))(activityOf(p, lane)),
       state, basis, waiting,
       counts: { children: 0, errors: 0, waiting: 0 }, groups: [],
-      ageMs: p.live.ageMs, durationMs: null, model: null, agentType: p.agentType, mark: null,
+      ageMs: p.live.ageMs, durationMs: null, model: null, agentType: p.agentType, batch: null, mark: null,
     };
     nodes.set(n.id, n);
   }
@@ -328,7 +333,7 @@ function memberNode(seat: OwnedSeat, m: OwnedMember, nowWall: number): TowerNode
     ageMs: m.lastAt === null ? null : Math.max(0, nowWall - m.lastAt),
     durationMs: m.startedAt === null || end === null || end < m.startedAt ? null : end - m.startedAt,
     model: m.model === null ? null : clipCp(m.model, TOWER_BOUNDS.textCp),
-    agentType: null,
+    agentType: null, batch: m.batch,
     mark: m.asking !== null && m.asking !== '' ? 'asks' : state === 'ended' && m.why === 'failed' ? 'failed' : null,
   };
 }
@@ -362,7 +367,7 @@ function ownedTree(seat: OwnedSeat, nowWall: number): { root: TowerNode; kids: T
     title: clipCp(title, TOWER_BOUNDS.titleCp), activity: activity === null ? null : clipCp(activity, TOWER_BOUNDS.activityCp),
     state, basis: state === 'unknown' ? 'none' : 'owned', waiting,
     counts: { children: kids.length, errors: 0, waiting: 0 }, groups: foldSiblings(kids),
-    ageMs: seat.lastAt === null ? null : Math.max(0, nowWall - seat.lastAt), durationMs: null, model: null, agentType: null, mark: null,
+    ageMs: seat.lastAt === null ? null : Math.max(0, nowWall - seat.lastAt), durationMs: null, model: null, agentType: null, batch: null, mark: null,
   };
   return { root, kids };
 }

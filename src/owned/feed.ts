@@ -36,6 +36,8 @@ export type FeedEvent = {
   readonly live: boolean;
   readonly exitCode?: number | null;
   readonly tokens?: FeedTokens;
+  /** On a dispatch note: the batch of the sub-agent its ref names, the same on the spawns of one dispatch. */
+  readonly batch?: number;
 };
 
 export type FeedInput = Omit<FeedEvent, 'seq' | 'at' | 'live' | 'uuid' | 'redactions'> & { uuid?: string | null; redactions?: number };

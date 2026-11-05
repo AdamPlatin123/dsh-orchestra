@@ -18,7 +18,7 @@ const busy = (): Json => JSON.parse(JSON.stringify(towerFromStage(busyStage())))
 const withMember = (): Json => JSON.parse(JSON.stringify(towerFromStage(busyStage(), {
   seats: [{
     ownedId: 'a'.repeat(20), harness: 'codex', title: 'a session', state: 'running', endReason: null, waiting: null, lastAt: 1, membersOver: 0,
-    members: [{ threadId: 't1', name: '/root/a', model: 'codex/gpt-6.1-sol', state: 'returned', why: null, startedAt: 1_000, endedAt: 4_000, lastAt: 4_000, failed: 0, ranUnasked: 0, asking: null }],
+    members: [{ threadId: 't1', name: '/root/a', model: 'codex/gpt-6.1-sol', state: 'returned', why: null, startedAt: 1_000, endedAt: 4_000, lastAt: 4_000, failed: 0, ranUnasked: 0, batch: 1, asking: null }],
   }],
   nowWall: 10_000,
 }))) as Json;

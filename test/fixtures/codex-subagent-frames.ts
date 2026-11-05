@@ -135,3 +135,23 @@ export const STOP_INTERRUPTED: readonly Frame[] = [
 
 /** What thread/backgroundTerminals/clean brings, 5 ms after its {}: the command's end, under the turn that already ended. */
 export const STOP_CLEANED: readonly Frame[] = [childCommand('completed', T0 + 12_500, 'failed', -1)];
+
+/** The root's own command, the same item on the root's thread and turn. */
+export const rootCommand = (phase: 'started' | 'completed', status: string, exitCode: number | null = null, id = 'exec-root'): Frame =>
+  note(`item/${phase}`, {
+    threadId: ROOT, turnId: ROOT_TURN, [phase === 'started' ? 'startedAtMs' : 'completedAtMs']: T0,
+    item: { type: 'commandExecution', id, command: 'ping', cwd: 'C:\\work', status, commandActions: [{ type: 'unknown', command: 'ping' }], aggregatedOutput: phase === 'started' ? null : 'ping output', exitCode },
+  });
+
+/** A stop of the root's command (--root-stop, 2026-11-04, both models): the turn ends first, and the clean brings the command's end under it. */
+export const ROOT_STOP_INTERRUPTED: readonly Frame[] = [note('turn/completed', { threadId: ROOT, turn: { id: ROOT_TURN, status: 'interrupted' } })];
+export const ROOT_STOP_CLEANED: readonly Frame[] = [rootCommand('completed', 'failed', -1)];
+
+/** Another sub-agent in a v2 spawn; `turnId` null leaves the turn out of the item. */
+export const spawnV2 = (agentThreadId: string, name: string, turnId: string | null = ROOT_TURN, threadId = ROOT): Frame =>
+  note('item/started', {
+    threadId, ...(turnId === null ? {} : { turnId }), startedAtMs: T0,
+    item: { type: 'subAgentActivity', id: `call_${agentThreadId}`, kind: 'started', agentThreadId, agentPath: name, model: 'codex/gpt-6.1-sol', reasoningEffort: 'low' },
+  });
+/** Any other item of the root's that starts: it closes a dispatch whether or not the feed shows it. */
+export const rootItem = (type: string, over: Record<string, unknown> = {}): Frame => note('item/started', { threadId: ROOT, turnId: ROOT_TURN, startedAtMs: T0, item: { type, id: `item-${type}`, ...over } });

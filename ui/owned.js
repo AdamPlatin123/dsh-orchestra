@@ -66,9 +66,16 @@ export function mergeFeed(had, page) {
 
 const MSG = /^msg-/;
 
+/** A dispatch in words: its one name, or the first and how many. @param {readonly string[]} names */
+export function sentText(names) {
+  const who = names[0] || t('chat.unnamed');
+  return t('fnote.dispatch', { t: names.length === 1 ? who : t('fold.group', { who, n: names.length }) });
+}
+
 /**
- * The chat, the last 200: a command folds with its output; your messages say their fate (msg-*). `over`: the list
- * knows the session ended, so the line a restart leaves does not say its state is not known (T1 both ways).
+ * The chat, the last 200: a command folds with its output; your messages say their fate (msg-*); a dispatch is one
+ * row, however many it sent. `over`: the list knows the session ended, so the line a restart leaves does not say its
+ * state is not known (T1 both ways).
  */
 export function describeChat(feed, over = false) {
   if (feed === undefined) return { kids: [], note: t('detail.loading') };
@@ -79,12 +86,26 @@ export function describeChat(feed, over = false) {
   const fates = new Map(feed.events.filter((e) => e.kind === 'note' && MSG.test(e.state ?? '')).map((e) => [e.ref, e]));
   /** @type {Map<string, number>} */
   const parts = new Map();
+  /** Each batch's row, and its sub-agents' names by ref. @type {Map<number, { node: any, names: Map<string, string> }>} */
+  const sent = new Map();
   // A long reply comes in chunks of one ref (2 KB each, src/owned/text.ts): adjacent final chunks are one
   // message, under the first chunk's key, so it reads (and is heard) as one.
   /** @type {{ ref: string, node: any } | null} */
   let lastText = null;
   for (const e of feed.events) {
     if (e.kind === 'note' && MSG.test(e.state ?? '')) continue;
+    if (e.kind === 'note' && e.state === 'dispatch') {
+      let b = sent.get(e.batch);
+      if (b === undefined) {
+        b = { names: new Map(), node: { key: `d${e.batch}`, tpl: 'tpl-msg', data: { kind: 'disp', live: '0', batch: String(e.batch) }, slots: { who: { text: '' }, tx: { text: '' } } } };
+        sent.set(e.batch, b);
+        kids.push(b.node);
+      }
+      // Told again once its name is known (src/owned/codex-session.ts): the same sub-agent, in the same place.
+      b.names.set(e.ref, e.text ?? '');
+      b.node.slots.tx.text = sentText([...b.names.values()]);
+      continue;
+    }
     const tx = e.text ?? '';
     const k = e.ref ?? `#${e.seq}`;
     // A message keeps one node from its first delta to its final words (the reader hears it once).
@@ -224,14 +245,41 @@ export function describeCard(a, g) {
   };
 }
 
-/** A waiting-bar entry of Orchestra's queue: its first request, whole, and its buttons; others stay read only. */
-export function pinExtra(e, list, g) {
-  const a = list?.approvals.find((x) => x.approvalId === entry(list, e.node.slice(2))?.waiting);
+/** A waiting-bar entry of Orchestra's queue: a request (`a`, by default its session's first), whole, and its buttons. */
+export function pinExtra(e, list, g, a = list?.approvals.find((x) => x.approvalId === entry(list, e.node.slice(2))?.waiting)) {
   const mine = e.source === 'orchestra';
   // r4 §8.5: a tainted session's pin says where its turns came from (the source chain, its id and label cut
   // at PIN_ORIGIN_CHARS, the cut said), with the same red bar as its card.
   const taint = mine && a !== undefined && (a.tainted === true || a.origin != null);
   return { ...(taint ? { data: { tainted: '1' }, hint: { text: originLine(a, PIN_ORIGIN_CHARS) } } : {}), acts:{ kids: !mine ? [] : !g.unlocked ? [lockBtn()] : a === undefined ? [] : apprActs(a, g, 'pin') }, pv: { text: mine && g.unlocked && a !== undefined && pinWhole(a) ? a.preview : '' } };
+}
+
+/** What waits in a session behind its first request: the bar has that one alone. @param {any} list */
+const behindFirst = (list) => (list?.approvals ?? []).filter((/** @type {any} */ a) => {
+  const first = entry(list, a.ownedId)?.waiting;
+  return first != null && first !== a.approvalId;
+});
+
+/** The answers the tower's count, one a session, leaves out. @param {any} list */
+export const queuedN = (list) => behindFirst(list).length;
+
+/**
+ * Sub-agents ask side by side, so one session can hold several requests while the bar stands for the first alone.
+ * Each of the others gets its pin after that one, as it has its card in the session: 等你 then counts the answers it
+ * takes, and agrees with the card that says who asks (T3). Locked, the list cannot be read: only the first shows.
+ * @param {any} pins @param {any} list @param {any} g
+ */
+export function withQueued(pins, list, g) {
+  const rest = behindFirst(list);
+  const kids = pins.slots.list.kids.flatMap((/** @type {any} */ k) => {
+    if (k.data?.src !== 'orchestra') return [k];
+    return [k, ...rest.filter((/** @type {any} */ a) => `n:${a.ownedId}` === k.data.node).map((/** @type {any} */ a) => {
+      const { data, ...slots } = pinExtra({ node: k.data.node, source: 'orchestra' }, list, g, a);
+      const left = a.deadline - g.nowWall;
+      return { ...k, key: `${k.key}:${a.approvalId}`, data: { ...k.data, ...data }, slots: { ...k.slots, ...slots, clock: { text: left > 0 ? t('wait.left', { t: fmtLeft(left) }) : t('wait.overdue') } } };
+    })];
+  });
+  return kids.length === pins.slots.list.kids.length ? pins : { ...pins, slots: { ...pins.slots, n: { text: t('pin.n', { n: kids.length }) }, list: { kids } } };
 }
 
 // --- seat: agent requests in 「等你」 (src/route/requests.ts; r4 A17, D8) ---------------------------------

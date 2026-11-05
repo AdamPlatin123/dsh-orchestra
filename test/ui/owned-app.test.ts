@@ -7,7 +7,7 @@ import { TOWER_TEXT } from '../../shared/strings.js';
 import { towerFromStage, type OwnedSeat } from '../../src/sources/tower.ts';
 import { busyStage } from '../helpers/tower-fixture.ts';
 import {
-  allowHow, apprActs, atBottom, describeCard, chatNews, describeAskPins, describeChat, describeNew, describeOwned, describeOwnedDock, describeRequestPins, errText, mergeFeed, msgError, notifyText, pinExtra, requestModel, requestOf, whyText, withRequests, type Approval, type Guard,
+  allowHow, apprActs, atBottom, describeCard, chatNews, describeAskPins, describeChat, describeNew, describeOwned, describeOwnedDock, describeRequestPins, errText, mergeFeed, msgError, notifyText, pinExtra, queuedN, requestModel, requestOf, whyText, withQueued, withRequests, type Approval, type Guard,
 } from '../../ui/owned.js';
 import { describeTower, routerNote } from '../../ui/view.js';
 
@@ -580,6 +580,27 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     }
     delete (FakeElement.prototype as any).addEventListener;
   }
+});
+
+test('two sub-agents asking at once are two pins: 等你 counts the answers it takes, each with its own buttons (found on the page 2026-11-05)', () => {
+  const g: Guard = { unlocked: true, settle: '', hold: null, busy: false, nowWall: 0 };
+  const first = approval(AP.a, ID.a, { rev: 1, deadline: 60_000 }) as Approval;
+  const next = approval(AP.b, ID.a, { rev: 1, deadline: 120_000 }) as Approval;
+  const other = approval('c'.repeat(32), ID.b, { rev: 1, deadline: 90_000 }) as Approval;
+  const list = { owned: [{ ownedId: ID.a, waiting: first.approvalId }, { ownedId: ID.b, waiting: other.approvalId }], approvals: [first, next, other] } as any;
+  const pin = (node: string, approvalId: string) => ({ key: node, data: { node, src: 'orchestra', sel: '0' }, slots: { path: { text: node }, clock: { text: 'first' }, acts: { kids: [{ data: { appr: approvalId } }] } } });
+  const pins = { data: { hide: '0' }, slots: { n: { text: '2 件' }, note: { text: '' }, list: { kids: [pin(`n:${ID.a}`, first.approvalId), pin(`n:${ID.b}`, other.approvalId)] } } };
+  const drawn = withQueued(pins, list, g) as any;
+  const kids = drawn.slots.list.kids;
+  assert.deepEqual(kids.map((k: any) => k.key), [`n:${ID.a}`, `n:${ID.a}:${next.approvalId}`, `n:${ID.b}`], 'after its first, in the place of its session');
+  assert.equal(drawn.slots.n.text, '3 件', 'T3: the count is the list');
+  assert.equal(queuedN(list), 1, 'what the one-a-session count of the tower leaves out');
+  assert.equal(kids[1].data.node, `n:${ID.a}`, 'it opens the same worker');
+  assert.equal(kids[1].slots.clock.text, '剩 2:00 自动拒', 'its own deadline');
+  assert.deepEqual(kids[1].slots.acts.kids.map((d: any) => d.data.appr), [next.approvalId, next.approvalId], 'its buttons answer this request, not the first');
+  assert.equal(withQueued(pins, { owned: [{ ownedId: ID.a, waiting: first.approvalId }], approvals: [first] }, g), pins, 'one each: nothing changes');
+  assert.equal(withQueued(pins, null, g), pins, 'locked, the list cannot be read');
+  assert.equal(queuedN(null), 0);
 });
 
 test('owned descriptors: no allow for a cut request or a native wait, words for refusals, the feed merge', () => {

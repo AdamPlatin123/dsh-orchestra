@@ -257,11 +257,14 @@ frozenClass(CodexOwned);
 /**
  * The newest thing a session said or did that a person reads, for the tower's activity line: its last
  * words (a message still streaming counts), a command or file change, your message, an automatic refusal.
- * Turn starts, token counts and notes are not activity. Null when the feed holds none of these.
+ * Turn starts, token counts and notes are not activity. Null when the feed holds none of these. A turn interrupted
+ * since says so first: what it last said ("both are still running") is no longer what the session stands at.
  */
 export function recentOf(feed: Feed): OwnedSeat['recent'] {
   const e = feed.last((x) => x.text !== null && x.text.trim() !== '' && (x.kind === 'text' || x.kind === 'you' || x.kind === 'auto-denied' || x.kind === 'tool'));
   if (e === null || e.text === null) return null;
+  const stopped = feed.last((x) => x.kind === 'lifecycle' && x.state === 'turn-interrupted');
+  if (stopped !== null && stopped.seq > e.seq) return { kind: 'interrupted', text: e.kind === 'tool' ? e.text.split('\n', 1)[0]! : e.text };
   if (e.kind === 'tool') return { kind: e.state === 'file-change' ? 'file-change' : 'command', text: e.text.split('\n', 1)[0]! };
   return { kind: e.kind === 'text' ? 'text' : e.kind === 'you' ? 'you' : 'auto-denied', text: e.text };
 }

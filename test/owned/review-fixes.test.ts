@@ -210,7 +210,7 @@ test('message fates: queued, then handed over; a stop withdraws what waits, each
   await r.s.interrupt();
   const states = (u: string) => events(r.s).filter((e) => e.ref === u).map((e) => e.state);
   assert.deepEqual(states(U(3)), ['msg-withdrawn'], 'the live queued note was replaced by its fate');
-  const feed = { v: 1, kind: 'owned-feed', ownedId: r.s.ownedId, from: 0, to: r.s.feed.lastSeq, clipped: false, events: events(r.s).map((e) => ({ ...e, exitCode: e.exitCode ?? null, tokens: e.tokens ?? null })) };
+  const feed = { v: 1, kind: 'owned-feed', ownedId: r.s.ownedId, from: 0, to: r.s.feed.lastSeq, clipped: false, events: events(r.s).map((e) => ({ ...e, exitCode: e.exitCode ?? null, tokens: e.tokens ?? null, batch: null })) };
   assert.deepEqual(validateOwnedFeed(feed).errors, []);
 });
 

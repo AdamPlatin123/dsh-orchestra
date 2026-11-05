@@ -8,7 +8,7 @@ import { getFeed, getOwned, getSession, oneAtATime, post } from './api.js';
 import { after, nowMono } from './clock.js';
 import {
   HOLD_MS, SETTLE_MS, brakeWhyText, closedTo, modelsOf, atBottom, chatNews, describeAskPins, describeDesk, describeNew, describeOwned, describeOwnedDock, describeRequestPins, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError,
-  allowHow, notifyRequestText, notifyText, ownedIdOf, pinExtra, pinWhole, requestModel, whyText, withRequests,
+  allowHow, notifyRequestText, notifyText, ownedIdOf, pinExtra, pinWhole, requestModel, whyText, withQueued, withRequests,
 } from './owned.js';
 import { getCsrf, setCsrf, setTheme } from './prefs.js';
 import { indexOf } from './tree.js';
@@ -139,7 +139,7 @@ export function makeDrive(state, dom, host) {
   function pinsPaint(snap, pinBar) {
     const g = guard();
     const reqCards = state.owned === null ? describeAskPins(snap.router.asks ?? [], g) : describeRequestPins(state.owned, g);
-    return withRequests(describePins(snap, { sel: state.sel, nowWall: nowWall(), bar: pinBar, extra: (/** @type {any} */ e) => pinExtra(e, state.owned, g) }), reqCards, pinBar);
+    return withQueued(withRequests(describePins(snap, { sel: state.sel, nowWall: nowWall(), bar: pinBar, extra: (/** @type {any} */ e) => pinExtra(e, state.owned, g) }), reqCards, pinBar), state.owned, g);
   }
 
   /**
@@ -155,7 +155,11 @@ export function makeDrive(state, dom, host) {
       void pollFeed();
     }
     // Not a session of Orchestra's own: its box goes, and no control of the last one stays behind in it.
-    Object.assign(/** @type {any} */ (detail.slots), mine === null ? { ownBox: { data: { hide: '1' } }, ownActs: { kids: [] }, cards: { kids: [] }, chat: { kids: [] } } : describeOwned(mine.id, state.owned, state.feeds.get(mine.id), g));
+    /** @type {any} */
+    const own = mine === null ? { ownBox: { data: { hide: '1' } }, ownActs: { kids: [] }, cards: { kids: [] }, chat: { kids: [] } } : describeOwned(mine.id, state.owned, state.feeds.get(mine.id), g);
+    // The home page draws a dispatch row its own way; the old page takes it as any other line.
+    if (mine !== null && own.chat !== undefined && host.rows !== undefined) own.chat = { kids: host.rows(own.chat.kids) };
+    Object.assign(/** @type {any} */ (detail.slots), own);
     const feed = mine === null ? undefined : state.feeds.get(mine.id);
     const opened = feed !== undefined && state.heard.id !== mine?.id;
     if (feed !== undefined && mine !== null && (opened || feed.to > state.heard.seq)) {

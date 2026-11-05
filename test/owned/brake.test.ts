@@ -98,7 +98,7 @@ const feedOk = (s: CodexSession | ClaudeSession) => {
   const page = s.feed.since(0);
   const v = validateOwnedFeed({
     v: 1, kind: 'owned-feed', ownedId: s.ownedId, from: page.from, to: page.to, clipped: page.clipped,
-    events: page.events.map((e) => ({ seq: e.seq, at: e.at, kind: e.kind, ref: e.ref, uuid: e.uuid, text: e.text, state: e.state, redactions: e.redactions, live: e.live, exitCode: e.exitCode ?? null, tokens: e.tokens === undefined ? null : { ...e.tokens } })),
+    events: page.events.map((e) => ({ seq: e.seq, at: e.at, kind: e.kind, ref: e.ref, uuid: e.uuid, text: e.text, state: e.state, redactions: e.redactions, live: e.live, exitCode: e.exitCode ?? null, tokens: e.tokens === undefined ? null : { ...e.tokens }, batch: e.batch ?? null })),
   });
   assert.ok(v.ok, v.errors.join('\n'));
 };

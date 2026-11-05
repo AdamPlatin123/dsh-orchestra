@@ -141,7 +141,7 @@ export const TOWER_BOUNDS = frozen({
  *   waiting: Waiting | null,
  *   counts: { children: number, errors: number, waiting: number },
  *   groups: Group[],
- *   ageMs: number | null, durationMs: number | null, model: string | null, agentType: string | null,
+ *   ageMs: number | null, durationMs: number | null, model: string | null, agentType: string | null, batch: number | null,
  *   mark: 'asks' | 'failed' | null,
  * }} Node
  *   counts: over the node's whole subtree below it (not itself): descendants, those in error, those
@@ -149,6 +149,8 @@ export const TOWER_BOUNDS = frozen({
  *   durationMs: how long a sub-agent of an owned session took, or runs so far; null when that cannot be
  *   told (T1), and on every other node. model: the model codex said such a sub-agent runs on; null when it
  *   did not say (T1), and on every other node. session is null on owned nodes (no file the stage reads).
+ *   batch: the dispatch of its session such a sub-agent came with (a number within that session; the talk's
+ *   dispatch row carries the same); null when no spawn of the root named it, and on every other node.
  *   mark: what such a sub-agent's card must flag though its state cannot (it runs while it asks, it ended
  *   when it failed); null otherwise, and on every other node.
  * @typedef {{ kind: 'approval' | 'question' | 'route', source: 'orchestra' | 'native' | 'inferred', deadline: number | null }} Waiting
@@ -274,7 +276,7 @@ function checkGroupShape(c, v, at) {
 
 /** @param {Checker} c @param {unknown} v @param {string} at */
 function checkNode(c, v, at) {
-  const n = c.obj(v, at, ['id', 'session', 'harness', 'ownership', 'layer', 'parent', 'depth', 'title', 'activity', 'state', 'basis', 'waiting', 'counts', 'groups', 'ageMs', 'durationMs', 'model', 'agentType', 'mark']);
+  const n = c.obj(v, at, ['id', 'session', 'harness', 'ownership', 'layer', 'parent', 'depth', 'title', 'activity', 'state', 'basis', 'waiting', 'counts', 'groups', 'ageMs', 'durationMs', 'model', 'agentType', 'batch', 'mark']);
   if (n === null) return null;
   c.re(n.id, `${at}.id`, NODE_ID_RE, 'node id');
   if (n.session !== null) c.re(n.session, `${at}.session`, TOWER_HEX20_RE, 'Hex20');
@@ -322,6 +324,10 @@ function checkNode(c, v, at) {
     if (!member) c.bad(`${at}.model`, 'only a sub-agent of an owned session has a model');
   }
   if (n.agentType !== null) c.text(n.agentType, `${at}.agentType`, TOWER_BOUNDS.textCp);
+  if (n.batch !== null) {
+    c.int(n.batch, `${at}.batch`, 1);
+    if (!member) c.bad(`${at}.batch`, 'only a sub-agent of an owned session has a batch');
+  }
   if (n.mark !== null) {
     c.en(n.mark, `${at}.mark`, TOWER_ENUMS.mark);
     if (!member) c.bad(`${at}.mark`, 'only a sub-agent of an owned session has a mark');

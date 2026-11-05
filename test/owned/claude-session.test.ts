@@ -292,6 +292,6 @@ test('GET /api/owned\'s list with Claude sessions: harness claude, its card in t
   assert.deepEqual([list.owned[0]!.harness, list.owned[0]!.model, list.owned[0]!.waiting, list.owned[0]!.tokens], ['claude', MODEL, list.approvals[0]!.approvalId, null]);
   assert.equal(list.approvals[0]!.ownedId, ownedId);
   const feed = s.feed.since(0);
-  const page = { v: 1, kind: 'owned-feed', ownedId, from: feed.from, to: feed.to, clipped: feed.clipped, events: feed.events.map((e) => ({ ...e, exitCode: e.exitCode ?? null, tokens: e.tokens ?? null })) };
+  const page = { v: 1, kind: 'owned-feed', ownedId, from: feed.from, to: feed.to, clipped: feed.clipped, events: feed.events.map((e) => ({ ...e, exitCode: e.exitCode ?? null, tokens: e.tokens ?? null, batch: null })) };
   assert.ok(validateOwnedFeed(page).ok, validateOwnedFeed(page).errors.join('\n'));
 });

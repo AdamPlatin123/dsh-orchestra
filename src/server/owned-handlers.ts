@@ -123,7 +123,7 @@ function approvalEntry(a: ApprovalView) {
 function feedEntry(e: FeedEvent) {
   return {
     seq: e.seq, at: e.at, kind: e.kind, ref: e.ref, uuid: e.uuid, text: e.text, state: e.state, redactions: e.redactions, live: e.live,
-    exitCode: e.exitCode ?? null, tokens: e.tokens === undefined ? null : { ...e.tokens },
+    exitCode: e.exitCode ?? null, tokens: e.tokens === undefined ? null : { ...e.tokens }, batch: e.batch ?? null,
   };
 }
 

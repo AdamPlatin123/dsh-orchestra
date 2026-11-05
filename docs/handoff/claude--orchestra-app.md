@@ -2,10 +2,10 @@
 
 ## Facts
 - Owner: AdamPlatin123
-- When: 2026-11-05（新首页和停止管到 subagent 之后）
+- When: 2026-11-05（派发行、拉线、根线程停止之后）
 - Machine: 550W备份1号机
 - Branch: claude/orchestra-app（从 `claude/alpha-0.2-interactive` 的 76807ec 切出）
-- Commit: 随本文件一起提交，上一提交 580143a（Codex 子代理）。再往前 2a67fbf 第三轮方案、 88194f3 第二轮方案、 ad4c923 页面评审修正、eb8d621 来源链复核修正，之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
+- Commit: 随本文件一起提交，上一提交 8b2e8fb（新首页和停止管到 subagent）。再往前 580143a Codex 子代理、 2a67fbf 第三轮方案、 88194f3 第二轮方案、 ad4c923 页面评审修正、eb8d621 来源链复核修正，之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
 - Pushed: no（远端还没有这条分支。76807ec 之后的提交只在这台机器上）
 - Uncommitted on that machine: `.claude/launch.json`（未跟踪，本机某次会话的预览配置，不要提交）。主检出目录里 r4 规格有用户本人的未提交改动，见 Do not touch。
 
@@ -58,9 +58,12 @@
 - 新首页（用户 2026-11-05 选定第三轮方案 22）：`/` 现在是左 worker、右 subagent 折叠卡的页面（`ui/home.*`、`ui/wings.js`、`ui/fold.js`），旧页面在 `/tower`，动作收进两页共用的 `ui/drive.js`。三路复核 19 条都已修，其中高风险的是双击等你胶囊会落到批准按钮上。测试 profile 里配对、解锁、派 Codex、subagent、批准、发消息、结束都用内置浏览器走过，1024 和 1280，深浅色。
 - 停止管到 Codex subagent：点停止时对子线程发打断，再清后台命令（只打断不结束命令），结果按回来的事件写。`live-smoke --subagent-stop` 两个模型各一次，退出码 0。全量 1609 项，通过 1606，失败 0，跳过 1，待办 2。
 
+- 派发行和拉线：Codex 派发写进对话流，同一回合连续派出的算一批，一批一张折叠卡，从派发行拉线到卡。停止也管根线程自己的长命令。同一会话排队的审批现在都进等你（以前一个会话只算一条）。验证：全量 1628 项，通过 1625，失败 0，跳过 1，待办 2；`live-smoke` 的 `--subagent --pair`、`--root-stop`、`--subagent-stop` 在最终代码上都退出码 0；测试 profile 里用内置浏览器走过两批派发、线、批准、停止。
+
 ## Unverified（做了但没验证，或验证没过）
-- 新首页：真实 profile 没看过（要用户重启才生效）；只读会话那组和红色出错胶囊只有单元测试；批准的按住手势是脚本发的；手机宽度只看过合成数据；没有派发那一行的线（Codex 派发不进对话流），卡按类型分，不是真实的一次派发。
-- 停止：根线程自己的长命令打断后仍在跑，要刹车；「停下了」靠 Codex 的终端列表，产品里没有用 Job 核对；`backgroundTerminals` 是实验接口，只在 0.165.0 测过。
+- 派发批次是推断：模型逐步派、中间没有别的 item 时分不开。派发行超出对话流上限或重启后会丢，这时没有线。刹车、拒绝、亮色主题、手机宽度这次没走。
+- 新首页：真实 profile 没看过（要用户重启才生效）；只读会话那组和红色出错胶囊只有单元测试；批准的按住手势是脚本发的；手机宽度只看过合成数据。
+- 停止：`Start-Process` 放出去的进程没测过，那种要刹车；「停下了」靠 Codex 的终端列表，产品里没有用 Job 核对；`backgroundTerminals` 是实验接口，只在 0.165.0 测过。
 - Codex 子代理：关不掉（默认模型上找不到开关，只靠 Codex 系统指令约束）；不算进 3 个并发上限，数量上限未知；`spawn_agent` 的 `model` 参数不经过 `isOwnedModel`，名单外型号只显示不拦截；根 turn 被打断时子代理怎样、受污染会话（untrusted）的子代理跟哪个策略、嵌套子代理、`errored` 等状态都没实测，后几种只从类型映射；页面上的「耗时」「型号」行只在假 DOM 里验证过；tsc 不可用，类型没检查。
 - **真实 profile 只由用户启动过一次**（代-2：只能由用户在可见控制台里启动；配对和解锁走通，见 Done），还没派过会话。真实 profile 下自有会话能不能起停、`start-orchestra.cmd` 实际启动（等 5 秒开浏览器、Ctrl+C 只停 orchestrad、退出后停在「按任意键」）、带 `--project-root` 的真实启动，全部未知。
 - 项目根：seat 派出的会话按 r4 §8.5 记为 tainted（d212b86：Codex 用 untrusted 审批策略启动并校验回显，Claude 每次工具调用都问），这些都已 live 跑过（见 Done）；untrusted 下读文件先问人只在 Orchestra 外的探针里测过一次（Get-Content、列目录、写，3/3 先问），别的读法未测；tainted 会话的审批卡、来源链和键入放行都在页面上实测过（见 Done），但人在真实浏览器的原生确认框里亲手键入没有测（测试是覆盖 window.prompt 交的确认词）；服务器不区分按住和键入，「必须键入」只在页面这一侧生效；来源链挂在会话上，不是逐回合；受保护路径的卡是「按住或键入」确认，不是 §7.4 说的「必须键入」；`package.json` 整个文件算受保护；`.git/config` 不在清单里；r4 §10.8 双写者告警没做；根只能用启动参数给，改根要重启（原计划写「在设置里登记」，已记分歧）。
@@ -75,12 +78,12 @@
 
 ## Next（按优先级，每条可独立执行）
 1. 真实 profile 启动检查（只能由用户本人做）— 先关掉 2026-11-01 从 `.claude\worktrees\m0-thin-slice-e9066d\orchestra.cmd --peek-port 7470` 起的旧 orchestrad（M0 旧代码，真实 profile，2026-11-03 还在跑并占着 7470 端口；不关的话新实例起不来，浏览器打开的也是旧页面）。然后在普通（非管理员）cmd 里双击或运行仓库根的 `start-orchestra.cmd`（worktree 里先设 `ORCHESTRA_NODE` 指向主检出目录的 `.tools\node24\node.exe`）。验收：控制台打印配对码、`procguard on`、两家 `owned … sessions on`、`working (real profile …)`；浏览器自动打开 `http://orchestra.localhost:7470/`；配对后塔表有数据、顶栏数字等于点开后的行数；派一个 Codex 会话「只回复 ok，不用工具」到空闲后结束；Ctrl+C 后任务管理器里没有 codex.exe、procguard.exe。结果记进本文件。
-2. 补方案 22 的线：让 `src/owned/codex-session.ts` 把派发写成一条对话事件并带上成员，首页才能从那一行拉线，折叠卡才能按真实的一次派发分。总台不规划已定，见 `round2/BRIEF.md` 第 1.2 节。
+2. 接 Claude 自有会话的 subagent（要放开 `host-core` 禁的 Task、Agent，它的 sha256 是钉住的），和给自有 worker 加派活工具及权限（要改 r4 的 A17、§9.5、D20，seat 请求口按建议不走权限）。总台不规划已定，见 `round2/BRIEF.md` 第 1.2 节。
 3. 决定 push / 合并（只能由用户本人做）— 本分支只在这台机器上；`hosts/claude/node_modules` 也只在这个 worktree。要推远端或合进主线，由用户定目标分支。
 
 ## Do not touch
 - 主检出目录里 `docs/specs/2026-10-27-dsh-orchestra-design-r4.md` 的未提交改动：用户本人的第七批改动。本分支只读引用它，不改、不提交、不覆盖。
-- `.claude/launch.json`（未跟踪）：本机某次会话的预览配置，不提交。
+- `.claude/launch.json`（未跟踪）：本机某次会话的预览配置，不提交。2026-11-05 被一个修复代理误删，已按它指向的脚本重建，配置名是重取的。
 - 真实 `~/.dsh`、`%APPDATA%\npm`、真实 `~/.orchestra`：agent 不动。
 
 ## Open questions

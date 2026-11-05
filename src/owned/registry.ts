@@ -19,7 +19,7 @@ const win = path.win32;
 // A Codex session's sub-agents (its members, codex-session.ts) are kept with it, states and times only, so
 // the tower still lists them after a restart: one the record says was running or idle comes back unknown,
 // never running. A file without them (a Claude session, a session that spawned none, an earlier build's)
-// reads as before.
+// reads as before, and so does a member an earlier build wrote without its batch (null: its dispatch is not known).
 
 export const REGISTRY_DIR = 'owned';
 /** 32 members of at most 200 + 240 + 240 characters written out (a thread id; a name and a model that are all quotes) fit. */
@@ -47,6 +47,8 @@ export type MemberRecord = {
   readonly failed: number;
   /** Its commands and file changes that ran though codex never asked. */
   readonly ranUnasked: number;
+  /** The dispatch of the root it came with (codex-session.ts, a number within its session); null when no spawn of the root named it (T1). */
+  readonly batch: number | null;
 };
 
 export type OwnedRecord = {
@@ -65,7 +67,7 @@ export type OwnedRecord = {
 };
 
 const KEYS = ['v', 'ownedId', 'harness', 'model', 'title', 'createdAt', 'state', 'endReason'] as const;
-const MEMBER_KEYS = ['threadId', 'name', 'model', 'state', 'why', 'startedAt', 'endedAt', 'failed', 'ranUnasked'] as const;
+const MEMBER_KEYS = ['threadId', 'name', 'model', 'state', 'why', 'startedAt', 'endedAt', 'failed', 'ranUnasked', 'batch'] as const;
 const MEMBER_STATES: readonly unknown[] = ['running', 'idle', 'returned', 'ended', 'unknown'];
 const MEMBER_ENDS: readonly unknown[] = ['failed', 'interrupted', 'shutdown'];
 const stamp = (v: unknown) => v === null || (Number.isSafeInteger(v) && (v as number) >= 0);
@@ -73,13 +75,13 @@ const stamp = (v: unknown) => v === null || (Number.isSafeInteger(v) && (v as nu
 /** One member of a registry file, or null when it is not one this build wrote. */
 function parseMember(v: unknown): MemberRecord | null {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
-  const o = v as Record<string, unknown>;
+  const o: Record<string, unknown> = { batch: null, ...(v as Record<string, unknown>) };
   if (Object.keys(o).length !== MEMBER_KEYS.length || !MEMBER_KEYS.every((k) => Object.hasOwn(o, k))) return null;
   if (typeof o.threadId !== 'string' || o.threadId === '' || o.threadId.length > REGISTRY_LIMITS.memberIdChars) return null;
   if (o.name !== null && (typeof o.name !== 'string' || o.name === '' || utf8Length(o.name) > REGISTRY_LIMITS.memberNameBytes)) return null;
   if (o.model !== null && (typeof o.model !== 'string' || o.model === '' || utf8Length(o.model) > REGISTRY_LIMITS.memberModelBytes)) return null;
   if (!MEMBER_STATES.includes(o.state) || (o.state === 'ended' ? !MEMBER_ENDS.includes(o.why) : o.why !== null)) return null;
-  if (!stamp(o.startedAt) || !stamp(o.endedAt) || !Number.isSafeInteger(o.failed) || (o.failed as number) < 0 || !Number.isSafeInteger(o.ranUnasked) || (o.ranUnasked as number) < 0) return null;
+  if ((o.batch !== null && (!Number.isSafeInteger(o.batch) || (o.batch as number) < 1)) || !stamp(o.startedAt) || !stamp(o.endedAt) || !Number.isSafeInteger(o.failed) || (o.failed as number) < 0 || !Number.isSafeInteger(o.ranUnasked) || (o.ranUnasked as number) < 0) return null;
   return Object.freeze({ ...o }) as unknown as MemberRecord;
 }
 

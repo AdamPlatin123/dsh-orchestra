@@ -180,6 +180,9 @@ export class FakeElement extends FakeParent {
     return null;
   }
   focus(): void { this.focused = true; }
+  /** What a test says this element measures; nothing laid out measures 0. */
+  rect = { top: 0, bottom: 0, left: 0, right: 0, height: 0 };
+  getBoundingClientRect() { return this.rect; }
   showModal(): void { this.ownerDocument.count('showModal', this); this.open = true; }
   close(): void { this.ownerDocument.count('close', this); this.open = false; }
   cloneNode(deep = false): FakeElement {

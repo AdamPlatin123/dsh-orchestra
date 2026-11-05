@@ -135,6 +135,13 @@ code, pre { font-family: var(--code); }
 .msg[data-kind=you] { justify-items: end; }
 .msg[data-kind=you] .msg-tx { max-width: 86%; padding: 3px 10px; border-radius: 9px 9px 2px 9px; background: var(--sunk); }
 .msg[data-live="1"] .msg-tx, .msg[data-kind=life] .msg-tx, .msg[data-kind=note] .msg-tx, .msg[data-kind=auto] .msg-tx { color: var(--ink-3); }
+/* A dispatch row: a port at its right end, where the wire goes out. */
+.dr { position: relative; display: block; width: calc(100% - 7px); min-width: 0; padding: 4px 12px 4px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); font-size: 13px; line-height: 1.5; text-align: left; overflow-wrap: anywhere; }
+.dr b { font-weight: 600; }
+.dr::after { content: ""; position: absolute; right: -5px; top: 50%; width: 9px; height: 9px; margin-top: -4.5px; border-radius: 50%; background: var(--panel); box-shadow: inset 0 0 0 1.5px var(--line-2); }
+.dr[disabled] { cursor: default; color: var(--ink-3); }
+.dr:hover:not([disabled]), .msg[data-hot="1"] .dr { border-color: var(--act); }
+.dr:hover:not([disabled])::after, .msg[data-hot="1"] .dr::after { background: var(--act); box-shadow: none; }
 .msg details { min-width: 0; }
 .msg summary { cursor: pointer; font: 12.5px var(--code); color: var(--ink-2); overflow-wrap: anywhere; }
 .ev-box { flex: 1 1 0; min-height: 0; overflow: auto; }
@@ -207,21 +214,23 @@ button.pin-go:hover { background: var(--sunk); }
 .btn[data-hold="1"]::after { transform: scaleX(1); }
 
 /* == right: the team line, then what the current worker sent out */
-.right { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
-.team { flex: none; padding: 10px 16px 8px; border-bottom: 1px solid var(--line); }
+.right { --g: 40px; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.team { flex: none; padding: 10px 16px 8px var(--g); border-bottom: 1px solid var(--line); }
 .lb { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin-bottom: 5px; font-size: 13px; font-weight: 600; }
 .lb-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-n { flex: none; font-size: 12px; font-weight: 400; color: var(--ink-3); }
 .empty { padding: 8px 12px; border: 1px dashed var(--line-2); border-radius: 10px; font-size: 13px; color: var(--ink-2); }
 .empty b { display: block; font-weight: 600; color: var(--ink); }
-.subs { flex: 1 1 0; min-height: 0; overflow: auto; padding: 8px 16px 12px; scrollbar-width: thin; }
+.subs { flex: 1 1 0; min-height: 0; overflow: auto; padding: 8px 16px 12px var(--g); scrollbar-width: thin; }
 .subs-note { margin-bottom: 8px; font-size: 12.5px; color: var(--ink-3); }
-.rbar { flex: none; padding: 6px 16px; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--ink-2); }
+.subs-note:empty { display: none; }
+.rbar { flex: none; padding: 6px 16px 6px var(--g); border-top: 1px solid var(--line); font-size: 12.5px; color: var(--ink-2); }
 
 /* The folded card: first line a name and an arrow, second kind, count, time, third one mark a member. */
 .cw { max-width: 520px; margin-bottom: 10px; }
 .fold { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; width: 100%; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); text-align: left; }
 .fold:hover { border-color: var(--line-2); }
+.cw[data-hot="1"] .fold { border-color: var(--act); }
 .fold-title { overflow: hidden; font-size: 15px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .fold-chev { flex: none; align-self: center; width: 8px; height: 8px; border-right: 1.5px solid var(--ink-3); border-top: 1.5px solid var(--ink-3); transform: rotate(45deg); }
 .fold > .fold-chev { grid-row: 1 / span 2; grid-column: 2; }
@@ -253,6 +262,14 @@ button.pin-go:hover { background: var(--sunk); }
 .mem-m { grid-column: 2 / -1; font: 12px var(--code); color: var(--ink-3); overflow-wrap: anywhere; }
 .mem-a { grid-column: 2 / -1; font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }
 .mem-a:empty { display: none; }
+
+/* == the wires: over both halves, faint, and out of the pointer's way; one stands out while new, aimed at or open */
+.wires { position: fixed; inset: 0; z-index: 3; width: 100vw; height: 100vh; pointer-events: none; }
+.wire { overflow: visible; }
+.wire path { fill: none; stroke: var(--line-2); stroke-width: 1; opacity: .55; }
+.wire circle { fill: var(--line-2); opacity: .55; }
+.wire[data-hot="1"] path { stroke: var(--act); stroke-width: 1.75; opacity: 1; }
+.wire[data-hot="1"] circle { fill: var(--act); opacity: 1; }
 
 /* == dialogs */
 .dlg { width: calc(100% - 32px); max-width: 520px; padding: 16px 18px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel); color: var(--ink); }
@@ -304,19 +321,26 @@ button.pin-go:hover { background: var(--sunk); }
   /* The page grows downward here, so a list under its capsule is what leaves the capsule where it was. */
   .isl { flex-direction: column; }
   .right { display: block; }
+  .right { --g: 16px; }
   .subs { overflow: visible; }
   .btn, .tb { min-height: 44px; }
 }
 
-/* == motion (no reduced-motion preference only): a new card comes out once, an allow's bar moves */
+/* == motion (no reduced-motion preference only): a new wire draws itself once, its card comes out at the end of it, an allow's bar moves */
 @media (prefers-reduced-motion: no-preference) {
   .fold-chev { transition: transform .15s; }
-  .cw[data-fresh="1"] { animation: grow .3s ease-out; }
+  .cw[data-fresh="1"] { animation: grow .3s .3s ease-out both; }
+  .wire path { transition: stroke .35s, stroke-width .35s, opacity .35s; }
+  .wire circle { transition: fill .35s, opacity .35s; }
+  .wire[data-grow="1"] path { stroke-dasharray: 1; animation: draw .36s ease-out; }
+  .wire[data-grow="1"] circle { animation: land .12s .34s both; }
   .btn[data-settle=a]::after { animation: settle-a .75s linear forwards; }
   .btn[data-settle=b]::after { animation: settle-b .75s linear forwards; }
   .btn[data-hold="1"]::after { animation: hold 1s linear forwards; }
 }
 @keyframes grow { from { opacity: 0; transform: translateX(-16px); } to { opacity: 1; transform: translateX(0); } }
+@keyframes draw { from { stroke-dashoffset: 1; } to { stroke-dashoffset: 0; } }
+@keyframes land { from { opacity: 0; } to { opacity: 1; } }
 @keyframes settle-a { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 @keyframes settle-b { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 @keyframes hold { from { transform: scaleX(0); } to { transform: scaleX(1); } }

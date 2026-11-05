@@ -14,6 +14,7 @@ import { Feed } from './feed.ts';
 import { isOwnedModel } from './models.ts';
 import { REGISTRY_LIMITS, memberLive } from './registry.ts';
 import { oneShot } from '../runtime/clock.ts';
+import { memberNodeId } from '../sources/tower.ts';
 import { OWNED_TEXT_LIMITS, liveTail, shown, splitUtf8 } from './text.ts';
 import { frozen } from '../../shared/frozen.js';
 
@@ -31,8 +32,9 @@ const win = path.win32;
 //   a message: turn/start while no turn runs; turn/steer {expectedTurnId} while one does; while the
 //              thread is still starting, or a turn/start is in flight, it waits here (at most 5).
 //   stop:      every open approval of the session is declined first, the waiting messages withdrawn,
-//              then turn/interrupt (sent as soon as the turn has an id, if it had none yet), then the
-//              sub-agents, whether or not the root still has a turn (see Sub-agents below).
+//              then turn/interrupt (sent as soon as the turn has an id, if it had none yet) and, with a turn
+//              or a command known to be out, thread/backgroundTerminals/clean on the root (see Root commands
+//              below), then the sub-agents, whether or not the root still has a turn (see Sub-agents below).
 //   end:       open approvals declined, then the child is stopped (stdin closed, then killed). Started
 //              inside a procguard Job (pipe.job), the child is procguard and its end closes the Job, so
 //              what codex's commands started dies with it (r4 D4); once it closed, the Job is checked
@@ -44,7 +46,7 @@ const win = path.win32;
 //              goes; the feed says how many processes the Job held and whether any is left.
 //   deadlines: initialize and thread/start get 60 s (then start-failed), turn/start and turn/steer 60 s
 //              (then the message is msg-unsure: sent, its fate unknown), turn/interrupt and
-//              thread/backgroundTerminals/* 10 s each; a stop reads its sub-agents' outcome 2 s after those answered.
+//              thread/backgroundTerminals/* 10 s each; a stop reads its outcome 2 s after those answered.
 //
 // Each message of yours carries the uuid of its human record, and its fate is a feed note with that
 // uuid as ref: msg-queued (live) while it waits here, then msg-sent (handed to codex), msg-not-sent
@@ -118,6 +120,34 @@ const win = path.win32;
 // without its words. The model codex says it runs on is kept: spawn_agent's model never meets isOwnedModel,
 // so one outside the list is said (member-off-list), not stopped. session.tokens is the root thread's only:
 // each member reports its own count, which is not added in.
+//
+// A dispatch: the root sending a member out is the one thing of theirs that is the root's own act, so it is a feed
+// event (a note of state dispatch), and the only one: what a member says stays out. Its ref is the member's node id
+// (src/sources/tower.ts: a hash, no thread id reaches the page), its text the name (null until one is known; v1 knows
+// it only from thread/read, and then it is told again with the name, under the same ref, the first telling left where
+// it stands, so its row keeps its place on a page opened later as on one open all along), its batch the dispatch it
+// belongs to. It comes from subAgentActivity started (v2) or a spawnAgent that names its thread (v1), on the root
+// thread only: a spawn on a member's thread (nested, not measured) is not the root's act, and that member has no
+// batch, as has one nothing announced. Nothing in the protocol says which spawns were one decision, so a batch is what
+// the root thread shows: the spawns of one turn (the turnId of their items) with no other item of the root started
+// between them, reasoning, a message or a wait included. Two calls of one model reply and two steps back to back read
+// the same here, and both count as one dispatch. An item that names no turn is a batch of its own, and opens none.
+//
+// Root commands (measured 2026-11-04): turn/interrupt on the root leaves a running command in the Job, as it does a
+// member's, and thread/backgroundTerminals/clean on the root ends it. So a stop of a turn sends both, in that order,
+// whether or not a command was seen open: clean takes nothing else from the session, which stands idle and takes the
+// next message. A root with no turn gets the clean only when a command is known to be out (one its turn left open, or
+// one the last stop did not confirm): those leave the stop on offer (session.stoppable), and with none the stop is not
+// offered and sends nothing, so a process whose item ended and that stays behind an idle root is neither seen nor
+// reached (the brake is). What the clean is about to end is read first (thread/backgroundTerminals/list, between the
+// interrupt and the clean), so a process an earlier turn left is said too; a count is of ids, the items seen open and
+// the list's itemId, each once. Sending says nothing again: 2 s later the list says, and the feed says commands-stopping
+// (live), then commands-stopped (the turn over and the list empty) or commands-not-stopped; nothing when nothing was
+// open and the list came back empty or not at all. One not confirmed that comes back later takes its count off, and
+// when the last has, commands-back says so, as it does when all came back but the turn or the list said nothing. The
+// command comes back failed after the turn's end, so a turn's end keeps what was asked about a command still out, or it
+// would read as run past the queue, and a command a stop reached comes back as stopped, not failed: what codex said is
+// its exit code.
 
 export const CODEX_SESSION_LIMITS = frozen({
   /** Messages waiting for the thread or for a turn/start in flight. */
@@ -309,6 +339,8 @@ type Member = { -readonly [K in Exclude<keyof CodexMember, 'asks'>]: CodexMember
   endedTurn: string | null;
   /** The turn codex said started and not yet ended: what a stop interrupts. */
   turn: string | null;
+  /** Its dispatch event was told with no name: told again once one is known. */
+  unnamed: boolean;
   /** Its commands announced and not yet ended: they outlive an interrupted turn (measured). */
   commands: Set<string>;
   /** The last stop that reached it did not end with its list empty and its turn over. */
@@ -317,8 +349,12 @@ type Member = { -readonly [K in Exclude<keyof CodexMember, 'asks'>]: CodexMember
   nameAsked: boolean;
 };
 
-/** The ref of a stop's notes, live and final. */
+/** The refs of a stop's notes, live and final: the members', the root's own commands'. */
 const STOP_REF = 'members-stop';
+const ROOT_STOP_REF = 'root-stop';
+
+/** A root item that sends a sub-agent out: the one kind that leaves a batch open. */
+const spawns = (item: Obj) => (str(item.type) === 'subAgentActivity' && str(item.kind) === 'started') || (str(item.type) === 'collabAgentToolCall' && str(item.tool) === 'spawnAgent');
 
 /** Something of its may still run, whatever its state says. */
 const memberBusy = (m: Member) => m.state === 'running' || m.turn !== null || m.commands.size > 0 || m.stopLeft;
@@ -369,8 +405,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   const endedTurns: string[] = [];
   /** Server request -> the approval it waits on. */
   const asked = new Map<string, string>();
-  /** A command's or file change's announcement while its item runs: hidden while an approval about it is open. */
-  const toolEvents = new Map<string, { seq: number; input: FeedInput; hidden: boolean }>();
+  /** A command's or file change's announcement while its item runs: hidden while an approval about it is open, held from then until it is allowed (held, it never ran). */
+  const toolEvents = new Map<string, { seq: number; input: FeedInput; hidden: boolean; held: boolean }>();
   /** Approval -> the item it decides, while it is open. */
   const askItem = new Map<string, string>();
   /** Items of this turn codex asked about (any answer, an automatic refusal too): a command or file change that ran without one is said (ran-unasked). */
@@ -390,6 +426,20 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   let memberUnasked = 0;
   /** A stop is on its way to the sub-agents: another press adds nothing to it. */
   let membersStopping = false;
+  /** Batches so far: the next dispatch's number. */
+  let batches = 0;
+  /** The dispatch the next spawn joins: of this turn, nothing else of the root's since. */
+  let dispatching: { batch: number; turn: string } | null = null;
+  /** A stop is on its way to the root's commands. */
+  let rootStopping = false;
+  /** The root's commands a stop reached and that have not come back. */
+  const rootStopped = new Set<string>();
+  /** The root's commands that ran and that their turn's end left open, until they come back or a stop confirms none is left. */
+  const rootOpen = new Set<string>();
+  /** The ids the last stop of the root's could not confirm gone and that have not come back; none when it could. */
+  const rootLeft = new Set<string>();
+  /** How many the last commands-not-stopped said. */
+  let rootSaid = 0;
   /** The timer of a stop's wait, made at the first stop. */
   let stopAfter: ((ms: number, fn: () => void) => () => void) | null = null;
 
@@ -448,9 +498,9 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     feed.push({ kind: 'note', ref: null, text: s?.text ?? null, state: stateName, redactions: s?.redactions ?? 0 });
   };
   /** A stop's final word: it takes the place of the live note, in the feed and on a page that holds it. */
-  const stopSaid = (stateName: string, text: string | null) => {
-    feed.settle(STOP_REF);
-    feed.push({ kind: 'note', ref: STOP_REF, text, state: stateName });
+  const stopSaid = (ref: string, stateName: string, text: string | null) => {
+    feed.settle(ref);
+    feed.push({ kind: 'note', ref, text, state: stateName });
   };
   /** Takes a command's announcement out of the feed while a card about it is open. */
   const hideTool = (iid: string | null) => {
@@ -458,6 +508,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     if (t === undefined || t.hidden) return;
     feed.withdraw(t.seq);
     t.hidden = true;
+    t.held = true;
   };
   /** Tells a hidden announcement again, below what decided it. */
   const showTool = (iid: string | null) => {
@@ -509,7 +560,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     }
     // Measured under on-request only: whether it takes this thread's untrusted or the config's on-request nobody knows.
     if (members.size === 0 && opts.tainted === true) note('members-untrusted');
-    const m: Member = { threadId: tid, name: null, model: null, state: 'unknown', why: null, startedAt: null, endedAt: null, failed: 0, ranUnasked: 0, lastAt: null, asks: [], endedTurn: null, turn: null, commands: new Set(), stopLeft: false, nameAsked: false };
+    const m: Member = { threadId: tid, name: null, model: null, state: 'unknown', why: null, startedAt: null, endedAt: null, failed: 0, ranUnasked: 0, batch: null, lastAt: null, asks: [], endedTurn: null, turn: null, unnamed: false, commands: new Set(), stopLeft: false, nameAsked: false };
     members.set(tid, m);
     membersRev++;
     return m;
@@ -551,6 +602,21 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     if (s === '') return;
     m.name = s;
     membersRev++;
+    if (m.unnamed) tellDispatch(m);
+    m.unnamed = false;
+  };
+  /** The dispatch event of a member, as it is known now. */
+  const tellDispatch = (m: Member) => {
+    feed.push({ kind: 'note', ref: memberNodeId(ownedId, m.threadId), text: m.name, state: 'dispatch', batch: m.batch! });
+  };
+  /** The root sent it out: once a member, in the open batch if this turn has one (see the header), else in a new one. */
+  const dispatched = (m: Member, turn: string | null) => {
+    if (m.batch !== null) return;
+    m.batch = turn !== null && dispatching?.turn === turn ? dispatching.batch : ++batches;
+    dispatching = turn === null ? null : { batch: m.batch, turn };
+    membersRev++;
+    tellDispatch(m);
+    m.unnamed = m.name === null;
   };
   /** The model codex says it runs on, the first it says; one outside the owned list is said, its name beside it (nothing stops it: isOwnedModel never saw it). */
   const memberModel = (m: Member, raw: string | null) => {
@@ -564,7 +630,9 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   /** The session is gone: nobody can hear a member again, so one still live is unknown, never running (T1). */
   const loseMembers = () => {
     const stopping = feed.last((e) => e.live && e.ref === STOP_REF);
-    if (stopping !== null) stopSaid('members-stop-unanswered', stopping.text);
+    if (stopping !== null) stopSaid(STOP_REF, 'members-stop-unanswered', stopping.text);
+    const stoppingRoot = feed.last((e) => e.live && e.ref === ROOT_STOP_REF);
+    if (stoppingRoot !== null) stopSaid(ROOT_STOP_REF, 'commands-stop-unanswered', stoppingRoot.text);
     askMember.clear();
     for (const m of members.values()) {
       m.asks = [];
@@ -697,7 +765,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   const afterTurnRequest = () => {
     if (interruptWanted && turnId !== null && !terminal()) {
       interruptWanted = false;
-      void sendInterrupt(turnId);
+      void stopTurn(turnId, new Set(rootOut()));
     }
     pump();
   };
@@ -718,8 +786,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     }
   };
 
-  /** A request of a stop to a member's thread: its reply, or null when codex refused it or never answered. */
-  const memberCall = async (method: string, params: Obj): Promise<Obj | null> => {
+  /** A request of a stop to a thread: its reply, or null when codex refused it or never answered. */
+  const stopCall = async (method: string, params: Obj): Promise<Obj | null> => {
     try {
       return obj(await rpc.request(method, params, D.interruptMs));
     } catch {
@@ -729,15 +797,18 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
 
   /** Its turn first, then what that leaves running: an interrupted turn does not end its command (measured). */
   const stopMember = async (m: Member) => {
-    if (m.turn !== null) await memberCall('turn/interrupt', { threadId: m.threadId, turnId: m.turn });
-    await memberCall('thread/backgroundTerminals/clean', { threadId: m.threadId });
+    if (m.turn !== null) await stopCall('turn/interrupt', { threadId: m.threadId, turnId: m.turn });
+    await stopCall('thread/backgroundTerminals/clean', { threadId: m.threadId });
   };
 
-  /** Only an answer with an empty list says none is left (T1). */
-  const noTerminals = async (m: Member) => {
-    const r = await memberCall('thread/backgroundTerminals/list', { threadId: m.threadId });
-    return r !== null && Array.isArray(r.data) && r.data.length === 0;
+  /** The background terminals its list holds; null when that is not known (T1). */
+  const terminalsOn = async (tid: string): Promise<unknown[] | null> => {
+    const r = await stopCall('thread/backgroundTerminals/list', { threadId: tid });
+    return r !== null && Array.isArray(r.data) ? r.data : null;
   };
+  const terminalsLeft = async (tid: string) => (await terminalsOn(tid))?.length ?? null;
+  /** The root's list by item, each entry once. */
+  const rootTerminals = async () => (await terminalsOn(threadId!))?.map((t, i) => id(obj(t).itemId) ?? `terminal ${i}`) ?? null;
 
   const stopPause = () => new Promise<void>((r) => {
     if (opts.hub === undefined) {
@@ -766,8 +837,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       await Promise.all(round.map(stopMember));
       await stopPause();
       if (terminal()) break;
-      const clean = await Promise.all(round.map(noTerminals));
-      round.forEach((m, i) => heard.set(m, clean[i]!));
+      const left = await Promise.all(round.map((m) => terminalsLeft(m.threadId)));
+      round.forEach((m, i) => heard.set(m, left[i] === 0));
     }
     membersStopping = false;
     // The session went meanwhile: its end says what became of them.
@@ -780,10 +851,58 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     const stopped = [...busy].filter((m) => !left.includes(m)).length;
     // Of one in an unknown state, or past the bound, no turn is known (T1).
     const unsure = [...members.values()].filter((m) => m.state === 'unknown' && !heard.has(m)).length + overIds.size;
-    if (stopped > 0) stopSaid('members-stopped', `${stopped}`);
-    if (left.length + unsure > 0) stopSaid('members-not-stopped', `${left.length + unsure}`);
+    if (stopped > 0) stopSaid(STOP_REF, 'members-stopped', `${stopped}`);
+    if (left.length + unsure > 0) stopSaid(STOP_REF, 'members-not-stopped', `${left.length + unsure}`);
     changed();
   };
+
+  /** Commands of the root known to be out with no turn to say so. */
+  const rootOut = () => [...rootOpen, ...rootLeft];
+  /** A stop reached these: what comes back of them is the stop's. */
+  const rootReached = (ids: Iterable<string>) => {
+    for (const iid of ids) rootStopped.add(iid);
+    while (rootStopped.size > L.memberChanges) rootStopped.delete(rootStopped.values().next().value!);
+  };
+
+  /**
+   * The root's turn, then what that leaves running (see Root commands in the header). `open` are the ids of the
+   * commands the stop found out, and it adds what the list holds. What it did is read afterwards, from what came back.
+   */
+  const stopRoot = async (turn: string | null, open: Set<string>) => {
+    rootStopping = true;
+    const stopping = () => {
+      if (open.size > 0) feed.upsert(ROOT_STOP_REF, { kind: 'note', ref: ROOT_STOP_REF, text: `${open.size}`, state: 'commands-stopping' });
+    };
+    // A message after the stop may have opened a turn: what that runs is on the list, and no part of this stop.
+    const moved = () => turnId !== null && turnId !== turn;
+    const notBack = () => [...open].filter((iid) => rootStopped.has(iid));
+    stopping();
+    if (turn !== null) await sendInterrupt(turn);
+    const found = terminal() || moved() ? null : await rootTerminals();
+    if (found !== null && found.some((iid) => !open.has(iid))) {
+      for (const iid of found) open.add(iid);
+      if (!terminal()) stopping();
+    }
+    rootReached(open);
+    await stopCall('thread/backgroundTerminals/clean', { threadId });
+    await stopPause();
+    const left = terminal() ? null : moved() ? notBack() : await rootTerminals();
+    rootStopping = false;
+    // The session went meanwhile: its end says what became of them.
+    if (terminal()) return;
+    const heard = left?.length === 0 && (turn === null || turnId !== turn);
+    rootLeft.clear();
+    if (heard) rootOpen.clear();
+    else for (const iid of [...notBack(), ...(left ?? [])]) rootLeft.add(iid);
+    rootSaid = rootLeft.size;
+    if (heard && open.size > 0) stopSaid(ROOT_STOP_REF, 'commands-stopped', `${open.size}`);
+    else if (rootLeft.size > 0) stopSaid(ROOT_STOP_REF, 'commands-not-stopped', `${rootLeft.size}`);
+    else if (open.size > 0) stopSaid(ROOT_STOP_REF, 'commands-back', `${open.size}`);
+    changed();
+  };
+
+  /** A stop of a turn; while one is on its way its clean has gone out, and only the turn is new. */
+  const stopTurn = (turn: string, open: Set<string>) => (rootStopping ? sendInterrupt(turn) : stopRoot(turn, open));
 
   // --- what codex tells ------------------------------------------------------------------------------
 
@@ -818,13 +937,13 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       it.command = str(item.command) ?? '';
       const s = shownFeed(it.command, 'head');
       const input: FeedInput = { kind: 'tool', ref: iid, text: s.text, state: 'command', redactions: s.redactions };
-      toolEvents.set(iid, { seq: feed.push(input).seq, input, hidden: false });
+      toolEvents.set(iid, { seq: feed.push(input).seq, input, hidden: false, held: false });
     } else if (type === 'fileChange') {
       const it = itemOf(iid, type);
       it.changes = changesOf(item.changes);
       const s = shownFeed(changeSummary(it.changes ?? [], feedPath), 'head');
       const input: FeedInput = { kind: 'tool', ref: iid, text: s.text, state: 'file-change', redactions: s.redactions };
-      toolEvents.set(iid, { seq: feed.push(input).seq, input, hidden: false });
+      toolEvents.set(iid, { seq: feed.push(input).seq, input, hidden: false, held: false });
     } else if (type === 'mcpToolCall' || type === 'dynamicToolCall' || type === 'webSearch') {
       itemOf(iid, type);
       const what = type === 'mcpToolCall' ? `${str(item.server) ?? '?'} / ${str(item.tool) ?? '?'}` : type === 'webSearch' ? str(item.query) ?? '' : str(item.tool) ?? '?';
@@ -866,15 +985,19 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       });
       if (keep.length === 0) feed.push({ kind: 'text', ref: iid, text: '', state: 'final' });
     } else if (type === 'commandExecution') {
+      const reached = rootStopped.delete(iid);
+      rootOpen.delete(iid);
       ranUnasked(iid, str(item.status), it?.command ?? str(item.command) ?? '');
       feed.settle(`out:${iid}`);
       const raw = (str(item.aggregatedOutput) ?? it?.out ?? '').slice(-L.outputChars);
       const s = shownFeed(raw, 'tail');
       const exit = item.exitCode;
       feed.push({
-        kind: 'tool-result', ref: iid, text: s.text, state: STATUS[str(item.status) ?? ''] ?? 'unknown', redactions: s.redactions,
+        kind: 'tool-result', ref: iid, text: s.text, state: reached && str(item.status) === 'failed' ? 'stopped' : STATUS[str(item.status) ?? ''] ?? 'unknown', redactions: s.redactions,
         exitCode: Number.isSafeInteger(exit) ? (exit as number) : null,
       });
+      // The last one a stop could not confirm came back: the note that said so has its answer, and nothing is left to stop.
+      if (rootLeft.delete(iid) && rootLeft.size === 0 && !rootStopping) stopSaid(ROOT_STOP_REF, 'commands-back', `${rootSaid}`);
     } else if (type === 'fileChange') {
       const changes = changesOf(item.changes) ?? it?.changes ?? [];
       ranUnasked(iid, str(item.status), changeSummary(changes, feedPath));
@@ -916,7 +1039,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     }
   };
 
-  const subAgentActivity = (item: Obj, at: number | null) => {
+  const subAgentActivity = (item: Obj, at: number | null, root: boolean, turn: string | null) => {
     const tid = memberThread(item.agentThreadId);
     const m = tid === null ? null : memberOf(tid);
     if (m === null) return;
@@ -927,6 +1050,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     if (kind === 'started') {
       memberStart(m, at);
       memberRuns(m);
+      if (root) dispatched(m, turn);
     } else if (kind === 'completed') {
       memberReturned(m, at);
     } else if (kind === 'interrupted') {
@@ -944,7 +1068,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     else if (status === 'notFound' && memberLive(m)) moveMember(m, 'unknown');
   };
 
-  const collabCall = (item: Obj, done: boolean, at: number | null) => {
+  const collabCall = (item: Obj, done: boolean, at: number | null, root: boolean, turn: string | null) => {
     const spawn = str(item.tool) === 'spawnAgent';
     const named = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [];
     const states = obj(item.agentsStates);
@@ -956,6 +1080,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       if (spawn) {
         memberStart(m, at);
         memberModel(m, str(item.model));
+        if (root) dispatched(m, turn);
       }
     }
     for (const [raw, st] of Object.entries(states)) {
@@ -967,12 +1092,13 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   };
 
   /** The items that tell of sub-agents, on whichever thread they come; every other item is left to the session's own. */
-  const memberItem = (p: Obj, done: boolean) => {
+  const memberItem = (p: Obj, done: boolean, root: boolean) => {
     const item = obj(p.item);
     const type = str(item.type);
     const at = atMs(done ? p.completedAtMs : p.startedAtMs);
-    if (type === 'subAgentActivity') subAgentActivity(item, at);
-    else if (type === 'collabAgentToolCall') collabCall(item, done, at);
+    const turn = id(p.turnId);
+    if (type === 'subAgentActivity') subAgentActivity(item, at, root, turn);
+    else if (type === 'collabAgentToolCall') collabCall(item, done, at, root, turn);
   };
 
   /**
@@ -1018,7 +1144,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   const memberHeard = (method: string, p: Obj, tid: string) => {
     const m = memberOf(tid);
     if (method === 'item/started' || method === 'item/completed') {
-      memberItem(p, method === 'item/completed');
+      memberItem(p, method === 'item/completed', false);
       memberStep(method === 'item/completed', obj(p.item), tid, m);
     }
     // An interrupted turn's command ends after it, once a stop cleans it up: what was asked about it is still needed then.
@@ -1112,7 +1238,11 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
           state = 'idle';
         }
         items.clear();
-        askedItems.clear();
+        // A turn's end does not end its commands (measured on an interrupted one): one that ran and is still open is out,
+        // and what was asked about whatever may yet come back is still needed then, past this turn and the next.
+        for (const [iid, t] of toolEvents) if (!t.held && t.input.state === 'command') rootOpen.add(iid);
+        while (rootOpen.size > L.memberChanges) rootOpen.delete(rootOpen.values().next().value!);
+        for (const iid of askedItems) if (!toolEvents.has(iid) && !rootOpen.has(iid) && !rootStopped.has(iid)) askedItems.delete(iid);
         showAllTools();
         toolEvents.clear();
         const err = str(obj(turn.error).message);
@@ -1122,12 +1252,13 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
         return;
       }
       case 'item/started':
-        memberItem(p, false);
+        if (!spawns(obj(p.item))) dispatching = null;
+        memberItem(p, false, true);
         itemStarted(obj(p.item));
         changed();
         return;
       case 'item/completed':
-        memberItem(p, true);
+        memberItem(p, true, true);
         itemCompleted(obj(p.item));
         changed();
         return;
@@ -1231,6 +1362,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
         });
         askItem.delete(approvalId);
         askSettled(approvalId);
+        const tool = ask.item === null ? undefined : toolEvents.get(ask.item);
+        if (tool !== undefined && a.decision === 'accept') tool.held = false;
         showTool(ask.item);
         changed();
       },
@@ -1444,7 +1577,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       return queue.length;
     },
     get members() {
-      return Object.freeze([...members.values()].map(({ endedTurn: _t, turn: _u, commands: _c, stopLeft: _l, nameAsked: _n, asks, ...m }) => Object.freeze({ ...m, asks: Object.freeze([...asks]) })));
+      return Object.freeze([...members.values()].map(({ endedTurn: _t, turn: _u, unnamed: _s, commands: _c, stopLeft: _l, nameAsked: _n, asks, ...m }) => Object.freeze({ ...m, asks: Object.freeze([...asks]) })));
     },
     get membersOver() {
       return overIds.size;
@@ -1453,7 +1586,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       return membersRev;
     },
     get stoppable() {
-      return [...members.values()].some(stopReaches);
+      return rootOut().length > 0 || [...members.values()].some(stopReaches);
     },
     feed,
     ready,
@@ -1471,12 +1604,20 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     },
     async interrupt() {
       if (terminal()) return { withdrawn: 0, denied: 0 };
+      // Before the refusals below: a command whose card is open never ran, and the refusal shows it again.
+      const running = [...toolEvents].filter(([, t]) => !t.held && t.input.state === 'command').map(([iid]) => iid);
+      // By id: a command the last stop left and still running is one command, however many presses it took.
+      const open = new Set([...running, ...rootOut()]);
+      rootReached(open);
       // Slice design §2.5: the approvals first, then the waiting messages, then the turn. The turn's
       // interrupt is sent, not awaited: its outcome is the feed's (turn-interrupted, or interrupt-failed).
       const denied = approvals.declineOwned(ownedId, 'interrupt');
       const withdrawn = withdrawAll();
-      if (turnId !== null) void sendInterrupt(turnId);
-      else if (turnStarting) interruptWanted = true;
+      if (turnId !== null) void stopTurn(turnId, open);
+      else {
+        if (turnStarting) interruptWanted = true;
+        if (open.size > 0 && !rootStopping) void stopRoot(null, open);
+      }
       // Its sub-agents, with the root's turn or without one (a root that went idle leaves them running, measured).
       // Sent is not stopped: the outcome is the feed's. What it cannot reach is said too.
       const anyToSay = overIds.size > 0 || [...members.values()].some((m) => m.state === 'unknown' || stopReaches(m));

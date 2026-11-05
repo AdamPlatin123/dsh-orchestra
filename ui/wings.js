@@ -1,11 +1,12 @@
 // @ts-check
 // The home page's descriptors (第三轮方案 22「左 worker，右 team」, docs/design/mocks/2026-11-03-ensemble/round3):
 // pure functions to ui/dom.js Paint values, like ui/view.js. Left the workers, Orchestra's own first and the
-// read-only ones folded under one count; right what the current worker sent out. Everything comes from the tower
-// snapshot: no router and no team exist yet, and nothing here draws one. What waits on you and what failed stay
-// at the top whatever is folded (describeIsland), each count the length of the list it opens (T3).
+// read-only ones folded under one count; right what the current worker sent out, a card a dispatch, tied by a wire
+// to its row in the talk. Everything comes from the tower snapshot and the talk: no router and no team exist yet, and
+// nothing here draws one. What waits on you and what failed stay at the top whatever is folded (describeIsland), each
+// count the length of the list it opens (T3).
 import { describeFold, stateWord } from './fold.js';
-import { ownedIdOf } from './owned.js';
+import { ownedIdOf, sentText } from './owned.js';
 import { indexOf, pathOf } from './tree.js';
 import { HARNESSES, activityOf, detectsError, fmtAge, fmtLeft, guessed, srcText, t, clippedSessions } from './view.js';
 
@@ -140,11 +141,12 @@ export function describeLost(snap) {
 const byName = (a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 /**
- * What a worker sent out, as cards: its direct sub-agents by agent type (a same-type batch is one card), each with
- * what they sent in turn. Keys and order hold from poll to poll, so a card never jumps: its members go by name, not
- * by the snapshot's rank, which changes on every event and would swap the card's title and the row being read.
- * A sub-agent names no group of its own in the data, so no card claims to be one dispatch.
- * @param {TowerSnapshot} snap @param {string | null} sel @returns {{ key: string, label: string | null, members: { node: Node, depth: number }[] }[]}
+ * What a worker sent out, as cards: one a dispatch (a batch, in the order they went out, as their rows stand in the
+ * talk), then those no batch names (a read-only session's, all of them) by agent type, a same-type group one card that
+ * claims no dispatch. Each member comes with what it sent in turn. Keys and order hold from poll to poll, so a card
+ * never jumps: its members go by name, not by the snapshot's rank, which changes on every event and would swap the
+ * card's title and the row being read.
+ * @param {TowerSnapshot} snap @param {string | null} sel @returns {{ key: string, label: string | null, batch: number | null, members: { node: Node, depth: number }[] }[]}
  */
 export function subCards(snap, sel) {
   const hit = sel === null ? undefined : indexOf(snap).byId.get(sel);
@@ -155,35 +157,85 @@ export function subCards(snap, sel) {
   for (const kids of under.values()) kids.sort(byName);
   /** @param {Node} n @param {number} depth @returns {{ node: Node, depth: number }[]} */
   const walk = (n, depth) => [{ node: n, depth }, ...(under.get(n.id) ?? []).flatMap((k) => walk(k, depth + 1))];
-  /** @type {Map<string, { key: string, label: string | null, members: { node: Node, depth: number }[] }>} */
+  /** @type {Map<string, { key: string, label: string | null, batch: number | null, members: { node: Node, depth: number }[] }>} */
   const cards = new Map();
   for (const n of under.get(hit.node.id) ?? []) {
-    const type = n.agentType ?? '';
-    const card = cards.get(type) ?? { key: `${hit.node.id}:${type}`, label: n.agentType, members: [] };
+    const key = n.batch === null ? `${hit.node.id}:${n.agentType ?? ''}` : `${hit.node.id}#${n.batch}`;
+    const card = cards.get(key) ?? { key, label: n.agentType, batch: n.batch, members: [] };
     card.members.push(...walk(n, 0));
-    cards.set(type, card);
+    cards.set(key, card);
   }
-  return [...cards.values()].sort((a, b) => (a.label === null ? 1 : b.label === null ? -1 : a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+  return [...cards.values()].sort((a, b) => {
+    if (a.batch !== null || b.batch !== null) return (a.batch ?? Infinity) - (b.batch ?? Infinity);
+    return a.label === null ? 1 : b.label === null ? -1 : a.label < b.label ? -1 : a.label > b.label ? 1 : 0;
+  });
 }
 
 /** A card of no agent type (a Codex session's are all so) goes by its first member's name. @param {readonly { node: Node }[]} members */
 const titleOf = (members) => { const who = members[0]?.node.title ?? ''; return members.length === 1 ? who : t('fold.group', { who, n: members.length }); };
 
 /**
- * Why the right side is empty for this worker, or what its cards can and cannot say. A count equals its list (T3), so
- * what the limits left out is said here: the snapshot counts it, it does not say whose it was (T1).
- * @param {Node | undefined} n @param {number} cards @param {number} over nodes the limits left out
+ * The talk's dispatch rows for the home page: each a button that opens its card. Its words are the card's, so what it
+ * says is what it opens (T3); a row whose card this snapshot does not hold says what the feed said, and opens nothing.
+ * @param {readonly Desc[]} kids describeChat's rows @param {ReturnType<typeof subCards>} cards @param {ReadonlySet<string>} open @returns {Desc[]}
  */
-function subsNote(n, cards, over) {
+export function wireRows(kids, cards, open) {
+  return kids.map((k) => {
+    if (k.data?.kind !== 'disp') return k;
+    const c = cards.find((x) => String(x.batch) === k.data?.batch);
+    return {
+      ...k, tpl: 'tpl-disp',
+      slots: {
+        ...k.slots,
+        ...(c === undefined ? {} : { tx: { text: sentText(c.members.map((m) => m.node.title)) } }),
+        b: { data: { fold: c?.key ?? '' }, attr: { 'aria-expanded': c === undefined ? null : open.has(c.key) ? 'true' : 'false', disabled: c === undefined ? '' : null, title: c === undefined ? t('home.wireNoCard') : null } },
+      },
+    };
+  });
+}
+
+/**
+ * The wires: one a row and card that both stand in view, row and card measured by the page. A pair with either end
+ * scrolled out has none: a line to nothing says nothing. The geometry goes in attributes, as the CSP has it.
+ * @param {readonly { key: string, hot: boolean, grow: boolean, row: DOMRect, card: DOMRect }[]} ends
+ * @param {{ chat: DOMRect, frame: DOMRect, subs: DOMRect, x: number }} box where the two lists stand, what cuts the talk off (it keeps a least height, so in a low window it runs past its pane), and x the cards' left edge @returns {Paint}
+ */
+export function describeWires(ends, box) {
+  const seen = (/** @type {number} */ y, /** @type {DOMRect} */ r) => r.height > 0 && y >= r.top && y <= r.bottom;
+  /** @type {Desc[]} */
+  const kids = [];
+  for (const e of ends) {
+    const y1 = e.row.top + e.row.height / 2;
+    const y2 = e.card.top + Math.min(e.card.height / 2, 30);
+    if (!seen(y1, box.chat) || !seen(y1, box.frame) || !seen(y2, box.subs)) continue;
+    const x1 = e.row.right + 4;
+    const mx = x1 + (box.x - x1) * 0.55;
+    kids.push({
+      key: e.key, tpl: 'tpl-wire', data: { hot: e.hot ? '1' : '0', grow: e.grow ? '1' : '0' },
+      slots: { p: { attr: { d: `M${x1} ${y1}C${mx} ${y1} ${mx} ${y2} ${box.x} ${y2}` } }, c: { attr: { cx: String(box.x), cy: String(y2) } } },
+    });
+  }
+  return { kids };
+}
+
+/**
+ * Why the right side is empty for this worker, or what its cards can and cannot say. A count equals its list (T3), so
+ * what the limits left out is said here: the snapshot counts it, it does not say whose it was (T1). A card with a wire
+ * needs no word; one without says why it has none: the talk is locked, not read yet, or holds no row for it.
+ * @param {Node | undefined} n @param {readonly { key: string }[]} cards @param {number} over nodes the limits left out
+ * @param {{ rows?: { has(k: string): boolean }, read?: boolean, locked?: boolean }} ctx the rows drawn, whether the talk was read, and whether that is for want of the unlock
+ */
+function subsNote(n, cards, over, ctx) {
   if (n === undefined) return t('home.subsPick');
   const ro = ownedIdOf(n) === null;
-  const says = cards === 0 ? [t(ro ? 'home.subsRo' : n.harness === 'claude' ? 'home.subsClaude' : 'home.subsNone')] : ro ? [t('home.subsRoNote'), t('home.noWireRo')] : [t('home.noWire')];
+  const lone = cards.some((c) => ctx.rows?.has(c.key) !== true);
+  const says = cards.length === 0 ? [t(ro ? 'home.subsRo' : n.harness === 'claude' ? 'home.subsClaude' : 'home.subsNone')] : ro ? [t('home.subsRoNote'), t('home.noWireRo')] : lone ? [t(ctx.read !== false ? 'home.noWire' : ctx.locked === true ? 'home.noWireLocked' : 'home.noWireUnread')] : [];
   return [...says, ...(over > 0 ? [t('home.subsClipped', { n: over })] : [])].join(t('sep.notes'));
 }
 
 /**
  * The right side's cards for the selected worker: folded unless clicked open (`open`, by key), running or not.
- * @param {TowerSnapshot} snap @param {string | null} sel @param {{ open: ReadonlySet<string>, fresh: ReadonlySet<string> }} ctx @returns {Paint}
+ * @param {TowerSnapshot} snap @param {string | null} sel @param {{ open: ReadonlySet<string>, fresh: ReadonlySet<string>, rows?: { has(k: string): boolean }, read?: boolean, locked?: boolean }} ctx @returns {Paint}
  */
 export function describeSubs(snap, sel, ctx) {
   const n = sel === null ? undefined : indexOf(snap).byId.get(sel)?.node;
@@ -193,7 +245,7 @@ export function describeSubs(snap, sel, ctx) {
     slots: {
       head: { text: n === undefined ? t('home.subsPlain') : t('home.subsH', { who: n.title }) },
       n: { text: cards.length === 0 ? '' : t('fold.n', { n: total }) },
-      note: { text: subsNote(n, cards.length, snap.meta.clipped.nodes) },
+      note: { text: subsNote(n, cards, snap.meta.clipped.nodes, ctx) },
       list: {
         kids: cards.map((c) => describeFold({
           key: c.key, members: c.members, open: ctx.open.has(c.key), fresh: ctx.fresh.has(c.key),

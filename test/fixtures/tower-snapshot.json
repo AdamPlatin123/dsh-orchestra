@@ -200,6 +200,7 @@
           "durationMs": null,
           "model": null,
           "agentType": null,
+          "batch": null,
           "mark": null
         },
         {
@@ -225,6 +226,7 @@
           "durationMs": null,
           "model": null,
           "agentType": "explorer",
+          "batch": null,
           "mark": null
         },
         {
@@ -250,6 +252,7 @@
           "durationMs": null,
           "model": null,
           "agentType": "worker",
+          "batch": null,
           "mark": null
         },
         {
@@ -279,6 +282,7 @@
           "durationMs": null,
           "model": null,
           "agentType": null,
+          "batch": null,
           "mark": null
         },
         {
@@ -304,6 +308,7 @@
           "durationMs": null,
           "model": null,
           "agentType": "code-reviewer",
+          "batch": null,
           "mark": null
         },
         {
@@ -329,6 +334,7 @@
           "durationMs": null,
           "model": null,
           "agentType": "general-purpose",
+          "batch": null,
           "mark": null
         },
         {
@@ -354,6 +360,7 @@
           "durationMs": null,
           "model": null,
           "agentType": "Explore",
+          "batch": null,
           "mark": null
         },
         {
@@ -379,6 +386,7 @@
           "durationMs": null,
           "model": null,
           "agentType": "Explore",
+          "batch": null,
           "mark": null
         },
         {
@@ -404,6 +412,7 @@
           "durationMs": null,
           "model": null,
           "agentType": null,
+          "batch": null,
           "mark": null
         },
         {
@@ -429,6 +438,7 @@
           "durationMs": null,
           "model": null,
           "agentType": "worker",
+          "batch": null,
           "mark": null
         },
         {
@@ -454,6 +464,7 @@
           "durationMs": null,
           "model": null,
           "agentType": "reviewer",
+          "batch": null,
           "mark": null
         }
       ],

@@ -9,7 +9,7 @@ import { after, every, fmtIso, nowMono, onFrame } from './clock.js';
 import { makePatcher } from './dom.js';
 import { POLL_MS, driveState, makeDrive } from './drive.js';
 import { getTheme } from './prefs.js';
-import { whyText } from './owned.js';
+import { queuedN, whyText } from './owned.js';
 import { go, openFull, parse } from './route.js';
 import { FILTERS, buildRows, freeze, groupKey, indexOf, navigate, projectKey, towerFrame } from './tree.js';
 import { clippedSessions, describeAbout, describeBar, describeDetail, describeTower, detectsError, t } from './view.js';
@@ -60,7 +60,7 @@ const frozen = () => state.hover || state.focusIn || state.quiet !== null;
  * A pending agent request waits for you too (seat): the tab says so, though the bar's 等你 filters nodes only.
  * @param {TowerSnapshot} snap */
 function paintTitle(snap) {
-  const waiting = snap.tally.waiting + (snap.router.asks?.length ?? 0);
+  const waiting = snap.tally.waiting + queuedN(state.owned) + (snap.router.asks?.length ?? 0);
   dom.title(waiting > 0 ? t('page.titleWait', { n: waiting }) : t('page.title'));
 }
 

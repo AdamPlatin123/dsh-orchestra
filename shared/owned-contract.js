@@ -114,6 +114,7 @@ export const OWNED_TOWER_TEXT = frozen({
   'act.file-change': '改文件：',
   'act.you': '你说：',
   'act.auto-denied': '自动拒绝了：',
+  'act.interrupted': '被中断前：',
   // Its sub-agents (src/sources/tower.ts memberNode). Nothing here says how the work went: a report is not a verdict (T2).
   'member.unnamed': '子代理（名字未知）',
   'member.asking': '在等你审批：',
@@ -129,6 +130,8 @@ export const OWNED_TOWER_TEXT = frozen({
 });
 
 export const OWNED_ID_RE = frozen(/^[0-9a-f]{20}$/);
+/** A sub-agent's node id on a dispatch row (src/sources/tower.ts memberNodeId). */
+export const MEMBER_REF_RE = frozen(/^n:[0-9a-f]{20}$/);
 export const APPROVAL_ID_RE = frozen(/^[0-9a-f]{32}$/);
 export const OWNED_DIGEST_RE = frozen(/^[0-9a-f]{64}$/);
 export const OWNED_UUID_RE = frozen(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
@@ -176,7 +179,7 @@ export function holdsControl(s) {
  *   cwd: { path: string, kind: 'project-root' | 'work' } | null,
  * }} OwnedEntry
  *   title: the first line of its first message, shown (possibly empty); waiting: an approvalId.
- *   stoppable: a sub-agent of it is live (running or idle), or over with a turn or command still open or its last stop unconfirmed, so the stop has something to reach even with no turn of its own running.
+ *   stoppable: a sub-agent of it is live (running or idle), or over with a turn or command still open or its last stop unconfirmed, or a command of its own outlived its turn or its last stop, so the stop has something to reach even with no turn of its own running.
  *   cwd: where it works, a project root (or a folder in one) or its own work dir; null when not known (T1).
  * @typedef {{ input: number, cachedInput: number, output: number, total: number }} Tokens
  * @typedef {{
@@ -214,7 +217,7 @@ export function holdsControl(s) {
  * }} OwnedFeed
  * @typedef {{
  *   seq: number, at: number, kind: string, ref: string | null, uuid: string | null, text: string | null, state: string | null,
- *   redactions: number, live: boolean, exitCode: number | null, tokens: Tokens | null,
+ *   redactions: number, live: boolean, exitCode: number | null, tokens: Tokens | null, batch: number | null,
  * }} FeedEntry
  *   uuid: only on `you`, the actionId of the human record the message came with.
  * @typedef {{ ok: boolean, errors: string[] }} Verdict
@@ -548,7 +551,7 @@ export function validateOwnedFeed(x) {
   let prev = typeof s.from === 'number' ? s.from : 0;
   c.arr(s.events, '$.events').forEach((e, i) => {
     const at = `$.events[${i}]`;
-    const ev = c.obj(e, at, ['seq', 'at', 'kind', 'ref', 'uuid', 'text', 'state', 'redactions', 'live', 'exitCode', 'tokens']);
+    const ev = c.obj(e, at, ['seq', 'at', 'kind', 'ref', 'uuid', 'text', 'state', 'redactions', 'live', 'exitCode', 'tokens', 'batch']);
     if (ev === null) return;
     c.int(ev.seq, `${at}.seq`, 1);
     if (typeof ev.seq === 'number') {
@@ -570,6 +573,11 @@ export function validateOwnedFeed(x) {
     c.bool(ev.live, `${at}.live`);
     if (ev.exitCode !== null && (typeof ev.exitCode !== 'number' || !Number.isSafeInteger(ev.exitCode))) c.bad(`${at}.exitCode`, 'not an integer');
     checkTokens(c, ev.tokens, `${at}.tokens`);
+    // A dispatch row carries its batch and names its sub-agent by node id: no thread id reaches the page.
+    const dispatch = ev.kind === 'note' && ev.state === 'dispatch';
+    if ((ev.batch !== null) !== dispatch) c.bad(`${at}.batch`, 'set exactly on a dispatch note');
+    if (ev.batch !== null) c.int(ev.batch, `${at}.batch`, 1);
+    if (dispatch) c.re(ev.ref, `${at}.ref`, MEMBER_REF_RE, 'node id');
   });
   return { ok: c.errors.length === 0, errors: c.errors };
 }

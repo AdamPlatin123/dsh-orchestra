@@ -11,10 +11,10 @@ import { TOWER_TEXT } from '../shared/strings.js';
  * @typedef {Paint & { key: string, tpl: string }} Desc
  */
 
-/** What setAttribute may write: ARIA, tabindex, title, disabled, value. Never href, style or on*. */
+/** What setAttribute may write: ARIA, tabindex, title, disabled, value, a wire's geometry. Never href, style or on*. */
 export const ATTRS = frozen([
   'aria-pressed', 'aria-current', 'aria-level', 'aria-expanded', 'aria-selected', 'aria-setsize', 'aria-posinset',
-  'aria-busy', 'aria-label', 'aria-disabled', 'tabindex', 'title', 'disabled', 'value',
+  'aria-busy', 'aria-label', 'aria-disabled', 'tabindex', 'title', 'disabled', 'value', 'd', 'cx', 'cy',
 ]);
 
 /**

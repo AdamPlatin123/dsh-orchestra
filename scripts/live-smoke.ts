@@ -1,7 +1,7 @@
 // The live end-to-end run of an owned session (orchestra app step 4): orchestrad in the test profile with
 // --owned, driven over HTTP exactly as the page drives it, against the real codex.exe or the Claude host
 // and the local magpie gateway (http://127.0.0.1:3425, no key). Not part of the test run.
-//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--outside | --brake | --daemon-stop | --daemon-kill | --project-root | --subagent | --subagent-stop] [--keep]
+//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--outside | --brake | --daemon-stop | --daemon-kill | --project-root | --subagent [--pair] | --subagent-stop | --root-stop] [--keep]
 //
 // --subagent (orchestra app plan 子代理, codex only): the task is to spawn one sub-agent that runs one ping and
 // to wait for it. Each round the run reads GET /api/tower (it answers only what passes the tower contract), and
@@ -9,7 +9,10 @@
 // many of its steps ran unasked, whether the feed stayed the root's (no tool row), and whether each card said
 // which sub-agent asked. Its node's state after the session ended is read too. Never the name itself: the
 // model chose it. It passes only if every sub-agent got to returned, named, with a duration, one card said
-// which, the feed holds no tool row and every tower read answered 200.
+// which, the feed holds no tool row, every tower read answered 200, and the feed has a dispatch row for each
+// sub-agent: its ref the node's id, its batch the node's, and a name in the end. With --pair the task is to spawn two
+// at once: the report says how many batches they made (the model decides how it spawns, so that is a finding, not a
+// pass or fail), and it must see two.
 //
 // --subagent-stop (orchestra app plan 子代理, codex only): the stop, pressed as the page does (POST
 // /api/owned/:id/interrupt) while a sub-agent's `ping -n 120` runs, twice in one session: first with the root
@@ -21,6 +24,13 @@
 // must have offered the stop before the press (the page's button goes by it) and offer it no more after, and the
 // record on disk must count no step failed or run unasked. It passes only if both rounds did, every tower read
 // answered 200, and nothing of the Job is left after the end.
+//
+// --root-stop (orchestra app plan 派发和拉线, codex only): the stop, pressed as the page does while the root's own
+// `ping -n 120` runs. After the press the run checks by pid + creation time that the ping and the shell around it are
+// gone and that the Job holds only JOB_RESIDENTS, that the feed's final word is commands-stopped=1 (at most 15 s), that
+// the command's end reads stopped, not failed, that no ran-unasked note came of it, that the session stands idle with no
+// stop left on offer, and then that a message opens a new turn and gets a reply. It passes only if all of that held and
+// nothing of the Job is left after the end.
 //
 // --daemon-kill (orchestra app plan 进程树的 Job 回收, residual 2): orchestrad is killed while a turn runs.
 // The task is to run `ping -n 60 127.0.0.1` and wait for it; once the approval was given and PING.EXE is
@@ -102,6 +112,12 @@ const KILL_TASK = 'Run exactly this one shell command, once, wait until it has f
 const SUBAGENT_TASK = 'Spawn exactly one sub-agent with the task name ping_once. Its task: run exactly this one shell command, once, and report back: ping -n 2 127.0.0.1. '
   + 'Do not run the command yourself. Wait for the sub-agent to finish, and then reply with the single word finished.';
 
+const SUBAGENT_PAIR_TASK = 'In one step, spawn exactly two sub-agents at once, with the task names ping_a and ping_b. The task of each: run exactly this one shell command, once, and report back: ping -n 2 127.0.0.1. '
+  + 'Do not run the command yourself. Wait for both sub-agents to finish, and then reply with the single word finished.';
+
+const ROOT_STOP_TASK = 'Run exactly this one shell command yourself, once, in the foreground, wait until it has finished, and then reply with the single word finished: `ping -n 120 127.0.0.1` ';
+const ROOT_AGAIN_TASK = 'Reply with the single word again. Do not run anything.';
+
 const SUBAGENT_STOP_TASK = 'Spawn exactly one sub-agent with the task name ping_wait. Its task: run exactly this one shell command, once, wait for it, and report back: `ping -n 120 127.0.0.1` '
   + 'Do not run the command yourself. Wait for the sub-agent to finish, and then reply with the single word finished.';
 const SUBAGENT_FREE_TASK = 'Spawn exactly one more sub-agent with the task name ping_free. Its task: run exactly this one shell command, once, wait for it, and report back: `ping -n 120 127.0.0.1` '
@@ -111,7 +127,7 @@ const STOP_CHECK_MS = 15_000;
 /** What stays in a session's Job with no command running (measured after a clean, 2026-11-04): anything else is a command's. */
 const JOB_RESIDENTS: ReadonlySet<string> = new Set(['codex.exe', 'codex-code-mode-host.exe', 'conhost.exe']);
 
-function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean; outside: boolean; brake: boolean; daemonStop: boolean; daemonKill: boolean; projectRoot: boolean; subagent: boolean; subagentStop: boolean } {
+function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean; outside: boolean; brake: boolean; daemonStop: boolean; daemonKill: boolean; projectRoot: boolean; subagent: boolean; pair: boolean; subagentStop: boolean; rootStop: boolean } {
   const a = process.argv.slice(2);
   let harness: string | null = null;
   let model: string | null = null;
@@ -122,7 +138,9 @@ function args(): { harness: 'codex' | 'claude'; model: string | null; keep: bool
   let daemonKill = false;
   let projectRoot = false;
   let subagent = false;
+  let pair = false;
   let subagentStop = false;
+  let rootStop = false;
   for (let i = 0; i < a.length; i++) {
     if (a[i] === '--harness') harness = a[++i] ?? null;
     else if (a[i] === '--model') model = a[++i] ?? null;
@@ -133,13 +151,16 @@ function args(): { harness: 'codex' | 'claude'; model: string | null; keep: bool
     else if (a[i] === '--daemon-kill') daemonKill = true;
     else if (a[i] === '--project-root') projectRoot = true;
     else if (a[i] === '--subagent') subagent = true;
+    else if (a[i] === '--pair') pair = true;
     else if (a[i] === '--subagent-stop') subagentStop = true;
+    else if (a[i] === '--root-stop') rootStop = true;
     else throw new Error(`live-smoke: unknown argument ${a[i]}`);
   }
   if (harness !== 'codex' && harness !== 'claude') throw new Error('live-smoke: --harness codex|claude');
-  if ([outside, brake, daemonStop, daemonKill, projectRoot, subagent, subagentStop].filter(Boolean).length > 1) throw new Error('live-smoke: one of --outside, --brake, --daemon-stop, --daemon-kill, --project-root, --subagent, --subagent-stop');
-  if ((subagent || subagentStop) && harness !== 'codex') throw new Error('live-smoke: --subagent and --subagent-stop are for --harness codex');
-  return { harness, model, keep, outside, brake, daemonStop, daemonKill, projectRoot, subagent, subagentStop };
+  if ([outside, brake, daemonStop, daemonKill, projectRoot, subagent, subagentStop, rootStop].filter(Boolean).length > 1) throw new Error('live-smoke: one of --outside, --brake, --daemon-stop, --daemon-kill, --project-root, --subagent, --subagent-stop, --root-stop');
+  if ((subagent || subagentStop || rootStop) && harness !== 'codex') throw new Error('live-smoke: --subagent, --subagent-stop and --root-stop are for --harness codex');
+  if (pair && !subagent) throw new Error('live-smoke: --pair goes with --subagent');
+  return { harness, model, keep, outside, brake, daemonStop, daemonKill, projectRoot, subagent, pair, subagentStop, rootStop };
 }
 
 function freePort(): Promise<number> {
@@ -228,7 +249,7 @@ async function connect(d: Daemon): Promise<Api> {
 const isPing = (p: { image: string | null }) => (p.image ?? '').toLowerCase() === 'ping.exe';
 
 async function main(): Promise<number> {
-  const { harness, model, keep, outside, brake, daemonStop, daemonKill, projectRoot, subagent, subagentStop } = args();
+  const { harness, model, keep, outside, brake, daemonStop, daemonKill, projectRoot, subagent, pair, subagentStop, rootStop } = args();
   const testDir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'orchestra-test-smoke-'));
   fs.mkdirSync(path.join(testDir, 'roots'));
   // --project-root: a project root inside the test dir (the test profile takes roots only there).
@@ -261,7 +282,7 @@ async function main(): Promise<number> {
       root = Array.isArray(roots) && typeof roots[0] === 'string' ? roots[0] : null;
       if (root === null) throw new Error('live-smoke: GET /api/owned lists no project root');
     }
-    const made = await post('/api/owned/new', { text: outside ? outsideTask(probeFile) : brake ? BRAKE_TASK : daemonKill ? KILL_TASK : subagent ? SUBAGENT_TASK : subagentStop ? SUBAGENT_STOP_TASK : TASK, harness, ...(model === null ? {} : { model }), ...(root === null ? {} : { root }) });
+    const made = await post('/api/owned/new', { text: outside ? outsideTask(probeFile) : brake ? BRAKE_TASK : daemonKill ? KILL_TASK : subagent ? (pair ? SUBAGENT_PAIR_TASK : SUBAGENT_TASK) : subagentStop ? SUBAGENT_STOP_TASK : rootStop ? ROOT_STOP_TASK : TASK, harness, ...(model === null ? {} : { model }), ...(root === null ? {} : { root }) });
     if (made.status !== 200) throw new Error(`live-smoke: new answered ${made.status} ${made.body}`);
     const id = String(made.json.ownedId);
     ownedId = id;
@@ -281,11 +302,11 @@ async function main(): Promise<number> {
     const memberFacts = { named: false, durationMs: null as number | null, models: new Set<string | null>(), towerAnswers: new Set<number>() };
     let cardsFromSubagent = 0;
     /** The session's sub-agent nodes as the last tower read gave them. */
-    let kids: { id: string; state: string }[] = [];
+    let kids: { id: string; state: string; batch: number | null }[] = [];
     const readMembers = async () => {
       const tower = await get('/api/tower');
       memberFacts.towerAnswers.add(tower.status);
-      const nodes: { id: string; parent: string | null; ownership: string; state: string; title: string; durationMs: number | null; model: string | null }[] = (tower.json?.projects ?? []).flatMap((p: { nodes: unknown[] }) => p.nodes);
+      const nodes: { id: string; parent: string | null; ownership: string; state: string; title: string; durationMs: number | null; model: string | null; batch: number | null }[] = (tower.json?.projects ?? []).flatMap((p: { nodes: unknown[] }) => p.nodes);
       kids = nodes.filter((x) => x.parent === `n:${ownedId}`);
       for (const n of kids as typeof nodes) {
         const seen = (memberStates[n.id] ??= []);
@@ -312,7 +333,7 @@ async function main(): Promise<number> {
     /** The nodes a stop already took: the next round's is another. */
     const stoppedNodes = new Set<string>();
     /** The stop, as the page presses it, and what is true of the command, the node and the feed afterwards. */
-    const pressStop = async (rootBefore: string, offered: boolean, nodes: readonly string[], procs: readonly { pid: number; createTime: string | null; image: string | null }[]) => {
+    const pressStop = async (rootBefore: string, offered: boolean, nodes: readonly string[], procs: readonly { pid: number; createTime: string | null; image: string | null }[], notesOf = 'members-') => {
       const known = procs.filter((p) => p.createTime !== null).map((p) => ({ pid: p.pid, createTime: p.createTime! }));
       if (known.length !== procs.length) throw new Error('live-smoke: a process without a creation time cannot be checked');
       const mark = (await get(`/api/owned/${id}/feed`)).json.to as number;
@@ -327,8 +348,8 @@ async function main(): Promise<number> {
         if (round.goneMs === null && round.alive === 0 && round.inJob.length === 0) round.goneMs = Date.now() - t;
         round.nodes = kids.filter((n) => nodes.includes(n.id)).map((n) => n.state);
         const page = (await get(`/api/owned/${id}/feed?after=${mark}`)).json;
-        round.notes = page.events.filter((e: { kind: string; state: string }) => e.kind === 'note' && e.state.startsWith('members-') && e.state !== 'members-ran-unasked').map((e: { state: string; text: string | null }) => `${e.state}=${String(e.text)}`);
-        const over = round.goneMs !== null && !round.nodes.includes('running') && round.notes.length > 0 && !round.notes.some((n) => n.startsWith('members-stopping='));
+        round.notes = page.events.filter((e: { kind: string; state: string }) => e.kind === 'note' && e.state.startsWith(notesOf) && e.state !== 'members-ran-unasked').map((e: { state: string; text: string | null }) => `${e.state}=${String(e.text)}`);
+        const over = round.goneMs !== null && !round.nodes.includes('running') && round.notes.length > 0 && !round.notes.some((n) => n.startsWith(`${notesOf}stopping=`));
         if (over || Date.now() - t > STOP_CHECK_MS) break;
         await sleep(250);
       }
@@ -342,8 +363,10 @@ async function main(): Promise<number> {
     };
     const stopHeld = (r: StopRound) => r.answer === 200 && r.offered && r.commandBefore.includes('ping.exe') && r.alive === 0 && r.inJob.length === 0 && r.nodes.length > 0 && r.nodes.every((n) => n === 'ended')
       && r.notes.length === 1 && r.notes[0] === `members-stopped=${r.nodes.length}` && r.rootAfter === 'idle' && r.offeredAfter === false && r.failed === 0 && r.ranUnasked === 0;
+    /** --root-stop: the feed position the message after the stop went out at; a reply past it is the proof. */
+    let againFrom: number | null = null;
     let after = 0;
-    const events: { kind: string; state: string | null; text: string | null }[] = [];
+    const events: { seq: number; kind: string; ref: string | null; state: string | null; text: string | null; batch: number | null }[] = [];
     let replied = false;
     const t0 = Date.now();
     for (;;) {
@@ -371,9 +394,9 @@ async function main(): Promise<number> {
         if (r.status === 200) allowed[`${a.kind}/${a.risk}`] = (allowed[`${a.kind}/${a.risk}`] ?? 0) + 1;
         else refusals[String(r.json?.error ?? r.status)] = (refusals[String(r.json?.error ?? r.status)] ?? 0) + 1;
       }
-      if (subagent || subagentStop) await readMembers();
+      if (subagent || subagentStop || rootStop) await readMembers();
       const feed = (await get(`/api/owned/${id}/feed?after=${after}`)).json;
-      for (const e of feed.events) events.push({ kind: e.kind, state: e.state, text: e.text });
+      for (const e of feed.events) events.push({ seq: e.seq, kind: e.kind, ref: e.ref, state: e.state, text: e.text, batch: e.batch });
       after = feed.to;
       replied = events.some((e) => e.kind === 'text' && e.state !== 'partial' && (e.text ?? '').length > 0);
       const turnOver = events.some((e) => e.kind === 'lifecycle' && /^turn-(ended|failed|max-turns|interrupted|unknown)$/.test(e.state ?? ''));
@@ -389,6 +412,19 @@ async function main(): Promise<number> {
           const sent = await post(`/api/owned/${id}/message`, { text: SUBAGENT_FREE_TASK });
           if (sent.status !== 200) throw new Error(`live-smoke: message answered ${sent.status}`);
         }
+        await sleep(500);
+        continue;
+      }
+      if (rootStop) {
+        if (againFrom === null) {
+          const procs = await commandsInJob();
+          if (me?.state === 'running' && procs.some(isPing)) {
+            await pressStop(me.state, true, [], procs, 'commands-');
+            const sent = await post(`/api/owned/${id}/message`, { text: ROOT_AGAIN_TASK });
+            if (sent.status !== 200) throw new Error(`live-smoke: message answered ${sent.status}`);
+            againFrom = (await get(`/api/owned/${id}/feed`)).json.to as number;
+          }
+        } else if (me?.state === 'idle' && events.some((e) => e.seq > againFrom! && e.kind === 'text' && e.state !== 'partial' && (e.text ?? '').length > 0)) break;
         await sleep(500);
         continue;
       }
@@ -526,11 +562,26 @@ async function main(): Promise<number> {
       await readMembers();
       report.subagentStop = { rounds: stops, held: stops.map(stopHeld), states: Object.values(memberStates), towerAnswers: [...memberFacts.towerAnswers] };
     }
+    // What the talk says of each sub-agent: the last telling of its dispatch (it is told again once its name is known).
+    const sentRows = new Map(events.filter((e) => e.kind === 'note' && e.state === 'dispatch').map((e) => [e.ref, e]));
+    let dispatchHeld = false;
     if (subagent) {
       await readMembers();
+      dispatchHeld = sentRows.size === kids.length && kids.length >= (pair ? 2 : 1) && kids.every((n) => n.batch !== null && sentRows.get(n.id)?.batch === n.batch && (sentRows.get(n.id)?.text ?? '') !== '');
       report.subagent = {
         states: Object.values(memberStates), named: memberFacts.named, durationMs: memberFacts.durationMs, models: [...memberFacts.models], cardsFromSubagent, towerAnswers: [...memberFacts.towerAnswers], toolRowsInFeed,
         ranUnasked: Number(events.findLast((e) => e.kind === 'note' && e.state === 'members-ran-unasked')?.text ?? 0),
+        dispatch: { rows: sentRows.size, members: kids.length, batches: new Set(kids.map((n) => n.batch)).size, nodesWithBatch: kids.filter((n) => n.batch !== null).length, held: dispatchHeld },
+      };
+    }
+    /** The end of the command the stop reached, and whether it was said to have run unasked. */
+    const rootResults = events.filter((e) => e.kind === 'tool-result').map((e) => e.state);
+    const rootRanUnasked = events.filter((e) => e.kind === 'note' && e.state === 'ran-unasked').length;
+    const rootHeld = (r: StopRound | undefined) => r !== undefined && r.answer === 200 && r.commandBefore.includes('ping.exe') && r.alive === 0 && r.inJob.length === 0 && r.notes.length === 1 && r.notes[0] === 'commands-stopped=1' && r.rootAfter === 'idle' && r.offeredAfter === false;
+    if (rootStop) {
+      report.rootStop = {
+        round: stops[0] ?? null, held: rootHeld(stops[0]), results: rootResults, ranUnasked: rootRanUnasked, turnsInterrupted: events.filter((e) => e.state === 'turn-interrupted').length,
+        repliedAfter: againFrom !== null && events.some((e) => e.seq > againFrom! && e.kind === 'text' && e.state !== 'partial'),
       };
     }
     if (!daemonStop && !daemonKill) report.treeNotes = ((await get(`/api/owned/${id}/feed`)).json?.events ?? []).filter((e: { kind: string; state: string }) => e.kind === 'note' && /^tree-|children-may-remain|host-killed/.test(e.state)).map((e: { state: string; text: string | null }) => `${e.state}${e.text === null ? '' : `=${e.text}`}`);
@@ -538,11 +589,13 @@ async function main(): Promise<number> {
     const ds = report.daemonStop as { how: string; code: number | null } | undefined;
     const dsRecord = report.daemonStopRecord as { endReason: string | null } | null | undefined;
     const restarted = report.afterRestart as { state: string; endReason: string | null } | null | undefined;
-    code = subagentStop
+    code = rootStop
+      ? (rootHeld(stops[0]) && rootResults.includes('stopped') && !rootResults.includes('failed') && rootRanUnasked === 0 && (report.rootStop as { repliedAfter: boolean }).repliedAfter && report.survivors === 0 && held.length > 0 ? 0 : 1)
+      : subagentStop
       ? (stops.length === 2 && stops.every(stopHeld) && report.survivors === 0 && held.length > 0 && memberFacts.towerAnswers.size === 1 && memberFacts.towerAnswers.has(200) ? 0 : 1)
       : subagent
       ? (replied && Object.keys(memberStates).length > 0 && Object.values(memberStates).every((s) => s.includes('returned')) && memberFacts.named && memberFacts.durationMs !== null
-        && cardsFromSubagent > 0 && toolRowsInFeed === 0 && memberFacts.towerAnswers.size === 1 && memberFacts.towerAnswers.has(200) ? 0 : 1)
+        && cardsFromSubagent > 0 && toolRowsInFeed === 0 && memberFacts.towerAnswers.size === 1 && memberFacts.towerAnswers.has(200) && dispatchHeld ? 0 : 1)
       : daemonKill
       ? (report.survivors === 0 && held.length > 0 && report.aliveBeforeKill === held.length &&Number((report.jobBeforeEnd as { images: Record<string, number> } | null)?.images?.['ping.exe'] ?? 0) > 0
         && (report.jobAfterKill as { found: boolean } | undefined)?.found === false && restarted?.state === 'unknown' && restarted.endReason === 'daemon-restart' ? 0 : 1)
@@ -570,7 +623,7 @@ async function main(): Promise<number> {
     }
     report.leftovers = await leftovers(testDir);
     const lo = report.leftovers as { leftover: number; unchecked: number };
-    if ((daemonKill || subagentStop) && lo.leftover + lo.unchecked !== 0) code = 1;
+    if ((daemonKill || subagentStop || rootStop) && lo.leftover + lo.unchecked !== 0) code = 1;
     if (!keep) {
       // The host and claude.exe may still be leaving: a few tries.
       for (let i = 0; i < 10; i++) {

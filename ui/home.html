@@ -91,6 +91,8 @@
 </section>
 </main>
 
+<svg id="wires" class="wires" aria-hidden="true"></svg>
+
 <dialog id="unlock-dlg" class="dlg" aria-labelledby="ul-h">
   <h2 id="ul-h" data-t="unlock.title"></h2>
   <p class="dlg-p" data-t="unlock.how"></p>
@@ -128,6 +130,8 @@
 <template id="tpl-cand"><li class="cand"><button type="button" class="cand-b" data-act="pick" aria-pressed="false" data-slot="b"><span class="cand-rank" data-slot="rank"></span><span class="cand-hm" data-slot="hm"></span><span class="cand-src" data-slot="src"></span><span class="cand-why" data-slot="why"></span></button></li></template>
 <template id="tpl-card"><li class="card" data-waiting="1"><p class="card-h"><span data-slot="kind"></span><span data-slot="left"></span></p><p class="card-t" data-slot="title"></p><pre class="pv" data-slot="pv"></pre><p class="card-note" data-slot="note"></p><p class="acts" data-slot="acts"></p></li></template>
 <template id="tpl-msg"><li class="msg"><span class="msg-who" data-slot="who"></span><span class="msg-tx" data-slot="tx"></span></li></template>
+<template id="tpl-disp"><li class="msg"><button type="button" class="dr" data-act="fold" aria-expanded="false" data-slot="b"><b data-slot="tx"></b><span class="sr" data-slot="who"></span></button></li></template>
+<template id="tpl-wire"><svg class="wire"><path data-slot="p" pathLength="1"></path><circle data-slot="c" r="2.5"></circle></svg></template>
 <template id="tpl-tool"><li class="msg"><details><summary data-slot="sum"></summary><pre class="pv" data-slot="body"></pre></details></li></template>
 <template id="tpl-req"><li class="pin req" data-waiting="1"><p class="pin-go req-h"><span class="ico" aria-hidden="true" data-t="icon.route"></span><span class="pin-kind" data-slot="kind"></span><span class="pin-path" data-slot="what"></span><span class="pin-clock" data-slot="clock"></span></p><pre class="pv req-pv" data-slot="pv"></pre><span class="pin-hint" data-slot="meta"></span><span class="pin-acts" data-slot="acts"></span></li></template>
 <template id="tpl-pin"><li class="pin"><button type="button" class="pin-go"><span class="ico" aria-hidden="true" data-slot="ico"></span><span class="pin-kind" data-slot="kind"></span><span class="pin-path" data-slot="path"></span><span class="pin-clock" data-slot="clock"></span><span class="pin-hint" data-slot="hint"></span></button><span class="pin-pv" data-slot="pv"></span><span class="pin-acts" data-slot="acts"></span></li></template>

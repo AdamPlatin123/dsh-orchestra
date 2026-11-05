@@ -235,11 +235,19 @@ test('owned sessions: the activity line is the newest thing the session said or 
   feed.push({ kind: 'tool', ref: 'i', text: 'Set-Content hello.txt orchestra', state: 'command' });
   feed.upsert('tokens', { kind: 'note', ref: null, text: null, state: 'tokens' });
   assert.deepEqual(recentOf(feed), { kind: 'command', text: 'Set-Content hello.txt orchestra' }, 'token counts are not activity');
+  // Found on the page 2026-11-05: a stopped session's row still said its sub-agents were running, in its last words.
+  const stopped = new Feed(() => 1);
+  stopped.push({ kind: 'text', ref: 'm', text: 'Both are still running', state: 'final' });
+  stopped.push({ kind: 'lifecycle', ref: 't', text: null, state: 'turn-interrupted' });
+  assert.deepEqual(recentOf(stopped), { kind: 'interrupted', text: 'Both are still running' }, 'what it said before the stop, said as that');
+  stopped.push({ kind: 'you', ref: null, uuid: '22222222-2222-4222-8222-222222222222', text: 'go on', state: null });
+  assert.deepEqual(recentOf(stopped), { kind: 'you', text: 'go on' }, 'what came after the stop is news again');
   const now = 61_000;
   const at = (recent: OwnedSeat['recent'], over: Partial<OwnedSeat> = {}) => towerFromStage(busyStage(), { seats: [seat(1, { recent, ...over })], nowWall: now }).projects[0]!.nodes[0]!.activity;
   assert.equal(at({ kind: 'text', text: 'Done writing\nhello.txt' }), 'Done writing hello.txt', 'one line');
   assert.equal(at({ kind: 'command', text: 'type hello.txt' }), '命令：type hello.txt');
   assert.equal(at({ kind: 'you', text: 'go' }), '你说：go');
+  assert.equal(at({ kind: 'interrupted', text: 'still running' }), '被中断前：still running');
   assert.equal(at(null), null);
   assert.equal(at({ kind: 'text', text: 'x' }, { waiting: { kind: 'approval', deadline: 2_000_000, title: 'rm synthetic' } }), 'rm synthetic', 'an open approval comes first');
   assert.equal(at({ kind: 'text', text: 'x' }, { state: 'ended', endReason: 'you-ended' }), '已结束：你结束的');
