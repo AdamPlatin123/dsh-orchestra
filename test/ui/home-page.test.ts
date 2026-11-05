@@ -413,8 +413,8 @@ test('home.html: nothing inline, one module script, one stylesheet, one plain li
   walk(doc, false);
   assert.deepEqual(texts, []);
   for (const m of HTML.matchAll(/data-t="([^"]+)"/g)) assert.ok(Object.hasOwn(TOWER_TEXT, m[1]!), m[1]);
-  const js = ['ui/wings.js', 'ui/fold.js', 'ui/home.js'].map(read).join('\n');
-  for (const f of ['ui/wings.js', 'ui/fold.js', 'ui/home.js', 'ui/drive.js']) assert.doesNotMatch(read(f).replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, ''), HAN, f);
+  const js = ['ui/wings.js', 'ui/fold.js', 'ui/home.js', 'ui/front.js'].map(read).join('\n');
+  for (const f of ['ui/wings.js', 'ui/fold.js', 'ui/home.js', 'ui/front.js', 'ui/drive.js']) assert.doesNotMatch(read(f).replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, ''), HAN, f);
   for (const m of js.matchAll(/\bt\('([^'$`]+)'/g)) assert.ok(Object.hasOwn(TOWER_TEXT, m[1]!), m[1]);
   const named = [...new Set([...(js + read('ui/view.js') + read('ui/owned.js')).matchAll(/tpl: '(tpl-[a-z]+)'/g)].map((m) => m[1]!))];
   const old = ['tpl-arow', 'tpl-group', 'tpl-node', 'tpl-proj', 'tpl-rule', 'tpl-src'];
@@ -467,11 +467,12 @@ test('what the browser loads for / stays within its own budget, all of it embedd
     assert.ok(Object.hasOwn(UI_ASSETS, f), `${f} is not embedded`);
     assert.ok(UI_FILES.includes(f), `${f} is not in embed-ui's UI_FILES`);
   }
-  const own = ['ui/home.html', 'ui/home.css', 'ui/home.js', 'ui/wings.js', 'ui/fold.js'].reduce((n, f) => n + Buffer.byteLength(read(f)), 0);
+  const own = ['ui/home.html', 'ui/home.css', 'ui/home.js', 'ui/wings.js', 'ui/fold.js', 'ui/front.js'].reduce((n, f) => n + Buffer.byteLength(read(f)), 0);
   const total = all.reduce((n, f) => n + Buffer.byteLength(read(f)), 0);
   // The page's own files, and everything it loads with what it shares with the old page.
-  assert.ok(own <= 96 * 1024, `the home page's own files are ${own} bytes`);
-  assert.ok(total <= 264 * 1024, `the home page loads ${total} bytes`);
+  // Widened with each thing the page took on; last the front desk's tile, talk and orders (2026-11-05).
+  assert.ok(own <= 112 * 1024, `the home page's own files are ${own} bytes`);
+  assert.ok(total <= 288 * 1024, `the home page loads ${total} bytes`);
 });
 
 const OBSERVED = towerFromStage(busyStage()).meta.observedAt;

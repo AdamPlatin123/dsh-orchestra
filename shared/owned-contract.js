@@ -84,6 +84,8 @@ export const OWNED_BOUNDS = frozen({
   /** An agent request's task text, label and cwd, in UTF-8 bytes (src/route/requests.ts REQUEST_LIMITS). */
   requestTextBytes: 2048,
   requestLabelBytes: 120,
+  /** An order's why and returns, and a report's line, in UTF-8 bytes. */
+  requestNoteBytes: 240,
   requestCwdBytes: 520,
   /** A session's cwd or a project root, in UTF-8 bytes (a Windows path of at most 260 UTF-16 units, each at most 3 bytes, is 780). */
   cwdBytes: 780,
@@ -166,8 +168,9 @@ export function holdsControl(s) {
  *   v: 1, kind: 'owned-list', rev: number, enabled: boolean, disabledWhy: string | null, brakeWhy: string | null,
  *   harnesses: { codex: boolean, claude: boolean }, roots: string[],
  *   owned: OwnedEntry[], approvals: ApprovalEntry[], limits: { maxOwned: number, active: number }, requests: RequestEntry[],
- *   requestedGone: string[], sentGone: string[],
+ *   requestedGone: string[], sentGone: string[], frontDesk: { on: boolean, ownedId: string | null, model: string, tools: string[] | null },
  * }} OwnedList
+ *   frontDesk: whether one could open here, the one that runs, the model it runs on (or would), the tools system/init listed for it (null: not yet).
  *   roots: the project roots named at startup (--project-root, checked), in the order named; the dispatch
  *   dialog offers them and owned-new's root must be one of them. Empty: none, every session works in
  *   Orchestra's own work dir.
@@ -183,16 +186,18 @@ export function holdsControl(s) {
  * @typedef {{
  *   ownedId: string, harness: 'codex' | 'claude', model: string, title: string, state: string, endReason: string | null,
  *   waiting: string | null, queued: number, tokens: Tokens | null, lastSeq: number, createdAt: number, brake: boolean, stoppable: boolean,
- *   cwd: { path: string, kind: 'project-root' | 'work' } | null,
+ *   cwd: { path: string, kind: 'project-root' | 'work' } | null, frontDesk: boolean,
  * }} OwnedEntry
  *   title: the first line of its first message, shown (possibly empty); waiting: an approvalId.
  *   stoppable: a sub-agent of it is live (running or idle), past the list's bound with no end heard, or over with a turn or command still open or its last stop unconfirmed, or a command of its own outlived its turn or its last stop, so the stop has something to reach even with no turn of its own running.
  *   cwd: where it works, a project root (or a folder in one) or its own work dir; null when not known (T1).
+ *   frontDesk: it is the front desk (src/route/front-desk.ts), no worker: limits.active does not count it.
  * @typedef {{ input: number, cachedInput: number, output: number, total: number }} Tokens
  * @typedef {{
  *   requestId: string, harness: 'codex' | 'claude', label: string | null, text: string, cwd: string,
  *   runIn: string | null, runInWhy: string | null, requester: string, state: string,
  *   createdAt: number, expiresAt: number, ownedId: string | null, why: string | null, fetched: boolean,
+ *   reason: string | null, returns: string | null, report: string | null,
  *   suggestion: { routeId: string | null, router: string, models: { model: string, source: string, rule: string | null, reason: string | null }[], pick: number | null } | null,
  *   suggesting: 'asking' | 'no-desk' | 'none' | 'failed' | 'ready',
  * }} RequestEntry
@@ -203,6 +208,8 @@ export function holdsControl(s) {
  *   only a done request is ever fetched. suggesting: where the suggestion stands (ready exactly when the
  *   suggestion is there, for a request still pending when it came). runIn: where a dispatch runs its session
  *   (its cwd, resolved, inside a project root); null: in Orchestra's own work dir, and runInWhy says why.
+ *   reason, returns: an owned session's order, why this worker and what it is to hand back; null: it said none (T1).
+ *   report: the first line of what its run handed back, the worker's own word; null: none yet, or it said nothing.
  * @typedef {{
  *   approvalId: string, ownedId: string, kind: string, title: string, preview: string, tooLong: boolean, redactions: number,
  *   digest: string, risk: string, high: boolean, tainted: boolean, origin: ApprovalOrigin | null, rev: number, canAccept: boolean, canText: boolean, deadline: number,
@@ -314,7 +321,7 @@ function checkTokens(c, v, at) {
  */
 export function validateOwnedList(x) {
   const c = checker();
-  const s = c.obj(x, '$', ['v', 'kind', 'rev', 'enabled', 'disabledWhy', 'brakeWhy', 'harnesses', 'roots', 'owned', 'approvals', 'limits', 'requests', 'requestedGone', 'sentGone', 'presence']);
+  const s = c.obj(x, '$', ['v', 'kind', 'rev', 'enabled', 'disabledWhy', 'brakeWhy', 'harnesses', 'roots', 'owned', 'approvals', 'limits', 'requests', 'requestedGone', 'sentGone', 'presence', 'frontDesk']);
   if (s === null) return { ok: false, errors: c.errors };
   if (s.v !== OWNED_V) c.bad('$.v', `${JSON.stringify(s.v)}, not ${OWNED_V}`);
   if (s.kind !== 'owned-list') c.bad('$.kind', `${JSON.stringify(s.kind)}, not owned-list`);
@@ -347,9 +354,10 @@ export function validateOwnedList(x) {
   const sessions = new Map();
   c.arr(s.owned, '$.owned').forEach((e, i) => {
     const at = `$.owned[${i}]`;
-    const o = c.obj(e, at, ['ownedId', 'harness', 'model', 'title', 'state', 'endReason', 'waiting', 'queued', 'tokens', 'lastSeq', 'createdAt', 'brake', 'cwd', 'stoppable', 'dispatch']);
+    const o = c.obj(e, at, ['ownedId', 'harness', 'model', 'title', 'state', 'endReason', 'waiting', 'queued', 'tokens', 'lastSeq', 'createdAt', 'brake', 'cwd', 'stoppable', 'dispatch', 'frontDesk']);
     if (o === null) return;
     c.re(o.ownedId, `${at}.ownedId`, OWNED_ID_RE, 'owned id');
+    c.bool(o.frontDesk, `${at}.frontDesk`);
     if (sessions.has(o.ownedId)) c.bad(`${at}.ownedId`, `${String(o.ownedId)} listed twice`);
     sessions.set(o.ownedId, o);
     c.en(o.harness, `${at}.harness`, OWNED_ENUMS.harness);
@@ -461,8 +469,22 @@ export function validateOwnedList(x) {
     c.int(limits.maxOwned, '$.limits.maxOwned');
     c.int(limits.active, '$.limits.active');
     let k = 0;
-    for (const o of sessions.values()) if (o.state !== 'ended' && o.state !== 'failed' && o.state !== 'unknown') k++;
+    for (const o of sessions.values()) if (o.frontDesk !== true && o.state !== 'ended' && o.state !== 'failed' && o.state !== 'unknown') k++;
     if (limits.active !== k) c.bad('$.limits.active', `${String(limits.active)}, but ${k} listed sessions still run`);
+  }
+
+  // The front desk: at most one runs, and it is the one the list marks; its tools are what passed the host's check, none before that.
+  const desk = c.obj(s.frontDesk, '$.frontDesk', ['on', 'ownedId', 'model', 'tools']);
+  if (desk !== null) {
+    c.bool(desk.on, '$.frontDesk.on');
+    c.re(desk.model, '$.frontDesk.model', OWNED_MODEL_NAME_RE, 'model of the owned list');
+    const live = [...sessions.values()].filter((o) => o.frontDesk === true && o.state !== 'ended' && o.state !== 'failed' && o.state !== 'unknown');
+    if (live.length > 1) c.bad('$.frontDesk', `${live.length} front desks run, at most one may`);
+    if (desk.ownedId !== (live[0]?.ownedId ?? null)) c.bad('$.frontDesk.ownedId', `${String(desk.ownedId)}, but the list says ${String(live[0]?.ownedId ?? null)}`);
+    if (desk.tools !== null) {
+      if (desk.ownedId === null) c.bad('$.frontDesk.tools', 'no front desk runs');
+      c.arr(desk.tools, '$.frontDesk.tools').forEach((t, i) => c.text(t, `$.frontDesk.tools[${i}]`, OWNED_BOUNDS.refChars));
+    }
   }
   return { ok: c.errors.length === 0, errors: c.errors };
 }
@@ -504,7 +526,7 @@ function checkRequests(c, v) {
   const ids = new Set();
   c.arr(v, '$.requests').forEach((e, i) => {
     const at = `$.requests[${i}]`;
-    const r = c.obj(e, at, ['requestId', 'harness', 'label', 'text', 'cwd', 'runIn', 'runInWhy', 'requester', 'tainted', 'model', 'askWhy', 'auto', 'state', 'createdAt', 'expiresAt', 'ownedId', 'why', 'fetched', 'suggestion', 'suggesting']);
+    const r = c.obj(e, at, ['requestId', 'harness', 'label', 'text', 'cwd', 'runIn', 'runInWhy', 'requester', 'tainted', 'model', 'askWhy', 'auto', 'reason', 'returns', 'report', 'state', 'createdAt', 'expiresAt', 'ownedId', 'why', 'fetched', 'suggestion', 'suggesting']);
     if (r === null) return;
     c.re(r.requestId, `${at}.requestId`, REQUEST_ID_RE, 'request id');
     if (ids.has(r.requestId)) c.bad(`${at}.requestId`, `${String(r.requestId)} listed twice`);
@@ -525,6 +547,7 @@ function checkRequests(c, v) {
     if (r.model !== null) c.re(r.model, `${at}.model`, OWNED_MODEL_NAME_RE, 'model of the owned list');
     if (r.askWhy !== null) c.en(r.askWhy, `${at}.askWhy`, OWNED_ENUMS.askWhy);
     c.bool(r.auto, `${at}.auto`);
+    for (const k of /** @type {const} */ (['reason', 'returns', 'report'])) if (r[k] !== null) c.text(r[k], `${at}.${k}`, OWNED_BOUNDS.requestNoteBytes);
     // Only a session's own call goes out on its permission: a DSH session's request never does, and a tainted one never does.
     if (r.auto === true && (typeof r.requester !== 'string' || !r.requester.startsWith('owned:') || r.tainted === true)) c.bad(`${at}.auto`, 'only a clean owned session dispatches on its permission');
     if (typeof r.requester === 'string' && r.requester.startsWith('dsh') && r.tainted !== true) c.bad(`${at}.tainted`, 'a DSH session is an unbound sender (r4 §8.5)');

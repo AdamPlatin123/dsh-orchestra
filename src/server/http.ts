@@ -8,7 +8,7 @@ import type { Log } from '../runtime/log.ts';
 import type { PeekEvent, PeekView, Redact } from '../sources/peek.ts';
 import { PEEK_LIMITS, findSession, readSession } from '../sources/peek.ts';
 import { makeStageBuilder } from '../sources/stage.ts';
-import type { OwnedSeats } from '../sources/tower.ts';
+import type { OwnedSeats, TowerSnapshot } from '../sources/tower.ts';
 import { makeTowerBuilder } from '../sources/tower.ts';
 import { validateTower } from '../../shared/tower-contract.js';
 import type { OwnedAnswer, OwnedApiOptions } from './owned.ts';
@@ -96,7 +96,7 @@ export type PeekServerOptions = {
   ownedSeats?: OwnedSeats;
 };
 
-export type PeekServer = { port: number; url: string; close(): Promise<void> };
+export type PeekServer = { port: number; url: string; close(): Promise<void>; /** The tower as GET /api/tower answers it, for the front desk's read. */ tower(): TowerSnapshot };
 
 export type PairOutcome = 'ok' | 'wrong' | 'voided' | 'shut' | 'expired' | 'no-code';
 
@@ -400,6 +400,7 @@ export async function startPeekServer(opts: PeekServerOptions): Promise<PeekServ
   return {
     port,
     url: `${origin}/`,
+    tower: () => tower.snapshot(),
     close: async () => {
       await Promise.all([closeServer(v4), both ? closeServer(v6) : Promise.resolve()]);
     },

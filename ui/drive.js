@@ -5,9 +5,9 @@
 // held or typed where it must be, void while the list settles, and a tainted session's high risk is typed only.
 // makeDrive only defines things; each page's boot (ui/app.js, ui/home.js) calls it with its own state and host.
 import { getFeed, getOwned, getSession, oneAtATime, post } from './api.js';
-import { after, nowMono } from './clock.js';
+import { after, fmtClock, nowMono } from './clock.js';
 import {
-  HOLD_MS, SETTLE_MS, brakeWhyText, closedTo, modelsOf, atBottom, chatNews, describeAskPins, describeDesk, describeNew, describeOwned, describeOwnedDock, describeRequestPins, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError,
+  HOLD_MS, SETTLE_MS, brakeWhyText, closedTo, deskOf, modelsOf, atBottom, chatNews, describeAskPins, describeDesk, describeNew, describeOwned, describeOwnedDock, describeRequestPins, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError,
   allowHow, notifyRequestText, notifyText, ownedIdOf, pinExtra, pinWhole, requestModel, whyText, withQueued, withRequests,
 } from './owned.js';
 import { getCsrf, setCsrf, setTheme } from './prefs.js';
@@ -62,6 +62,7 @@ export const driveState = () => ({
   /** @type {string | null} */ note: null,
   /** @type {(() => void) | null} */ noteOff: null,
   /** @type {{ id: string, title: string } | null} */ to: null,
+  /** The front desk's talk is open (no worker is selected then). */ front: false,
   /** @type {string | null} */ endArm: null,
   /** The session whose brake waits for its second click (ARM_MS). @type {string | null} */
   brakeArm: null,
@@ -76,9 +77,10 @@ export const driveState = () => ({
 /**
  * @param {any} state a page's state, driveState() and more (its theme)
  * @param {ReturnType<typeof import('./dom.js').makePatcher>} dom
- * @param {{ schedule: () => void, render: () => void, poll: () => Promise<void> | void, openNode: (key: string) => void, homeId: string }} host
+ * @param {{ schedule: () => void, render: () => void, poll: () => Promise<void> | void, openNode: (key: string) => void, homeId: string, rows?: any, openFront?: () => void, frontTalk?: any }} host
  * schedule: one render on the next frame; render: one now; poll: the tower read; openNode: shows a node (a new
- * session, an entry that says 去看); homeId: where the focus goes when the last entry of a list was answered.
+ * session, an entry that says 去看); homeId: where the focus goes when the last entry of a list was answered;
+ * openFront, frontTalk: the home page's way to the front desk's talk, and what it draws (ui/front.js).
  */
 export function makeDrive(state, dom, host) {
   const { schedule } = host;
@@ -92,6 +94,10 @@ export function makeDrive(state, dom, host) {
 
   /** The selected owned session as a recipient, or null. */
   function selTo() {
+    if (state.front) {
+      const d = deskOf(state.owned);
+      return d === null ? null : { id: d.ownedId, title: t('front.name'), front: true };
+    }
     const n = state.snap === null || state.sel === null ? undefined : indexOf(state.snap).byId.get(state.sel)?.node;
     const id = ownedIdOf(n);
     return id === null || n === undefined ? null : { id, title: n.title };
@@ -156,7 +162,7 @@ export function makeDrive(state, dom, host) {
     }
     // Not a session of Orchestra's own: its box goes, and no control of the last one stays behind in it.
     /** @type {any} */
-    const own = mine === null ? { ownBox: { data: { hide: '1' } }, ownActs: { kids: [] }, cards: { kids: [] }, chat: { kids: [] } } : describeOwned(mine.id, state.owned, state.feeds.get(mine.id), g);
+    const own = mine === null ? { ownBox: { data: { hide: '1' } }, ownActs: { kids: [] }, cards: { kids: [] }, chat: { kids: [] } } : mine.front === true ? host.frontTalk(mine.id, state.owned, state.feeds.get(mine.id), g, fmtClock) : describeOwned(mine.id, state.owned, state.feeds.get(mine.id), g);
     // The home page draws a dispatch row its own way; the old page takes it as any other line.
     if (mine !== null && own.chat !== undefined && host.rows !== undefined) own.chat = { kids: host.rows(own.chat.kids) };
     Object.assign(/** @type {any} */ (detail.slots), own);
@@ -178,6 +184,9 @@ export function makeDrive(state, dom, host) {
     const dock = describeDock(snap, state.sel);
     const to = state.to ?? mine;
     Object.assign(/** @type {any} */ (dock.slots), describeOwnedDock(to, state.owned, g, state.to !== null, to !== null && state.endArm === to.id, to !== null && state.brakeArm === to.id), state.to === null ? {} : { to: { text: t('dock.to', { who: state.to.title }) } });
+    const asksDesk = to !== null && to.id === deskOf(state.owned)?.ownedId;
+    if (asksDesk) /** @type {any} */ (dock.slots).to = { text: t('front.ask') };
+    /** @type {any} */ (dock.slots).in = { .../** @type {any} */ (dock.slots).in, attr: { placeholder: asksDesk ? t('front.ask') : null } };
     dom.paintId('dock', { ...dock, attr: { 'aria-disabled': String(to === null || !g.unlocked) } });
     // Last: the composer's height is the chat's too.
     if (follow && chatEl.scrollHeight !== undefined) chatEl.scrollTop = chatEl.scrollHeight;
@@ -462,6 +471,13 @@ export function makeDrive(state, dom, host) {
     said(a, t('grant.set', { l: t(`grant.level.${level}`) }));
   }
 
+  /** You open the front desk: owned-new, as any session you start, on the model the tile's select holds. */
+  async function openFront() {
+    const a = await op('owned/new', { text: t('front.opening'), harness: 'claude', model: val('front-model') || undefined, frontDesk: true });
+    said(a, t('front.opened'));
+    if (a?.ok) host.openFront?.();
+  }
+
   /** The stop on a receipt: the same order as the session's own, for the worker the row names. @param {HTMLElement} el */
   async function stopWorker(el) {
     const id = el.dataset.owned ?? '';
@@ -665,5 +681,5 @@ export function makeDrive(state, dom, host) {
     });
   }
 
-  return { act, cancelHold, detailFor, guard, holdPins, listen, moveFocusOn, nowWall, openNew, paintDesk, paintSession, pinsPaint, pollFeed, pollOwned, say, selTo, settle, settleOn, settling };
+  return { act, cancelHold, detailFor, guard, holdPins, listen, moveFocusOn, nowWall, openFront, openNew, paintDesk, paintSession, pinsPaint, pollFeed, pollOwned, say, selTo, settle, settleOn, settling, unlock: unlockStart };
 }

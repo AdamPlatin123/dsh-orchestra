@@ -522,7 +522,7 @@ test('the journal takes nothing by default: writer, clock, redactor, bootId and 
 // seat: oneOfEach gained a last batch (request-reject and its `agent-request` record), on purpose.
 // Project roots review: oneOfEach gained a last batch (owned-new and its `owned-cwd` record), on purpose.
 // Dispatch permission: oneOfEach gained two last batches (dispatch-grant with its record, and an `auto` record), on purpose.
-const REPLAY_GOLDEN = '089ae53bec5a13ef94e5bacf5d2022c9a467dc7b80e0e931a3ed43a96b28bee1';
+const REPLAY_GOLDEN = '6119a5bbf42d94f69fbc701737f19866fadf26b548d34c8d8aacd0d593b6f79e';
 
 test('replay is deterministic: the same records, bootId and clock give byte-identical journals and identical projections', async (t) => {
   const runs: { journal: string; dump: unknown }[] = [];

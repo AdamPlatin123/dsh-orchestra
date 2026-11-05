@@ -2,11 +2,12 @@
 // The home page's descriptors (第三轮方案 22「左 worker，右 team」, docs/design/mocks/2026-11-03-ensemble/round3):
 // pure functions to ui/dom.js Paint values, like ui/view.js. Left the workers, Orchestra's own first and the
 // read-only ones folded under one count; right what the current worker sent out, a card a dispatch, tied by a wire
-// to its row in the talk. Everything comes from the tower snapshot and the talk: no router and no team exist yet, and
-// nothing here draws one. What waits on you and what failed stay at the top whatever is folded (describeIsland), each
-// count the length of the list it opens (T3).
+// to its row in the talk. Everything comes from the tower snapshot and the talk: no team exists yet, and nothing here draws
+// one. The front desk (总台) has no seat on the tower, so no list or count of workers holds it: its tile stands over them, from
+// GET /api/owned. What waits on you and what failed stay at the top whatever is folded (describeIsland), each count the
+// length of the list it opens (T3).
 import { describeFold, stateWord } from './fold.js';
-import { ownedIdOf, sentText } from './owned.js';
+import { deskOf, modelsOf, ownedIdOf, sentText } from './owned.js';
 import { indexOf, pathOf } from './tree.js';
 import { HARNESSES, activityOf, detectsError, fmtAge, fmtLeft, guessed, srcText, t, clippedSessions } from './view.js';
 
@@ -152,24 +153,26 @@ const byName = (a, b) => a.title.localeCompare(b.title, undefined, { numeric: tr
  */
 export function subCards(snap, sel) {
   const hit = sel === null ? undefined : indexOf(snap).byId.get(sel);
-  if (hit === undefined) return [];
+  // The front desk has no node of its own; what it sent out has.
+  const project = hit?.project ?? snap.projects.find((p) => p.nodes.some((n) => n.sent?.by === sel));
+  if (project === undefined) return [];
   /** @type {Map<string, Node[]>} */
   const under = new Map();
-  for (const n of hit.project.nodes) if (n.parent !== null) under.set(n.parent, [...(under.get(n.parent) ?? []), n]);
+  for (const n of project.nodes) if (n.parent !== null) under.set(n.parent, [...(under.get(n.parent) ?? []), n]);
   for (const kids of under.values()) kids.sort(byName);
   /** @param {Node} n @param {number} depth @returns {{ node: Node, depth: number }[]} */
   const walk = (n, depth) => [{ node: n, depth }, ...(under.get(n.id) ?? []).flatMap((k) => walk(k, depth + 1))];
   /** @type {Map<string, { key: string, label: string | null, batch: number | null, worker?: string, members: { node: Node, depth: number }[] }>} */
   const cards = new Map();
-  for (const n of under.get(hit.node.id) ?? []) {
-    const key = n.batch === null ? `${hit.node.id}:${n.agentType ?? ''}` : `${hit.node.id}#${n.batch}`;
+  for (const n of hit === undefined ? [] : under.get(hit.node.id) ?? []) {
+    const key = n.batch === null ? `${sel}:${n.agentType ?? ''}` : `${sel}#${n.batch}`;
     const card = cards.get(key) ?? { key, label: n.agentType, batch: n.batch, members: [] };
     card.members.push(...walk(n, 0));
     cards.set(key, card);
   }
-  for (const n of hit.project.nodes) {
-    if (n.sent?.by !== hit.node.id) continue;
-    const key = `${hit.node.id}~${n.id}`;
+  for (const n of project.nodes) {
+    if (n.sent?.by !== sel) continue;
+    const key = `${sel}~${n.id}`;
     cards.set(key, { key, label: null, batch: null, worker: n.id, members: walk(n, 0) });
   }
   return [...cards.values()].sort((a, b) => {
@@ -252,7 +255,8 @@ function subsNote(n, cards, over, ctx) {
 
 /**
  * The right side's cards for the selected worker: folded unless clicked open (`open`, by key), running or not.
- * @param {TowerSnapshot} snap @param {string | null} sel @param {{ open: ReadonlySet<string>, fresh: ReadonlySet<string>, rows?: { has(k: string): boolean }, read?: boolean, locked?: boolean }} ctx @returns {Paint}
+ * `front`: `sel` is the front desk's, which no node stands for.
+ * @param {TowerSnapshot} snap @param {string | null} sel @param {{ open: ReadonlySet<string>, fresh: ReadonlySet<string>, rows?: { has(k: string): boolean }, read?: boolean, locked?: boolean, front?: boolean }} ctx @returns {Paint}
  */
 export function describeSubs(snap, sel, ctx) {
   const n = sel === null ? undefined : indexOf(snap).byId.get(sel)?.node;
@@ -260,9 +264,9 @@ export function describeSubs(snap, sel, ctx) {
   const total = cards.reduce((k, c) => k + c.members.length, 0);
   return {
     slots: {
-      head: { text: n === undefined ? t('home.subsPlain') : t('home.subsH', { who: n.title }) },
+      head: { text: ctx.front === true ? t('home.subsH', { who: t('front.name') }) : n === undefined ? t('home.subsPlain') : t('home.subsH', { who: n.title }) },
       n: { text: cards.length === 0 ? '' : t('fold.n', { n: total }) },
-      note: { text: subsNote(n, cards, snap.meta.clipped.nodes, ctx) },
+      note: { text: ctx.front === true ? (cards.length === 0 ? t('front.subsNone') : '') : subsNote(n, cards, snap.meta.clipped.nodes, ctx) },
       list: {
         kids: cards.map((c) => describeFold({
           key: c.key, members: c.members, open: ctx.open.has(c.key), fresh: ctx.fresh.has(c.key),
@@ -281,7 +285,8 @@ export function describeSubs(snap, sel, ctx) {
  */
 export function grantsLine(list, unlocked = false) {
   if (list === null || !Array.isArray(list.owned)) return t(unlocked ? 'home.grantsUnread' : 'home.grantsLocked');
-  const live = list.owned.filter((/** @type {any} */ o) => o.dispatch != null);
+  // The front desk is no worker: its level is on its own tile.
+  const live = list.owned.filter((/** @type {any} */ o) => o.dispatch != null && o.frontDesk !== true);
   if (live.length === 0) return t('home.grantsNone');
   const free = live.filter((/** @type {any} */ o) => o.dispatch.level === 'free').length;
   return t('home.grants', { free, ask: live.length - free });
@@ -302,7 +307,7 @@ export function describeGrant(id, list, ctx) {
     slots: {
       b: { data: { level, owned: id }, attr: { 'aria-pressed': d?.level === level ? 'true' : 'false', disabled: can && ctx.unlocked && d !== null ? null : '', title: ctx.unlocked || !can ? null : t('grant.locked') } },
       name: { text: t(`grant.level.${level}`) },
-      note: { text: t(`grant.note.${level}`) },
+      note: { text: t(level === 'free' && o?.frontDesk === true ? 'grant.note.freeFront' : `grant.note.${level}`) },
     },
   });
   const here = list == null ? '' : t(`grant.here.${list.presence ?? 'unknown'}`);
@@ -310,11 +315,58 @@ export function describeGrant(id, list, ctx) {
   const none = o === undefined || o.state === 'unknown' ? 'grant.unknown' : o.state === 'ended' || o.state === 'failed' ? 'grant.over' : 'grant.none';
   const says = !ctx.unlocked ? [t('grant.locked')] : d === null ? [t(none)] : [
     d.grantAt === null ? t('grant.default') : t('grant.since', { at: ctx.fmt(d.grantAt) }),
+    o?.frontDesk === true && t(d.level === 'free' ? 'grant.frontFree' : 'grant.frontAsk'),
     d.tainted === true && t('grant.tainted'),
     d.depth >= ctx.maxDepth && t('grant.depth', { d: d.depth }),
     here,
   ];
   return { data: { hide: '0' }, slots: { st: { text: says.filter(Boolean).join(t('sep.notes')) }, lv: { kids: [row('ask', true), row('free', true), row('away', false)] } } };
+}
+
+/**
+ * The front desk's tile over the workers: off with why, not open with the way to open it, or open and how it stands. It is
+ * no worker, so it counts nowhere, and what is not known locked is said so (T1): the tower has no word of it.
+ * @param {any} list GET /api/owned's reply, or null @param {{ unlocked: boolean, on: boolean, busy: boolean }} ctx @returns {Record<string, Paint>}
+ */
+export function describeFrontTile(list, ctx) {
+  const f = list?.frontDesk ?? null;
+  const d = deskOf(list);
+  const live = f?.ownedId != null ? d : null;
+  const max = list?.limits?.maxOwned ?? '?';
+  const closed = f !== null && live === null;
+  // You ended it: nothing to say. Anything else that ended it is said (a safety-stop above all).
+  const over = d === null || d.endReason === null || d.endReason === 'you-ended' ? null : t(`life.${d.endReason}`);
+  const l2 = !ctx.unlocked ? t('front.locked') : f === null ? t('front.unread') : live !== null ? `${live.model}${t('sep.parts')}${t(`state.${live.state}`)}`
+    : !f.on ? t('front.off') : over !== null ? t('front.lastOver', { why: over }) : t('front.closed');
+  const note = !ctx.unlocked ? t('front.noteLocked') : live !== null ? t('front.noteOpen', { n: max, l: t(`grant.level.${live.dispatch?.level ?? 'ask'}`) }) : `${t('home.noRouter')}${f?.on === true ? t('front.what', { n: max }) : ''}`;
+  const pick = closed && f.on === true;
+  return {
+    tile: { data: { on: ctx.on ? '1' : '0', open: live !== null ? '1' : '0' } },
+    b: { attr: { 'aria-current': ctx.on ? 'true' : null, title: note } },
+    bd: { data: { b: live === null ? 'none' : live.state === 'running' || live.state === 'starting' ? 'run' : 'none' } },
+    l2: { text: l2 },
+    openBox: { data: { hide: pick ? '0' : '1' } },
+    model: { kids: pick ? [f.model, ...modelsOf('claude').filter((m) => m !== f.model)].map((m) => ({ key: m, tpl: 'tpl-opt', text: m, attr: { value: m } })) : [] },
+    open: { text: t('front.open'), attr: { disabled: ctx.busy ? '' : null } },
+    note: { text: note },
+  };
+}
+
+/**
+ * The desk's head and 资料, over what describeDetail said of nothing selected. @param {any} d its entry, null while it has none
+ * @param {any} list @returns {Paint}
+ */
+export function describeFrontHead(d, list) {
+  if (d === null) return { data: { mode: 'empty' }, slots: { empty: { text: t('front.pick') } } };
+  const kv = (/** @type {string} */ k, /** @type {string} */ v) => ({ key: k, tpl: 'tpl-kv', slots: { k: { text: t(k) }, v: { text: v } } });
+  const tools = list?.frontDesk?.ownedId === d.ownedId ? list.frontDesk.tools : null;
+  return {
+    data: { mode: 'front', state: '', harness: 'claude', src: '' },
+    slots: {
+      title: { text: t('front.name') }, sub: { text: t('front.sub', { m: d.model }) }, empty: { text: '' },
+      facts: { kids: [kv('front.factTools', tools === null ? t('front.factToolsNone') : tools.join(t('sep.parts'))), kv('front.factCwd', d.cwd?.path ?? t('front.unknown')), kv('front.factPlace', t('front.factPlaceV'))] },
+    },
+  };
 }
 
 /**

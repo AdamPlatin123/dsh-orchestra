@@ -76,11 +76,38 @@ export const DISPATCH_TOOL = Object.freeze({
       harness: { type: 'string', enum: ['codex', 'claude'], description: 'Which harness runs it.' },
       model: { type: 'string', description: 'Optional: a model of the local gateway, like zcode/GLM-5.3. Left out, the harness default.' },
       cwd: { type: 'string', description: 'Optional: an absolute folder inside a project root the person opened. Left out, the worker gets its own empty folder.' },
+      why: { type: 'string', description: 'Optional: why this worker, in one sentence. The person reads it on the order.' },
+      returns: { type: 'string', description: 'Optional: what the worker should hand back, in one sentence. The person reads it on the order; say it in task too, the worker sees only task.' },
     },
   },
 });
 /** The dispatch tool's name as the CLI lists and calls it. */
 export const DISPATCH_TOOL_ID = `mcp__${DISPATCH_SERVER}__${DISPATCH_TOOL.name}`;
+/**
+ * The front desk's read tool (src/route/front-desk.ts, whose STATUS_TOOL this restates as DISPATCH_TOOL is, and a test
+ * holds the two equal). Only a start frame's frontDesk offers it, on the dispatch tool's server; orchestrad answers it.
+ */
+export const STATUS_TOOL = Object.freeze({
+  name: 'status',
+  description: 'Read the state of Orchestra itself: what sessions there are, what waits for the person, one session. It never holds a conversation or the output of a command. Read it before you say anything about a session, a count or a wait.',
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['what'],
+    properties: {
+      what: { type: 'string', enum: ['overview', 'waiting', 'session'], description: 'overview: every session and its state; waiting: what waits for the person; session: one session.' },
+      session: { type: 'string', description: 'With what=session: its id, as overview lists it.' },
+    },
+  },
+});
+export const STATUS_TOOL_ID = `mcp__${DISPATCH_SERVER}__${STATUS_TOOL.name}`;
+/**
+ * All a front desk may hold, as system/init must list it: `tools: []` takes every built-in away (measured on CLI 2.1.287,
+ * 2026-11-05: init then lists these two and nothing else, Task and Agent included), so anything more is a safety-stop.
+ */
+export const FRONT_DESK_TOOLS = Object.freeze([DISPATCH_TOOL_ID, STATUS_TOOL_ID]);
+/** A front desk's turn cap: a question takes a read or two and a reply, so a turn this long is something gone wrong (the SDK's count, as MAX_TURNS). */
+export const FRONT_DESK_MAX_TURNS = 8;
 /** What an Agent call may name; anything else is refused unseen by a person (agent-input). `isolation` runs it out of cwd, or out of the Job; `name` and `mode` were never measured. */
 const AGENT_INPUT_KEYS = Object.freeze(['description', 'prompt', 'subagent_type', 'model', 'run_in_background']);
 /** The kinds of sub-agent measured to come to the gate. statusline-setup would only edit a protected file, and `fork` was never seen. */
@@ -509,7 +536,7 @@ function toolReach(toolName, input, cwd, home) {
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
 const onlyKeys = (o, allowed) => Object.keys(o).every((k) => allowed.includes(k));
 
-const START_KEYS = Object.freeze(['t', 'ownedId', 'model', 'cwd', 'configDir', 'resume', 'fork', 'resumeAt', 'appendSystem', 'tainted', 'claudeExe', 'protectedRoots', 'askTimeoutMs', 'subagents', 'dispatch']);
+const START_KEYS = Object.freeze(['t', 'ownedId', 'model', 'cwd', 'configDir', 'resume', 'fork', 'resumeAt', 'appendSystem', 'tainted', 'claudeExe', 'protectedRoots', 'askTimeoutMs', 'subagents', 'dispatch', 'frontDesk']);
 
 /** The env value of `name`, matched case-insensitively as Windows does; undefined when absent. */
 function envValue(env, name) {
@@ -539,6 +566,8 @@ export function parseStart(f, env) {
   if (typeof f.tainted !== 'boolean') return bad('tainted');
   if (f.subagents !== undefined && typeof f.subagents !== 'boolean') return bad('subagents');
   if (f.dispatch !== undefined && typeof f.dispatch !== 'boolean') return bad('dispatch');
+  // The front desk's own system prompt: it runs on that alone, with the dispatch tool, as a fresh session of no sub-agents.
+  if (f.frontDesk !== undefined && (typeof f.frontDesk !== 'string' || f.frontDesk.length === 0 || f.dispatch !== true || f.subagents === true || f.resume !== undefined || f.appendSystem !== undefined)) return bad('frontDesk');
   const claudeExe = winAbsolute(f.claudeExe);
   if (claudeExe === null || baseName(claudeExe).toLowerCase() !== 'claude.exe') return bad('claudeExe');
   if (!Array.isArray(f.protectedRoots) || f.protectedRoots.length > MAX_PROTECTED_ROOTS) return bad('protectedRoots');
@@ -562,7 +591,7 @@ export function parseStart(f, env) {
     ok: true,
     start: Object.freeze({
       ownedId: f.ownedId, model: f.model, cwd, configDir, resume: f.resume, fork: f.fork === true, resumeAt: f.resumeAt,
-      appendSystem: f.appendSystem, tainted: f.tainted, subagents: f.subagents === true, dispatch: f.dispatch === true, claudeExe, protectedRoots: Object.freeze(roots), askTimeoutMs, home,
+      appendSystem: f.appendSystem, tainted: f.tainted, subagents: f.subagents === true, dispatch: f.dispatch === true, frontDesk: f.frontDesk ?? null, claudeExe, protectedRoots: Object.freeze(roots), askTimeoutMs, home,
       hardRoots: Object.freeze([`${home}\\.claude`, `${home}\\.dsh`, configDir]),
       models: Object.freeze(smallFast === null || smallFast === f.model ? [f.model] : [f.model, smallFast]),
     }),
@@ -634,6 +663,11 @@ export function sdkOptions(start, env, gate) {
     hooks: { PreToolUse: [{ hooks: [gate.preToolUse] }] },
     canUseTool: gate.canUseTool,
   };
+  if (start.frontDesk !== null) {
+    options.tools = [];
+    options.systemPrompt = start.frontDesk;
+    options.maxTurns = FRONT_DESK_MAX_TURNS;
+  }
   if (start.appendSystem !== undefined) {
     // On a resume the append only takes effect with snapshot: false (probe §10 item 8).
     options.systemPrompt = { type: 'preset', preset: 'claude_code', append: start.appendSystem, ...(start.resume !== undefined ? { snapshot: false } : {}) };
@@ -649,12 +683,15 @@ export function sdkOptions(start, env, gate) {
 }
 
 /** Why a system/init frame stops the session, or null when it passes (design §2.2 startup checks). */
-export function initProblem(m, model, subagents = false, dispatch = false) {
+export function initProblem(m, model, subagents = false, dispatch = false, frontDesk = false) {
   if (m.claude_code_version !== CLI_VERSION) return 'cli-version';
   if (m.model !== model) return 'model';
   if (m.permissionMode !== 'default') return 'permission-mode';
   if (typeof m.session_id !== 'string' || !UUID.test(m.session_id)) return 'session-id';
-  if (!Array.isArray(m.tools) || m.tools.some((t) => typeof t !== 'string' || (t.startsWith('mcp__') && !(dispatch && t === DISPATCH_TOOL_ID)) || disallowedFor(subagents).includes(t))) return 'tools';
+  const mine = frontDesk ? FRONT_DESK_TOOLS : dispatch ? [DISPATCH_TOOL_ID] : [];
+  if (!Array.isArray(m.tools) || m.tools.some((t) => typeof t !== 'string' || (t.startsWith('mcp__') && !mine.includes(t)) || disallowedFor(subagents).includes(t))) return 'tools';
+  // A front desk holds its two tools and not one more: no list of names could say what a new build's built-in reaches.
+  if (frontDesk && (m.tools.length !== FRONT_DESK_TOOLS.length || !FRONT_DESK_TOOLS.every((t) => m.tools.includes(t)))) return 'tools';
   if (dispatch && !m.tools.includes(DISPATCH_TOOL_ID)) return 'tools';
   if (!Array.isArray(m.mcp_servers) || m.mcp_servers.length !== (dispatch ? 1 : 0)) return 'mcp-servers';
   if (dispatch && (m.mcp_servers[0]?.name !== DISPATCH_SERVER || m.mcp_servers[0]?.status !== 'connected')) return 'mcp-servers';
@@ -835,12 +872,13 @@ export function runHost(powers) {
   function onMcp(m) {
     const ok = (result) => mcpSend({ jsonrpc: '2.0', id: m.id, result });
     if (m.method === 'initialize') return ok({ protocolVersion: m.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: DISPATCH_SERVER, version: '1.0.0' } });
-    if (m.method === 'tools/list') return ok({ tools: [DISPATCH_TOOL] });
+    if (m.method === 'tools/list') return ok({ tools: start.frontDesk === null ? [DISPATCH_TOOL] : [DISPATCH_TOOL, STATUS_TOOL] });
     if (m.method === 'tools/call') {
-      if (m.params?.name !== DISPATCH_TOOL.name || finished) return mcpAnswer(m.id, false, DENY_MESSAGES.disallowed);
+      const read = start.frontDesk !== null && m.params?.name === STATUS_TOOL.name;
+      if ((!read && m.params?.name !== DISPATCH_TOOL.name) || finished) return mcpAnswer(m.id, false, DENY_MESSAGES.disallowed);
       const callId = hexOf(randomBytes(16));
       dispatchCalls.set(callId, m.id);
-      return emit({ t: 'dispatch', callId, input: isPlainObject(m.params.arguments) ? m.params.arguments : {} });
+      return emit({ t: read ? 'status' : 'dispatch', callId, input: isPlainObject(m.params.arguments) ? m.params.arguments : {} });
     }
     if (m.method === 'notifications/cancelled') {
       for (const [callId, id] of dispatchCalls) {
@@ -890,9 +928,11 @@ export function runHost(powers) {
    */
   async function judge(toolName, input, agent) {
     if (typeof toolName !== 'string' || !isPlainObject(input)) return { verdict: 'deny', why: 'bad-input' };
-    // Not a call a card decides: orchestrad does, in dispatch.ts, whatever the session's taint.
-    if (toolName === DISPATCH_TOOL_ID) {
-      if (!start.dispatch) return { verdict: 'deny', why: 'disallowed' };
+    // A front desk has these two, whatever a session holds besides.
+    if (start.frontDesk !== null && !FRONT_DESK_TOOLS.includes(toolName)) return { verdict: 'deny', why: 'disallowed' };
+    // Not a call a card decides: orchestrad does, in dispatch.ts, whatever the session's taint. A front desk's read asks nobody either.
+    if (toolName === DISPATCH_TOOL_ID || toolName === STATUS_TOOL_ID) {
+      if (toolName === DISPATCH_TOOL_ID ? !start.dispatch : start.frontDesk === null) return { verdict: 'deny', why: 'disallowed' };
       return agent === null ? { verdict: 'dispatch' } : { verdict: 'deny', why: 'dispatch-subagent' };
     }
     // Starting a sub-agent is a card like any other call that is no read inside cwd: a person sees its whole prompt.
@@ -1104,7 +1144,7 @@ export function runHost(powers) {
   function onMessage(m) {
     if (!isPlainObject(m)) return;
     if (m.type === 'system' && m.subtype === 'init') {
-      const problem = initProblem(m, start.model, start.subagents, start.dispatch);
+      const problem = initProblem(m, start.model, start.subagents, start.dispatch, start.frontDesk !== null);
       if (problem !== null) return stop(problem);
       if (m.session_id !== sessionId) {
         sessionId = m.session_id;
@@ -1130,8 +1170,8 @@ export function runHost(powers) {
         if (b.type !== 'tool_use' || typeof b.id !== 'string' || typeof b.name !== 'string') continue;
         // A dispatch is told by its sub-start, not as a tool row. One reply's calls share message.id (sdk.d.ts).
         if (SUBAGENT_TOOLS.includes(b.name)) replyOf.set(b.id, agentOf(message.id));
-        // A dispatch tool call is told by orchestrad's own note, not as a tool row.
-        else if (b.name !== DISPATCH_TOOL_ID) emit({ t: 'tool', toolUseId: b.id, name: b.name });
+        // A dispatch tool call is told by orchestrad's own note, not as a tool row; so is a front desk's read.
+        else if (b.name !== DISPATCH_TOOL_ID && b.name !== STATUS_TOOL_ID) emit({ t: 'tool', toolUseId: b.id, name: b.name });
       }
       return;
     }

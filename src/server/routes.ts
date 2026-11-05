@@ -124,7 +124,7 @@ export const CHECKS: readonly Check[] = Object.freeze([
   {
     step: 'own', status: null, codes: [
       'text-too-long', 'brake-unavailable', 'not-test-root', 'plan-expired',
-      'owned-disabled', 'owned-limit', 'slash-command', 'digest-mismatch', 'approval-gone', 'stale-view', 'still-running', 'source-live', 'cwd-gone',
+      'owned-disabled', 'owned-limit', 'desk-open', 'slash-command', 'digest-mismatch', 'approval-gone', 'stale-view', 'still-running', 'source-live', 'cwd-gone',
       'cwd-forbidden', 'unfinished-frame', 'source-changed', 'newer-format', 'import-too-big', 'gateway-real-data', 'owned-ended', 'queue-full',
       'request-gone', 'request-mismatch',
     ],
@@ -254,8 +254,8 @@ const message = text(OWNED_BODY_MAX_BYTES, 'message');
 const accepted = (extra: Record<string, Shape> = {}): Shape => obj({ actionId: uuid, accepted: konst(true), jseq, replayed: konst(true), ...extra }, ['replayed']);
 const OWNED_CHECKS: readonly CheckStep[] = ['auth', 'ui-only', 'actionId', 'dedup', 'own', 'execute'];
 const OWNED_TARGET_CHECKS: readonly CheckStep[] = ['auth', 'ui-only', 'actionId', 'dedup', 'item', 'own', 'execute'];
-/** The body fields a route may leave out: a retry's confirmGone, a new session's model, the suggestion it came from, the agent request it answers and the project root it runs in. */
-const OPTIONAL_BODY = ['confirmGone', 'model', 'routeId', 'requestId', 'root'];
+/** The body fields a route may leave out: a retry's confirmGone, a new session's model, the suggestion it came from, the agent request it answers, the project root it runs in, and whether it is the front desk. */
+const OPTIONAL_BODY = ['confirmGone', 'model', 'routeId', 'requestId', 'root', 'frontDesk'];
 /** An owned-session human route: the cookie and the controller token, a uuid actionId, the human record; never an inbox item. */
 const owned = (verb: HumanVerb, target: Route['target'], body: Record<string, Shape>, reply: Shape, own: ErrorCode[] = [], failures: ErrorCode[] = []): Route => ({
   method: 'POST', path: HUMAN_VERB_ROUTES[verb], auth: 'unlocked', human: verb, item: null, target,
@@ -366,12 +366,14 @@ export const ROUTES: readonly Route[] = Object.freeze([
   // root (orchestra app plan 项目根): one of the project roots GET /api/owned lists (--project-root); the
   // session runs there. Any other path, or a root with a requestId (a request runs where its card said), is
   // cwd-forbidden: the page offers the list, never a free path.
+  // frontDesk (src/route/front-desk.ts): you open the front desk, the same way you dispatch anything, on Claude, in its own work
+  // dir; a second while one runs is desk-open.
   owned(
     'owned-new', null, {
       text: message, harness: en(OWNED_HARNESSES), model: re(OWNED_MODEL_RE, 'model'), routeId: re(ROUTE_ID_RE, 'routeId'), requestId: re(AGENT_REQUEST_ID_RE, 'requestId'),
-      root: text(260, 'root-path'),
+      root: text(260, 'root-path'), frontDesk: konst(true),
     }, accepted({ ownedId: id }),
-    ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command', 'request-gone', 'request-mismatch', 'cwd-forbidden'], NEW_FAILS,
+    ['owned-disabled', 'owned-limit', 'desk-open', 'text-too-long', 'slash-command', 'request-gone', 'request-mismatch', 'cwd-forbidden'], NEW_FAILS,
   ),
   // via: what became of it at once: handed to codex (turn/start, turn/steer) or waiting here (queued).
   owned('owned-message', 'owned', { text: message }, accepted({ uuid, queued: count, via: en(MESSAGE_VIA) }), ['text-too-long', 'slash-command', 'owned-ended', 'queue-full']),

@@ -66,8 +66,9 @@ test('the gate: only a clean session at 直接派出 with you present goes out a
 });
 
 test('the tool\'s arguments: task and harness, model and cwd if any, and nothing else', () => {
-  assert.deepEqual(dispatchArgs(CALL), { task: CALL.task, harness: 'codex', model: 'zcode/GLM-5.3', cwd: null });
-  for (const bad of [null, [], 'x', {}, { task: 'x' }, { task: ' ', harness: 'codex' }, { task: '/model x', harness: 'codex' }, { task: 'x', harness: 'dsh' }, { ...CALL, level: 'free' }, { ...CALL, ownedId: W }, { ...CALL, model: 1 }, { ...CALL, cwd: '' }, { ...CALL, cwd: 'x'.repeat(261) }]) {
+  assert.deepEqual(dispatchArgs(CALL), { task: CALL.task, harness: 'codex', model: 'zcode/GLM-5.3', cwd: null, why: null, returns: null });
+  assert.deepEqual(dispatchArgs({ ...CALL, why: 'a', returns: 'b' }), { task: CALL.task, harness: 'codex', model: 'zcode/GLM-5.3', cwd: null, why: 'a', returns: 'b' });
+  for (const bad of [null, [], 'x', {}, { task: 'x' }, { task: ' ', harness: 'codex' }, { task: '/model x', harness: 'codex' }, { task: 'x', harness: 'dsh' }, { ...CALL, level: 'free' }, { ...CALL, ownedId: W }, { ...CALL, model: 1 }, { ...CALL, cwd: '' }, { ...CALL, cwd: 'x'.repeat(261) }, { ...CALL, why: 1 }, { ...CALL, returns: [] }]) {
     assert.equal(dispatchArgs(bad), null, JSON.stringify(bad));
   }
 });
@@ -97,12 +98,13 @@ test('派前问你: 拒绝 and time up are refusals the worker reads; a stop tak
   const no = fx.d.call(W, CALL, fx.say);
   fx.requests.reject(pendingOf(fx)[0]!.requestId);
   assert.deepEqual(await no.reply, { ok: false, text: 'The person refused this dispatch.' });
-  assert.deepEqual(fx.notes.at(-1), { state: 'worker-refused', ref: null, text: 'you-rejected' });
+  assert.deepEqual({ ...fx.notes.at(-1)!, ref: null }, { state: 'worker-refused', ref: null, text: 'you-rejected' });
+  assert.match(String(fx.notes.at(-1)!.ref), /^[0-9a-f]{20}$/, 'it names the request, so the talk can tell which order');
 
   const late = fx.d.call(W, CALL, fx.say);
   fx.clock.advanceBy(REQUEST_LIMITS.ttlMs);
   assert.equal((await late.reply).ok, false);
-  assert.deepEqual(fx.notes.at(-1), { state: 'worker-refused', ref: null, text: 'expired' });
+  assert.equal(fx.notes.at(-1)!.text, 'expired');
 
   const stopped = fx.d.call(W, CALL, fx.say);
   const id = pendingOf(fx)[0]!.requestId;
@@ -116,6 +118,48 @@ test('派前问你: 拒绝 and time up are refusals the worker reads; a stop tak
   fx.requests.bind(r.requestId, 'c'.repeat(20));
   sent.cancel();
   assert.equal(fx.requests.get(r.requestId)!.state, 'dispatched', 'a stop of the worker\'s turn does not end what you dispatched');
+});
+
+test('the front desk at 派前问你: the call is answered at once and the card stands; what comes of it goes to the talk, and a stop leaves it', async () => {
+  const fx = fixture();
+  fx.sessions.set(W, { title: '总台', tainted: false, over: false, frontDesk: true } as S);
+  const c = fx.d.call(W, { ...CALL, why: 'it is short', returns: 'the word' }, fx.say);
+  const r = await c.reply;
+  assert.equal(r.ok, true);
+  assert.match(r.text, /^Proposed/);
+  const card = pendingOf(fx)[0]!;
+  assert.deepEqual([card.reason, card.returns, card.auto, fx.started.length], ['it is short', 'the word', false, 0]);
+  assert.deepEqual(fx.notes.at(-1), { state: 'worker-asked', ref: card.requestId, text: null });
+  c.cancel();
+  assert.equal(pendingOf(fx).length, 1, 'no turn holds it, so a stop takes nothing back');
+  fx.requests.reject(card.requestId);
+  await new Promise((res) => setImmediate(res));
+  assert.deepEqual(fx.notes.at(-1), { state: 'worker-refused', ref: card.requestId, text: 'you-rejected' });
+
+  const next = fx.d.call(W, CALL, fx.say);
+  await next.reply;
+  const r2 = pendingOf(fx)[0]!;
+  fx.requests.bind(r2.requestId, 'c'.repeat(20));
+  fx.d.adopted(fx.requests.get(r2.requestId)!, 'c'.repeat(20));
+  await new Promise((res) => setImmediate(res));
+  assert.equal(fx.notes.at(-1)!.state, 'worker-sent');
+  assert.equal(fx.d.view('c'.repeat(20)).level, 'ask', 'nothing it sent inherits a level');
+  assert.equal(fx.d.view('c'.repeat(20)).depth, 1);
+});
+
+test('the front desk at 直接派出: no card, and the order says why and what comes back; away it goes back to a card, answered at once too', async () => {
+  const fx = fixture();
+  fx.sessions.set(W, { title: '总台', tainted: false, over: false, frontDesk: true } as S);
+  fx.d.grant(W, 'free', crypto.randomUUID());
+  const r = await fx.d.call(W, { ...CALL, why: 'a', returns: 'b' }, fx.say).reply;
+  assert.match(r.text, /^Dispatched/);
+  const made = fx.requests.list().find((x) => x.auto)!;
+  assert.deepEqual([made.reason, made.returns], ['a', 'b']);
+  assert.deepEqual(kinds(fx).filter((k) => k === 'auto'), ['auto']);
+  fx.state.presence = 'away';
+  const away = await fx.d.call(W, CALL, fx.say).reply;
+  assert.match(away.text, /^Proposed/);
+  assert.equal(pendingOf(fx)[0]!.askWhy, 'away');
 });
 
 test('直接派出: no card, a session, an `auto` record and a route of mode auto, no human record; the receipt says the permission', async () => {

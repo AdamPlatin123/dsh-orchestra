@@ -41,6 +41,11 @@ import { ROUTE_HARNESSES, ROUTE_MODELS } from './rules.ts';
 //
 // What a tool call gets back is fixed text of this module, never another session's words. What comes of the dispatched
 // session does not come back to the worker: the person sees it (its row, its card, its own talk).
+//
+// The front desk (src/route/front-desk.ts) dispatches through this very tool, at the same levels; ask is its default too. One
+// thing differs: at ask its call is answered at once and the card goes on by itself, so a question you put while an order
+// waits is not held behind that order for ten minutes. Its call therefore reports the card as proposed, never its fate:
+// that goes to its talk (the feed notes), and to the model only when you ask and it reads.
 
 export const DISPATCH_TOOL = frozen({
   name: 'orchestra_dispatch',
@@ -55,6 +60,8 @@ export const DISPATCH_TOOL = frozen({
       harness: { type: 'string', enum: ['codex', 'claude'], description: 'Which harness runs it.' },
       model: { type: 'string', description: 'Optional: a model of the local gateway, like zcode/GLM-5.3. Left out, the harness default.' },
       cwd: { type: 'string', description: 'Optional: an absolute folder inside a project root the person opened. Left out, the worker gets its own empty folder.' },
+      why: { type: 'string', description: 'Optional: why this worker, in one sentence. The person reads it on the order.' },
+      returns: { type: 'string', description: 'Optional: what the worker should hand back, in one sentence. The person reads it on the order; say it in task too, the worker sees only task.' },
     },
   },
 });
@@ -77,7 +84,7 @@ export type DispatchRefusal =
 /** What the model reads; fixed text, nothing of the call is echoed back. */
 const REFUSED: Readonly<Record<DispatchRefusal, string>> = frozen({
   off: 'Orchestra cannot dispatch now.',
-  'bad-input': 'Not dispatched: the call needs task (text, not starting with a slash) and harness (codex or claude), and may have model and cwd. Nothing else.',
+  'bad-input': 'Not dispatched: the call needs task (text, not starting with a slash) and harness (codex or claude), and may have model, cwd, why and returns. Nothing else.',
   depth: `Not dispatched: this session is ${DISPATCH_LIMITS.depth} dispatches from the person, the most Orchestra allows.`,
   'model-refused': 'Not dispatched: that model is not one this harness may run here.',
   'cwd-forbidden': 'Not dispatched: that folder is protected.',
@@ -96,6 +103,9 @@ const REFUSED: Readonly<Record<DispatchRefusal, string>> = frozen({
   'text-too-long': 'Not dispatched: the task is too long.',
   'cwd-too-long': 'Not dispatched: the folder name is too long.',
 });
+
+/** What a front desk's call answers at 派前问你: the card stands and the talk goes on. */
+const PROPOSED = 'Proposed: the order waits for the person on the page, and nothing went out yet. Say so in one sentence and end your turn; read status when you are asked what came of it.';
 
 /** What the session's talk says of a call: a note of its feed, for the driver to push. */
 export type DispatchNote = { readonly state: 'worker-sent' | 'worker-sent-grant' | 'worker-asked' | 'worker-refused'; readonly ref: string | null; readonly text: string | null };
@@ -124,7 +134,8 @@ export type DispatchView = {
   readonly tainted: boolean;
 };
 
-export type DispatchSession = { readonly title: string; readonly tainted: boolean; readonly over: boolean };
+/** frontDesk: it is the front desk (src/route/front-desk.ts): its calls at ask do not wait on the card. */
+export type DispatchSession = { readonly title: string; readonly tainted: boolean; readonly over: boolean; readonly frontDesk?: boolean };
 /** r4 §8.5: the source chain the cards of what was dispatched show: which session sent it, by which request. */
 export type DispatchOrigin = { readonly kind: 'worker-dispatch'; readonly requestId: string; readonly requester: string; readonly label: string | null };
 export type DispatchStart = { harness: RouteHarness; model: string; text: string; uuid: string; cwd: string | null; origin: DispatchOrigin };
@@ -173,19 +184,20 @@ export function gateOf(level: DispatchLevel, tainted: boolean, presence: Presenc
   return { go: false, why: presence === 'away' ? 'away' : 'presence-unknown' };
 }
 
-type Args = { task: string; harness: RouteHarness; model: string | null; cwd: string | null };
+type Args = { task: string; harness: RouteHarness; model: string | null; cwd: string | null; why: string | null; returns: string | null };
 
 /** A tool call's arguments as the tool's schema has them, or null. The harness checks nothing of this for us. */
 export function dispatchArgs(raw: unknown): Args | null {
   if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
-  if (!Object.keys(o).every((k) => k === 'task' || k === 'harness' || k === 'model' || k === 'cwd')) return null;
-  const { task, harness, model, cwd } = o;
+  if (!Object.keys(o).every((k) => k === 'task' || k === 'harness' || k === 'model' || k === 'cwd' || k === 'why' || k === 'returns')) return null;
+  const { task, harness, model, cwd, why, returns } = o;
   if (typeof task !== 'string' || task.trim() === '' || task.trimStart().startsWith('/')) return null;
   if (typeof harness !== 'string' || !(ROUTE_HARNESSES as readonly string[]).includes(harness)) return null;
   if (model !== undefined && model !== null && typeof model !== 'string') return null;
   if (cwd !== undefined && cwd !== null && (typeof cwd !== 'string' || cwd === '' || cwd.length > DISPATCH_LIMITS.cwdChars)) return null;
-  return { task, harness: harness as RouteHarness, model: model ?? null, cwd: cwd ?? null };
+  if ([why, returns].some((v) => v !== undefined && v !== null && typeof v !== 'string')) return null;
+  return { task, harness: harness as RouteHarness, model: model ?? null, cwd: cwd ?? null, why: why ?? null, returns: returns ?? null };
 }
 
 /** Whether `harness` may run `model`: the owned list, and Claude's own narrower one. */
@@ -214,9 +226,9 @@ export function makeDispatcher(deps: DispatchDeps): Dispatcher {
   const levelOf = (ownedId: string): DispatchLevel => levels.get(ownedId)?.level ?? 'ask';
   const labelOf = (ownedId: string): string | null => requests.label(deps.session(ownedId)?.title ?? '');
 
-  const refused = (ownedId: string, why: DispatchRefusal, say: (n: DispatchNote) => void): DispatchReply => {
+  const refused = (ownedId: string, why: DispatchRefusal, say: (n: DispatchNote) => void, ref: string | null = null): DispatchReply => {
     log.info('dispatch-refused', { ownedId, why });
-    say({ state: 'worker-refused', ref: null, text: why });
+    say({ state: 'worker-refused', ref, text: why });
     return { ok: false, text: REFUSED[why] };
   };
   const sent = (child: string, model: string | null, harness: RouteHarness, state: DispatchNote['state'], say: (n: DispatchNote) => void): DispatchReply => {
@@ -241,7 +253,7 @@ export function makeDispatcher(deps: DispatchDeps): Dispatcher {
     // No card to say where it would run instead: a folder it named and may not have is a refusal.
     if (a.cwd !== null && placed.at.runIn === null) return refused(ownedId, 'cwd-outside', say);
     if (deps.full(a.harness)) return refused(ownedId, 'owned-limit', say);
-    const made = requests.create({ harness: a.harness, text: a.task, cwd: a.cwd ?? '', label: null, requester: { kind: 'owned', sessionId: ownedId }, runIn: placed.at.runIn, runInWhy: placed.at.why, tainted: false, model, auto: true });
+    const made = requests.create({ harness: a.harness, text: a.task, cwd: a.cwd ?? '', label: null, requester: { kind: 'owned', sessionId: ownedId }, runIn: placed.at.runIn, runInWhy: placed.at.why, tainted: false, model, auto: true, reason: a.why, returns: a.returns });
     if (!made.ok) return refused(ownedId, made.why, say);
     const r = made.request;
     if (a.cwd !== null && r.runIn === null) {
@@ -278,29 +290,31 @@ export function makeDispatcher(deps: DispatchDeps): Dispatcher {
     return sent(child, started.model, a.harness, 'worker-sent-grant', say);
   };
 
-  const ask = (ownedId: string, a: Args, tainted: boolean, why: AskWhy | null, say: (n: DispatchNote) => void): DispatchCall => {
+  const ask = (ownedId: string, a: Args, tainted: boolean, why: AskWhy | null, say: (n: DispatchNote) => void, detached: boolean): DispatchCall => {
     const done = (reply: DispatchReply): DispatchCall => ({ reply: Promise.resolve(reply), cancel: () => {} });
     if (a.model !== null && !takes(a.harness, a.model)) return done(refused(ownedId, 'model-refused', say));
     const placed = place(a.cwd);
     if (!placed.ok) return done(refused(ownedId, placed.why, say));
     const made = requests.create({
-      harness: a.harness, text: a.task, cwd: a.cwd ?? '', label: null, requester: { kind: 'owned', sessionId: ownedId }, runIn: placed.at.runIn, runInWhy: placed.at.why, tainted, model: a.model, askWhy: why,
+      harness: a.harness, text: a.task, cwd: a.cwd ?? '', label: null, requester: { kind: 'owned', sessionId: ownedId }, runIn: placed.at.runIn, runInWhy: placed.at.why, tainted, model: a.model, askWhy: why, reason: a.why, returns: a.returns,
     });
     if (!made.ok) return done(refused(ownedId, made.why, say));
     const id = made.request.requestId;
     say({ state: 'worker-asked', ref: id, text: why });
     const settle = (r: AgentRequest): DispatchReply => {
       if (r.ownedId !== null) return sent(r.ownedId, r.model, r.harness, 'worker-sent', say);
-      return refused(ownedId, r.state === 'rejected' ? 'you-rejected' : r.state === 'expired' ? 'expired' : r.state === 'withdrawn' ? 'stopped' : 'gone', say);
+      return refused(ownedId, r.state === 'rejected' ? 'you-rejected' : r.state === 'expired' ? 'expired' : r.state === 'withdrawn' ? 'stopped' : 'gone', say, id);
     };
     const reply = (async (): Promise<DispatchReply> => {
       for (;;) {
         const r = requests.get(id);
-        if (r === null) return refused(ownedId, 'gone', say);
+        if (r === null) return refused(ownedId, 'gone', say, id);
         if (r.state !== 'pending') return settle(r);
         await requests.wait(id, REQUEST_LIMITS.ttlMs);
       }
     })();
+    // What came of it still goes to the feed through `say`; no turn is held for it, and a stop leaves the card standing.
+    if (detached) return done({ ok: true, text: PROPOSED });
     return {
       reply,
       cancel() {
@@ -318,7 +332,7 @@ export function makeDispatcher(deps: DispatchDeps): Dispatcher {
     if (depthOf(ownedId) >= DISPATCH_LIMITS.depth) return done(refused(ownedId, 'depth', say));
     if (!deps.on(a.harness)) return done(refused(ownedId, 'harness-off', say));
     const gate = gateOf(levelOf(ownedId), s.tainted, deps.presence());
-    return gate.go ? done(direct(ownedId, a, say)) : ask(ownedId, a, s.tainted, gate.why, say);
+    return gate.go ? done(direct(ownedId, a, say)) : ask(ownedId, a, s.tainted, gate.why, say, s.frontDesk === true);
   };
 
   return Object.freeze({

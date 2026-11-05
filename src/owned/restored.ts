@@ -25,7 +25,7 @@ export type RestoredOwned = {
   readonly restored: number;
   get(ownedId: string): AnySession | null;
   list(): AnySession[];
-  meta(ownedId: string): { readonly title: string; readonly createdAt: number } | null;
+  meta(ownedId: string): { readonly title: string; readonly createdAt: number; readonly frontDesk: boolean } | null;
   towerSeats(): OwnedSeat[];
 };
 
@@ -41,7 +41,7 @@ export function restoredOwned(harness: 'codex' | 'claude', registry: OwnedRegist
     all = [];
   }
   const sessions = new Map<string, AnySession>();
-  const meta = new Map<string, { title: string; createdAt: number }>();
+  const meta = new Map<string, { title: string; createdAt: number; frontDesk: boolean }>();
   for (const was of all.slice(-RESTORED_KEEP)) {
     const r = afterRestart(was);
     if (r !== was) {
@@ -52,7 +52,7 @@ export function restoredOwned(harness: 'codex' | 'claude', registry: OwnedRegist
       }
     }
     sessions.set(r.ownedId, make(r, now));
-    meta.set(r.ownedId, Object.freeze({ title: r.title, createdAt: r.createdAt }));
+    meta.set(r.ownedId, Object.freeze({ title: r.title, createdAt: r.createdAt, frontDesk: r.frontDesk === true }));
   }
   return Object.freeze({
     harness,
@@ -60,7 +60,7 @@ export function restoredOwned(harness: 'codex' | 'claude', registry: OwnedRegist
     get: (ownedId: string) => sessions.get(ownedId) ?? null,
     list: () => [...sessions.values()],
     meta: (ownedId: string) => meta.get(ownedId) ?? null,
-    towerSeats: (): OwnedSeat[] => [...sessions.values()].map((s) => ({
+    towerSeats: (): OwnedSeat[] => [...sessions.values()].filter((s) => meta.get(s.ownedId)?.frontDesk !== true).map((s) => ({
       ownedId: s.ownedId, harness, title: meta.get(s.ownedId)?.title ?? '', state: s.state, endReason: s.endReason,
       waiting: null, lastAt: s.feed.lastAt, recent: recentOf(s.feed),
       ...('members' in s ? memberSeats(s) : {}),

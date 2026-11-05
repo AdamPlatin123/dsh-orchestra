@@ -280,6 +280,55 @@
 - **`msg-withdrawn`**：根线程回合被打断时，CLI 对这条消息发 `cancelled`，对话流会在 `msg-sent` 之后多一条「撤回」。这不是这次引入的。
 - **页面**：这次没有在浏览器里走一遍 Claude 成员的折叠卡和线，靠塔接口的契约校验（冒烟里每次都是 200）和页面已有的测试。
 
+### 总台（2026-11-05 接上）
+
+用户的话：「superrouter 应当尽一切可能避免自己做任何非问答式的工作」「规划交给 worker」。规则见 `docs/design/mocks/2026-11-03-ensemble/round2/BRIEF.md` 第 1、1.2 节，`round3/BRIEF.md` 第 1.1 节。r4 里最接近的是 Maestro（§9.1：负责路由、委派、总结，从不改代码）。代码里叫 front desk，首页叫总台。
+
+**实测**（2026-11-05，走 magpie；Claude 探针用私有 config 和假 home，Codex 只经测试 profile）
+
+| 问题 | Claude（CLI 2.1.287，SDK 0.3.287） | Codex（codex-cli 0.165.0） |
+|---|---|---|
+| 能不能把工具收到两个 | 能。`tools: []` 加进程内 MCP，`system/init` 只列 `mcp__orchestra__dispatch`、`mcp__orchestra__status`，`Task`、`Agent` 也没有 | 不能。默认给 `exec_command`、`write_stdin`、`request_user_input`、`view_image`、`multi_agent_v1`、三个 goal 工具、`web_search`。把试到的开关全关后（`shell_tool`、`unified_exec`、`apply_patch_freeform`、`multi_agent`、`multi_agent_v2`、`goals`、`view_image_tool`、`[tools] view_image`、`web_search = "disabled"`），`zcode/GLM-5.3-Flash` 上还有 `request_user_input`、`view_image` 和三个 goal 工具。`view_image` 读本机文件 |
+| 能不能在启动时核对 | 能，`system/init` 列全部工具 | 不能，没有列工具的帧。上面的清单是把测试目录的 `config.toml` 指到本地抓包端口看到的请求 |
+| 模型会不会调这两个工具 | 三个问题（列工具、读状态、派活）各跑一次：`zcode/GLM-5.3-Flash`、`zcode/GLM-5-Turbo`、`opencode-go/glm-5.3-flash` 都调对了 | 没测（`codex/gpt-6.1-sol` 第一个请求 `tools` 是空的，抓包端口回 400 后没有下文，它的清单未知） |
+
+结论：用 Claude host。模型默认 `zcode/GLM-5.3-Flash`：同样调对工具，5 到 9 秒一轮，第三问累计 1262 进 561 出（Turbo 是 1666 进 990 出、18 秒；`opencode-go/glm-5.3-flash` 是 3770 进 612 出、5 秒），派活台的规则本来就把它当便宜模型（`CHEAP_MODEL`）。这是一次的数，不是基准。磁贴上的选择框可以换 Claude 名单里任一个。
+
+**做了什么**
+
+- **开启**：磁贴上的「开启」走 `POST /api/owned/new` 加 `frontDesk: true`，和派活同一条检查链和同一个 `owned-new` 人类动词。批次里多一条新 kind `front-desk`，不写 `route`（没有派活）。已有一个在跑回 409 `desk-open`。页面发一句固定的话当第一条消息（「开启总台。……」，对话里看得到），所以启动检查在你点的时候就跑，代价是一次便宜模型调用。
+- **名额**：不占 3 个并发名额，页面写了。理由：名额管的是在干活的东西，它没有能碰东西的工具，全局最多一个进程，你开口才调模型；占了的话它要派满 3 个就派不满。`active()`、`full()`、`limits.active` 都不算它。
+- **工具**：`hosts/claude/host-core.mjs` 的 `start.frontDesk`（系统提示全文）开这条路：`tools: []`、`systemPrompt` 只用这段、`maxTurns` 8、不给 subagent。`initProblem` 要求 `tools` 正好是 `FRONT_DESK_TOOLS`，多一个少一个都 safety-stop，新版本多出的内置工具名也算。钩子拒绝其它一切。工作目录是它自己的 `work\<id>`。
+- **读状态**（`src/route/front-desk.ts`）：`overview`、`waiting`、`session` 三种读。字段：id、标题、harness、状态、等什么、距上次活动的秒数、子代理数、上次做的事的种类（`command` 这样的词，不是内容）。不给 `activity`（那是会话最新一句话或命令）、审批的 title 和 preview、对话、命令输出。别人写的文字（标题、任务、回报）过 redact、只取一行、截到 120 字节。回报只给总台自己派出的会话。
+- **派活**：同一个 `orchestra_dispatch`、同一个 `dispatch.ts`，默认派前问你。工具多了可选的 `why`、`returns`，worker 也能用，请求卡上也显示。和 worker 只差一点：派前问你时调用立刻回 `Proposed`，卡自己留着，这样你在派单等着的时候还能问别的。要是照 worker 那样等，它一个回合最长挂 10 分钟，这期间问什么都排队。结果照样进对话流（`worker-sent`、`worker-refused`，后者现在带请求 id），只是不回给模型，你问了它才读。回合被停不撤派单，派单到期算拒绝。
+- **首页**：左栏顶部是总台磁贴（未开启时有开启和模型选择，今天的说明保留，后面多一句它是什么）。点它进总台对话，输入框写「问总台」。`ui/front.js`（只有首页加载）画四种东西：你的话、回答、派单、回报。出处由 orchestrad 看到的读取算（`desk-read` 记录读了什么，不记内容），不是模型自报；没读写「这句没读状态」。派单五件事写不全写未知，按钮就是「等你」里那张卡的 `req-go`、`req-no`。回报写在派单的「现在怎样」里（`AgentRequest.output` 的第一行，标 worker 自述），不用调模型。回合出错写在对话上方。右半边显示它派出的 worker。
+- **计数**：它不进塔（`towerSeats`），所以左边自有数、等你数、塔的 tally 都没有它。`GET /api/owned` 的 `owned` 里有它（`frontDesk: true`，派单要靠它显示来路），`frontDesk` 一节说能不能开、哪个在跑、实际工具。`grantsLine` 不数它。
+- **受污染**：资料面板写了风险，两档措辞不同。开「直接派出」时写明标题是不可信文本、提示词注入可能让它不经你点就派活。
+
+**冒烟**（`scripts/live-smoke.ts --harness claude --router`，测试 profile，走 magpie）：跑了 2 次，都是 21 项判定全过，退出码 0，`leftovers` 全 0。回归各 1 次，退出码都是 0：`--harness claude --dispatch-tool`（23 项）、`--harness codex --model zcode/GLM-5.3 --dispatch-tool`（23 项）、`--harness claude`（每个会话的派活工具都多了 `why`、`returns`）。工具实际清单：`mcp__orchestra__dispatch`、`mcp__orchestra__status`。读取：问状态读了 `overview`、`waiting`，问回报读了 `overview`、`session`。journal：`front-desk` 1 条，`auto` 1 条（总台），`route` manual 2、auto 1。页面在测试 profile 里走过一遍：开启、派单、点派出、回报、资料面板、1024 宽无横向滚动。
+
+**残余**
+
+- **回报不主动来**：worker 回合结束不唤醒总台，不自动续跑，没有循环（r4 D20 的精神）。派单上的回报行是页面读请求算的。回报要模型转述的话，你得问它。
+- **派单记录在内存里**：`requests` 不落盘，最多 16 条，重启或被挤出后派单写未知。总台重启后也不恢复，要再点开启。
+- **标题发给了模型**：总台读到的标题经 magpie 发给模型提供方。真实 profile 下标题是你别的会话的第一句话，过了 redact 也可能有私事。任务要的字段里包括标题，所以留着，开之前该知道。
+- **提示词注入**：系统提示说别人写的文字是数据，标题也截短了，但这靠模型听话，不是硬隔离。「派前问你」时靠你看派单；开「直接派出」后派出这一步没人看。派出的 worker 从派前问你开始，命令和改文件还要批，所以它能做的是起一个会话。`requests` 每分钟 6 条的速率也管它。
+- **总台派出的会话不算受污染**：它读过不可信标题，严格按 r4 §8.5 的来源追踪可以算。这里没算，任务只要求写明风险。
+- **`Proposed` 之后模型不知道结果**：它可能说「等你确认」，之后状态变了要读才知道。提示词写了别保证回头告诉你，实际说法看模型。
+- **第一条消息是固定的话**：开启花一次便宜调用，对话里那句「你的话」是按钮替你说的。
+- **磁贴锁着时写未知**：塔没有总台的信息，解锁才读得到。
+- **没有路由**：页面刷新后回到第一个 worker，要再点磁贴。
+- **没测的**：Codex 的 `codex/gpt-6.1-sol` 工具清单；模型改用 `opencode-go` 家的整条冒烟（只跑过探针）；窄屏手机宽度下的磁贴（只看了 1280、1024）。
+
+**分歧**（由用户的话取代，r4 没改，等用户改）
+
+| 文件 | 写的是 | 现在 |
+|---|---|---|
+| r4 §9.1（M1–M3 没有 Maestro，M4 才有；跑在 DSH 私有 home，模型 `deepseek-v4-flash`，由 §17 Q3 定） | M1–M3 期间你指定一个自有乐手当主代理 | 现在就有总台，跑在 Claude host 上，模型 `zcode/GLM-5.3-Flash`。理由见实测：DSH 没测过，Claude 能把工具收到两个并在启动时核对 |
+| r4 §8.9 (c) 和 §9.1（M1–M3 主代理规划，M4 起 Maestro 提议计划，Q-P8） | 规划者是主代理，M4 起可为 Maestro | 总台不规划，规划派给 worker（round2 简报第 1.2 节），系统提示写了。规划 worker 这个角色还没做 |
+| r4 §9.2 十步流水线（Maestro 走规则再走分类器，拿不准出 Route to?） | 路由是确定性规则优先 | 总台的派活由它自己的模型决定派给谁，不走这十步，靠「派前问你」兜底。派活台的规则和路由模型还在，只是派单卡片上的建议（`desk.suggest`）会跟着跑 |
+| r4 §9.1 baton bar、`@mention` | 你通过顶部的 baton bar（`/`）和它说话，`@mention` 绕过 | 磁贴加对话，没有 `/` 和 `@` |
+
 ### 派活权限（2026-11-05 接上）
 
 用户的话：「这里不应该限制派出，至少允许打开相关权限让bot自由派出」。规则见 `docs/design/mocks/2026-11-03-ensemble/round3/BRIEF.md` 第 1.1 节。

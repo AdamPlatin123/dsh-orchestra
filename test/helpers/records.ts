@@ -143,6 +143,7 @@ export function oneOfEach(): Rec[][] {
     [
       R.human(uuidOf('each-grant'), 'dispatch-grant', '4123456789abcdef0123'), R.result(uuidOf('each-grant'), 'dispatch-grant', '4123456789abcdef0123'),
       { kind: 'dispatch-grant', body: { actionId: uuidOf('each-grant'), ownedId: '4123456789abcdef0123', level: 'free' } },
+      { kind: 'front-desk', body: { actionId: uuidOf('each-grant'), ownedId: '4123456789abcdef0123', model: 'zcode/GLM-5.3-Flash' } },
     ],
     // A worker dispatches on that permission: an `auto` record, with no human record.
     [autoRec(uuidOf('each-auto'), uuidOf('each-grant'))],

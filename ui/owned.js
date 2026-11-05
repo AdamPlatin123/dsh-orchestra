@@ -19,16 +19,22 @@ export const SETTLE_MS = 750;
 export const HOLD_MS = 1000;
 
 /** A code's text; an unknown code takes the fallback (T1). */
-const tk = (p, v, fb, a = {}) => t(Object.hasOwn(TOWER_TEXT, `${p}.${v}`) ? `${p}.${v}` : fb, { s: v ?? '', ...a });
-const btn = (key, text, data, attr = {}) => ({ key, tpl: 'tpl-btn', text, data, attr });
+export const tk = (p, v, fb, a = {}) => t(Object.hasOwn(TOWER_TEXT, `${p}.${v}`) ? `${p}.${v}` : fb, { s: v ?? '', ...a });
+export const btn = (key, text, data, attr = {}) => ({ key, tpl: 'tpl-btn', text, data, attr });
 const lockBtn = () => btn('lock', t('op.lock'), { act: 'unlock' });
-const join = (parts, sep = 'sep.parts') => parts.filter(Boolean).join(t(sep));
-const off = { data: { hide: '1' } };
-const on = { data: { hide: '0' } };
-const entry = (list, id) => list?.owned.find((x) => x.ownedId === id);
-const busy = (g) => (g.busy ? 'true' : null);
+export const join = (parts, sep = 'sep.parts') => parts.filter(Boolean).join(t(sep));
+export const off = { data: { hide: '1' } };
+export const on = { data: { hide: '0' } };
+export const entry = (list, id) => list?.owned.find((x) => x.ownedId === id);
+export const busy = (g) => (g.busy ? 'true' : null);
 
 /** The list says this session takes no more messages: gone from it, ended, or unknown since a restart. Locked, nothing says so. */
+/** The front desk the list holds: the one that runs, else the last one; null with none. */
+export const deskOf = (list) => {
+  const all = list?.owned?.filter((o) => o.frontDesk === true) ?? [];
+  return all.find((o) => o.ownedId === list.frontDesk?.ownedId) ?? all.at(-1) ?? null;
+};
+
 export const closedTo = (list, id) => {
   const o = entry(list, id);
   return list != null && (o === undefined || o.state === 'unknown' || o.state === 'ended' || o.state === 'failed');
@@ -64,7 +70,7 @@ export function mergeFeed(had, page) {
   return { to: Math.max(had?.to ?? 0, page.to), clipped: had?.clipped === true || page.clipped, events: events.slice(-500) };
 }
 
-const MSG = /^msg-/;
+export const MSG = /^msg-/;
 
 /** A dispatch in words: its one name, or the first and how many. @param {readonly string[]} names */
 export function sentText(names) {
@@ -157,7 +163,7 @@ export function describeChat(feed, over = false) {
 
 /** What a screen reader hears of the events after `after`: not your own words, not a live one, at most the last three. */
 export function chatNews(feed, after) {
-  const fresh = feed.events.filter((e) => e.seq > after && !e.live && e.kind !== 'you' && e.kind !== 'answer' && !(e.kind === 'note' && (MSG.test(e.state ?? '') || e.state === 'tokens')));
+  const fresh = feed.events.filter((e) => e.seq > after && !e.live && e.kind !== 'you' && e.kind !== 'answer' && !(e.kind === 'note' && (MSG.test(e.state ?? '') || e.state === 'tokens' || e.state === 'desk-read')));
   const lines = describeChat({ clipped: false, events: fresh }).kids.map((d) => (d.tpl === 'tpl-tool' ? d.slots.sum.text : join([d.slots.who.text, d.slots.tx.text])));
   return lines.slice(-3).map((l) => (l.length > 300 ? `${l.slice(0, 300)}…` : l)).join(t('sep.notes'));
 }
@@ -316,10 +322,10 @@ export function requestModel(r) {
 /** The owned session a request came from, or null for a DSH session's. */
 const workerOf = (r) => (typeof r.requester === 'string' && r.requester.startsWith('owned:') ? r.requester.slice(6) : null);
 /** That session's title as the list has it, cut as the tower cuts one (it is the whole first message), or its id. */
-const workerName = (list, id) => { const s = entry(list, id)?.title; return s !== undefined && s !== '' ? cutTo(s, WORKER_CHARS).text : id; };
+export const workerName = (list, id) => { const s = entry(list, id)?.title; return s !== undefined && s !== '' ? cutTo(s, WORKER_CHARS).text : id; };
 
 /** Why a request went no further, in the talk's own words where it has them; a code it has none for stays a code (T1). */
-const reqWhy = (why) => (why == null ? t('dash') : tk('life', why.replace(/^session-/, ''), 'chat.life'));
+export const reqWhy = (why) => (why == null ? t('dash') : tk('life', why.replace(/^session-/, ''), 'chat.life'));
 
 /** Who asked, as the card says it: the requester's own id, or 未知 when it named none. */
 const reqWho = (r) => (typeof r.requester === 'string' && r.requester.startsWith('dsh:') ? r.requester.slice(4) : t('req.whoNone'));
@@ -336,7 +342,7 @@ const reqWhere = (r) => (workerOf(r) !== null ? join([typeof r.runIn === 'string
 export const cwdText = (o) => (o?.cwd === undefined ? '' : o.cwd === null ? t('own.cwdUnknown') : t(o.cwd.kind === 'project-root' ? 'own.cwdRoot' : 'own.cwdWork', { d: o.cwd.path }));
 
 /** What a request card names it by: its label, else its text's first line, at most 120 characters. */
-const reqWhat = (r) => {
+export const reqWhat = (r) => {
   const s = (r.label ?? r.text.split('\n', 1)[0] ?? '').trim();
   return s.length > 120 ? `${s.slice(0, 120)}…` : s;
 };
@@ -356,10 +362,6 @@ export function describeRequestPins(list, g) {
     const what = reqWhat(r);
     const m = requestModel(r);
     const worker = workerOf(r);
-    const acts = !g.unlocked ? [lockBtn()] : [
-      btn('no', t('req.no'), { act: 'req-no', req: r.requestId }, { 'aria-disabled': busy(g), 'aria-label': t('req.noLabel', { what }) }),
-      btn('go', t('req.go'), { act: 'req-go', req: r.requestId, model: m.model, settle: g.settle }, { 'aria-disabled': g.settle !== '' ? 'true' : busy(g), 'aria-label': t('req.goLabel', { what }) }),
-    ];
     return {
       key: `req:${r.requestId}`, tpl: 'tpl-req', data: { req: r.requestId, harness: r.harness, due: String(r.expiresAt) },
       slots: {
@@ -367,11 +369,19 @@ export function describeRequestPins(list, g) {
         what: { text: what },
         clock: { text: left > 0 ? t('req.left', { t: fmtLeft(left) }) : t('req.overdue') },
         pv: { text: r.text },
-        meta: { text: join([worker === null ? t('req.who', { who: reqWho(r) }) : t('req.whoWorker', { who: workerName(list, worker) }), r.askWhy != null && tk('askwhy', r.askWhy, 'askwhy.other'), reqWhere(r), t('req.model', { m: m.model, src: t(m.src) })], 'sep.notes') },
-        acts: { kids: acts },
+        meta: { text: join([worker === null ? t('req.who', { who: reqWho(r) }) : t('req.whoWorker', { who: workerName(list, worker) }), r.askWhy != null && tk('askwhy', r.askWhy, 'askwhy.other'), r.reason != null && t('req.reason', { t: r.reason }), r.returns != null && t('req.returns', { t: r.returns }), reqWhere(r), t('req.model', { m: m.model, src: t(m.src) })], 'sep.notes') },
+        acts: { kids: reqActs(r, m, what, g) },
       },
     };
   });
+}
+
+/** What the order of a request may do while it waits: 拒绝, 派出 (void for SETTLE_MS after the bar moved, r4 §10.9). */
+export function reqActs(r, m, what, g) {
+  return !g.unlocked ? [lockBtn()] : [
+    btn('no', t('req.no'), { act: 'req-no', req: r.requestId }, { 'aria-disabled': busy(g), 'aria-label': t('req.noLabel', { what }) }),
+    btn('go', t('req.go'), { act: 'req-go', req: r.requestId, model: m.model, settle: g.settle }, { 'aria-disabled': g.settle !== '' ? 'true' : busy(g), 'aria-label': t('req.goLabel', { what }) }),
+  ];
 }
 
 /**

@@ -67,6 +67,8 @@ export type OwnedRecord = {
   readonly members?: readonly MemberRecord[];
   /** Sub-agents past that bound: named nowhere, counted here. */
   readonly membersOver?: number;
+  /** It was the front desk (src/route/front-desk.ts): no worker, whatever else this file says. Absent on every other session. */
+  readonly frontDesk?: true;
 };
 
 const KEYS = ['v', 'ownedId', 'harness', 'model', 'title', 'createdAt', 'state', 'endReason'] as const;
@@ -101,7 +103,9 @@ export function parseOwnedRecord(text: string): OwnedRecord | null {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
   const withMembers = Object.hasOwn(o, 'members') && Object.hasOwn(o, 'membersOver');
-  if (Object.keys(o).length !== KEYS.length + (withMembers ? 2 : 0) || !KEYS.every((k) => Object.hasOwn(o, k))) return null;
+  const desk = Object.hasOwn(o, 'frontDesk');
+  if (desk && o.frontDesk !== true) return null;
+  if (Object.keys(o).length !== KEYS.length + (withMembers ? 2 : 0) + (desk ? 1 : 0) || !KEYS.every((k) => Object.hasOwn(o, k))) return null;
   if (o.v !== 1 || typeof o.ownedId !== 'string' || !OWNED_ID_RE.test(o.ownedId) || (o.harness !== 'codex' && o.harness !== 'claude')) return null;
   if (typeof o.model !== 'string' || !isOwnedModel(o.model)) return null;
   if (typeof o.title !== 'string' || utf8Length(o.title) > OWNED_BOUNDS.titleBytes) return null;
@@ -118,6 +122,7 @@ export function parseOwnedRecord(text: string): OwnedRecord | null {
     v: 1, ownedId: o.ownedId, harness: o.harness, model: o.model, title: o.title, createdAt: o.createdAt as number,
     state: o.state as OwnedRecordState, endReason: o.endReason as string | null,
     ...(members === null ? {} : { members: Object.freeze(members), membersOver: o.membersOver as number }),
+    ...(desk ? { frontDesk: true as const } : {}),
   });
 }
 

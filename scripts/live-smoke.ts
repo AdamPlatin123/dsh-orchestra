@@ -1,7 +1,17 @@
 // The live end-to-end run of an owned session (orchestra app step 4): orchestrad in the test profile with
 // --owned, driven over HTTP exactly as the page drives it, against the real codex.exe or the Claude host
 // and the local magpie gateway (http://127.0.0.1:3425, no key). Not part of the test run.
-//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--outside | --brake [--via-subagent] | --daemon-stop | --daemon-kill | --project-root | --subagent [--pair] | --subagent-stop [--loose] | --root-stop | --dispatch-tool] [--keep]
+//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--outside | --brake [--via-subagent] | --daemon-stop | --daemon-kill | --project-root | --subagent [--pair] | --subagent-stop [--loose] | --root-stop | --dispatch-tool | --router] [--keep]
+//
+// --router (orchestra app plan 总台; --harness claude): the front desk, as the page drives it. One worker runs, then the desk is
+// opened (owned-new with frontDesk), and a second open is desk-open. The tools system/init listed are printed and must be its two
+// and no more; the desk is in no count of workers and no node of the tower. It is asked how things stand: the feed must hold a
+// read, the answer must come, and the answer's sources are those reads. It is asked to dispatch: an order waits at 派前问你 with
+// its why and what it hands back, the desk's turn ends meanwhile, nothing started; the run stands in for the person and presses
+// 派出, the talk says so, and the worker's report is on the order's request once its turn ended. Asked what came of it, the desk
+// reads again. At 直接派出 the next dispatch starts a session with no card. It passes only if each of those held, the desk ran no
+// tool of any other name and raised no approval, the journal has one `front-desk` record, one `auto` by the desk, and no route
+// line for the desk itself, and nothing of a Job is left. It prints none of the model's words: only whether they came.
 //
 // --dispatch-tool (orchestra app plan 派活权限): one worker of this harness, told to call the dispatch tool, through both
 // levels and what no level opens. 派前问你: a card with the worker as its requester and nothing started; the run stands in for
@@ -167,7 +177,7 @@ const STOP_SETTLE_MS = 5_500;
 /** What stays in a session's Job with no command running (measured after a clean, 2026-11-04): anything else is a command's. */
 const JOB_RESIDENTS: ReadonlySet<string> = new Set(['codex.exe', 'codex-code-mode-host.exe', 'conhost.exe']);
 
-function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean; outside: boolean; brake: boolean; viaSubagent: boolean; daemonStop: boolean; daemonKill: boolean; projectRoot: boolean; subagent: boolean; pair: boolean; subagentStop: boolean; loose: boolean; rootStop: boolean; dispatchTool: boolean } {
+function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean; outside: boolean; brake: boolean; viaSubagent: boolean; daemonStop: boolean; daemonKill: boolean; projectRoot: boolean; subagent: boolean; pair: boolean; subagentStop: boolean; loose: boolean; rootStop: boolean; dispatchTool: boolean; router: boolean } {
   const a = process.argv.slice(2);
   let harness: string | null = null;
   let model: string | null = null;
@@ -184,6 +194,7 @@ function args(): { harness: 'codex' | 'claude'; model: string | null; keep: bool
   let loose = false;
   let rootStop = false;
   let dispatchTool = false;
+  let router = false;
   for (let i = 0; i < a.length; i++) {
     if (a[i] === '--harness') harness = a[++i] ?? null;
     else if (a[i] === '--model') model = a[++i] ?? null;
@@ -200,15 +211,17 @@ function args(): { harness: 'codex' | 'claude'; model: string | null; keep: bool
     else if (a[i] === '--loose') loose = true;
     else if (a[i] === '--root-stop') rootStop = true;
     else if (a[i] === '--dispatch-tool') dispatchTool = true;
+    else if (a[i] === '--router') router = true;
     else throw new Error(`live-smoke: unknown argument ${a[i]}`);
   }
   if (harness !== 'codex' && harness !== 'claude') throw new Error('live-smoke: --harness codex|claude');
-  if ([outside, brake, daemonStop, daemonKill, projectRoot, subagent, subagentStop, rootStop, dispatchTool].filter(Boolean).length > 1) throw new Error('live-smoke: one of --outside, --brake, --daemon-stop, --daemon-kill, --project-root, --subagent, --subagent-stop, --root-stop, --dispatch-tool');
+  if ([outside, brake, daemonStop, daemonKill, projectRoot, subagent, subagentStop, rootStop, dispatchTool, router].filter(Boolean).length > 1) throw new Error('live-smoke: one of --outside, --brake, --daemon-stop, --daemon-kill, --project-root, --subagent, --subagent-stop, --root-stop, --dispatch-tool, --router');
+  if (router && harness !== 'claude') throw new Error('live-smoke: --router is for --harness claude');
   if (rootStop && harness !== 'codex') throw new Error('live-smoke: --root-stop is for --harness codex');
   if (pair && !subagent) throw new Error('live-smoke: --pair goes with --subagent');
   if (viaSubagent && (!brake || harness !== 'claude')) throw new Error('live-smoke: --via-subagent goes with --brake and --harness claude');
   if (loose && (!subagentStop || harness !== 'claude')) throw new Error('live-smoke: --loose goes with --subagent-stop and --harness claude');
-  return { harness, model, keep, outside, brake, viaSubagent, daemonStop, daemonKill, projectRoot, subagent, pair, subagentStop, loose, rootStop, dispatchTool };
+  return { harness, model, keep, outside, brake, viaSubagent, daemonStop, daemonKill, projectRoot, subagent, pair, subagentStop, loose, rootStop, dispatchTool, router };
 }
 
 function freePort(): Promise<number> {
@@ -524,9 +537,192 @@ async function dispatchRun(harness: 'codex' | 'claude', model: string | null, ke
   return code;
 }
 
+const DESK_TOOLS = ['mcp__orchestra__dispatch', 'mcp__orchestra__status'];
+const DESK_OPEN = '开启总台。用一句话说你能做什么，不用读状态。';
+const DESK_ASK = '现在有几个 worker，有什么在等我？读状态回答，写出处。';
+const DESK_SEND = `派一个 claude worker，模型用 ${DISPATCH_MODEL}。它的任务：回复一个词 pong，什么都不要运行，把这个词交回来。理由：冒烟。`;
+const DESK_AFTER = '刚才派出去的那个 worker 现在怎样了，回报了什么？读状态回答。';
+
+/** --router: see the head of this file. */
+async function routerRun(model: string | null, keep: boolean): Promise<number> {
+  const testDir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'orchestra-test-smoke-'));
+  fs.mkdirSync(path.join(testDir, 'roots'));
+  const d = await startDaemon(testDir, []);
+  const report: Record<string, unknown> = { harness: 'claude', mode: 'router' };
+  const checks: Record<string, boolean> = {};
+  const check = (name: string, ok: boolean) => {
+    checks[name] = ok;
+  };
+  const sessions: string[] = [];
+  let code = 1;
+  let api: Api | null = null;
+  const until = async <T>(what: string, ms: number, read: () => Promise<T | null | undefined>): Promise<T> => {
+    for (const t0 = Date.now(); Date.now() - t0 < ms; await sleep(700)) {
+      const v = await read();
+      if (v !== null && v !== undefined) return v;
+    }
+    throw new Error(`live-smoke: no ${what} within ${ms / 1000} s`);
+  };
+  try {
+    const a = await connect(d);
+    api = a;
+    report.startup = a.owned;
+    type Ev = { seq: number; kind: string; ref: string | null; state: string | null; text: string | null };
+    const list = async () => (await a.get('/api/owned')).json;
+    const events = async (id: string): Promise<Ev[]> => (await a.get(`/api/owned/${id}/feed`)).json.events;
+    const entry = async (id: string) => (await list()).owned.find((o: { ownedId: string }) => o.ownedId === id);
+    const nodes = async () => ((await a.get('/api/tower')).json?.projects ?? []).flatMap((p: { nodes: unknown[] }) => p.nodes) as { id: string; sent: { by: string; via: string } | null }[];
+    const last = async (id: string) => (await events(id)).at(-1)?.seq ?? 0;
+    const pending = async (from: string) => (await list()).requests.find((r: { requester: string; state: string }) => r.state === 'pending' && r.requester === from) ?? null;
+    const idle = (id: string) => until('idle session', 150_000, async () => ((await entry(id))?.state === 'idle' ? true : null));
+    /** The answer of the turn after `mark`, once the session stands idle again: whether words came, never the words. */
+    const answered = async (id: string, mark: number) => {
+      const es = await until('an answer', 150_000, async () => {
+        const all = (await events(id)).filter((e) => e.seq > mark);
+        return all.some((e) => e.kind === 'lifecycle' && /^turn-/.test(e.state ?? '') && e.state !== 'turn-started') ? all : null;
+      });
+      return { text: es.filter((e) => e.kind === 'text').map((e) => e.text ?? '').join(''), reads: es.filter((e) => e.kind === 'note' && e.state === 'desk-read').map((e) => e.text), turn: es.findLast((e) => e.kind === 'lifecycle')?.state ?? null };
+    };
+    const send = async (id: string, text: string) => {
+      const r = await a.post(`/api/owned/${id}/message`, { text });
+      if (r.status !== 200) throw new Error(`live-smoke: message answered ${r.status}`);
+    };
+
+    // -- a worker runs, and the desk opens beside it ---------------------------------------------------
+    const before = (await list()).frontDesk;
+    check('before: it could open, and none runs', before?.on === true && before?.ownedId === null);
+    const w = await a.post('/api/owned/new', { text: 'Reply with the single word ready. Do not run anything.', harness: 'claude', model: DISPATCH_MODEL });
+    if (w.status !== 200) throw new Error(`live-smoke: new answered ${w.status} ${w.body}`);
+    const W = String(w.json.ownedId);
+    sessions.push(W);
+    const open = await a.post('/api/owned/new', { text: DESK_OPEN, harness: 'claude', frontDesk: true, ...(model === null ? {} : { model }) });
+    if (open.status !== 200) throw new Error(`live-smoke: opening answered ${open.status} ${open.body}`);
+    const D = String(open.json.ownedId);
+    sessions.push(D);
+    const again = await a.post('/api/owned/new', { text: DESK_OPEN, harness: 'claude', frontDesk: true });
+    check('a second desk is desk-open', again.status === 409 && again.json?.error === 'desk-open');
+    await idle(D);
+    await idle(W);
+    const opened = await list();
+    report.model = opened.frontDesk.model;
+    report.tools = opened.frontDesk.tools;
+    check('tools: init listed its two and no more', JSON.stringify([...(opened.frontDesk.tools ?? [])].sort()) === JSON.stringify(DESK_TOOLS));
+    check('the list says it runs, and it is marked', opened.frontDesk.ownedId === D && (await entry(D))?.frontDesk === true);
+    check('it takes no place: one worker counts', opened.limits.active === 1);
+    check('it has no node on the tower', !(await nodes()).some((n) => n.id === `n:${D}`));
+    check('it starts at 派前问你', (await entry(D))?.dispatch?.level === 'ask');
+
+    // -- it answers from what it read -------------------------------------------------------------------
+    let mark = await last(D);
+    await send(D, DESK_ASK);
+    const asked = await answered(D, mark);
+    await idle(D);
+    report.reads = asked.reads;
+    report.answerSaysSource = /出处/.test(asked.text);
+    check('asked: it read, and answered', asked.reads.length > 0 && asked.text.trim() !== '' && asked.turn === 'turn-ended');
+    check('asked: the answer says where it came from', /出处/.test(asked.text));
+
+    // -- it dispatches at 派前问你 ------------------------------------------------------------------------
+    mark = await last(D);
+    await send(D, DESK_SEND);
+    const order = await until('an order', 150_000, () => pending(`owned:${D}`));
+    await answered(D, mark);
+    await idle(D);
+    const feed = await events(D);
+    report.order = { harness: order.harness, model: order.model, why: order.reason !== null, returns: order.returns !== null, state: order.state };
+    check('order: it waits for you, and nothing started', order.auto === false && order.ownedId === null && (await list()).limits.active === 1);
+    check('order: it says why, and what comes back', typeof order.reason === 'string' && typeof order.returns === 'string');
+    check('order: the talk has it, and the desk is free to talk', feed.some((e) => e.state === 'worker-asked' && e.ref === order.requestId) && (await entry(D))?.state === 'idle' && (await pending(`owned:${D}`)) !== null);
+    const go = await a.post('/api/owned/new', { text: order.text, harness: order.harness, model: DISPATCH_MODEL, requestId: order.requestId });
+    if (go.status !== 200) throw new Error(`live-smoke: 派出 answered ${go.status} ${go.body}`);
+    const C = String(go.json.ownedId);
+    sessions.push(C);
+    const sent = await until('its receipt', 30_000, async () => (await events(D)).find((e) => e.kind === 'note' && e.state === 'worker-sent') ?? null);
+    const nodeC = (await nodes()).find((n) => n.id === `n:${C}`);
+    check('派出: the talk says so, and the worker says who sent it', sent.ref === `n:${C}` && nodeC?.sent?.by === `n:${D}` && nodeC?.sent?.via === 'person');
+    const done = await until('its report', 150_000, async () => (await list()).requests.find((r: { ownedId: string | null; state: string }) => r.ownedId === C && r.state === 'done') ?? null);
+    report.reportCame = done.report !== null;
+    check('report: one line on the order, no turn of the desk', done.report !== null && (await entry(D))?.state === 'idle');
+
+    // -- asked, it reads what came of it ------------------------------------------------------------------
+    mark = await last(D);
+    await send(D, DESK_AFTER);
+    const after = await answered(D, mark);
+    await idle(D);
+    report.readsAfter = after.reads;
+    check('after: it read again, and answered', after.reads.length > 0 && after.text.trim() !== '');
+
+    // -- 直接派出 ----------------------------------------------------------------------------------------
+    const g = await a.post(`/api/owned/${D}/dispatch-grant`, { level: 'free' });
+    if (g.status !== 200) throw new Error(`live-smoke: grant answered ${g.status} ${g.body}`);
+    mark = await last(D);
+    await send(D, DESK_SEND);
+    let cardSeen = false;
+    const free = await until('a dispatch at 直接派出', 150_000, async () => {
+      if ((await pending(`owned:${D}`)) !== null) cardSeen = true;
+      return (await events(D)).find((e) => e.seq > mark && e.kind === 'note' && e.state === 'worker-sent-grant') ?? null;
+    });
+    const F = String(free.ref).slice(2);
+    sessions.push(F);
+    await answered(D, mark);
+    await idle(D);
+    check('free: no card, and the worker went out on the permission', !cardSeen && (await nodes()).find((n) => n.id === `n:${F}`)?.sent?.via === 'grant');
+    check('free: what it sent starts at 派前问你', (await entry(F))?.dispatch?.level === 'ask');
+
+    // -- what it never did --------------------------------------------------------------------------------
+    const all = await events(D);
+    report.deskFeedKinds = Object.fromEntries(Object.entries(Object.groupBy(all, (e) => e.kind)).map(([k, v]) => [k, v!.length]));
+    check('it ran no tool and asked no approval', !all.some((e) => ['tool', 'tool-result', 'ask', 'auto-denied'].includes(e.kind)) && !(await list()).approvals.some((x: { ownedId: string }) => x.ownedId === D));
+
+    for (const id of sessions) {
+      const e = await entry(id);
+      if (e !== undefined && !['ended', 'failed'].includes(e.state)) await a.post(`/api/owned/${id}/end`, {});
+    }
+    await until('every end', 30_000, async () => ((await list()).limits.active === 0 && (await list()).frontDesk.ownedId === null ? true : null));
+    await sleep(STOP_SETTLE_MS);
+
+    report.stopped = await stopDaemon(d.child, d.exited);
+    api = null;
+    const lines = fs.readFileSync(path.join(testDir, 'orchestra', 'journal.jsonl'), 'utf8').split('\n').filter((l) => l !== '').map((l) => JSON.parse(l) as { kind: string; body: Record<string, any> });
+    const of = (k: string) => lines.filter((l) => l.kind === k).map((l) => l.body);
+    report.journal = { frontDesk: of('front-desk').length, auto: of('auto').length, routeManual: of('route').filter((r) => r.mode === 'manual').length, routeAuto: of('route').filter((r) => r.mode === 'auto').length, grants: of('dispatch-grant').map((b) => b.level) };
+    check('journal: a person opened it', of('front-desk').length === 1 && of('front-desk')[0]!.ownedId === D && of('human').some((h) => h.verb === 'owned-new' && h.targetId === D));
+    check('journal: its dispatch at 直接派出 is an auto record of the desk', of('auto').length === 1 && of('auto')[0]!.by === D && of('auto')[0]!.ownedId === F);
+    check('journal: opening it dispatched nothing', !of('route').some((r) => r.ownedId === D));
+    code = Object.values(checks).every(Boolean) ? 0 : 1;
+  } catch (e) {
+    report.error = e instanceof Error ? e.message : String(e);
+    report.orchestradSaid = d.lines.filter((l) => /owned|refus|failed|error/i.test(l) && !/code \d{8}/.test(l)).map((l) => l.replace(testDir, '<testDir>'));
+  } finally {
+    report.checks = checks;
+    if (api !== null) {
+      for (const id of sessions) await (api as Api).post(`/api/owned/${id}/end`, {}).catch(() => {});
+      await sleep(STOP_SETTLE_MS);
+    }
+    report.stopped ??= await stopDaemon(d.child, d.exited);
+    report.leftovers = await leftovers(testDir);
+    const lo = report.leftovers as { leftover: number; unchecked: number };
+    if (lo.leftover + lo.unchecked !== 0) code = 1;
+    if (!keep) {
+      for (let i = 0; i < 10; i++) {
+        try {
+          fs.rmSync(testDir, { recursive: true, force: true });
+          break;
+        } catch {
+          await sleep(1000);
+        }
+      }
+    }
+    report.testDirKept = keep || fs.existsSync(testDir);
+  }
+  console.log(JSON.stringify(report, null, 2));
+  return code;
+}
+
 async function main(): Promise<number> {
-  const { harness, model, keep, outside, brake, viaSubagent, daemonStop, daemonKill, projectRoot, subagent, pair, subagentStop, loose, rootStop, dispatchTool } = args();
+  const { harness, model, keep, outside, brake, viaSubagent, daemonStop, daemonKill, projectRoot, subagent, pair, subagentStop, loose, rootStop, dispatchTool, router } = args();
   if (dispatchTool) return dispatchRun(harness, model, keep);
+  if (router) return routerRun(model, keep);
   const testDir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'orchestra-test-smoke-'));
   fs.mkdirSync(path.join(testDir, 'roots'));
   // --project-root: a project root inside the test dir (the test profile takes roots only there).

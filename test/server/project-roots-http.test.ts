@@ -43,14 +43,14 @@ async function fixture(t: TestContext, projectRoots: string[] | undefined): Prom
       made.push(req);
       return { ok: true as const, ownedId: (n++).toString(16).padStart(20, 'b'), session: { model: req.model ?? 'codex/gpt-6.1-sol' } };
     },
-    get: () => null, list: () => [], meta: () => null, maxActive: 3, approvals: null,
+    get: () => null, list: () => [], meta: () => null, maxActive: 3, approvals: null, frontDesk: () => null,
   };
   const claude = {
     create(req: Made) {
       made.push({ ...req, harness: 'claude' });
       return { ok: true as const, ownedId: (n++).toString(16).padStart(20, 'c'), session: { model: req.model ?? 'zcode/glm-5.1' } };
     },
-    get: () => null, list: () => [], meta: () => null, maxActive: 3, approvals: null,
+    get: () => null, list: () => [], meta: () => null, maxActive: 3, approvals: null, frontDesk: () => null,
   };
   const requests = makeRequests({
     after: oneShot(sf.clock, 'project-roots-http'), nowMono: () => clock.nowMono(), nowWall: () => clock.nowWall(), redact: (text) => ({ text, count: 0 }),

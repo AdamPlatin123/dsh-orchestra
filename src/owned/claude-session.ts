@@ -2,6 +2,7 @@ import * as path from 'node:path';
 import type { After, HostPipe } from '../os/owned-proc.ts';
 import type { ClockHub, Fired } from '../runtime/clock.ts';
 import type { DispatchPort } from '../route/dispatch.ts';
+import type { StatusPort } from '../route/front-desk.ts';
 import type { Answer, AnswerCause, ApprovalKind, ApprovalOrigin, ApprovalRisk, Approvals } from './approvals.ts';
 import type { PathJudge } from './codex-session.ts';
 import type { FeedInput, FeedTokens } from './feed.ts';
@@ -76,6 +77,10 @@ const win = path.win32;
 // server when the start frame says dispatch, and a call of the root comes here as a dispatch frame; the answer goes back as
 // a dispatch-reply frame. A sub-agent's call is refused by the host (it holds the tool, measured). A stop takes back a card
 // still waiting; the CLI cancels the call itself (dispatch-gone) and the turn ends.
+//
+// The front desk (src/route/front-desk.ts): a start frame with its system prompt makes the host hold it to its two tools, and
+// its reads come here as status frames, answered like a dispatch at once. The feed keeps which read it was (a desk-read note, for
+// the sources under an answer), never what it said. It has no sub-agents, whatever the session's Job.
 //
 // A dispatch: the root's Agent calls of one model reply (one message.id, which the host passes on as reply) are a batch;
 // a sub-agent's own spawn (depth 2) has no row and no batch.
@@ -175,6 +180,8 @@ export type ClaudeSessionOptions = {
   origin?: ApprovalOrigin | null;
   /** Offers the session the dispatch tool, and takes its calls; absent: no such tool, the start frame as before. */
   dispatch?: DispatchPort;
+  /** Makes it the front desk: its system prompt, and the read its status tool calls. Needs `dispatch`. */
+  frontDesk?: { system: string; port: StatusPort };
 };
 
 export type ClaudeSendResult = { ok: true; via: 'turn/start' | 'queued' } | { ok: false; reason: 'ended' | 'queue-full' };
@@ -193,6 +200,8 @@ export type ClaudeSession = {
   readonly tokens: FeedTokens | null;
   /** The cost the last result reported (USD), or null before any. */
   readonly costUsd: number | null;
+  /** The tools system/init listed, as it passed the host's check; null before init. */
+  readonly tools: readonly string[] | null;
   readonly queued: number;
   /** Its sub-agents, in the order they were first heard of. */
   readonly members: readonly SessionMember[];
@@ -289,6 +298,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
   let exitFrame: { reason: string; detail: string | null } | null = null;
   let sessionId: string | null = null;
   let costUsd: number | null = null;
+  let tools: readonly string[] | null = null;
   /** A user frame went to the host and its result has not come. */
   let turn = false;
   /** A turn nobody's message opened runs (see the header). */
@@ -571,6 +581,21 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     });
   };
 
+  /** A front desk's read: answered at once, its text never in the feed. */
+  const onStatus = (f: Obj) => {
+    const id = str(f.callId);
+    if (id === null || !/^[0-9a-f]{32}$/.test(id)) return;
+    const desk = opts.frontDesk;
+    if (desk === undefined || terminal()) {
+      write({ t: 'dispatch-reply', callId: id, ok: false, text: 'This tool is not available here.' });
+      return;
+    }
+    woke();
+    const r = desk.port.status(f.input);
+    feed.push({ kind: 'note', ref: r.ref, text: r.source, state: 'desk-read' });
+    write({ t: 'dispatch-reply', callId: id, ok: r.ok, text: r.text });
+  };
+
   /** The root speaks with no message of ours in flight: the CLI woke it. */
   const woke = () => {
     if (turn || wake || state !== 'idle') return;
@@ -786,6 +811,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
         const fresh = sessionId === null;
         sessionId = sid;
         if (!fresh) return;
+        tools = Array.isArray(f.tools) ? Object.freeze(f.tools.filter((x): x is string => typeof x === 'string')) : null;
         cancelInit();
         if (state === 'starting') state = turn ? 'running' : 'idle';
         feed.push({ kind: 'lifecycle', ref: sid, text: model, state: 'started' });
@@ -843,6 +869,9 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
       }
       case 'dispatch':
         onDispatch(f);
+        return;
+      case 'status':
+        onStatus(f);
         return;
       case 'dispatch-gone': {
         const id = str(f.callId);
@@ -952,7 +981,8 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
   // --- start -----------------------------------------------------------------------------------------
   write({
     t: 'start', ownedId, model, cwd, configDir: opts.configDir, tainted: opts.tainted === true, claudeExe: opts.claudeExe,
-    protectedRoots: [...opts.protectedRoots], askTimeoutMs: opts.askTimeoutMs, subagents: job !== null, ...(opts.dispatch === undefined ? {} : { dispatch: true }),
+    protectedRoots: [...opts.protectedRoots], askTimeoutMs: opts.askTimeoutMs, subagents: job !== null && opts.frontDesk === undefined, ...(opts.dispatch === undefined ? {} : { dispatch: true }),
+    ...(opts.frontDesk === undefined ? {} : { frontDesk: opts.frontDesk.system }),
   });
   if (first !== null) {
     const s = shownFeed(first.text, 'head');
@@ -999,6 +1029,9 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     tokens: null,
     get costUsd() {
       return costUsd;
+    },
+    get tools() {
+      return tools;
     },
     get queued() {
       return queue.length;

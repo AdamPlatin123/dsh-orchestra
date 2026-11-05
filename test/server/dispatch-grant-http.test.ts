@@ -32,7 +32,7 @@ const T = 'b'.repeat(20);
 const uuid = () => crypto.randomUUID();
 type Fx = { server: PeekServer; host: string; origin: string; store: Store; requests: Requests; dispatch: Dispatcher; made: Record<string, unknown>[]; printed: string[]; over: Set<string> };
 
-async function fixture(t: TestContext): Promise<Fx> {
+async function fixture(t: TestContext, withClaude = false): Promise<Fx> {
   const sf = await storeFixture(t);
   const store = mustOpen(sf).store;
   const clock = sf.clock.port(null);
@@ -67,7 +67,19 @@ async function fixture(t: TestContext): Promise<Fx> {
     requests, desk, log, presence: () => presence.state(), session: (id) => { const s = held.get(id); return s === undefined ? null : { title: titleOf(id), tainted: s.tainted, over: over.has(id) }; },
     on: () => true, full: () => false, start: () => ({ ok: false, reason: 'spawn-refused', detail: 'not here' }), end: () => {}, judgeCwd: () => null, cwdRecord: () => [], commit: (r) => void store.commit(r), nowWall: () => clock.nowWall(),
   });
-  const deps = { codex: codex as never, codexOff: 'on', claude: null, desk, log, requests, dispatch };
+  // A stand-in of ClaudeOwned for what the route reads of a desk.
+  let open: string | null = null;
+  const claude = {
+    create(req: Record<string, unknown>) {
+      made.push(req);
+      if (open !== null) return { ok: false as const, reason: 'desk-open' as const, detail: 'one runs' };
+      open = 'f'.repeat(20);
+      held.set(open, session(open, false));
+      return { ok: true as const, ownedId: open, session: { model: req.model ?? 'zcode/GLM-5.3-Flash' } };
+    },
+    deskOn: true, frontDesk: () => (open === null ? null : { ownedId: open, model: 'zcode/GLM-5.3-Flash', tools: null }), get: () => null, list: () => [], meta: () => null, maxActive: 3, approvals: null,
+  };
+  const deps = { codex: codex as never, codexOff: 'on', claude: withClaude ? claude as never : null, desk, log, requests, dispatch };
   const server = await startPeekServer({
     port: 0, gate: new ReadGate({ roots: [], io: realIo, testDirs: [sf.dir] }), roots: [], redact: (s) => s, clock, log, pairingCode: CODE, profile: 'test',
     owned: { journal: humanJournal(store), printUnlockCode: (c) => printed.push(c), enabled: ownedEnabled(deps), handlers: registerOwnedHandlers(deps), presence },
@@ -106,7 +118,7 @@ async function unlocked(fx: Fx): Promise<Record<string, string>> {
   return { ...base, 'content-type': 'application/json', 'x-orchestra-csrf': String(u.json.csrf) };
 }
 
-const rows = (fx: Fx) => fx.store.db.all("SELECT kind, body FROM event WHERE kind IN ('human', 'human.result', 'dispatch-grant', 'route', 'agent-request', 'auto') ORDER BY jseq").map((r) => ({ kind: String(r.kind), body: JSON.parse(String(r.body)) }));
+const rows = (fx: Fx) => fx.store.db.all("SELECT kind, body FROM event WHERE kind IN ('human', 'human.result', 'dispatch-grant', 'route', 'agent-request', 'auto', 'front-desk') ORDER BY jseq").map((r) => ({ kind: String(r.kind), body: JSON.parse(String(r.body)) }));
 const grant = (fx: Fx, h: Record<string, string>, id: string, level: string, actionId = uuid()) => request(fx, 'POST', `/api/owned/${id}/dispatch-grant`, h, JSON.stringify({ actionId, level }));
 const say = (_n: DispatchNote) => {};
 
@@ -125,6 +137,35 @@ test('the permission only on a paired, unlocked page: no cookie, no token, a wro
   assert.equal((await request(fx, 'POST', url, { ...h, 'x-orchestra-csrf': 'A'.repeat(43) }, body())).status, 403);
   assert.equal(fx.dispatch.view(W).level, 'ask');
   assert.deepEqual(rows(fx), []);
+});
+
+test('you open the front desk through the dispatch route: a person\'s records and its own, no RouteDecision; a second is desk-open; every way of mixing it in is refused', async (t) => {
+  const fx = await fixture(t, true);
+  const h = await unlocked(fx);
+  const open = (over: Record<string, unknown> = {}) => request(fx, 'POST', '/api/owned/new', h, JSON.stringify({ actionId: uuid(), text: 'open', harness: 'claude', frontDesk: true, ...over }));
+  assert.equal((await open({ harness: 'codex' })).status, 409, 'on Claude only');
+  assert.equal((await open({ model: 'codex/gpt-6.1-sol' })).json?.error, 'owned-disabled');
+  for (const over of [{ root: 'C:\\p' }, { requestId: 'a'.repeat(20) }, { routeId: 'a'.repeat(20) }]) assert.equal((await open(over)).json?.error, 'cwd-forbidden', JSON.stringify(over));
+  assert.equal((await open({ frontDesk: false })).status, 400, 'there is no false to send');
+  assert.deepEqual(fx.made, []);
+  const r = await open({ model: 'zcode/GLM-5.3-Flash' });
+  assert.equal(r.status, 200, r.body);
+  assert.deepEqual(fx.made.at(-1), { text: 'open', uuid: r.json.actionId, title: '总台', frontDesk: true, model: 'zcode/GLM-5.3-Flash' });
+  assert.deepEqual(rows(fx).map((x) => x.kind), ['human', 'human.result', 'front-desk']);
+  assert.deepEqual(rows(fx)[2]!.body, { actionId: r.json.actionId, ownedId: r.json.ownedId, model: 'zcode/GLM-5.3-Flash' });
+  const second = await open();
+  assert.deepEqual([second.status, second.json?.error], [409, 'desk-open']);
+  assert.equal(rows(fx).length, 3, 'a refusal writes nothing');
+});
+
+test('no front desk without a person: the route has the whole check chain, and the agent side has no way to it', async (t) => {
+  const fx = await fixture(t, true);
+  const h = await unlocked(fx);
+  const { 'x-orchestra-csrf': _k, ...noToken } = h;
+  const body = () => JSON.stringify({ actionId: uuid(), text: 'open', harness: 'claude', frontDesk: true });
+  assert.equal((await request(fx, 'POST', '/api/owned/new', noToken, body())).status, 403);
+  assert.equal((await request(fx, 'POST', '/api/owned/new', { ...h, origin: 'http://orchestra.localhost:1' }, body())).status, 403);
+  assert.equal(fx.made.length, 0);
 });
 
 test('a person sets it: a human record, its result and a dispatch-grant record in one batch, and it holds; the same action is answered once', async (t) => {

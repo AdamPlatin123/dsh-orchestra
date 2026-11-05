@@ -85,6 +85,7 @@ export const ERROR_STATUS = Object.freeze(/** @type {const} */ ({
   'not-unlocked': 403,
   'owned-disabled': 409,
   'owned-limit': 409,
+  'desk-open': 409,
   'slash-command': 422,
   'digest-mismatch': 409,
   'approval-gone': 409,

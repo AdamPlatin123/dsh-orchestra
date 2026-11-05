@@ -8,12 +8,13 @@ import { TIMEOUT_MS, getTower, oneAtATime } from './api.js';
 import { after, every, fmtClock, fmtIso, nowMono, onFrame } from './clock.js';
 import { makePatcher } from './dom.js';
 import { POLL_MS, driveState, makeDrive } from './drive.js';
-import { atBottom, ownedIdOf, queuedN } from './owned.js';
+import { describeFront } from './front.js';
+import { atBottom, deskOf, ownedIdOf, queuedN } from './owned.js';
 import { getTheme } from './prefs.js';
 import { go, openFull, parse } from './route.js';
 import { indexOf, towerFrame } from './tree.js';
 import { describeDetail, detectsError, t } from './view.js';
-import { avatarOf, describeErrs, describeGrant, describeIsland, describeLost, describeRail, describeSubs, describeTop, describeWires, grantsLine, railList, rootOf, subCards, wireRows, workersOf } from './wings.js';
+import { avatarOf, describeErrs, describeFrontHead, describeFrontTile, describeGrant, describeIsland, describeLost, describeRail, describeSubs, describeTop, describeWires, grantsLine, railList, rootOf, subCards, wireRows, workersOf } from './wings.js';
 
 /** @typedef {import('../shared/tower-contract.js').TowerSnapshot} TowerSnapshot */
 
@@ -74,9 +75,15 @@ function schedule() {
   });
 }
 
+/** Whose cards the right side shows: the selected worker's, or with the front desk's talk open, the desk's. */
+function cardsOf() {
+  const d = state.front ? deskOf(state.owned) : null;
+  return d === null ? state.sel : `n:${d.ownedId}`;
+}
+
 /** Marks the selected worker's new cards; a worker's first look marks none, so nothing plays on opening it. @param {TowerSnapshot} snap */
 function freshCards(snap) {
-  const sel = state.sel;
+  const sel = cardsOf();
   const keys = subCards(snap, sel).map((c) => c.key);
   if (sel !== null) {
     const had = state.seen.get(sel);
@@ -175,7 +182,7 @@ function render() {
   const top = describeTop(snap, { ageMs, stale: ageMs !== null && ageMs > STALE_MS, theme: state.theme });
   Object.assign(/** @type {any} */ (top.slots), { unlock: { text: t(open ? 'bar.unlocked' : 'bar.unlock') } });
   dom.paintId('top', top);
-  dom.paintId('desk', { slots: { new: { text: t(open ? 'bar.new' : 'bar.newLocked'), attr: { title: t('bar.newHint') } } } });
+  dom.paintId('desk', { slots: { new: { text: t(open ? 'bar.new' : 'bar.newLocked'), attr: { title: t('bar.newHint') } }, ...describeFrontTile(state.owned, { unlocked: open, on: state.front, busy: state.busy }) } });
   drive.paintDesk();
   if (snap === null) return;
   paintTitle(snap);
@@ -198,11 +205,17 @@ function render() {
   const node = state.sel === null ? undefined : indexOf(snap).byId.get(state.sel)?.node;
   const face = node === undefined ? { data: { hide: '1' } } : avatarOf(node);
   Object.assign(/** @type {any} */ (detail.slots), { hav: { ...face, data: { hide: node === undefined ? '1' : '0', ...face.data } } }, node === undefined ? { empty: { text: t('home.pick') } } : {});
-  Object.assign(/** @type {any} */ (detail.slots), { grant: describeGrant(node === undefined ? null : ownedIdOf(node), state.owned, { unlocked: open, fmt: fmtClock, maxDepth: MAX_DEPTH }) });
+  const desk = state.front ? deskOf(state.owned) : null;
+  if (state.front) {
+    const head = describeFrontHead(desk, state.owned);
+    Object.assign(/** @type {any} */ (detail.data), head.data);
+    Object.assign(/** @type {any} */ (detail.slots), head.slots, { hav: { data: { hide: desk === null ? '1' : '0', harness: 'claude', ro: '0' }, slots: { ch: { text: t('front.ch') }, bd: { data: { b: 'none' } } } } });
+  }
+  Object.assign(/** @type {any} */ (detail.slots), { grant: describeGrant(desk !== null ? desk.ownedId : node === undefined ? null : ownedIdOf(node), state.owned, { unlocked: open, fmt: fmtClock, maxDepth: MAX_DEPTH }) });
   drive.paintSession(snap, detail, atEnd);
-  const own = node === undefined ? null : ownedIdOf(node);
+  const own = desk !== null ? desk.ownedId : node === undefined ? null : ownedIdOf(node);
   const read = own !== null && state.feeds.has(own);
-  dom.paintId('subs', describeSubs(snap, state.sel, { open: state.folds, fresh: freshCards(snap), rows: state.rows, read, locked: !open }));
+  dom.paintId('subs', describeSubs(snap, cardsOf(), { open: state.folds, fresh: freshCards(snap), rows: state.rows, read, locked: !open, front: state.front }));
   dom.paintId('rbar', { text: grantsLine(state.owned, open) });
   freshWires(read);
   drive.moveFocusOn();
@@ -252,11 +265,12 @@ function settleSel(snap) {
   const root = want === null ? null : rootOf(snap, want);
   if (root !== null) {
     if (root !== state.sel) show(root);
-  } else if (state.sel === null) state.sel = workersOf(snap).owned[0]?.node.id ?? null;
+  } else if (state.sel === null && !state.front) state.sel = workersOf(snap).owned[0]?.node.id ?? null;
 }
 
 /** Selects a worker; a read-only one's group opens so its row shows. @param {string} id */
 function show(id) {
+  state.front = false;
   state.sel = id;
   if (state.snap !== null && workersOf(state.snap).readonly.some((w) => w.node.id === id)) state.roOpen = true;
 }
@@ -269,9 +283,17 @@ function openNode(key) {
   schedule();
 }
 
+/** The front desk's talk takes the page's middle; no worker is selected meanwhile. */
+function openFrontTalk() {
+  state.front = true;
+  state.sel = null;
+  go({ view: 'tower', node: null }, true);
+  schedule();
+}
+
 /** A dispatch row of the selected worker's talk, tied to its card. @param {readonly import('./dom.js').Desc[]} kids */
 function chatRows(kids) {
-  const rows = wireRows(kids, state.snap === null ? [] : subCards(state.snap, state.sel), state.folds, fmtClock);
+  const rows = wireRows(kids, state.snap === null ? [] : subCards(state.snap, cardsOf()), state.folds, fmtClock);
   for (const r of rows) {
     const fold = r.tpl === 'tpl-disp' ? r.slots?.b?.data?.fold : '';
     if (fold) state.rows.set(fold, r.key);
@@ -279,7 +301,7 @@ function chatRows(kids) {
   return rows;
 }
 
-const drive = makeDrive(state, dom, { schedule, render, poll, openNode, homeId: 'cap-wait', rows: chatRows });
+const drive = makeDrive(state, dom, { schedule, render, poll, openNode, openFront: openFrontTalk, frontTalk: describeFront, homeId: 'cap-wait', rows: chatRows });
 
 /** @type {(() => void)[]} */
 let timers = [];
@@ -300,6 +322,8 @@ function act(el) {
   if ((a === 'deny' || a === 'req-no') && t0.closest('.pin-acts') !== null && drive.settling()) return drive.say(t('home.moved'));
   if (drive.act(t0)) return;
   if (a === 'worker') return openNode(t0.dataset.node ?? '');
+  if (a === 'front') return state.csrf === null ? void drive.unlock() : openFrontTalk();
+  if (a === 'front-open') return void drive.openFront();
   if (a === 'fold') {
     const k = t0.dataset.fold ?? '';
     if (state.folds.has(k)) state.folds.delete(k);

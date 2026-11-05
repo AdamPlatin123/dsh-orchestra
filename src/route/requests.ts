@@ -78,6 +78,8 @@ export const REQUEST_LIMITS = frozen({
   /** The task text, in UTF-8 bytes: the owned message cap (routes.ts OWNED_TEXT_MAX_BYTES). */
   textBytes: 2048,
   labelBytes: 120,
+  /** An order's why and returns, and the line of a report. */
+  noteBytes: 240,
   cwdBytes: 520,
   /** How often a dispatched or running request looks at its session's feed. */
   watchMs: 1000,
@@ -141,6 +143,9 @@ export type AgentRequest = {
   readonly model: string | null;
   /** Why it waits for you though its session may dispatch freely; null when that is no question. */
   readonly askWhy: AskWhy | null;
+  /** The two lines of an order its session's dispatch tool may add, shown like a label: why this worker, and what it is to hand back; null when it said none (T1). */
+  readonly reason: string | null;
+  readonly returns: string | null;
   /** Made and bound on a session's permission, with no person's click. */
   readonly auto: boolean;
   readonly state: RequestState;
@@ -175,7 +180,7 @@ export type Observed = {
  */
 export type NewRequest = {
   harness: RouteHarness; text: string; cwd: string; label: string | null; requester: Requester; runIn?: string | null; runInWhy?: RunInWhy | null;
-  tainted?: boolean; model?: string | null; askWhy?: AskWhy | null; auto?: boolean;
+  tainted?: boolean; model?: string | null; askWhy?: AskWhy | null; auto?: boolean; reason?: string | null; returns?: string | null;
 };
 
 export type RequestRefusal = 'full' | 'rate' | 'stopped' | 'requester-full' | 'text-too-long' | 'cwd-too-long';
@@ -372,6 +377,7 @@ export function makeRequests(deps: RequestsDeps): Requests {
   };
 
   const labelOf = (raw: string): string | null => cleanLabel(deps.redact, raw.split('\n', 1)[0] ?? '', REQUEST_LIMITS.labelBytes) || null;
+  const lineOf = (raw: string | null | undefined): string | null => (raw == null ? null : cleanLabel(deps.redact, raw.replace(/\s+/g, ' ').trim(), REQUEST_LIMITS.noteBytes) || null);
 
   return Object.freeze({
     label: labelOf,
@@ -400,7 +406,7 @@ export function makeRequests(deps: RequestsDeps): Requests {
         : { runIn: null, runInWhy: req.runInWhy ?? 'no-roots' };
       const m: Mut = {
         requestId, harness: req.harness, text: text.text, label,
-        cwd: cwd.text, ...placed, requester: Object.freeze({ ...req.requester }), tainted: req.tainted ?? true, model: req.model ?? null, askWhy: req.askWhy ?? null, auto: req.auto === true,
+        cwd: cwd.text, ...placed, requester: Object.freeze({ ...req.requester }), tainted: req.tainted ?? true, model: req.model ?? null, askWhy: req.askWhy ?? null, auto: req.auto === true, reason: lineOf(req.reason), returns: lineOf(req.returns),
         state: 'pending', createdWall: deps.nowWall(),
         expiresWall: deps.nowWall() + ttl, expiresMono: now + ttl, ownedId: null, output: null, truncated: false, cuts: [], fetched: false, why: null,
         suggestion: null, suggesting: deps.suggest === undefined || req.auto === true ? 'no-desk' : 'asking',
@@ -539,6 +545,14 @@ function ownedIn(rows: readonly { body?: unknown }[], counts: (b: { verdict?: un
     }
   }
   return out.slice(0, REQUEST_LIMITS.rememberedOwned).reverse();
+}
+
+/** A run's report in one line: the first of what it handed back that says anything, cut short with the cut said; null with none. The worker's own word, never a verdict (D19). */
+export function reportLine(r: Pick<AgentRequest, 'output'>): string | null {
+  const line = r.output?.split('\n').map((l) => l.trim()).find((l) => l !== '') ?? null;
+  if (line === null) return null;
+  const c = headUtf8(line, REQUEST_LIMITS.noteBytes - 3);
+  return c.cut ? `${c.text}…` : c.text;
 }
 
 /** The UTF-8 length a request's text may have (the owned message cap), for the port's own check. */

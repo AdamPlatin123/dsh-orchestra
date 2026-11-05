@@ -4,12 +4,14 @@ import type { ClaudeSession } from '../owned/claude-session.ts';
 import type { CodexOwned } from '../owned/codex-owned.ts';
 import type { CodexSession } from '../owned/codex-session.ts';
 import { isOver } from '../owned/codex-session.ts';
+import { DEFAULT_DESK_MODEL, isClaudeModel } from '../owned/models.ts';
 import type { FeedEvent } from '../owned/feed.ts';
 import type { RestoredOwned } from '../owned/restored.ts';
 import type { Desk } from '../route/desk.ts';
 import type { Dispatcher, DispatchLevel } from '../route/dispatch.ts';
+import { FRONT_DESK_TITLE } from '../route/front-desk.ts';
 import type { AgentRequest, Requests } from '../route/requests.ts';
-import { requesterName } from '../route/requests.ts';
+import { reportLine, requesterName } from '../route/requests.ts';
 import type { Rec } from '../store/journal.ts';
 import type { Log } from '../runtime/log.ts';
 import { canonicalDigest } from '../store/canonical-json.ts';
@@ -37,6 +39,10 @@ import { makeOwnedHandlers } from './owned.ts';
 //                                       very sentence it names that suggestion's candidates (and the session
 //                                       takes the router model's title if the person took its pick); without
 //                                       one (none, aged out, another sentence) it is router not-asked.
+//   POST /api/owned/new + frontDesk     you open the front desk (src/route/front-desk.ts): on Claude, in its own work dir, its first
+//                                       message the sentence the page sends for that click, no routeId, requestId or root. A
+//                                       `front-desk` record joins the batch; no RouteDecision, as nothing was dispatched. One
+//                                       while another runs is desk-open.
 //   POST /api/owned/:id/message         {text}: turn/start, turn/steer, or waits (queued); the reply says
 //                                       which (via), and the uuid of the message in the feed is the
 //                                       actionId of its human record (its fate follows as msg-* notes).
@@ -139,7 +145,7 @@ function feedEntry(e: FeedEvent) {
 export function requestEntry(r: AgentRequest) {
   const g = r.suggestion;
   return {
-    requestId: r.requestId, harness: r.harness, label: r.label, text: r.text, cwd: r.cwd, runIn: r.runIn, runInWhy: r.runInWhy, requester: requesterName(r.requester), tainted: r.tainted, model: r.model, askWhy: r.askWhy, auto: r.auto, state: r.state,
+    requestId: r.requestId, harness: r.harness, label: r.label, text: r.text, cwd: r.cwd, runIn: r.runIn, runInWhy: r.runInWhy, requester: requesterName(r.requester), tainted: r.tainted, model: r.model, askWhy: r.askWhy, auto: r.auto, reason: r.reason, returns: r.returns, report: reportLine(r), state: r.state,
     createdAt: r.createdWall, expiresAt: r.expiresWall, ownedId: r.ownedId, why: r.why, fetched: r.fetched,
     suggestion: g === null ? null : { routeId: g.routeId, router: g.router, models: g.models.map((m) => ({ ...m })), pick: g.pick },
     suggesting: r.suggesting,
@@ -192,7 +198,7 @@ export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'code
   const roots = deps.projectRoots ?? [];
   const queue = queueOf(deps);
   const approvals = queue === null ? [] : queue.list();
-  const sessions: { s: AnySession; harness: 'codex' | 'claude'; meta: { title: string; createdAt: number } | null }[] = [
+  const sessions: { s: AnySession; harness: 'codex' | 'claude'; meta: { title: string; createdAt: number; frontDesk?: boolean } | null }[] = [
     ...(codex === null ? [] : codex.list().map((s) => ({ s: s as AnySession, harness: 'codex' as const, meta: codex.meta(s.ownedId) }))),
     ...(claude === null ? [] : claude.list().map((s) => ({ s: s as AnySession, harness: 'claude' as const, meta: claude.meta(s.ownedId) }))),
     ...(deps.restored ?? []).flatMap((r) => r.list().map((s) => ({ s, harness: r.harness, meta: r.meta(s.ownedId) }))),
@@ -209,16 +215,20 @@ export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'code
       // A root gone idle still has something to stop while a sub-agent of its is live, or over with a command open.
       stoppable: !FINAL(s) && 'stoppable' in s && s.stoppable,
       dispatch: deps.dispatch == null || FINAL(s) ? null : { ...deps.dispatch.view(s.ownedId) },
+      frontDesk: meta?.frontDesk === true,
     };
   });
   const enabled = ownedEnabled(deps);
+  const desk = claude?.frontDesk() ?? null;
   return {
     v: OWNED_V, kind: 'owned-list', rev: queue === null ? 0 : queue.rev, enabled, disabledWhy: enabled ? null : deps.codexOff,
     brakeWhy: deps.brakeWhy === undefined ? 'not-asked' : typeof deps.brakeWhy === 'function' ? deps.brakeWhy() : deps.brakeWhy,
     harnesses: { codex: codex !== null, claude: claude !== null },
     roots: [...roots],
     owned, approvals: approvals.map(approvalEntry),
-    limits: { maxOwned: deps.maxOwned ?? (codex === null ? 0 : codex.maxActive) + (claude === null ? 0 : claude.maxActive), active: sessions.filter(({ s }) => !FINAL(s)).length },
+    limits: { maxOwned: deps.maxOwned ?? (codex === null ? 0 : codex.maxActive) + (claude === null ? 0 : claude.maxActive), active: sessions.filter(({ s, meta }) => !FINAL(s) && meta?.frontDesk !== true).length },
+    // The front desk (src/route/front-desk.ts): what runs now, or whether one could open, and the tools its host's check let through.
+    frontDesk: { on: claude?.deskOn === true, ownedId: desk?.ownedId ?? null, model: desk?.model ?? DEFAULT_DESK_MODEL, tools: desk?.tools === null || desk === null ? null : [...desk.tools] },
     requests: (deps.requests?.list() ?? []).map(requestEntry),
     requestedGone: deps.requests?.requestedGone() ?? [],
     sentGone: deps.requests?.sentGone() ?? [],
@@ -262,8 +272,24 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     });
   }
 
+  /** You open the front desk. Its first message is the sentence the page sent for that click, as any first message is. */
+  const openDesk = (call: OwnedCall): OwnedOutcome => {
+    const body = call.body!;
+    if (claude === null || !claude.deskOn || body.harness !== 'claude' || (typeof body.model === 'string' && !isClaudeModel(body.model))) return refuse('owned-disabled');
+    if (typeof body.routeId === 'string' || typeof body.requestId === 'string' || typeof body.root === 'string') return refuse('cwd-forbidden');
+    const made = claude.create({ text: String(body.text), uuid: call.actionId!, title: FRONT_DESK_TITLE, frontDesk: true, ...(typeof body.model === 'string' ? { model: body.model } : {}) });
+    if (!made.ok) {
+      if (made.reason === 'desk-open') return refuse('desk-open');
+      log.warn('front-desk-failed', { reason: made.reason, detail: made.detail });
+      return refuse(made.reason === 'desk-off' || made.reason === 'model-refused' ? 'owned-disabled' : 'spawn-failed');
+    }
+    log.info('front-desk-opened', { ownedId: made.ownedId, model: made.session.model });
+    return { ok: true, reply: { ownedId: made.ownedId }, targetId: made.ownedId, records: [{ kind: 'front-desk', body: { actionId: call.actionId!, ownedId: made.ownedId, model: made.session.model } }] };
+  };
+
   handlers.register('POST', '/api/owned/new', (call) => {
     const body = call.body!;
+    if (body.frontDesk === true) return openDesk(call);
     const harness = body.harness === 'claude' ? 'claude' : 'codex';
     const manager = harness === 'claude' ? claude : codex;
     if (manager === null) return refuse('owned-disabled');

@@ -18,6 +18,7 @@ import type { Redact } from '../owned/text.ts';
 import type { PathJudge } from '../owned/codex-session.ts';
 import type { Desk } from '../route/desk.ts';
 import type { Dispatcher, DispatchPort } from '../route/dispatch.ts';
+import type { StatusPort } from '../route/front-desk.ts';
 import type { Requests } from '../route/requests.ts';
 import type { AgentPort } from '../server/agent-port.ts';
 import type { CwdPolicySpec } from '../os/cwd.ts';
@@ -420,6 +421,8 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   let placeRun: ((cwd: string) => RunIn) | null = null;
   /** The dispatch tool's way in, for the sessions the managers start; bound to its dispatcher below. Null: no page to decide on. */
   let dispatchLink: { port: DispatchPort; bind(d: DispatchPort): void } | null = null;
+  /** The front desk's read (src/route/front-desk.ts), for the Claude sessions; bound once the tower is there. Null with the dispatch link. */
+  let statusLink: { port: StatusPort; bind(p: StatusPort): void } | null = null;
   if (ctx.owned === true) {
     const { OWNED_POOL_MAX } = await import('../owned/codex-owned.ts');
     pool = Object.freeze({ max: OWNED_POOL_MAX, active: () => (codexOwned?.active() ?? 0) + (claudeOwned?.active() ?? 0) });
@@ -432,6 +435,9 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
         const { makeDispatchLink } = await import('../route/dispatch.ts');
         dispatchLink = makeDispatchLink();
         shared.base.dispatch = dispatchLink.port;
+        const { makeStatusLink } = await import('../route/front-desk.ts');
+        statusLink = makeStatusLink();
+        shared.base.status = statusLink.port;
       }
       if (projectRoots.length > 0) {
         log.info('project-roots', { roots: projectRoots });
@@ -580,7 +586,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
           requests, desk, log, presence: () => presence.state(),
           session: (id) => {
             const s = held(id);
-            return s === null ? null : { title: titleOf(id), tainted: s.tainted, over: s.state === 'ended' || s.state === 'failed' || s.state === 'unknown' };
+            return s === null ? null : { title: titleOf(id), tainted: s.tainted, over: s.state === 'ended' || s.state === 'failed' || s.state === 'unknown', frontDesk: claudeOwned?.meta(id)?.frontDesk === true };
           },
           on: (h) => managerOf(h) !== null,
           full: (h) => managerOf(h)?.full() ?? true,
@@ -643,6 +649,21 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
         }),
       });
       peek = server;
+      if (statusLink !== null) {
+        const { makeFrontDesk } = await import('../route/front-desk.ts');
+        const { recentOf } = await import('../owned/codex-owned.ts');
+        const { ownedList } = await import('../server/owned-handlers.ts');
+        statusLink.bind(makeFrontDesk({
+          tower: () => server.tower(),
+          list: () => ownedList(deps),
+          recent: (id) => {
+            const s = codexOwned?.get(id) ?? claudeOwned?.get(id) ?? null;
+            return s === null ? null : recentOf(s.feed)?.kind ?? null;
+          },
+          redact: ownedRedact!,
+          nowWall: () => wall.nowWall(),
+        }));
+      }
       ctx.console.out(`orchestrad: peek page at ${server.url} (read-only; pair with the code above)`);
       if (requests !== null && ctx.agentPort === true) {
         const { AGENT_TOKEN_FILE, agentPipeName, startAgentPort } = await import('../server/agent-port.ts');
@@ -796,6 +817,8 @@ type OwnedBase = {
   now(): number;
   /** Gives every session the dispatch tool; absent: there is no page to decide on (no --peek-port), and none has it. */
   dispatch?: DispatchPort;
+  /** The front desk's read; set with `dispatch`. */
+  status?: StatusPort;
 };
 
 /**
@@ -1035,6 +1058,7 @@ async function setUpOwnedClaude(ctx: WorkingContext, fence: WriteFence, home: st
     const { checkExe, checkPins, exeMark, pinnedFiles, resolveHostSite } = await import('../owned/claude-site.ts');
     const { CLAUDE_SMALL_FAST_MODEL, DEFAULT_CLAUDE_MODEL } = await import('../owned/models.ts');
     const { ClaudeOwned: Owned } = await import('../owned/claude-owned.ts');
+    const { FRONT_DESK_SYSTEM } = await import('../route/front-desk.ts');
     const site = resolveHostSite(ctx.realpath);
     if (!site.ok) return off(`claude-${site.reason}`, site.detail);
     // The three pinned files are hashed; claude.exe (too large for that) is held to its size, mtime and file id at startup.
@@ -1104,6 +1128,7 @@ async function setUpOwnedClaude(ctx: WorkingContext, fence: WriteFence, home: st
       now: base.now,
       redact: base.redact,
       ...(base.dispatch === undefined ? {} : { dispatch: base.dispatch }),
+      ...(base.status === undefined ? {} : { frontDesk: { system: FRONT_DESK_SYSTEM, port: base.status } }),
     });
     return {
       status: { on: true, node: site.node, entry: site.entry, claudeExe: site.claudeExe, configRoot, model: DEFAULT_CLAUDE_MODEL, gateway: CLAUDE_GATEWAY_URL, restored: owned.restored, jobs: jobs !== null },

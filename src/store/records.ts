@@ -218,6 +218,9 @@ export const BODY_SCHEMAS = frozen({
   // A person set a session's dispatch permission (src/route/dispatch.ts): in the batch of its dispatch-grant `human`
   // records, which say who and when; this says what to. An open grant is what every `auto` record below names.
   'dispatch-grant': obj({ actionId: uuid, ownedId: id, level: en(GRANT_LEVELS) }),
+  // A person opened the front desk (src/route/front-desk.ts): in the batch of its owned-new `human` records, which alone could
+  // not tell it from a worker. No `route` line: nothing was dispatched.
+  'front-desk': obj({ actionId: uuid, ownedId: id, model: { t: 'model' } }),
   // A worker dispatched a session on its permission, with no person's click: no `human` record exists for it, so
   // none of its fields can be read as a person's act. actionId is orchestrad's own, the same on its `route` line (mode
   // auto). by: the session that called the tool; grantActionId: the person's dispatch-grant it went on; textDigest: the

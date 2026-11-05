@@ -109,7 +109,7 @@ test('the steps of every route, in one order; a human route runs exactly plan li
   assert.ok(CHECKS.findIndex((c) => c.step === 'ended') < CHECKS.findIndex((c) => c.step === 'verb'), 'an ended item has no verbs: ended answers first');
   assert.deepEqual([...step('own').codes], [
     'text-too-long', 'brake-unavailable', 'not-test-root', 'plan-expired',
-    'owned-disabled', 'owned-limit', 'slash-command', 'digest-mismatch', 'approval-gone', 'stale-view', 'still-running', 'source-live', 'cwd-gone',
+    'owned-disabled', 'owned-limit', 'desk-open', 'slash-command', 'digest-mismatch', 'approval-gone', 'stale-view', 'still-running', 'source-live', 'cwd-gone',
     'cwd-forbidden', 'unfinished-frame', 'source-changed', 'newer-format', 'import-too-big', 'gateway-real-data', 'owned-ended', 'queue-full',
     'request-gone', 'request-mismatch',
   ]);
@@ -343,7 +343,7 @@ test('new and message: text up to the body cap as a shape, the 2 KB limit and th
   assert.equal(why(nu.body!, { actionId: ACT, text: 'x'.repeat(3000), harness: 'codex' }), 'ok', 'over 2 KB is text-too-long, never a 400');
   assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'codex', cwd: 'C:\\' }), 'extra-key $', 'no cwd from the browser');
   assert.equal(why(nu.body!, { actionId: ACT, text: 'hi\ud800', harness: 'codex' }), 'type $.text');
-  assert.deepEqual([...nu.own], ['owned-disabled', 'owned-limit', 'text-too-long', 'slash-command', 'request-gone', 'request-mismatch', 'cwd-forbidden']);
+  assert.deepEqual([...nu.own], ['owned-disabled', 'owned-limit', 'desk-open', 'text-too-long', 'slash-command', 'request-gone', 'request-mismatch', 'cwd-forbidden']);
   // --project-root: a root the list names may come back as root (the handler holds it to that list: cwd-forbidden otherwise).
   assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'codex', root: 'D:\\proj' }), 'ok');
   assert.equal(why(nu.body!, { actionId: ACT, text: 'hello', harness: 'codex', root: 'x'.repeat(261) }), 'too-long $.root');

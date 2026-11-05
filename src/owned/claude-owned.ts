@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import type { HostPipe } from '../os/owned-proc.ts';
 import type { ClockHub } from '../runtime/clock.ts';
 import type { DispatchPort } from '../route/dispatch.ts';
+import type { StatusPort } from '../route/front-desk.ts';
 import type { OwnedSeat } from '../sources/tower.ts';
 import type { ApprovalOrigin, Approvals } from './approvals.ts';
 import type { ClaudeEndReason, ClaudeSession, ClaudeSessionState } from './claude-session.ts';
@@ -14,7 +15,7 @@ import type { OwnedPool } from './codex-owned.ts';
 import { memberSeats, recentOf, sentSeat } from './codex-owned.ts';
 import { Feed } from './feed.ts';
 import { memberRecords, restoredMembers } from './members.ts';
-import { DEFAULT_CLAUDE_MODEL, isClaudeModel } from './models.ts';
+import { DEFAULT_CLAUDE_MODEL, DEFAULT_DESK_MODEL, isClaudeModel } from './models.ts';
 import { afterRestart } from './registry.ts';
 import { shown } from './text.ts';
 import { frozen, frozenClass } from '../../shared/frozen.js';
@@ -29,6 +30,12 @@ import { frozen, frozenClass } from '../../shared/frozen.js';
 // claude); after a restart the sessions an earlier orchestrad left come back as unknown (daemon-restart)
 // when they had not ended, never resumed and never sent anything again (r4 §8.3 rule 5). Their sub-agents (members.ts)
 // are kept with them, states and times only: one that was live comes back unknown, never running (T1).
+//
+// The front desk (src/route/front-desk.ts) is a session of this manager with a mark on its record, at most one running. It is no
+// worker: it takes none of the running sessions' places and has no seat on the tower, so no list or count of workers holds it.
+// It takes no place because the limit is there for work in progress and this does none: no tool of it touches anything, it
+// is one process at most, and it calls a model only when you ask. If it took a place the desk could never fill the three
+// it is there to fill. An earlier orchestrad's desk comes back unknown like any session, and never stands in the way of a new one.
 
 export const CLAUDE_OWNED_LIMITS = frozen({
   /** Claude sessions running at once when no shared pool is given (tests); with one (codex-owned.ts OWNED_POOL_MAX), the pool's total counts too. */
@@ -39,7 +46,7 @@ export const CLAUDE_OWNED_LIMITS = frozen({
   titleBytes: 240,
 });
 
-export type ClaudeMeta = { readonly ownedId: string; readonly harness: 'claude'; readonly title: string; readonly createdAt: number };
+export type ClaudeMeta = { readonly ownedId: string; readonly harness: 'claude'; readonly title: string; readonly createdAt: number; readonly frontDesk: boolean };
 
 export type ClaudeOwnedOptions = {
   approvals: Approvals;
@@ -66,11 +73,13 @@ export type ClaudeOwnedOptions = {
   pool?: OwnedPool;
   /** Gives each session the dispatch tool (src/route/dispatch.ts); without one none has it. */
   dispatch?: DispatchPort;
+  /** What a front desk runs on; without it, or without `dispatch`, none can open. */
+  frontDesk?: { system: string; port: StatusPort };
 };
 
 export type NewClaude =
   | { ok: true; ownedId: string; session: ClaudeSession }
-  | { ok: false; reason: 'model-refused' | 'owned-limit' | 'cwd-failed' | 'spawn-refused'; detail: string };
+  | { ok: false; reason: 'model-refused' | 'owned-limit' | 'cwd-failed' | 'spawn-refused' | 'desk-open' | 'desk-off'; detail: string };
 
 export class ClaudeOwned {
   readonly #opts: ClaudeOwnedOptions;
@@ -93,7 +102,7 @@ export class ClaudeOwned {
         const r = afterRestart(was);
         if (r !== was) this.#save(r);
         this.#sessions.set(r.ownedId, restoredSession(r, opts.now));
-        this.#meta.set(r.ownedId, Object.freeze({ ownedId: r.ownedId, harness: 'claude', title: r.title, createdAt: r.createdAt }));
+        this.#meta.set(r.ownedId, Object.freeze({ ownedId: r.ownedId, harness: 'claude', title: r.title, createdAt: r.createdAt, frontDesk: r.frontDesk === true }));
       }
     }
   }
@@ -129,9 +138,23 @@ export class ClaudeOwned {
     }
   }
 
-  /** Sessions whose host still runs. */
+  #desk(s: ClaudeSession): boolean {
+    return this.#meta.get(s.ownedId)?.frontDesk === true;
+  }
+
+  /** Workers whose host still runs: the limit's count, so the front desk is not one. */
   active(): number {
-    return [...this.#sessions.values()].filter((s) => !isClaudeOver(s.state)).length;
+    return [...this.#sessions.values()].filter((s) => !isClaudeOver(s.state) && !this.#desk(s)).length;
+  }
+
+  /** The front desk that runs now, or null. */
+  frontDesk(): ClaudeSession | null {
+    return [...this.#sessions.values()].find((s) => !isClaudeOver(s.state) && this.#desk(s)) ?? null;
+  }
+
+  /** Whether a front desk could open here at all. */
+  get deskOn(): boolean {
+    return this.#opts.frontDesk !== undefined && this.#opts.dispatch !== undefined;
   }
 
   /**
@@ -139,11 +162,15 @@ export class ClaudeOwned {
    * `cwd`: a project root (or a folder in one) the composition root let through (--project-root); absent, the session gets its own ORCHESTRA_HOME\work\<id>.
    * The spawn gate holds either to its cwd table again. The model is checked before anything is made.
    * `tainted` (r4 §8.5): the first message comes from an unbound sender (a seat request, in a project root or its own work dir): the host asks for every tool call, reads in cwd too.
+   * `frontDesk`: it is the front desk, in its own work dir: desk-open while one runs, and outside the limit.
    */
-  create(req: { model?: string; text?: string; uuid?: string; title?: string; cwd?: string; tainted?: boolean; origin?: ApprovalOrigin | null } = {}): NewClaude {
-    const model = req.model ?? DEFAULT_CLAUDE_MODEL;
+  create(req: { model?: string; text?: string; uuid?: string; title?: string; cwd?: string; tainted?: boolean; origin?: ApprovalOrigin | null; frontDesk?: boolean } = {}): NewClaude {
+    const desk = req.frontDesk === true;
+    const model = req.model ?? (desk ? DEFAULT_DESK_MODEL : DEFAULT_CLAUDE_MODEL);
     if (!isClaudeModel(model)) return { ok: false, reason: 'model-refused', detail: String(model) };
-    if (this.full()) return { ok: false, reason: 'owned-limit', detail: `${this.maxActive} running` };
+    if (desk && !this.deskOn) return { ok: false, reason: 'desk-off', detail: 'no dispatch tool here' };
+    if (desk && this.frontDesk() !== null) return { ok: false, reason: 'desk-open', detail: 'one runs' };
+    if (!desk && this.full()) return { ok: false, reason: 'owned-limit', detail: `${this.maxActive} running` };
     const o = this.#opts;
     const ownedId = crypto.randomBytes(10).toString('hex');
     let cwd: string;
@@ -164,7 +191,7 @@ export class ClaudeOwned {
       const key = `${mine.state}|${String(mine.endReason)}|${mine.membersRev}`;
       if (key === kept) return;
       kept = key;
-      this.#save({ v: 1, ownedId, harness: 'claude', model, title, createdAt, state: mine.state, endReason: mine.endReason, ...memberRecords(mine) });
+      this.#save({ v: 1, ownedId, harness: 'claude', model, title, createdAt, state: mine.state, endReason: mine.endReason, ...memberRecords(mine), ...(desk ? { frontDesk: true as const } : {}) });
     };
     const started = startClaudeSession({
       ownedId, cwd, configDir, model, claudeExe: o.claudeExe, protectedRoots: o.protectedRoots, askTimeoutMs: o.askTimeoutMs ?? APPROVAL_LIMITS.timeoutMs,
@@ -177,12 +204,13 @@ export class ClaudeOwned {
       ...(req.tainted === true ? { tainted: true } : {}),
       ...(req.origin != null ? { origin: req.origin } : {}),
       ...(o.dispatch === undefined ? {} : { dispatch: o.dispatch }),
+      ...(desk ? { frontDesk: o.frontDesk! } : {}),
     }, req.text === undefined ? null : { text: req.text, uuid: req.uuid ?? '' });
     if (!started.ok) return started;
     mine = started.session;
     keep();
     this.#sessions.set(ownedId, started.session);
-    this.#meta.set(ownedId, Object.freeze({ ownedId, harness: 'claude', title, createdAt }));
+    this.#meta.set(ownedId, Object.freeze({ ownedId, harness: 'claude', title, createdAt, frontDesk: desk }));
     this.#trim();
     return { ok: true, ownedId, session: started.session };
   }
@@ -202,7 +230,7 @@ export class ClaudeOwned {
   /** Every session as the tower draws it (harness claude, ownership owned). */
   towerSeats(): OwnedSeat[] {
     const open = this.#opts.approvals.list();
-    return this.list().map((s) => {
+    return this.list().filter((s) => !this.#desk(s)).map((s) => {
       const mine = open.filter((a) => a.ownedId === s.ownedId);
       const first = [...mine].sort((a, b) => a.deadlineWall - b.deadlineWall)[0] ?? null;
       return {
@@ -255,7 +283,7 @@ export function restoredSession(r: OwnedRecord, now: () => number): ClaudeSessio
   feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'daemon-restart' });
   return Object.freeze({
     ownedId: r.ownedId, harness: 'claude' as const, model: r.model, cwd: '', state: r.state as ClaudeSessionState, endReason: r.endReason as ClaudeEndReason | null,
-    sessionId: null, tainted: false, tokens: null, costUsd: null, queued: 0, members: restoredMembers(r), membersOver: r.membersOver ?? 0, membersRev: 0, stoppable: false, run: 'whole' as const, feed, ready: Promise.resolve(false), exited: Promise.resolve(),
+    sessionId: null, tainted: false, tokens: null, costUsd: null, tools: null, queued: 0, members: restoredMembers(r), membersOver: r.membersOver ?? 0, membersRev: 0, stoppable: false, run: 'whole' as const, feed, ready: Promise.resolve(false), exited: Promise.resolve(),
     send: () => ({ ok: false as const, reason: 'ended' as const }),
     interrupt: async () => ({ withdrawn: 0, denied: 0 }),
     end: () => ({ denied: 0 }),

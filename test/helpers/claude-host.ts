@@ -12,6 +12,7 @@ import type { TestContext } from 'node:test';
 import type { BackendOptions, ChildLike, SpawnBackend } from '../../src/os/spawn.ts';
 import type { HostPipe } from '../../src/os/owned-proc.ts';
 import type { DispatchPort } from '../../src/route/dispatch.ts';
+import type { StatusPort } from '../../src/route/front-desk.ts';
 import { runHost } from '../../hosts/claude/host-core.mjs';
 import { realpath } from '../../src/fs/node-io.ts';
 import { hostPipe } from '../../src/os/owned-proc.ts';
@@ -119,7 +120,7 @@ export type ClaudeRig = {
 };
 
 /** Owned Claude sessions over the real gate (rule claude-host) and the in-process host; settleMs 0 unless given. */
-export function claudeRig(t: TestContext, opts: { settleMs?: number; dispatch?: DispatchPort } = {}): ClaudeRig {
+export function claudeRig(t: TestContext, opts: { settleMs?: number; dispatch?: DispatchPort; frontDesk?: { system: string; port: StatusPort } } = {}): ClaudeRig {
   const dir = fs.realpathSync.native(withTmp(t));
   const home = path.join(dir, 'orchestra');
   const workRoot = path.join(home, 'work');
@@ -157,6 +158,7 @@ export function claudeRig(t: TestContext, opts: { settleMs?: number; dispatch?: 
     now: () => clock.wall,
     redact: (text) => ({ text, count: 0 }),
     ...(opts.dispatch === undefined ? {} : { dispatch: opts.dispatch }),
+    ...(opts.frontDesk === undefined ? {} : { frontDesk: opts.frontDesk }),
   });
   t.after(() => {
     owned.endAll();

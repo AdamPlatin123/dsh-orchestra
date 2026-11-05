@@ -64,6 +64,7 @@ test('the error codes are UI design 一 5\'s table, with ui-only, procguard-time
     'not-unlocked': 403,
     'owned-disabled': 409,
     'owned-limit': 409,
+    'desk-open': 409,
     'slash-command': 422,
     'digest-mismatch': 409,
     'approval-gone': 409,

@@ -248,6 +248,10 @@ function applyRecord(c: Ctx): void {
       // A person set a session's dispatch permission: an event row beside its human records.
       eventRow(c, { actionId: str(b.actionId) }, false);
       return;
+    case 'front-desk':
+      // A person opened the front desk: an event row beside its human records.
+      eventRow(c, { actionId: str(b.actionId) }, false);
+      return;
     case 'auto':
       // A worker dispatched a session on its permission: an event row beside its `route` line, with no human record.
       eventRow(c, { actionId: str(b.actionId) }, false);

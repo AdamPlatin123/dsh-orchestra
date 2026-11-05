@@ -9,6 +9,6 @@ export const CLAUDE_SDK_VERSION = '0.3.287';
 /** Repository-relative path (forward slashes) -> sha256 of its bytes. */
 export const CLAUDE_HOST_PINS: Readonly<Record<string, string>> = frozen({
   'hosts/claude/host.mjs': '892a3072e84d5203fe5f836dd05743924eec995d89e8e7dcf158962d9dc048f9',
-  'hosts/claude/host-core.mjs': '1b9cf94e92852a54256539342cf6459a92a20de36b97c267c7dc048fe5112679',
+  'hosts/claude/host-core.mjs': 'd616aebf949c8c52915111188da5142a00d1b7fa5f17d2ae18bdc095aa4288a4',
   'hosts/claude/node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs': '21fbc4b359e517a370524dd6e25c40c5eab40368eb122491530ac4233021925d',
 });
