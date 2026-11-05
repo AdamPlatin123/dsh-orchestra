@@ -119,7 +119,7 @@ export type OwnedSeat = {
   /** Wall ms of the session's last feed event; null before any. */
   lastAt: number | null;
   /** The newest thing it said or did that a person reads (shown text already); null or absent when none. */
-  recent?: { kind: 'text' | 'command' | 'file-change' | 'you' | 'auto-denied' | 'interrupted'; text: string } | null;
+  recent?: { kind: 'text' | 'command' | 'file-change' | 'you' | 'order' | 'auto-denied' | 'interrupted'; text: string } | null;
   /** Its sub-agents; absent for a harness that does not report them. */
   members?: readonly OwnedMember[];
   /** Sub-agents past the driver's bound, counted and not listed. */

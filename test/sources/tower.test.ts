@@ -229,6 +229,7 @@ test('owned sessions: the activity line is the newest thing the session said or 
   assert.equal(recentOf(feed), null, 'nothing yet: null, said as unknown by the page (T1)');
   feed.push({ kind: 'you', ref: null, uuid: '11111111-1111-4111-8111-111111111111', text: 'write hello.txt', state: null });
   assert.deepEqual(recentOf(feed), { kind: 'you', text: 'write hello.txt' });
+  assert.deepEqual(recentOf(feed, true), { kind: 'order', text: 'write hello.txt' }, 'a session sent out: its first message is the order, no word of yours');
   feed.push({ kind: 'lifecycle', ref: 't', text: null, state: 'turn-started' });
   feed.upsert('text:m', { kind: 'text', ref: 'm', text: 'Creating the', state: 'partial' });
   assert.deepEqual(recentOf(feed), { kind: 'text', text: 'Creating the' }, 'a message still streaming counts');

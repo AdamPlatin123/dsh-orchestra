@@ -4,7 +4,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describeFront, describeFrontChat } from '../../ui/front.js';
-import { chatNews, deskOf } from '../../ui/owned.js';
+import { chatNews, deskOf, describeOwned } from '../../ui/owned.js';
 import { describeFrontHead, describeFrontTile, describeGrant, describeSubs, grantsLine, subCards } from '../../ui/wings.js';
 import { TOWER_TEXT } from '../../shared/strings.js';
 
@@ -122,12 +122,34 @@ test('a question you put while a turn runs queues behind it: that turn\'s answer
 });
 
 test('the sentence the page sent for 开启 is no word of yours: it is said as what happened, and it says the model ran; your own words stay yours', () => {
-  const c = chat(listOf(), ev('you', null, TOWER_TEXT['front.opening']!), ev('text', 'final', '我是总台', 'm1'), ev('lifecycle', 'turn-ended', null), ev('you', null, TOWER_TEXT['front.opening']!));
+  const c = chat(listOf(), { ...ev('you', null, TOWER_TEXT['front.opening']!), uuid: 'u1' }, ev('note', 'msg-sent', null, 'u1'), ev('text', 'final', '我是总台', 'm1'), ev('lifecycle', 'turn-ended', null), ev('you', null, TOWER_TEXT['front.opening']!));
   assert.deepEqual(c.kids.map((k) => k.data.kind), ['life', 'agent', 'you']);
   assert.equal(c.kids[0]!.slots.who.text, '');
   assert.equal(c.kids[0]!.slots.tx.text, TOWER_TEXT['front.openedNote']);
   assert.match(TOWER_TEXT['front.openedNote']!, /跑了模型/);
   assert.equal(c.kids[2]!.slots.who.text, TOWER_TEXT['chat.you'], 'only the first one is the button\'s');
+});
+
+test('开启\'s sentence says the model ran only once it was handed over: not sent, withdrawn, unsure or still on its way, the line says that instead (T1)', () => {
+  const opening = { ...ev('you', null, TOWER_TEXT['front.opening']!), uuid: 'u1' };
+  const line = (...es: Json[]) => chat(listOf(), opening, ...es).kids[0]!.slots.tx.text as string;
+  const says = (state: string, text = '') => fill('front.openedNoteNot', { t: fill(`msgst.${state}`, { t: text }) });
+  assert.equal(line(ev('note', 'msg-not-sent', 'refused by the host', 'u1')), says('msg-not-sent', 'refused by the host'));
+  assert.equal(line(ev('note', 'msg-withdrawn', null, 'u1')), says('msg-withdrawn'));
+  assert.equal(line(ev('note', 'msg-unsure', 'gone', 'u1')), says('msg-unsure'));
+  assert.equal(line(ev('note', 'msg-queued', null, 'u1')), says('msg-queued'));
+  assert.equal(line(), says('other'), 'no fate yet is unknown, not run');
+  for (const s of [line(), line(ev('note', 'msg-withdrawn', null, 'u1'))]) assert.doesNotMatch(s, /跑了模型/);
+  assert.doesNotMatch(TOWER_TEXT['msgst.msg-withdrawn']!, /你/, 'a safety stop takes it back too: nobody here pressed anything');
+});
+
+test('what the desk sent out: its first message is the order it wrote, what you add is yours; past a clip nothing says which came first (T1)', () => {
+  const uuid = 'u1';
+  const feed = (clipped: boolean) => ({ clipped, events: [{ ...ev('you', null, '翻译 README'), uuid }, { ...ev('you', null, '再短一点'), uuid: 'u2' }] });
+  const who = (o: Json, clipped = false) => (describeOwned(C, listOf({ owned: [desk(), { tokens: null, ...o }] }), feed(clipped) as Json, { unlocked: true, nowWall: 0, settle: '', busy: false } as Json) as Json).chat.kids.map((k: Json) => k.slots.who.text);
+  assert.deepEqual(who(worker()), [TOWER_TEXT['chat.order'], TOWER_TEXT['chat.you']]);
+  assert.deepEqual(who(worker(), true), [TOWER_TEXT['chat.you'], TOWER_TEXT['chat.you']]);
+  assert.deepEqual(who(worker({ dispatch: { level: 'ask', grantAt: null, depth: 0, tainted: false, byDesk: false } })), [TOWER_TEXT['chat.you'], TOWER_TEXT['chat.you']], 'a session you started');
 });
 
 test('an order: six things, 未知 for what nobody said (T1); waiting it has the same buttons as its card, and says it is refused at the end of its time', () => {
@@ -145,7 +167,10 @@ test('an order: six things, 未知 for what nobody said (T1); waiting it has the
 test('an order says where it would work, as its card does, and that the desk\'s worker is held tight; 未知 once orchestrad forgot it', () => {
   const own = chat(listOf({ requests: [request()] }), ev('note', 'worker-asked', null, R)).kids[0]!;
   assert.ok(own.slots.where.text.includes(TOWER_TEXT['req.workerWork']!));
-  assert.ok(own.slots.where.text.includes(TOWER_TEXT['req.deskTainted']!));
+  assert.ok(own.slots.where.text.includes(TOWER_TEXT['req.deskTaintedClaude']!));
+  const codex = chat(listOf({ requests: [request({ harness: 'codex' })] }), ev('note', 'worker-asked', null, R)).kids[0]!;
+  assert.ok(codex.slots.where.text.includes(TOWER_TEXT['req.deskTaintedCodex']!), 'a Codex order says what was measured');
+  assert.doesNotMatch(codex.slots.where.text, /工具都要你批/);
   const root = chat(listOf({ requests: [request({ cwd: 'D:\\p', runIn: 'D:\\p', runInWhy: null })] }), ev('note', 'worker-asked', null, R)).kids[0]!;
   assert.ok(root.slots.where.text.includes(fill('req.workerRoot', { cwd: 'D:\\p', run: 'D:\\p' })));
   assert.equal(chat(listOf(), ev('note', 'worker-asked', null, R)).kids[0]!.slots.where.text, TOWER_TEXT['front.unknown']);
@@ -234,9 +259,12 @@ test('资料: the permission panel of the desk says the risk at both levels, the
   assert.equal(free.slots.lv.kids[1].slots.note.text, TOWER_TEXT['grant.note.freeFront']);
   assert.match(TOWER_TEXT['grant.frontFree']!, /不可信/);
   assert.match(TOWER_TEXT['grant.frontFree']!, /提示词注入/);
-  for (const k of ['grant.frontAsk', 'grant.frontFree']) for (const re of [/标题/, /任务/, /回报/, /工具都要你批/]) assert.match(TOWER_TEXT[k]!, re, k);
+  for (const k of ['grant.frontAsk', 'grant.frontFree']) for (const re of [/标题/, /任务/, /回报/, /Claude 的工具都要你批/, /Codex 用 untrusted/, /子代理没测/]) assert.match(TOWER_TEXT[k]!, re, k);
   const sent = describeGrant(C, listOf({ owned: [desk(), worker()] }), { unlocked: true, fmt, maxDepth: 2 }) as Json;
-  assert.ok(sent.slots.st.text.includes(TOWER_TEXT['grant.taintedDesk']!), 'the worker\'s panel says who sent it and why it is held so');
+  assert.ok(sent.slots.st.text.includes(TOWER_TEXT['grant.taintedDeskClaude']!), 'the worker\'s panel says who sent it and why it is held so');
+  const sentCodex = describeGrant(C, listOf({ owned: [desk(), worker({ harness: 'codex' })] }), { unlocked: true, fmt, maxDepth: 2 }) as Json;
+  assert.ok(sentCodex.slots.st.text.includes(TOWER_TEXT['grant.taintedDeskCodex']!), 'a Codex worker: what was measured, not that every tool asks');
+  assert.doesNotMatch(sentCodex.slots.st.text, /工具都要你批/);
   assert.ok(!sent.slots.st.text.includes(TOWER_TEXT['grant.tainted']!));
   const seat = describeGrant(C, listOf({ owned: [desk(), worker({ dispatch: { level: 'ask', grantAt: null, depth: 0, tainted: true, byDesk: false } })] }), { unlocked: true, fmt, maxDepth: 2 }) as Json;
   assert.ok(seat.slots.st.text.includes(TOWER_TEXT['grant.tainted']!));

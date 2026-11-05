@@ -233,12 +233,13 @@ export class ClaudeOwned {
     return this.list().filter((s) => !this.#desk(s)).map((s) => {
       const mine = open.filter((a) => a.ownedId === s.ownedId);
       const first = [...mine].sort((a, b) => a.deadlineWall - b.deadlineWall)[0] ?? null;
+      const sent = sentSeat(this.#opts.dispatch, s.ownedId);
       return {
         ownedId: s.ownedId, harness: 'claude' as const, title: this.#meta.get(s.ownedId)?.title ?? '', state: s.state, endReason: s.endReason,
         waiting: first === null ? null : { kind: 'approval' as const, deadline: first.deadlineWall, title: first.title },
         lastAt: s.feed.lastAt,
-        recent: recentOf(s.feed),
-        sent: sentSeat(this.#opts.dispatch, s.ownedId),
+        recent: recentOf(s.feed, sent !== null || s.tainted),
+        sent,
         ...memberSeats(s, mine),
       };
     });

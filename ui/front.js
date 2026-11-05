@@ -55,7 +55,8 @@ function sourcesOf(reads, list, fmt) {
  * no model call stands behind it. What went wrong with a turn goes to the note over the talk, never left out (T1).
  *
  * A turn's reads end with the turn, not with your next words: what you say while it runs queues behind it, and its answer
- * still comes from what it read. The sentence the page sent for the click on 开启 is no word of yours, so it is said as what happened.
+ * still comes from what it read. The sentence the page sent for the click on 开启 is no word of yours, so it is said as what happened:
+ * the model ran only once it was handed over; until then, or when it never was, the line says what became of it (T1).
  */
 export function describeFrontChat(feed, list, g, fmt) {
   if (feed === undefined) return { kids: [], note: t('detail.loading') };
@@ -83,7 +84,7 @@ export function describeFrontChat(feed, list, g, fmt) {
       const f = fates.get(e.uuid);
       lastAnswer = null;
       failed = null;
-      if (e === opening) kids.push({ key: `y${e.seq}`, tpl: 'tpl-msg', data: { kind: 'life', live: '0' }, slots: { who: { text: '' }, tx: { text: t('front.openedNote') } } });
+      if (e === opening) kids.push({ key: `y${e.seq}`, tpl: 'tpl-msg', data: { kind: 'life', live: '0' }, slots: { who: { text: '' }, tx: { text: f?.state === 'msg-sent' ? t('front.openedNote') : t('front.openedNoteNot', { t: tk('msgst', f?.state, 'msgst.other', { t: f?.text ?? '' }) }) } } });
       else kids.push({ key: `y${e.seq}`, tpl: 'tpl-msg', data: { kind: 'you', live: '0' }, slots: { who: { text: join([t('chat.you'), f && tk('msgst', f.state, 'msgst.other', { t: f.text ?? '' })]) }, tx: { text: e.text ?? '' } } });
     } else if (e.kind === 'text') {
       const src = sourcesOf(reads, list, fmt);

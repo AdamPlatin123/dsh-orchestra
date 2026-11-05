@@ -362,7 +362,10 @@ test('the front desk\'s worker: its card says the desk sent it and why it is hel
   assert.ok(card.slots.note.text.includes(TOWER_TEXT['appr.taintedDeskHigh']!));
   assert.ok((describeCard({ ...approval(desk), high: false, risk: 'read' }, G) as any).slots.note.text.includes(TOWER_TEXT['appr.taintedDeskNote']!));
   assert.deepEqual(pinOf(approval(desk)).hint, { text: TOWER_TEXT['appr.originDesk'] });
-  for (const k of ['appr.taintedDeskNote', 'appr.taintedDeskHigh']) for (const re of [/总台派的/, /不可信来源/, /工具都要你批/]) assert.match(TOWER_TEXT[k]!, re, k);
+  for (const k of ['appr.taintedDeskNote', 'appr.taintedDeskHigh']) {
+    for (const re of [/总台派的/, /不可信来源/]) assert.match(TOWER_TEXT[k]!, re, k);
+    assert.doesNotMatch(TOWER_TEXT[k]!, /工具都要你批/, 'either harness shows this card: Codex is measured only in part');
+  }
   const further = describeCard(approval({ ...desk, kind: 'worker-dispatch', label: '翻译' }), G) as any;
   assert.ok(further.slots.note.text.includes(TOWER_TEXT['appr.taintedWorkerHigh']!));
   assert.doesNotMatch(further.slots.note.text, /DSH/);

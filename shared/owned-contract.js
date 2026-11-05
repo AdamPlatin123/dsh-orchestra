@@ -121,6 +121,7 @@ export const OWNED_TOWER_TEXT = frozen({
   'act.command': '命令：',
   'act.file-change': '改文件：',
   'act.you': '你说：',
+  'act.order': '派单写的：',
   'act.auto-denied': '自动拒绝了：',
   'act.interrupted': '被中断前：',
   // Its sub-agents (src/sources/tower.ts memberNode). Nothing here says how the work went: a report is not a verdict (T2).

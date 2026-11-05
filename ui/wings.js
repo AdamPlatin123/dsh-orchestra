@@ -316,7 +316,7 @@ export function describeGrant(id, list, ctx) {
   const says = !ctx.unlocked ? [t('grant.locked')] : d === null ? [t(none)] : [
     d.grantAt === null ? t('grant.default') : t('grant.since', { at: ctx.fmt(d.grantAt) }),
     o?.frontDesk === true && t(d.level === 'free' ? 'grant.frontFree' : 'grant.frontAsk'),
-    d.tainted === true && t(d.byDesk === true ? 'grant.taintedDesk' : 'grant.tainted'),
+    d.tainted === true && t(d.byDesk !== true ? 'grant.tainted' : o?.harness === 'claude' ? 'grant.taintedDeskClaude' : 'grant.taintedDeskCodex'),
     d.depth >= ctx.maxDepth && t('grant.depth', { d: d.depth }),
     here,
   ];

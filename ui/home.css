@@ -66,10 +66,13 @@ code, pre { font-family: var(--code); }
 /* == the two halves: the right stays; a narrow window takes from the left list first */
 .wings { flex: 1 1 0; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); min-height: 0; }
 .left { display: grid; grid-template-columns: 200px minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); min-height: 0; min-width: 0; }
-.desk { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); background: var(--panel); font-size: 13px; color: var(--ink-2); }
+.desk { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 12px; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); background: var(--panel); font-size: 13px; color: var(--ink-2); }
 .desk-t { flex: 1 1 0; min-width: 0; font-size: 12.5px; overflow-wrap: anywhere; }
+/* Not open it says what opening does and what goes to the provider: too long for the gap beside the tile, so a row of its own, the buttons above it. */
+.desk:has(.ft-open:not([data-hide="1"])) .desk-t { order: 1; flex-basis: 100%; }
+.desk:has(.ft-open:not([data-hide="1"])) > .desk-go { margin-left: auto; }
 /* The front desk's tile: a block of its own, larger than a worker's row (第三轮简报 1.2). */
-.ft { flex: none; display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 60%; }
+.ft { flex: none; display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; }
 .ft-b { display: flex; align-items: center; gap: 9px; min-width: 0; padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; background: none; color: var(--ink); text-align: left; }
 .ft-b:hover { background: var(--sunk); }
 .ft[data-on="1"] .ft-b { border-color: var(--act); box-shadow: inset 0 0 0 1px var(--act); }
@@ -127,8 +130,10 @@ code, pre { font-family: var(--code); }
 .detail:has(.chat-box:not([data-hide="1"])) [data-slot=actBox] { display: none; }
 .dt-gone { padding: 6px 0; font-size: 12.5px; color: var(--ink-2); }
 .facts-box { flex: none; padding: 4px 0; font-size: 12.5px; color: var(--ink-3); }
+/* Open it scrolls as one: .detail clips what overflows it, and on a laptop the facts under the permission panel were out of reach. */
+.facts-box[open] { flex: 0 1 auto; min-height: 0; max-height: 65%; overflow: auto; scrollbar-width: thin; }
 .facts-box summary { cursor: pointer; }
-.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; max-height: 30vh; overflow: auto; padding: 4px 0; color: var(--ink-2); }
+.facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; padding: 4px 0; color: var(--ink-2); }
 .kv { display: contents; }
 .kv dd { overflow-wrap: anywhere; }
 .dt-sec { flex: none; padding: 4px 0; }
@@ -170,7 +175,7 @@ code, pre { font-family: var(--code); }
 .dr-stop:hover { border-color: var(--err); }
 .mem-go { grid-column: 2 / -1; justify-self: start; margin-top: 2px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--bg); font-size: 12px; color: var(--act); white-space: nowrap; }
 /* A worker's dispatch permission, in its 资料. */
-.grant { max-height: 42vh; overflow: auto; padding: 8px 0 4px; scrollbar-width: thin; }
+.grant { padding: 8px 0 4px; }
 .grant-h { font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
 .grant-st { padding: 2px 0 6px; overflow-wrap: anywhere; }
 .grant-lv { display: grid; gap: 4px; }

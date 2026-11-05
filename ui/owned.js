@@ -83,8 +83,10 @@ export function sentText(names) {
  * row, however many it sent. `over`: the list knows the session ended, so the line a restart leaves does not say its
  * state is not known (T1 both ways).
  */
-export function describeChat(feed, over = false) {
+export function describeChat(feed, over = false, handed = false) {
   if (feed === undefined) return { kids: [], note: t('detail.loading') };
+  /** Someone else sent this session out: its first message is the order they wrote, no word of yours. Past a clip, which one came first is not known. */
+  let order = handed && !feed.clipped;
   /** @type {Desc[]} */
   const kids = [];
   /** @type {Map<string, any>} */
@@ -143,7 +145,8 @@ export function describeChat(feed, over = false) {
       d.data.live = e.live ? '1' : '0';
     } else if (e.kind === 'you') {
       const f = fates.get(e.uuid);
-      msg(join([t('chat.you'), f && tk('msgst', f.state, 'msgst.other', { t: f.text ?? '' })]), tx, 'you');
+      msg(join([t(order ? 'chat.order' : 'chat.you'), f && tk('msgst', f.state, 'msgst.other', { t: f.text ?? '' })]), tx, 'you');
+      order = false;
     } else if (e.kind === 'text' || e.kind === 'result') {
       msg(t('chat.agent'), e.live ? tx + t('chat.live') : tx, 'agent');
       if (e.kind === 'text' && e.ref !== null && !e.live) lastText = { ref: e.ref, node: kids[kids.length - 1] };
@@ -340,7 +343,7 @@ const reqWho = (r) => (typeof r.requester === 'string' && r.requester.startsWith
  * Where a request's session runs, as its card says it: in its cwd (inside a project root; per harness, what it may do there unasked), else
  * Orchestra's own work dir and why. Either way the session is held as untrusted (r4 §8.5: a DSH session asked), which the card says.
  */
-export const reqWhere = (r) => (workerOf(r) !== null ? join([typeof r.runIn === 'string' ? t('req.workerRoot', { cwd: r.cwd, run: r.runIn }) : r.cwd === '' ? t('req.workerWork') : t('req.cwd', { cwd: r.cwd, why: tk('cwdwhy', r.runInWhy ?? 'no-roots', 'cwdwhy.other') }), t(r.fromDesk === true ? 'req.deskTainted' : r.tainted === true ? 'req.workerTainted' : 'req.workerClean')], 'sep.notes')
+export const reqWhere = (r) => (workerOf(r) !== null ? join([typeof r.runIn === 'string' ? t('req.workerRoot', { cwd: r.cwd, run: r.runIn }) : r.cwd === '' ? t('req.workerWork') : t('req.cwd', { cwd: r.cwd, why: tk('cwdwhy', r.runInWhy ?? 'no-roots', 'cwdwhy.other') }), t(r.fromDesk === true ? (r.harness === 'claude' ? 'req.deskTaintedClaude' : 'req.deskTaintedCodex') : r.tainted === true ? 'req.workerTainted' : 'req.workerClean')], 'sep.notes')
   : typeof r.runIn === 'string' ? t(r.harness === 'claude' ? 'req.cwdRootClaude' : 'req.cwdRoot', { cwd: r.cwd, run: r.runIn })
   : join([t('req.cwd', { cwd: r.cwd, why: tk('cwdwhy', r.runInWhy ?? 'no-roots', 'cwdwhy.other') }), t(r.harness === 'claude' ? 'req.untrustedClaude' : 'req.untrustedCodex')], 'sep.notes'));
 
@@ -457,7 +460,7 @@ export function describeOwned(id, list, feed, g) {
     return { ownBox: on, evBox: off, ownSt: { text: t(!g.unlocked ? 'own.locked' : list === null ? 'detail.loading' : 'own.missing') }, ownActs: { kids: g.unlocked ? [] : [lockBtn()] }, cardsH: off, cards: { kids: [] }, chatBox: off };
   }
   const mine = list.approvals.filter((a) => a.ownedId === id);
-  const chat = describeChat(feed, o.state === 'ended' || o.state === 'failed');
+  const chat = describeChat(feed, o.state === 'ended' || o.state === 'failed', (o.dispatch?.depth ?? 0) > 0 || o.dispatch?.tainted === true);
   return {
     ownBox: on, evBox: off, ownActs: { kids: [] }, chatBox: on, chatNote: { text: chat.note }, chat: { kids: chat.kids },
     ownSt: {

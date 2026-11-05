@@ -224,12 +224,13 @@ export class CodexOwned {
     return this.list().map((s) => {
       const mine = open.filter((a) => a.ownedId === s.ownedId).sort((a, b) => a.deadlineWall - b.deadlineWall);
       const first = mine[0] ?? null;
+      const sent = sentSeat(this.#opts.dispatch, s.ownedId);
       return {
         ownedId: s.ownedId, harness: 'codex' as const, title: this.#meta.get(s.ownedId)?.title ?? '', state: s.state, endReason: s.endReason,
         waiting: first === null ? null : { kind: first.kind === 'question' ? 'question' as const : 'approval' as const, deadline: first.deadlineWall, title: first.title },
         lastAt: s.feed.lastAt,
-        recent: recentOf(s.feed),
-        sent: sentSeat(this.#opts.dispatch, s.ownedId),
+        recent: recentOf(s.feed, sent !== null || s.tainted),
+        sent,
         ...memberSeats(s, mine),
       };
     });
@@ -266,13 +267,15 @@ frozenClass(CodexOwned);
  * words (a message still streaming counts), a command or file change, your message, an automatic refusal.
  * Turn starts, token counts and notes are not activity. Null when the feed holds none of these. A turn interrupted
  * since says so first: what it last said ("both are still running") is no longer what the session stands at.
+ * `handed`: someone else sent this session out, so its first message is the order they wrote, no word of yours.
  */
-export function recentOf(feed: Feed): OwnedSeat['recent'] {
+export function recentOf(feed: Feed, handed = false): OwnedSeat['recent'] {
   const e = feed.last((x) => x.text !== null && x.text.trim() !== '' && (x.kind === 'text' || x.kind === 'you' || x.kind === 'auto-denied' || x.kind === 'tool'));
   if (e === null || e.text === null) return null;
   const stopped = feed.last((x) => x.kind === 'lifecycle' && x.state === 'turn-interrupted');
   if (stopped !== null && stopped.seq > e.seq) return { kind: 'interrupted', text: e.kind === 'tool' ? e.text.split('\n', 1)[0]! : e.text };
   if (e.kind === 'tool') return { kind: e.state === 'file-change' ? 'file-change' : 'command', text: e.text.split('\n', 1)[0]! };
+  if (e.kind === 'you' && handed && feed.last((x) => x.kind === 'you' && x.seq < e.seq) === null) return { kind: 'order', text: e.text };
   return { kind: e.kind === 'text' ? 'text' : e.kind === 'you' ? 'you' : 'auto-denied', text: e.text };
 }
 
