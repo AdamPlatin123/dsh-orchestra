@@ -347,11 +347,13 @@ export function residentOf(h: ProcHandle, after: After, limits: { readyMs?: numb
  */
 export type JobOutcome = { readonly ok: true; readonly found: boolean; readonly killed: number; readonly left: number } | { readonly ok: false; readonly why: string };
 
-/** An owned session's Job, as its driver holds it (src/owned/): its name and the kill. */
+/** An owned session's Job, as its driver holds it (src/owned/): its name, what it holds and the kill. */
 export type OwnedJob = {
   readonly name: string;
   /** Ends every process in the Job now and waits until none is left (the brake; and the check after an end). */
   endTree(): Promise<JobOutcome>;
+  /** The processes in the Job now: none when no Job of that name is left, null when the resident could not say (T1: unknown, never "none"). */
+  procs(): Promise<readonly JobProc[] | null>;
 };
 
 /**
@@ -378,6 +380,7 @@ export function jobTracker(resident: Resident | null, onTree: (job: string, o: J
       const j = ownedJob(name, resident);
       return Object.freeze({
         name,
+        procs: j.procs,
         endTree: (): Promise<JobOutcome> => {
           const p = j.endTree().then((o) => {
             try {
@@ -423,6 +426,15 @@ export function ownedJob(name: string, resident: Resident | null): OwnedJob {
         return Object.freeze(r.found ? { ok: true as const, found: true, killed: r.before, left: r.after } : { ok: true as const, found: false, killed: 0, left: 0 });
       } catch (e) {
         return Object.freeze({ ok: false as const, why: e instanceof ProcguardError ? `procguard-${e.reason}` : 'procguard-failed' });
+      }
+    },
+    procs: async (): Promise<readonly JobProc[] | null> => {
+      if (resident === null || !resident.up) return null;
+      try {
+        const r = await resident.jobInfo(name);
+        return r.found ? r.procs : [];
+      } catch {
+        return null;
       }
     },
   });

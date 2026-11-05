@@ -6,6 +6,7 @@ import { frozen } from '../../shared/frozen.js';
 import { validateOwnedFeed, validateOwnedList } from '../../shared/owned-contract.js';
 import type { Clock } from '../runtime/clock.ts';
 import type { Log } from '../runtime/log.ts';
+import type { PresenceWatch } from '../route/presence.ts';
 import type { Line, Rec } from '../store/journal.ts';
 import type { Store } from '../store/store.ts';
 import { StoreError } from '../store/store.ts';
@@ -240,6 +241,8 @@ export type OwnedApiOptions = {
    */
   enabled?: boolean;
   handlers?: OwnedHandlers;
+  /** Hears the unlocked page's reads of GET /api/owned and every recorded human action: whether you are here (src/route/presence.ts). */
+  presence?: Pick<PresenceWatch, 'beat' | 'acted'>;
 };
 
 export type OwnedApi = {
@@ -371,6 +374,7 @@ export function makeOwnedApi(opts: OwnedApiOptions & {
     }
     if (route.auth === 'cookie') return unlockRoutes(route, req, sid);
     if (!unlock.holds(sid, req.headers[CONTROL_HEADER])) return refuse('not-unlocked');
+    if (route.method === 'GET' && route.path === '/api/owned') opts.presence?.beat();
 
     // 7-8: the body (a POST) or the query (a GET), its message, its shape, the path id.
     let parsed: Record<string, unknown> | null = null;
@@ -459,6 +463,7 @@ export function makeOwnedApi(opts: OwnedApiOptions & {
         log.warn('owned-record-failed', { route: `${route.method} ${route.path}`, error: e });
         return text(500, 'failed');
       }
+      opts.presence?.acted();
       if (out.after !== undefined) {
         try {
           out.after();

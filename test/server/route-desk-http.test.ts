@@ -152,7 +152,7 @@ test('dispatch with the card\'s routeId: the session takes its title, and the Ro
     chosen: { harness: 'codex', model: 'codex/gpt-6.1-terra' }, pick: 1, reason: 'router-model', router: 'answered', routerModel: 'zcode/GLM-5.3', routerWhy: null, mode: 'manual',
   });
   assert.equal(fx.desk.last()?.ownedId, r.json.ownedId);
-  assert.deepEqual(lastDispatchIn(fx.store.db), { ownedId: r.json.ownedId, harness: 'codex', model: 'codex/gpt-6.1-terra', at: lastDispatchIn(fx.store.db)!.at }, 'a restart finds it in the journal');
+  assert.deepEqual(lastDispatchIn(fx.store.db), { ownedId: r.json.ownedId, harness: 'codex', model: 'codex/gpt-6.1-terra', at: lastDispatchIn(fx.store.db)!.at, auto: false }, 'a restart finds it in the journal');
   // The same actionId again: replayed, nothing started, nothing written.
   const again = await request(fx, 'POST', '/api/owned/new', h, body);
   assert.equal(again.json.replayed, true);
@@ -182,10 +182,15 @@ test('a routeId for another sentence (edited after the card) or unknown: the ses
 
 test('the router row ("你"): the last dispatch\'s title and time, linked to its node only when the snapshot shows it', () => {
   const stage = busyStage();
-  const d = { ownedId: 'abcdefabcdefabcdefab', harness: 'codex' as const, model: 'codex/gpt-6.1-sol', at: 1_761_868_800_000, title: '修登录测试' };
+  const d = { ownedId: 'abcdefabcdefabcdefab', harness: 'codex' as const, model: 'codex/gpt-6.1-sol', at: 1_761_868_800_000, title: '修登录测试', auto: false };
   const none = towerFromStage(stage, { seats: [], nowWall: 1_761_868_900_000, dispatch: d });
-  assert.deepEqual(none.router, { kind: 'human', dispatch: { title: '修登录测试', at: 1_761_868_800_000, harness: 'codex', model: 'codex/gpt-6.1-sol', node: null }, asks: [] });
+  assert.deepEqual(none.router, { kind: 'human', dispatch: { title: '修登录测试', at: 1_761_868_800_000, harness: 'codex', model: 'codex/gpt-6.1-sol', node: null, auto: false }, asks: [] });
   assert.equal(validateTower(none).ok, true, validateTower(none).errors.join(' | '));
+  // A worker's dispatch on your permission says so, and the contract wants it said.
+  const sent = towerFromStage(stage, { seats: [], nowWall: 1_761_868_900_000, dispatch: { ...d, auto: true } });
+  assert.equal(sent.router.dispatch?.auto, true);
+  assert.equal(validateTower(sent).ok, true, validateTower(sent).errors.join(' | '));
+  assert.ok(validateTower({ ...sent, router: { ...sent.router, dispatch: { ...sent.router.dispatch, auto: 'yes' } } } as never).errors.some((e: string) => e.includes('router.dispatch.auto')));
   // seat: the pending agent requests, soonest first, harness and deadline only.
   const asked = towerFromStage(stage, { seats: [], nowWall: 1_761_868_900_000, asks: [{ harness: 'claude', deadline: 9 }, { harness: 'codex', deadline: 3 }] });
   assert.deepEqual(asked.router.asks, [{ harness: 'codex', deadline: 3 }, { harness: 'claude', deadline: 9 }]);

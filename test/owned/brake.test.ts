@@ -40,6 +40,7 @@ function fakeJob(answer: JobOutcome = { ok: true, found: true, killed: 3, left: 
         f.calls++;
         return f.answer;
       },
+      procs: async () => [],
     }),
   };
   return f;

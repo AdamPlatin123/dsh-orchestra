@@ -8,7 +8,7 @@ import { frozen } from '../../shared/frozen.js';
 import { ACK_REPLIES } from '../notify/channel.ts';
 import { ownFields } from '../runtime/own.ts';
 import { COUNT_NAMES } from '../model/source-report.ts';
-import { DIGEST_RE, ERROR_CODE_RE, EVENT_KINDS } from '../store/records.ts';
+import { DIGEST_RE, ERROR_CODE_RE, EVENT_KINDS, GRANT_LEVELS } from '../store/records.ts';
 import { OWNED_MODEL_RE } from '../owned/models.ts';
 import { MAX_CANDIDATES, ROUTE_HARNESSES, ROUTER_STATES, RULE_IDS, TASK_CLASSES } from '../route/rules.ts';
 import { ROUTER_WHY } from '../route/router-model.ts';
@@ -391,6 +391,9 @@ export const ROUTES: readonly Route[] = Object.freeze([
   owned('import-dsh', 'stage', { stageId }, accepted({ importId: id }), DSH_IMPORT_OWN, COPY_FAILS),
   // seat: you reject an agent request (r4 A17, D8: a person, this page). One that no longer waits is request-gone.
   owned('request-reject', 'request', {}, accepted(), ['request-gone']),
+  // You set a session's dispatch permission (src/route/dispatch.ts; D8: a person, this page). 你不在也派 is no level here:
+  // r4 D20 does not allow it, so the shape refuses it. A session that ended is owned-ended.
+  owned('dispatch-grant', 'owned', { level: en(GRANT_LEVELS) }, accepted({ level: en(GRANT_LEVELS) }), ['owned-ended']),
 ].map((r) => Object.freeze(r)));
 
 /** The route of `method path` (a pattern as the table writes it), or undefined. */

@@ -16,14 +16,15 @@ const win = path.win32;
 // endReason daemon-restart, and is never resumed and no message is sent again (r4 §8.3 rule 5: what has
 // an unknown outcome is never resent automatically). One that had ended or failed comes back as it was.
 //
-// A Codex session's sub-agents (its members, codex-session.ts) are kept with it, states and times only, so
+// An owned session's sub-agents (its members, members.ts) are kept with it, states and times only, so
 // the tower still lists them after a restart: one the record says was running or idle comes back unknown,
-// never running. A file without them (a Claude session, a session that spawned none, an earlier build's)
-// reads as before, and so does a member an earlier build wrote without its batch (null: its dispatch is not known).
+// never running. A file without them (a session that spawned none, an earlier build's) reads as before, and so
+// does a member an earlier build wrote without its batch or its type (null: not known). threadId holds a Codex
+// thread id or a Claude task id.
 
 export const REGISTRY_DIR = 'owned';
-/** 32 members of at most 200 + 240 + 240 characters written out (a thread id; a name and a model that are all quotes) fit. */
-export const REGISTRY_LIMITS = frozen({ fileBytes: 32 * 1024, members: 32, memberIdChars: 200, memberNameBytes: 120, memberModelBytes: 120 });
+/** 32 members of at most 200 + 240 + 240 + 240 characters written out (a thread id; a name, a model and a type that are all quotes) fit. */
+export const REGISTRY_LIMITS = frozen({ fileBytes: 40 * 1024, members: 32, memberIdChars: 200, memberNameBytes: 120, memberModelBytes: 120 });
 
 export type OwnedRecordState = 'starting' | 'idle' | 'running' | 'ended' | 'failed' | 'unknown';
 /** running and idle are what codex last said of a live thread; the rest stay true once its session is gone. */
@@ -37,6 +38,8 @@ export type MemberRecord = {
   readonly name: string | null;
   /** The model codex said it runs on, shown text; null when codex did not say (T1). */
   readonly model: string | null;
+  /** The kind of sub-agent the harness named (Claude's subagent_type), shown text; null when it names none (T1). */
+  readonly agentType: string | null;
   readonly state: MemberState;
   /** Set exactly when the state is ended. */
   readonly why: MemberEnd | null;
@@ -67,7 +70,7 @@ export type OwnedRecord = {
 };
 
 const KEYS = ['v', 'ownedId', 'harness', 'model', 'title', 'createdAt', 'state', 'endReason'] as const;
-const MEMBER_KEYS = ['threadId', 'name', 'model', 'state', 'why', 'startedAt', 'endedAt', 'failed', 'ranUnasked', 'batch'] as const;
+const MEMBER_KEYS = ['threadId', 'name', 'model', 'agentType', 'state', 'why', 'startedAt', 'endedAt', 'failed', 'ranUnasked', 'batch'] as const;
 const MEMBER_STATES: readonly unknown[] = ['running', 'idle', 'returned', 'ended', 'unknown'];
 const MEMBER_ENDS: readonly unknown[] = ['failed', 'interrupted', 'shutdown'];
 const stamp = (v: unknown) => v === null || (Number.isSafeInteger(v) && (v as number) >= 0);
@@ -75,11 +78,12 @@ const stamp = (v: unknown) => v === null || (Number.isSafeInteger(v) && (v as nu
 /** One member of a registry file, or null when it is not one this build wrote. */
 function parseMember(v: unknown): MemberRecord | null {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
-  const o: Record<string, unknown> = { batch: null, ...(v as Record<string, unknown>) };
+  const o: Record<string, unknown> = { batch: null, agentType: null, ...(v as Record<string, unknown>) };
   if (Object.keys(o).length !== MEMBER_KEYS.length || !MEMBER_KEYS.every((k) => Object.hasOwn(o, k))) return null;
   if (typeof o.threadId !== 'string' || o.threadId === '' || o.threadId.length > REGISTRY_LIMITS.memberIdChars) return null;
   if (o.name !== null && (typeof o.name !== 'string' || o.name === '' || utf8Length(o.name) > REGISTRY_LIMITS.memberNameBytes)) return null;
   if (o.model !== null && (typeof o.model !== 'string' || o.model === '' || utf8Length(o.model) > REGISTRY_LIMITS.memberModelBytes)) return null;
+  if (o.agentType !== null && (typeof o.agentType !== 'string' || o.agentType === '' || utf8Length(o.agentType) > REGISTRY_LIMITS.memberNameBytes)) return null;
   if (!MEMBER_STATES.includes(o.state) || (o.state === 'ended' ? !MEMBER_ENDS.includes(o.why) : o.why !== null)) return null;
   if ((o.batch !== null && (!Number.isSafeInteger(o.batch) || (o.batch as number) < 1)) || !stamp(o.startedAt) || !stamp(o.endedAt) || !Number.isSafeInteger(o.failed) || (o.failed as number) < 0 || !Number.isSafeInteger(o.ranUnasked) || (o.ranUnasked as number) < 0) return null;
   return Object.freeze({ ...o }) as unknown as MemberRecord;

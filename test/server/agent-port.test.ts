@@ -7,6 +7,7 @@ import * as net from 'node:net';
 import * as path from 'node:path';
 import type { TestContext } from 'node:test';
 import { HUMAN_VERB_ROUTES } from '../../shared/protocol.js';
+import { shapeError } from '../../src/server/routes.ts';
 import { VirtualClock, makeRealClock, oneShot } from '../../src/runtime/clock.ts';
 import { Log } from '../../src/runtime/log.ts';
 import { makeReadGate, makeWriteFence } from '../../src/fs/node-io.ts';
@@ -16,7 +17,7 @@ import { makeDbOpener } from '../../src/store/node-sqlite.ts';
 import type { TestProfile } from '../../src/runtime/test-profile.ts';
 import type { Requests, RequestsDeps } from '../../src/route/requests.ts';
 import { REQUEST_LIMITS, makeRequests } from '../../src/route/requests.ts';
-import { AGENT_AUTH, AGENT_PORT_LIMITS, AGENT_ROUTES, AGENT_TOKEN_FILE, agentPipeName, agentReplyMac, agentRequestMac, matchAgentRoute, startAgentPort } from '../../src/server/agent-port.ts';
+import { AGENT_AUTH, AGENT_PORT_LIMITS, AGENT_REQUEST_BODY, AGENT_ROUTES, AGENT_TOKEN_FILE, agentPipeName, agentReplyMac, agentRequestMac, matchAgentRoute, startAgentPort } from '../../src/server/agent-port.ts';
 import type { AgentPort, AgentPortDeps } from '../../src/server/agent-port.ts';
 import { ROUTES } from '../../src/server/routes.ts';
 import { endOwnedFor } from '../../src/server/owned-handlers.ts';
@@ -120,6 +121,33 @@ test('the reverse assertion: the agent port has exactly three routes, none of th
   assert.equal(matchAgentRoute('GET', '/agent/v1/requests/0123456789abcdef0123?wait=25')!.route.path, '/agent/v1/requests/:id');
   assert.equal(matchAgentRoute('GET', '/agent/v1/requests/0123456789abcdef0123#x'), null);
   assert.deepEqual(fx.requests.list(), [], 'nothing reached the store');
+});
+
+test('the reverse assertion, for the dispatch permission: the port has no route that sets a level, and its body cannot say it is a session, auto or clean', async (t) => {
+  assert.equal(HUMAN_VERB_ROUTES['dispatch-grant'], '/api/owned/:id/dispatch-grant');
+  for (const r of AGENT_ROUTES) assert.ok(!/grant|level|auto/.test(r.path), r.path);
+  const fx = await fixture(t);
+  for (const url of ['/api/owned/0123456789abcdef0123/dispatch-grant', '/agent/v1/dispatch-grant', '/agent/v1/requests/0123456789abcdef0123/dispatch-grant', '/agent/v1/requests/0123456789abcdef0123/grant']) {
+    assert.equal(matchAgentRoute('POST', url), null, url);
+    const body = JSON.stringify({ actionId: crypto.randomUUID(), level: 'free' });
+    assert.equal((await call(fx.port.pipe, 'POST', url, proofHeaders(fx.token, fx.clock.wall, 'POST', url, body), body)).status, 404, url);
+  }
+  const ask = { harness: 'codex', text: 'x', cwd: 'D:\\w', requester: { kind: 'dsh', sessionId: null } };
+  assert.equal(shapeError(AGENT_REQUEST_BODY, ask), null);
+  for (const bad of [{ ...ask, requester: { kind: 'owned', sessionId: 'a'.repeat(20) } }, { ...ask, auto: true }, { ...ask, tainted: false }, { ...ask, model: 'zcode/GLM-5.3' }, { ...ask, askWhy: null }]) {
+    assert.notEqual(shapeError(AGENT_REQUEST_BODY, bad), null, JSON.stringify(bad));
+  }
+});
+
+test('a seat request is a pending card whatever the session it names holds: nothing at the port reads a level', async (t) => {
+  const fx = await fixture(t);
+  const url = '/agent/v1/requests';
+  const body = JSON.stringify({ harness: 'codex', text: 'seat job', cwd: 'D:\\w', requester: { kind: 'dsh', sessionId: 'a'.repeat(20) } });
+  const r = await call(fx.port.pipe, 'POST', url, { 'content-type': 'application/json', ...proofHeaders(fx.token, fx.clock.wall, 'POST', url, body) }, body);
+  assert.equal(r.status, 200, r.raw);
+  assert.equal(r.json.state, 'pending');
+  const held = fx.requests.list()[0]!;
+  assert.deepEqual([held.auto, held.tainted, held.ownedId, held.requester.kind], [false, true, null, 'dsh']);
 });
 
 test('the token never crosses the pipe: a request proves it by HMAC (fresh nonce, time near orchestrad\'s, MAC over method, path and body); anything else is 401, and a replay too', async (t) => {

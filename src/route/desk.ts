@@ -60,7 +60,7 @@ export type Kept = {
 };
 
 /** The last dispatch, as the tower's router row shows it (title from the session's own meta). */
-export type Dispatch = { readonly ownedId: string; readonly harness: RouteHarness; readonly model: string; readonly at: number };
+export type Dispatch = { readonly ownedId: string; readonly harness: RouteHarness; readonly model: string; readonly at: number; /** A worker sent it out on your permission: no click of yours. */ readonly auto: boolean };
 
 export type DeskDeps = {
   /** The POST to magpie's chat completions; null when the router model is off (the rules alone). */
@@ -91,10 +91,12 @@ export type Desk = {
   decision(kept: Kept, d: { actionId: string; ownedId: string; harness: RouteHarness; model: string }): Rec;
   /** The RouteDecision record of a dispatch with no suggestion for its sentence (r4 §9.5): the rules' taskClass, no candidates, router not-asked. */
   manual(text: string, d: { actionId: string; ownedId: string; harness: RouteHarness; model: string }): Rec;
+  /** The RouteDecision record of a dispatch a worker made on its permission (src/route/dispatch.ts): as `manual`, mode auto, reason worker. */
+  auto(text: string, d: { actionId: string; ownedId: string; harness: RouteHarness; model: string }): Rec;
   /** The title a dispatch from `kept` gives its session: the router model's only when the person took the candidate it chose, else null (the sentence's first line). */
   titleFor(kept: Kept, harness: RouteHarness, model: string): string | null;
   /** A dispatch whose records are in the journal: the router row shows it, stamped now. */
-  dispatched(d: Omit<Dispatch, 'at'>): void;
+  dispatched(d: Omit<Dispatch, 'at' | 'auto'> & { auto?: boolean }): void;
   last(): Dispatch | null;
 };
 
@@ -205,13 +207,21 @@ export function makeDesk(deps: DeskDeps): Desk {
       };
       return { kind: 'route', body: { decisionId: canonicalDigest(body), ...body } };
     },
+    auto(text: string, d: { actionId: string; ownedId: string; harness: RouteHarness; model: string }): Rec {
+      const rules = runRules(text, { codex: true, claude: true });
+      const body = {
+        actionId: d.actionId, routeId: null, ownedId: d.ownedId, taskClass: rules.taskClass, rules: [...rules.hits],
+        candidates: [], chosen: { harness: d.harness, model: d.model }, pick: null, reason: 'worker', router: 'not-asked', routerModel: null, routerWhy: null, mode: 'auto',
+      };
+      return { kind: 'route', body: { decisionId: canonicalDigest(body), ...body } };
+    },
     titleFor(k: Kept, harness: RouteHarness, model: string): string | null {
       if (k.reply.titleSource !== 'model' || k.reply.router.pick === null) return null;
       const c = k.reply.candidates[k.reply.router.pick];
       return c !== undefined && c.harness === harness && c.model === model ? k.reply.title : null;
     },
-    dispatched(d: Omit<Dispatch, 'at'>): void {
-      last = Object.freeze({ ownedId: d.ownedId, harness: d.harness, model: d.model, at: deps.nowWall() });
+    dispatched(d: Omit<Dispatch, 'at' | 'auto'> & { auto?: boolean }): void {
+      last = Object.freeze({ ownedId: d.ownedId, harness: d.harness, model: d.model, at: deps.nowWall(), auto: d.auto === true });
     },
     last: () => last,
   });
@@ -220,10 +230,10 @@ export function makeDesk(deps: DeskDeps): Desk {
 /** The last dispatch a stored `route` body names, with the wall time of its line; null when it is not one. */
 export function dispatchOf(body: unknown, obsWall: number): Dispatch | null {
   if (typeof body !== 'object' || body === null) return null;
-  const b = body as { ownedId?: unknown; chosen?: { harness?: unknown; model?: unknown } };
+  const b = body as { ownedId?: unknown; mode?: unknown; chosen?: { harness?: unknown; model?: unknown } };
   const h = b.chosen?.harness;
   if (typeof b.ownedId !== 'string' || (h !== 'codex' && h !== 'claude') || typeof b.chosen?.model !== 'string') return null;
-  return Object.freeze({ ownedId: b.ownedId, harness: h, model: b.chosen.model, at: obsWall });
+  return Object.freeze({ ownedId: b.ownedId, harness: h, model: b.chosen.model, at: obsWall, auto: b.mode === 'auto' });
 }
 
 /** The last dispatch the journal holds (the newest `route` line), or null: read once when the desk is made. */

@@ -2,10 +2,10 @@
 
 ## Facts
 - Owner: AdamPlatin123
-- When: 2026-11-05（派发行、拉线、根线程停止之后）
+- When: 2026-11-05（Claude 子代理和派活权限之后）
 - Machine: 550W备份1号机
 - Branch: claude/orchestra-app（从 `claude/alpha-0.2-interactive` 的 76807ec 切出）
-- Commit: 随本文件一起提交，上一提交 8b2e8fb（新首页和停止管到 subagent）。再往前 580143a Codex 子代理、 2a67fbf 第三轮方案、 88194f3 第二轮方案、 ad4c923 页面评审修正、eb8d621 来源链复核修正，之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
+- Commit: 随本文件一起提交，上一提交 05ad22c（派发行和拉线）。再往前 8b2e8fb 新首页和停止、 580143a Codex 子代理、 2a67fbf 第三轮方案、 88194f3 第二轮方案、 ad4c923 页面评审修正、eb8d621 来源链复核修正，之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
 - Pushed: no（远端还没有这条分支。76807ec 之后的提交只在这台机器上）
 - Uncommitted on that machine: `.claude/launch.json`（未跟踪，本机某次会话的预览配置，不要提交）。主检出目录里 r4 规格有用户本人的未提交改动，见 Do not touch。
 
@@ -60,7 +60,12 @@
 
 - 派发行和拉线：Codex 派发写进对话流，同一回合连续派出的算一批，一批一张折叠卡，从派发行拉线到卡。停止也管根线程自己的长命令。同一会话排队的审批现在都进等你（以前一个会话只算一条）。验证：全量 1628 项，通过 1625，失败 0，跳过 1，待办 2；`live-smoke` 的 `--subagent --pair`、`--root-stop`、`--subagent-stop` 在最终代码上都退出码 0；测试 profile 里用内置浏览器走过两批派发、线、批准、停止。
 
+- Claude 自有会话的 subagent：只给有 Job 的会话放开 Task、Agent，实测全部走审批闸、没有逃出 Job；成员表抽成 `src/owned/members.ts`，Codex 和 Claude 共用；派一个 subagent 要批。seat 请求等 subagent 说完才算 done。
+- 派活权限：自有 worker 有 `orchestra_dispatch` 工具（`src/route/dispatch.ts`），每个会话一档，默认派前问你，只有人能在配对且解锁的页面上改（`POST /api/owned/:id/dispatch-grant`）。直接派出走全部其余检查，记录写 `auto`。受污染、你不在、被派出的会话都退回派前问你，派出深度上限 2，seat 不走权限。在场判定新做在 `src/route/presence.ts`。验证：全量 1733 项，通过 1730，失败 0，跳过 1，待办 2；`live-smoke --dispatch-tool` 和 `--subagent` 两家各一次，退出码 0。
+
 ## Unverified（做了但没验证，或验证没过）
+- 派活权限：污染只认 seat 来源，抓过网页、读过项目根外文件的 worker 派出的会话算干净（r4 §8.5 这部分没跟踪），这是这次放宽的缺口；权限和派出关系只在内存，重启后要看 journal；派出结果不回给 worker；空闲会话也占 3 个名额；你不在时退回、来源不可信的页面路径没在浏览器走过；Claude 的派活工具没在页面上走过。
+- 走查里第一轮第一次点「刹车」落到了「中断这一回合」，原因没查实，之后修了版面跳动，复走没再出现。
 - 派发批次是推断：模型逐步派、中间没有别的 item 时分不开。派发行超出对话流上限或重启后会丢，这时没有线。刹车、拒绝、亮色主题、手机宽度这次没走。
 - 新首页：真实 profile 没看过（要用户重启才生效）；只读会话那组和红色出错胶囊只有单元测试；批准的按住手势是脚本发的；手机宽度只看过合成数据。
 - 停止：`Start-Process` 放出去的进程没测过，那种要刹车；「停下了」靠 Codex 的终端列表，产品里没有用 Job 核对；`backgroundTerminals` 是实验接口，只在 0.165.0 测过。
@@ -78,7 +83,7 @@
 
 ## Next（按优先级，每条可独立执行）
 1. 真实 profile 启动检查（只能由用户本人做）— 先关掉 2026-11-01 从 `.claude\worktrees\m0-thin-slice-e9066d\orchestra.cmd --peek-port 7470` 起的旧 orchestrad（M0 旧代码，真实 profile，2026-11-03 还在跑并占着 7470 端口；不关的话新实例起不来，浏览器打开的也是旧页面）。然后在普通（非管理员）cmd 里双击或运行仓库根的 `start-orchestra.cmd`（worktree 里先设 `ORCHESTRA_NODE` 指向主检出目录的 `.tools\node24\node.exe`）。验收：控制台打印配对码、`procguard on`、两家 `owned … sessions on`、`working (real profile …)`；浏览器自动打开 `http://orchestra.localhost:7470/`；配对后塔表有数据、顶栏数字等于点开后的行数；派一个 Codex 会话「只回复 ok，不用工具」到空闲后结束；Ctrl+C 后任务管理器里没有 codex.exe、procguard.exe。结果记进本文件。
-2. 接 Claude 自有会话的 subagent（要放开 `host-core` 禁的 Task、Agent，它的 sha256 是钉住的），和给自有 worker 加派活工具及权限（要改 r4 的 A17、§9.5、D20，seat 请求口按建议不走权限）。总台不规划已定，见 `round2/BRIEF.md` 第 1.2 节。
+2. 用户决定 r4 要不要跟着改：A17（agent 只能请求新建，由你批准）、§9.5 和 Q11（自动派活要过门槛）已被用户的话取代，见计划「派活权限」一节。总台还没做，今天没有总台；规划归 worker 已定，见 `round2/BRIEF.md` 第 1.2 节。
 3. 决定 push / 合并（只能由用户本人做）— 本分支只在这台机器上；`hosts/claude/node_modules` 也只在这个 worktree。要推远端或合进主线，由用户定目标分支。
 
 ## Do not touch
@@ -88,7 +93,7 @@
 
 ## Open questions
 - 派活权限落到代码要先定两件事：一是改 r4（A17 agent 只能请求新建、由你批准，§9.5 / Q11 自动派活要过门槛，D20 你不在时不派新的执行 Task，计划第 169 行派出只有人点）；二是 seat 请求口不走权限。请求口的请求方是自报的，没有校验管道对端进程，之所以接受就是因为每条都要人点（计划第 135 行）。今天自有 worker 没有派活工具，所以要先给自有 worker 加派活工具，权限才有东西可管。
-- 折叠卡接真实数据：只读会话约五成（没有耗时、没有红点，名字退回类型）；Codex 自有 worker 已接上（2026-11-04）；Claude 自有 worker 还是零成（Claude 禁了 Task 和 Agent，host-core 的 sha256 是钉住的）。
+- 折叠卡接真实数据：只读会话约五成（没有耗时、没有红点，名字退回类型）；Codex 自有 worker 已接上（2026-11-04）；Claude 自有 worker 2026-11-05 也接上了。
 - `docs/research/ds-bot.md` 第 87 行「没有任务对象」和 `2026-10-30-ds-bot-noticed.md` 第 88、119 行（转发上限、Continue 按钮）对 0.2.7 已过时，这次只读代码发现，没改文档。
 - r4 要不要跟着改：用户定了总台不规划，但 r4 §8.9 (c) 写规划者是主代理（M1–M3）、M4 起可为 Maestro，§9.1 同样写 Maestro 可当规划者。r4 由用户本人改，本分支没动。
 - 哪个 DSH profile 是日常用的、要不要把 seat 装进去：由用户定（D11 / Q5a：先在隔离 DSH_HOME 验过同一版本，再由主人自己装）。Q5a 和 seat 对不上的三处（没有 Tuning 页；seat 加的是能提请求的工具，不是只读；DS-Bot 已换桌面版要重核）记在计划分歧一节。

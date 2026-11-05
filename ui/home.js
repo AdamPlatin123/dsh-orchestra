@@ -5,7 +5,7 @@
 // loosen an allow. A card opens only when clicked, and a new one comes out once at the end of its wire, never moving
 // the reader's place or the focus. The wires are the one thing measured here: they follow every frame, scroll and resize.
 import { TIMEOUT_MS, getTower, oneAtATime } from './api.js';
-import { after, every, fmtIso, nowMono, onFrame } from './clock.js';
+import { after, every, fmtClock, fmtIso, nowMono, onFrame } from './clock.js';
 import { makePatcher } from './dom.js';
 import { POLL_MS, driveState, makeDrive } from './drive.js';
 import { atBottom, ownedIdOf, queuedN } from './owned.js';
@@ -13,7 +13,7 @@ import { getTheme } from './prefs.js';
 import { go, openFull, parse } from './route.js';
 import { indexOf, towerFrame } from './tree.js';
 import { describeDetail, detectsError, t } from './view.js';
-import { avatarOf, describeErrs, describeIsland, describeLost, describeRail, describeSubs, describeTop, describeWires, railList, rootOf, subCards, wireRows, workersOf } from './wings.js';
+import { avatarOf, describeErrs, describeGrant, describeIsland, describeLost, describeRail, describeSubs, describeTop, describeWires, grantsLine, railList, rootOf, subCards, wireRows, workersOf } from './wings.js';
 
 /** @typedef {import('../shared/tower-contract.js').TowerSnapshot} TowerSnapshot */
 
@@ -27,6 +27,8 @@ const WIRE_MS = 2200;
 const NARROW = '(max-width: 899px)';
 /** After the pointer or focus left, the left list holds this long, as the old page's tree. */
 const QUIET_MS = 5000;
+/** The chain of dispatches a worker may stand at the end of (src/route/dispatch.ts DISPATCH_LIMITS.depth): the panel says so there. */
+const MAX_DEPTH = 2;
 const dom = makePatcher(document);
 
 const state = {
@@ -196,10 +198,12 @@ function render() {
   const node = state.sel === null ? undefined : indexOf(snap).byId.get(state.sel)?.node;
   const face = node === undefined ? { data: { hide: '1' } } : avatarOf(node);
   Object.assign(/** @type {any} */ (detail.slots), { hav: { ...face, data: { hide: node === undefined ? '1' : '0', ...face.data } } }, node === undefined ? { empty: { text: t('home.pick') } } : {});
+  Object.assign(/** @type {any} */ (detail.slots), { grant: describeGrant(node === undefined ? null : ownedIdOf(node), state.owned, { unlocked: open, fmt: fmtClock, maxDepth: MAX_DEPTH }) });
   drive.paintSession(snap, detail, atEnd);
   const own = node === undefined ? null : ownedIdOf(node);
   const read = own !== null && state.feeds.has(own);
   dom.paintId('subs', describeSubs(snap, state.sel, { open: state.folds, fresh: freshCards(snap), rows: state.rows, read, locked: !open }));
+  dom.paintId('rbar', { text: grantsLine(state.owned, open) });
   freshWires(read);
   drive.moveFocusOn();
   settlePlace();
@@ -267,7 +271,7 @@ function openNode(key) {
 
 /** A dispatch row of the selected worker's talk, tied to its card. @param {readonly import('./dom.js').Desc[]} kids */
 function chatRows(kids) {
-  const rows = wireRows(kids, state.snap === null ? [] : subCards(state.snap, state.sel), state.folds);
+  const rows = wireRows(kids, state.snap === null ? [] : subCards(state.snap, state.sel), state.folds, fmtClock);
   for (const r of rows) {
     const fold = r.tpl === 'tpl-disp' ? r.slots?.b?.data?.fold : '';
     if (fold) state.rows.set(fold, r.key);

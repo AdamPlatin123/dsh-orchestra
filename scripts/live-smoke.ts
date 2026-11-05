@@ -1,9 +1,20 @@
 // The live end-to-end run of an owned session (orchestra app step 4): orchestrad in the test profile with
 // --owned, driven over HTTP exactly as the page drives it, against the real codex.exe or the Claude host
 // and the local magpie gateway (http://127.0.0.1:3425, no key). Not part of the test run.
-//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--outside | --brake | --daemon-stop | --daemon-kill | --project-root | --subagent [--pair] | --subagent-stop | --root-stop] [--keep]
+//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--outside | --brake [--via-subagent] | --daemon-stop | --daemon-kill | --project-root | --subagent [--pair] | --subagent-stop [--loose] | --root-stop | --dispatch-tool] [--keep]
 //
-// --subagent (orchestra app plan 子代理, codex only): the task is to spawn one sub-agent that runs one ping and
+// --dispatch-tool (orchestra app plan 派活权限): one worker of this harness, told to call the dispatch tool, through both
+// levels and what no level opens. 派前问你: a card with the worker as its requester and nothing started; the run stands in for
+// the person and presses 派出. 直接派出: the run sets the level (POST /api/owned/:id/dispatch-grant), and the next call
+// starts a session with no card. At the limit of running sessions the next call is refused and the worker told. Away (no
+// read of the list for longer than the heartbeat): the level goes back to a card, which is rejected. A seat request
+// (signed, over the agent port) stays a card with every level open; dispatched, its session is tainted: at 直接派出 its call
+// is a card too, and what that dispatches is tainted. It passes only if each of those held, the agent port answers 404 to
+// the permission's route, level away is refused, what was dispatched starts at 派前问你, the journal has exactly one `auto`
+// record, on the right sessions and the person's grant, `route` lines of mode manual and auto to match, no `human` record
+// for the session the level started, and nothing of a Job is left.
+//
+// --subagent (orchestra app plan 子代理): the task is to spawn one sub-agent that runs one ping and
 // to wait for it. Each round the run reads GET /api/tower (it answers only what passes the tower contract), and
 // reports the states the sub-agent's node went through, whether it had a name and a duration, its model, how
 // many of its steps ran unasked, whether the feed stayed the root's (no tool row), and whether each card said
@@ -12,9 +23,10 @@
 // which, the feed holds no tool row, every tower read answered 200, and the feed has a dispatch row for each
 // sub-agent: its ref the node's id, its batch the node's, and a name in the end. With --pair the task is to spawn two
 // at once: the report says how many batches they made (the model decides how it spawns, so that is a finding, not a
-// pass or fail), and it must see two.
+// pass or fail), and it must see two. With --harness claude the sub-agent is a background one and the root's turn ends
+// before it does: the run waits for it to be over and for the turn it wakes, and starting it is a card of its own.
 //
-// --subagent-stop (orchestra app plan 子代理, codex only): the stop, pressed as the page does (POST
+// --subagent-stop (orchestra app plan 子代理): the stop, pressed as the page does (POST
 // /api/owned/:id/interrupt) while a sub-agent's `ping -n 120` runs, twice in one session: first with the root
 // turn waiting for the sub-agent, then, after a message that spawns another and does not wait, with the root idle.
 // After each press the run checks by pid + creation time that the ping and the shell around it are gone, that
@@ -23,7 +35,11 @@
 // (at most 15 s, far inside the ping's own two minutes), and that the session itself still stands idle. The list
 // must have offered the stop before the press (the page's button goes by it) and offer it no more after, and the
 // record on disk must count no step failed or run unasked. It passes only if both rounds did, every tower read
-// answered 200, and nothing of the Job is left after the end.
+// answered 200, and nothing of the Job is left after the end. With --harness claude the first sub-agent runs in the
+// foreground (run_in_background false, so the root's turn waits for it) and the second in the background.
+// With --loose (Claude only, one round) the sub-agent's command first lets a `ping -t` go with Start-Process, a process no
+// frame ever names, and the stop comes during the ping it then runs: it passes only if that ping is still in the Job after the
+// stop, the feed's final word is members-job-left, never members-stopped, the stop stays on offer, and the end takes it.
 //
 // --root-stop (orchestra app plan 派发和拉线, codex only): the stop, pressed as the page does while the root's own
 // `ping -n 120` runs. After the press the run checks by pid + creation time that the ping and the shell around it are
@@ -56,7 +72,8 @@
 // keeps running (Start-Process, so it outlives the command that started it), the run waits until that
 // PING.EXE is in the session's Job, presses the brake (POST /api/owned/:id/brake, as the page does) and
 // checks by pid + creation time that none of the Job's processes survived. Every run reports what its
-// Job held before the end and how many of those processes are still alive after it.
+// Job held before the end and how many of those processes are still alive after it. With --via-subagent
+// (--harness claude) a sub-agent starts that ping: what it lets out of its own command must be in the Job too.
 //
 // --outside: the task is instead to read a synthetic file the script writes in the test dir, outside the
 // session's work dir; the report says whether the harness asked about it (approvals by kind and risk) or
@@ -90,10 +107,13 @@
 import { type ChildProcessWithoutNullStreams, spawn } from 'node:child_process';
 import * as crypto from 'node:crypto';
 import * as fs from 'node:fs';
+import * as http from 'node:http';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { CLAUDE_JOB_RESIDENTS } from '../src/owned/claude-session.ts';
+import { AGENT_AUTH, AGENT_TOKEN_FILE, agentPipeName, agentRequestMac } from '../src/server/agent-port.ts';
 import { endAndWait, endReasonOnDisk, jobsOf, leftovers, membersOnDisk, type probe, probeOf, type Reply, request, sleep, stopDaemon } from './live-common.ts';
 
 const REPO = fileURLToPath(new URL('../', import.meta.url));
@@ -122,45 +142,73 @@ const SUBAGENT_STOP_TASK = 'Spawn exactly one sub-agent with the task name ping_
   + 'Do not run the command yourself. Wait for the sub-agent to finish, and then reply with the single word finished.';
 const SUBAGENT_FREE_TASK = 'Spawn exactly one more sub-agent with the task name ping_free. Its task: run exactly this one shell command, once, wait for it, and report back: `ping -n 120 127.0.0.1` '
   + 'Do not run the command yourself and do not wait for the sub-agent: as soon as it is spawned, end your turn by replying with the single word spawned.';
+
+/** The same four tasks in the words of the Claude CLI's Agent tool. */
+const CLAUDE_TASKS = {
+  one: 'Use the Agent tool exactly once, with subagent_type general-purpose and the description ping_once. Its prompt: run exactly this one shell command, once, and report back: ping -n 2 127.0.0.1. '
+    + 'Do not run the command yourself. When it has reported, reply with the single word finished.',
+  pair: 'In one single reply, call the Agent tool exactly twice, both with subagent_type general-purpose, with the descriptions ping_a and ping_b. The prompt of each: run exactly this one shell command, once, and report back: ping -n 2 127.0.0.1. '
+    + 'Do not run the command yourself. When both have reported, reply with the single word finished.',
+  stop: 'Use the Agent tool exactly once, with run_in_background false, subagent_type general-purpose and the description ping_wait. Its prompt: run exactly this one shell command in the foreground, once, wait for it, and report back: `ping -n 120 127.0.0.1` '
+    + 'Do not run the command yourself. When it has reported, reply with the single word finished.',
+  brake: 'Use the Agent tool exactly once, with subagent_type general-purpose and the description ping_loose. Its prompt: run exactly this one shell command, once, and report back: '
+    + 'powershell -NoProfile -Command "Start-Process -WindowStyle Hidden -FilePath ping.exe -ArgumentList \'-t\',\'127.0.0.1\'" Do not run the command yourself.',
+  loose: 'Use the Agent tool exactly once, with run_in_background false, subagent_type general-purpose and the description ping_loose. Its prompt: run exactly this one shell command in the foreground, once, wait for it, and report back: '
+    + 'powershell -NoProfile -Command "Start-Process -WindowStyle Hidden -FilePath cmd.exe -ArgumentList \'/c\',\'start\',\'/b\',\'ping\',\'-t\',\'127.0.0.1\'; ping.exe -n 120 127.0.0.1" Do not run the command yourself. When it has reported, reply with the single word finished.',
+  free: 'Use the Agent tool exactly once more, with run_in_background true, subagent_type general-purpose and the description ping_free. Its prompt: run exactly this one shell command in the foreground, once, wait for it, and report back: `ping -n 120 127.0.0.1` '
+    + 'Do not run the command yourself and do not wait for it: as soon as it is spawned, end your turn by replying with the single word spawned.',
+};
+/** How long a Claude run waits for the turn a background sub-agent's end wakes. */
+const WAKE_MS = 45_000;
 /** How long a stop has to show what it did, far inside the ping's own two minutes. */
 const STOP_CHECK_MS = 15_000;
+/** The stop order of the sessions a run ended, before orchestrad goes (scripts/live-common.ts STOP_ORDER_MS). */
+const STOP_SETTLE_MS = 5_500;
 /** What stays in a session's Job with no command running (measured after a clean, 2026-11-04): anything else is a command's. */
 const JOB_RESIDENTS: ReadonlySet<string> = new Set(['codex.exe', 'codex-code-mode-host.exe', 'conhost.exe']);
 
-function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean; outside: boolean; brake: boolean; daemonStop: boolean; daemonKill: boolean; projectRoot: boolean; subagent: boolean; pair: boolean; subagentStop: boolean; rootStop: boolean } {
+function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean; outside: boolean; brake: boolean; viaSubagent: boolean; daemonStop: boolean; daemonKill: boolean; projectRoot: boolean; subagent: boolean; pair: boolean; subagentStop: boolean; loose: boolean; rootStop: boolean; dispatchTool: boolean } {
   const a = process.argv.slice(2);
   let harness: string | null = null;
   let model: string | null = null;
   let keep = false;
   let outside = false;
   let brake = false;
+  let viaSubagent = false;
   let daemonStop = false;
   let daemonKill = false;
   let projectRoot = false;
   let subagent = false;
   let pair = false;
   let subagentStop = false;
+  let loose = false;
   let rootStop = false;
+  let dispatchTool = false;
   for (let i = 0; i < a.length; i++) {
     if (a[i] === '--harness') harness = a[++i] ?? null;
     else if (a[i] === '--model') model = a[++i] ?? null;
     else if (a[i] === '--keep') keep = true;
     else if (a[i] === '--outside') outside = true;
     else if (a[i] === '--brake') brake = true;
+    else if (a[i] === '--via-subagent') viaSubagent = true;
     else if (a[i] === '--daemon-stop') daemonStop = true;
     else if (a[i] === '--daemon-kill') daemonKill = true;
     else if (a[i] === '--project-root') projectRoot = true;
     else if (a[i] === '--subagent') subagent = true;
     else if (a[i] === '--pair') pair = true;
     else if (a[i] === '--subagent-stop') subagentStop = true;
+    else if (a[i] === '--loose') loose = true;
     else if (a[i] === '--root-stop') rootStop = true;
+    else if (a[i] === '--dispatch-tool') dispatchTool = true;
     else throw new Error(`live-smoke: unknown argument ${a[i]}`);
   }
   if (harness !== 'codex' && harness !== 'claude') throw new Error('live-smoke: --harness codex|claude');
-  if ([outside, brake, daemonStop, daemonKill, projectRoot, subagent, subagentStop, rootStop].filter(Boolean).length > 1) throw new Error('live-smoke: one of --outside, --brake, --daemon-stop, --daemon-kill, --project-root, --subagent, --subagent-stop, --root-stop');
-  if ((subagent || subagentStop || rootStop) && harness !== 'codex') throw new Error('live-smoke: --subagent, --subagent-stop and --root-stop are for --harness codex');
+  if ([outside, brake, daemonStop, daemonKill, projectRoot, subagent, subagentStop, rootStop, dispatchTool].filter(Boolean).length > 1) throw new Error('live-smoke: one of --outside, --brake, --daemon-stop, --daemon-kill, --project-root, --subagent, --subagent-stop, --root-stop, --dispatch-tool');
+  if (rootStop && harness !== 'codex') throw new Error('live-smoke: --root-stop is for --harness codex');
   if (pair && !subagent) throw new Error('live-smoke: --pair goes with --subagent');
-  return { harness, model, keep, outside, brake, daemonStop, daemonKill, projectRoot, subagent, pair, subagentStop, rootStop };
+  if (viaSubagent && (!brake || harness !== 'claude')) throw new Error('live-smoke: --via-subagent goes with --brake and --harness claude');
+  if (loose && (!subagentStop || harness !== 'claude')) throw new Error('live-smoke: --loose goes with --subagent-stop and --harness claude');
+  return { harness, model, keep, outside, brake, viaSubagent, daemonStop, daemonKill, projectRoot, subagent, pair, subagentStop, loose, rootStop, dispatchTool };
 }
 
 function freePort(): Promise<number> {
@@ -248,8 +296,237 @@ async function connect(d: Daemon): Promise<Api> {
 
 const isPing = (p: { image: string | null }) => (p.image ?? '').toLowerCase() === 'ping.exe';
 
+/** The heartbeat's limit (src/route/presence.ts PRESENCE_LIMITS.beatMs) and a margin: this long without a read of the list is away. */
+const AWAY_MS = 32_000;
+const DISPATCH_MODEL = 'zcode/GLM-5.3';
+const dispatchTask = (tool: string, harness: string) => `Call the tool ${tool} exactly once, with task "Reply with the single word pong. Do not run anything." and harness ${harness} and model ${DISPATCH_MODEL}. Do not do anything else first. Then reply with exactly what the tool returned, word for word.`;
+
+/** One signed request of the agent port, as the seat sends it: over the test dir's pipe, with the token orchestrad wrote there. */
+function seatRequest(testDir: string, method: string, pathname: string, body: unknown): Promise<{ status: number; json: any }> {
+  const name = path.basename(testDir).slice('orchestra-test-'.length);
+  const token = fs.readFileSync(path.join(testDir, 'orchestra', AGENT_TOKEN_FILE), 'utf8').trim();
+  const payload = JSON.stringify(body);
+  const nonce = crypto.randomBytes(16).toString('base64url');
+  const time = String(Date.now());
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      socketPath: agentPipeName('test', name), method, path: pathname, agent: false,
+      headers: {
+        'content-type': 'application/json', 'content-length': Buffer.byteLength(payload), authorization: `${AGENT_AUTH.scheme} ${agentRequestMac(token, nonce, time, method, pathname, payload)}`,
+        [AGENT_AUTH.nonceHeader]: nonce, [AGENT_AUTH.timeHeader]: time,
+      },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (c: Buffer) => chunks.push(c));
+      res.on('end', () => {
+        let json: unknown = null;
+        try {
+          json = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        } catch {
+          json = null;
+        }
+        resolve({ status: res.statusCode ?? 0, json });
+      });
+    });
+    req.setTimeout(10_000, () => req.destroy(new Error('live-smoke: the agent port had no answer')));
+    req.on('error', reject);
+    req.end(payload);
+  });
+}
+
+/** --dispatch-tool: see the head of this file. */
+async function dispatchRun(harness: 'codex' | 'claude', model: string | null, keep: boolean): Promise<number> {
+  const testDir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'orchestra-test-smoke-'));
+  fs.mkdirSync(path.join(testDir, 'roots'));
+  const d = await startDaemon(testDir, ['--agent-port']);
+  const report: Record<string, unknown> = { harness, mode: 'dispatch-tool' };
+  const checks: Record<string, boolean> = {};
+  const check = (name: string, ok: boolean) => {
+    checks[name] = ok;
+  };
+  const sessions: string[] = [];
+  let code = 1;
+  let api: Api | null = null;
+  const until = async <T>(what: string, ms: number, read: () => Promise<T | null | undefined>): Promise<T> => {
+    for (const t0 = Date.now(); Date.now() - t0 < ms; await sleep(700)) {
+      const v = await read();
+      if (v !== null && v !== undefined) return v;
+    }
+    throw new Error(`live-smoke: no ${what} within ${ms / 1000} s`);
+  };
+  try {
+    const a = await connect(d);
+    api = a;
+    report.startup = a.owned;
+    const tool = harness === 'claude' ? 'mcp__orchestra__dispatch' : 'orchestra_dispatch';
+    const task = dispatchTask(tool, harness);
+    const list = async () => (await a.get('/api/owned')).json;
+    const events = async (id: string): Promise<{ seq: number; kind: string; ref: string | null; state: string | null; text: string | null }[]> => (await a.get(`/api/owned/${id}/feed`)).json.events;
+    const note = async (id: string, state: string, after = 0) => (await events(id)).find((e) => e.seq > after && e.kind === 'note' && e.state === state) ?? null;
+    const last = async (id: string) => (await events(id)).at(-1)?.seq ?? 0;
+    const entry = async (id: string) => (await list()).owned.find((o: { ownedId: string }) => o.ownedId === id);
+    const nodeOf = async (id: string) => ((await a.get('/api/tower')).json?.projects ?? []).flatMap((p: { nodes: unknown[] }) => p.nodes).find((n: { id: string }) => n.id === `n:${id}`) as { sent: { by: string; via: string; grantAt: number | null } | null } | undefined;
+    const pending = async (from: string) => (await list()).requests.find((r: { requester: string; state: string }) => r.state === 'pending' && r.requester === from) ?? null;
+    /** The session's turn, over and said: the tool's answer reached the model when its next words came. */
+    const spoke = (id: string, after: number, re: RegExp) => until('reply', 120_000, async () => {
+      const es = await events(id);
+      return es.some((e) => e.seq > after && e.kind === 'text' && e.state !== 'partial' && re.test(e.text ?? '')) ? true : null;
+    });
+    const idle = (id: string) => until('idle session', 120_000, async () => ((await entry(id))?.state === 'idle' ? true : null));
+    const send = async (id: string, text: string) => {
+      const r = await a.post(`/api/owned/${id}/message`, { text });
+      if (r.status !== 200) throw new Error(`live-smoke: message answered ${r.status}`);
+    };
+    const click = async (r: { text: string; harness: string; requestId: string }) => {
+      const m = await a.post('/api/owned/new', { text: r.text, harness: r.harness, model: DISPATCH_MODEL, requestId: r.requestId });
+      if (m.status !== 200) throw new Error(`live-smoke: 派出 answered ${m.status} ${m.body}`);
+      sessions.push(String(m.json.ownedId));
+      return String(m.json.ownedId);
+    };
+    const end = async (id: string) => {
+      await a.post(`/api/owned/${id}/end`, {});
+      await until('end', 20_000, async () => (['ended', 'failed'].includes((await entry(id))?.state) ? true : null));
+    };
+
+    // -- 派前问你 --------------------------------------------------------------------------------------
+    const made = await a.post('/api/owned/new', { text: task, harness, ...(model === null ? {} : { model }) });
+    if (made.status !== 200) throw new Error(`live-smoke: new answered ${made.status} ${made.body}`);
+    const W = String(made.json.ownedId);
+    sessions.push(W);
+    report.level0 = (await entry(W))?.dispatch?.level ?? null;
+    check('starts at ask', report.level0 === 'ask');
+    const card = await until('card', 150_000, () => pending(`owned:${W}`));
+    check('ask: a card, requester the worker, nothing started', card.auto === false && card.tainted === false && card.ownedId === null && (await list()).owned.length === 1);
+    check('ask: the feed says it waits', (await note(W, 'worker-asked')) !== null);
+    const c1 = await click(card);
+    await spoke(W, 0, /Dispatched/);
+    await idle(W);
+    const sent1 = await note(W, 'worker-sent');
+    const n1 = await nodeOf(c1);
+    check('ask: receipt names the session, by your click', sent1?.ref === `n:${c1}` && n1?.sent?.by === `n:${W}` && n1?.sent?.via === 'person' && n1?.sent?.grantAt === null);
+
+    // -- the route and who can reach it ---------------------------------------------------------------
+    check('level away is refused', (await a.post(`/api/owned/${W}/dispatch-grant`, { level: 'away' })).status === 400);
+    report.agentPortGrant = (await seatRequest(testDir, 'POST', `/api/owned/${W}/dispatch-grant`, { level: 'free' })).status;
+    check('the agent port has no such route', report.agentPortGrant === 404);
+
+    // -- 直接派出 --------------------------------------------------------------------------------------
+    const g = await a.post(`/api/owned/${W}/dispatch-grant`, { level: 'free' });
+    if (g.status !== 200) throw new Error(`live-smoke: grant answered ${g.status} ${g.body}`);
+    const grantAction = String(g.json.actionId);
+    report.presence = (await list()).presence;
+    check('free is set, and you are present', (await entry(W))?.dispatch?.level === 'free' && report.presence === 'present');
+    let mark = await last(W);
+    await send(W, task);
+    let cardSeen = false;
+    const sent2 = await until('free dispatch', 150_000, async () => {
+      if ((await pending(`owned:${W}`)) !== null) cardSeen = true;
+      return note(W, 'worker-sent-grant', mark);
+    });
+    const c2 = String(sent2.ref).slice(2);
+    sessions.push(c2);
+    await spoke(W, mark, /Dispatched/);
+    await idle(W);
+    const auto = (await list()).requests.find((r: { ownedId: string | null }) => r.ownedId === c2);
+    const n2 = await nodeOf(c2);
+    check('free: no card, the request is auto', !cardSeen && auto?.auto === true);
+    check('free: the receipt says the permission and when', n2?.sent?.by === `n:${W}` && n2?.sent?.via === 'grant' && typeof n2?.sent?.grantAt === 'number');
+    check('free: what it dispatched starts at ask', (await entry(c2))?.dispatch?.level === 'ask');
+    check('free: what a clean worker dispatched is clean (r4 §8.5)', (await entry(c2))?.dispatch?.tainted === false && (await entry(c1))?.dispatch?.tainted === false);
+    await until('its first reply', 120_000, async () => ((await events(c2)).some((e) => e.kind === 'text' && e.state !== 'partial') ? true : null));
+
+    // -- the limit: the worker and the two it sent out are three --------------------------------------
+    report.limits = (await list()).limits;
+    mark = await last(W);
+    await send(W, task);
+    const over = await until('refusal at the limit', 150_000, () => note(W, 'worker-refused', mark));
+    await spoke(W, mark, /Not dispatched/);
+    await idle(W);
+    check('limit: refused, told, no fourth', over.text === 'owned-limit' && (await list()).limits.active === 3 && (await pending(`owned:${W}`)) === null);
+    await end(c1);
+    await end(c2);
+
+    // -- away -----------------------------------------------------------------------------------------
+    await sleep(AWAY_MS);
+    mark = await last(W);
+    await send(W, task);
+    const asked = await until('card while away', 150_000, () => note(W, 'worker-asked', mark));
+    const held = await pending(`owned:${W}`);
+    check('away: back to a card, and it says why', asked.text === 'away' && held?.askWhy === 'away');
+    const no = await a.post(`/api/agent-requests/${held.requestId}/reject`, {});
+    await spoke(W, mark, /refused/i);
+    await idle(W);
+    check('away: 拒绝 reaches the worker', no.status === 200 && (await note(W, 'worker-refused', mark))?.text === 'you-rejected');
+
+    // -- a seat request and a tainted session ---------------------------------------------------------
+    const seat = await seatRequest(testDir, 'POST', '/agent/v1/requests', { harness, text: task, cwd: 'D:\\work\\smoke', requester: { kind: 'dsh', sessionId: 'smoke-seat' } });
+    if (seat.status !== 200) throw new Error(`live-smoke: the seat request answered ${seat.status}`);
+    await sleep(3000);
+    const waiting = await pending('dsh:smoke-seat');
+    check('seat: a card, whatever level anyone has', waiting !== null && waiting.auto === false && waiting.tainted === true);
+    const T = await click(waiting);
+    await until('tainted session', 30_000, async () => (await entry(T)) ?? null);
+    check('seat: its session is tainted', (await entry(T))?.dispatch?.tainted === true);
+    const g2 = await a.post(`/api/owned/${T}/dispatch-grant`, { level: 'free' });
+    const tCard = await until('card of the tainted session', 150_000, () => pending(`owned:${T}`));
+    check('tainted: back to a card at free, and it says why', g2.status === 200 && tCard.askWhy === 'tainted' && tCard.tainted === true && tCard.auto === false);
+    const c3 = await click(tCard);
+    await until('child', 30_000, async () => (await entry(c3)) ?? null);
+    check('tainted: what it dispatched is tainted', (await entry(c3))?.dispatch?.tainted === true);
+    report.c3Sent = (await nodeOf(c3))?.sent?.via ?? null;
+    for (const id of sessions) {
+      const e = await entry(id);
+      if (e !== undefined && !['ended', 'failed'].includes(e.state)) await end(id);
+    }
+    await sleep(STOP_SETTLE_MS);
+
+    report.stopped = await stopDaemon(d.child, d.exited);
+    api = null;
+    const lines = fs.readFileSync(path.join(testDir, 'orchestra', 'journal.jsonl'), 'utf8').split('\n').filter((l) => l !== '').map((l) => JSON.parse(l) as { kind: string; body: Record<string, any> });
+    const of = (k: string) => lines.filter((l) => l.kind === k).map((l) => l.body);
+    const autos = of('auto');
+    const routes = of('route');
+    const requests = of('agent-request');
+    report.journal = { auto: autos.length, routeManual: routes.filter((r) => r.mode === 'manual').length, routeAuto: routes.filter((r) => r.mode === 'auto').length, grants: of('dispatch-grant').map((b) => b.level), agentRequests: requests.map((r) => `${r.requesterKind}:${r.verdict}`) };
+    check('journal: one auto record, the right sessions, on your grant', autos.length === 1 && autos[0]!.by === W && autos[0]!.ownedId === c2 && autos[0]!.grantActionId === grantAction && autos[0]!.depth === 1);
+    check('journal: its route line is mode auto, the others manual', routes.filter((r) => r.mode === 'auto').length === 1 && routes.find((r) => r.mode === 'auto')?.ownedId === c2 && routes.find((r) => r.mode === 'auto')?.decisionId === autos[0]!.decisionId
+      && [W, c1, T, c3].every((id) => routes.find((r) => r.ownedId === id)?.mode === 'manual'));
+    check('journal: no human record started it', of('human').every((h) => !(h.verb === 'owned-new' && h.targetId === c2)) && of('human').filter((h) => h.verb === 'owned-new').length === 4);
+    check('journal: each level change is a person\'s', of('dispatch-grant').length === 2 && of('human').filter((h) => h.verb === 'dispatch-grant').length === 2);
+    check('journal: the requests say who asked', requests.filter((r) => r.requesterKind === 'owned' && r.verdict === 'dispatched').length === 2 && requests.filter((r) => r.requesterKind === 'owned' && r.verdict === 'rejected').length === 1 && requests.filter((r) => r.requesterKind === 'dsh' && r.verdict === 'dispatched').length === 1);
+    code = Object.values(checks).every(Boolean) ? 0 : 1;
+  } catch (e) {
+    report.error = e instanceof Error ? e.message : String(e);
+    report.orchestradSaid = d.lines.filter((l) => /owned|refus|failed|error/i.test(l) && !/code \d{8}/.test(l)).map((l) => l.replace(testDir, '<testDir>'));
+  } finally {
+    report.checks = checks;
+    if (api !== null) {
+      for (const id of sessions) await (api as Api).post(`/api/owned/${id}/end`, {}).catch(() => {});
+      await sleep(STOP_SETTLE_MS);
+    }
+    report.stopped ??= await stopDaemon(d.child, d.exited);
+    report.leftovers = await leftovers(testDir);
+    const lo = report.leftovers as { leftover: number; unchecked: number };
+    if (lo.leftover + lo.unchecked !== 0) code = 1;
+    if (!keep) {
+      for (let i = 0; i < 10; i++) {
+        try {
+          fs.rmSync(testDir, { recursive: true, force: true });
+          break;
+        } catch {
+          await sleep(1000);
+        }
+      }
+    }
+    report.testDirKept = keep || fs.existsSync(testDir);
+  }
+  console.log(JSON.stringify(report, null, 2));
+  return code;
+}
+
 async function main(): Promise<number> {
-  const { harness, model, keep, outside, brake, daemonStop, daemonKill, projectRoot, subagent, pair, subagentStop, rootStop } = args();
+  const { harness, model, keep, outside, brake, viaSubagent, daemonStop, daemonKill, projectRoot, subagent, pair, subagentStop, loose, rootStop, dispatchTool } = args();
+  if (dispatchTool) return dispatchRun(harness, model, keep);
   const testDir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'orchestra-test-smoke-'));
   fs.mkdirSync(path.join(testDir, 'roots'));
   // --project-root: a project root inside the test dir (the test profile takes roots only there).
@@ -282,7 +559,10 @@ async function main(): Promise<number> {
       root = Array.isArray(roots) && typeof roots[0] === 'string' ? roots[0] : null;
       if (root === null) throw new Error('live-smoke: GET /api/owned lists no project root');
     }
-    const made = await post('/api/owned/new', { text: outside ? outsideTask(probeFile) : brake ? BRAKE_TASK : daemonKill ? KILL_TASK : subagent ? (pair ? SUBAGENT_PAIR_TASK : SUBAGENT_TASK) : subagentStop ? SUBAGENT_STOP_TASK : rootStop ? ROOT_STOP_TASK : TASK, harness, ...(model === null ? {} : { model }), ...(root === null ? {} : { root }) });
+    const claude = harness === 'claude';
+    const residents = claude ? new Set(CLAUDE_JOB_RESIDENTS) : JOB_RESIDENTS;
+    const subagentTask = claude ? (pair ? CLAUDE_TASKS.pair : CLAUDE_TASKS.one) : pair ? SUBAGENT_PAIR_TASK : SUBAGENT_TASK;
+    const made = await post('/api/owned/new', { text: outside ? outsideTask(probeFile) : viaSubagent ? CLAUDE_TASKS.brake : brake ? BRAKE_TASK : daemonKill ? KILL_TASK : subagent ? subagentTask : subagentStop ? (loose ? CLAUDE_TASKS.loose : claude ? CLAUDE_TASKS.stop : SUBAGENT_STOP_TASK) : rootStop ? ROOT_STOP_TASK : TASK, harness, ...(model === null ? {} : { model }), ...(root === null ? {} : { root }) });
     if (made.status !== 200) throw new Error(`live-smoke: new answered ${made.status} ${made.body}`);
     const id = String(made.json.ownedId);
     ownedId = id;
@@ -299,14 +579,14 @@ async function main(): Promise<number> {
     const seenAppr = new Set<string>();
     /** --subagent: what the tower said of the session's sub-agent nodes, and how many cards named one. */
     const memberStates: Record<string, string[]> = {};
-    const memberFacts = { named: false, durationMs: null as number | null, models: new Set<string | null>(), towerAnswers: new Set<number>() };
+    const memberFacts = { named: false, durationMs: null as number | null, models: new Set<string | null>(), types: new Set<string | null>(), towerAnswers: new Set<number>() };
     let cardsFromSubagent = 0;
     /** The session's sub-agent nodes as the last tower read gave them. */
     let kids: { id: string; state: string; batch: number | null }[] = [];
     const readMembers = async () => {
       const tower = await get('/api/tower');
       memberFacts.towerAnswers.add(tower.status);
-      const nodes: { id: string; parent: string | null; ownership: string; state: string; title: string; durationMs: number | null; model: string | null; batch: number | null }[] = (tower.json?.projects ?? []).flatMap((p: { nodes: unknown[] }) => p.nodes);
+      const nodes: { id: string; parent: string | null; ownership: string; state: string; title: string; durationMs: number | null; model: string | null; agentType: string | null; batch: number | null }[] = (tower.json?.projects ?? []).flatMap((p: { nodes: unknown[] }) => p.nodes);
       kids = nodes.filter((x) => x.parent === `n:${ownedId}`);
       for (const n of kids as typeof nodes) {
         const seen = (memberStates[n.id] ??= []);
@@ -314,6 +594,7 @@ async function main(): Promise<number> {
         if (!n.title.startsWith('子代理（')) memberFacts.named = true;
         if (n.durationMs !== null) memberFacts.durationMs = n.durationMs;
         memberFacts.models.add(n.model);
+        memberFacts.types.add(n.agentType);
       }
     };
     /** --subagent-stop: what the session's Job holds now beyond its residents: a command's shell and what that started. */
@@ -325,7 +606,7 @@ async function main(): Promise<number> {
         if (opened.pg === null) throw new Error(`live-smoke: no probe: ${opened.why}`);
         pg = opened.pg;
       }
-      return (await pg.info(job)).procs.filter((p) => !JOB_RESIDENTS.has((p.image ?? '').toLowerCase()));
+      return (await pg.info(job)).procs.filter((p) => !residents.has((p.image ?? '').toLowerCase()));
     };
     const imagesOf = (procs: readonly { image: string | null }[]) => procs.map((p) => (p.image ?? '?').toLowerCase()).sort();
     type StopRound = { rootBefore: string; offered: boolean; answer: number; commandBefore: string[]; alive: number; inJob: string[]; goneMs: number | null; nodes: string[]; notes: string[]; rootAfter: string | null; offeredAfter: boolean | null; failed: number | null; ranUnasked: number | null };
@@ -363,6 +644,12 @@ async function main(): Promise<number> {
     };
     const stopHeld = (r: StopRound) => r.answer === 200 && r.offered && r.commandBefore.includes('ping.exe') && r.alive === 0 && r.inJob.length === 0 && r.nodes.length > 0 && r.nodes.every((n) => n === 'ended')
       && r.notes.length === 1 && r.notes[0] === `members-stopped=${r.nodes.length}` && r.rootAfter === 'idle' && r.offeredAfter === false && r.failed === 0 && r.ranUnasked === 0;
+    /** --loose: the let-go ping outlives the stop; the Job says so, and the stop stays on offer. */
+    const looseHeld = (r: StopRound | undefined) => r !== undefined && r.answer === 200 && r.offered && r.alive > 0 && r.inJob.includes('ping.exe') && r.nodes.length > 0 && r.nodes.every((n) => n === 'ended')
+      && r.notes.length === 1 && r.notes[0] === `members-job-left=${r.inJob.length}` && r.rootAfter === 'idle' && r.offeredAfter === true;
+    /** --subagent with Claude: when every sub-agent was over, and the turn count then; the turn it wakes is awaited. */
+    let membersOverAt: { t: number; turns: number } | null = null;
+    let turnAfterMembers = false;
     /** --root-stop: the feed position the message after the stop went out at; a reply past it is the proof. */
     let againFrom: number | null = null;
     let after = 0;
@@ -394,7 +681,7 @@ async function main(): Promise<number> {
         if (r.status === 200) allowed[`${a.kind}/${a.risk}`] = (allowed[`${a.kind}/${a.risk}`] ?? 0) + 1;
         else refusals[String(r.json?.error ?? r.status)] = (refusals[String(r.json?.error ?? r.status)] ?? 0) + 1;
       }
-      if (subagent || subagentStop || rootStop) await readMembers();
+      if (subagent || subagentStop || rootStop || viaSubagent) await readMembers();
       const feed = (await get(`/api/owned/${id}/feed?after=${after}`)).json;
       for (const e of feed.events) events.push({ seq: e.seq, kind: e.kind, ref: e.ref, state: e.state, text: e.text, batch: e.batch });
       after = feed.to;
@@ -406,10 +693,10 @@ async function main(): Promise<number> {
         const fresh = kids.filter((n) => !stoppedNodes.has(n.id));
         if (fresh.some((n) => n.state === 'returned')) throw new Error('live-smoke: the sub-agent reported before a stop could reach it');
         const procs = await commandsInJob();
-        if (me?.state === (stops.length === 0 ? 'running' : 'idle') && procs.some(isPing) && fresh.some((n) => n.state === 'running')) {
+        if (me?.state === (stops.length === 0 ? 'running' : 'idle') && procs.filter(isPing).length >= (loose ? 2 : 1) && fresh.some((n) => n.state === 'running')) {
           await pressStop(me.state, me.stoppable === true, fresh.map((n) => n.id), procs);
-          if (stops.length === 2) break;
-          const sent = await post(`/api/owned/${id}/message`, { text: SUBAGENT_FREE_TASK });
+          if (stops.length === 2 || loose) break;
+          const sent = await post(`/api/owned/${id}/message`, { text: claude ? CLAUDE_TASKS.free : SUBAGENT_FREE_TASK });
           if (sent.status !== 200) throw new Error(`live-smoke: message answered ${sent.status}`);
         }
         await sleep(500);
@@ -428,9 +715,20 @@ async function main(): Promise<number> {
         await sleep(500);
         continue;
       }
-      if (replied && turnOver && me?.state === 'idle') break;
-      if (daemonKill) {
-        // The kill comes while the turn runs: once the ping is in the session's Job.
+      if (subagent && claude) {
+        // The root's turn ends before a background sub-agent's: its end is what counts here, and the turn it wakes after.
+        const turns = events.filter((e) => e.kind === 'lifecycle' && /^turn-/.test(e.state ?? '')).length;
+        if (membersOverAt === null && kids.length >= (pair ? 2 : 1) && kids.every((n) => n.state !== 'running')) membersOverAt = { t: Date.now(), turns };
+        if (membersOverAt !== null && me?.state === 'idle') {
+          turnAfterMembers = turns > membersOverAt.turns;
+          if (turnAfterMembers || Date.now() - membersOverAt.t > WAKE_MS) break;
+        }
+        await sleep(500);
+        continue;
+      }
+      if (viaSubagent ? false : replied && turnOver && me?.state === 'idle') break;
+      if (daemonKill || viaSubagent) {
+        // The kill (or, --via-subagent, the brake) comes while the turn runs: once the ping is in the session's Job.
         const job = jobsOf(testDir).at(-1)?.job ?? null;
         if (pg === null && job !== null) {
           const opened = probeOf(testDir);
@@ -560,16 +858,17 @@ async function main(): Promise<number> {
     const toolRowsInFeed = events.filter((e) => e.kind === 'tool' || e.kind === 'tool-result').length;
     if (subagentStop) {
       await readMembers();
-      report.subagentStop = { rounds: stops, held: stops.map(stopHeld), states: Object.values(memberStates), towerAnswers: [...memberFacts.towerAnswers] };
+      report.subagentStop = { rounds: stops, held: stops.map(loose ? looseHeld : stopHeld), states: Object.values(memberStates), towerAnswers: [...memberFacts.towerAnswers] };
     }
     // What the talk says of each sub-agent: the last telling of its dispatch (it is told again once its name is known).
+    if (viaSubagent) report.viaSubagent = { states: Object.values(memberStates), cardsFromSubagent };
     const sentRows = new Map(events.filter((e) => e.kind === 'note' && e.state === 'dispatch').map((e) => [e.ref, e]));
     let dispatchHeld = false;
     if (subagent) {
       await readMembers();
       dispatchHeld = sentRows.size === kids.length && kids.length >= (pair ? 2 : 1) && kids.every((n) => n.batch !== null && sentRows.get(n.id)?.batch === n.batch && (sentRows.get(n.id)?.text ?? '') !== '');
       report.subagent = {
-        states: Object.values(memberStates), named: memberFacts.named, durationMs: memberFacts.durationMs, models: [...memberFacts.models], cardsFromSubagent, towerAnswers: [...memberFacts.towerAnswers], toolRowsInFeed,
+        states: Object.values(memberStates), named: memberFacts.named, durationMs: memberFacts.durationMs, models: [...memberFacts.models], types: [...memberFacts.types], cardsFromSubagent, ...(claude ? { turnAfterMembers } : {}), towerAnswers: [...memberFacts.towerAnswers], toolRowsInFeed,
         ranUnasked: Number(events.findLast((e) => e.kind === 'note' && e.state === 'members-ran-unasked')?.text ?? 0),
         dispatch: { rows: sentRows.size, members: kids.length, batches: new Set(kids.map((n) => n.batch)).size, nodesWithBatch: kids.filter((n) => n.batch !== null).length, held: dispatchHeld },
       };
@@ -592,7 +891,7 @@ async function main(): Promise<number> {
     code = rootStop
       ? (rootHeld(stops[0]) && rootResults.includes('stopped') && !rootResults.includes('failed') && rootRanUnasked === 0 && (report.rootStop as { repliedAfter: boolean }).repliedAfter && report.survivors === 0 && held.length > 0 ? 0 : 1)
       : subagentStop
-      ? (stops.length === 2 && stops.every(stopHeld) && report.survivors === 0 && held.length > 0 && memberFacts.towerAnswers.size === 1 && memberFacts.towerAnswers.has(200) ? 0 : 1)
+      ? ((loose ? looseHeld(stops[0]) : stops.length === 2 && stops.every(stopHeld)) && report.survivors === 0 && held.length > 0 && memberFacts.towerAnswers.size === 1 && memberFacts.towerAnswers.has(200) ? 0 : 1)
       : subagent
       ? (replied && Object.keys(memberStates).length > 0 && Object.values(memberStates).every((s) => s.includes('returned')) && memberFacts.named && memberFacts.durationMs !== null
         && cardsFromSubagent > 0 && toolRowsInFeed === 0 && memberFacts.towerAnswers.size === 1 && memberFacts.towerAnswers.has(200) && dispatchHeld ? 0 : 1)
@@ -602,7 +901,7 @@ async function main(): Promise<number> {
       : daemonStop
       ? (ds?.how === 'stdin-eof' && ds.code === 0 && dsRecord?.endReason === 'daemon-stop' && report.survivors === 0 && held.length > 0 ? 0 : 1)
       : brake
-      ? (report.survivors === 0 && (report.brakeAnswer as { status: number }).status === 200 && last?.endReason === 'braked' && held.length > 0 ? 0 : 1)
+      ? (report.survivors === 0 && (report.brakeAnswer as { status: number }).status === 200 && last?.endReason === 'braked' && held.length > 0 && (!viaSubagent || cardsFromSubagent > 0) ? 0 : 1)
       : outside ? (replied ? 0 : 1)
       : projectRoot ? (replied && written !== null && written.trim() === WORD && noSurvivors && report.workDirMade === false && (report.listedCwd as { kind?: string } | null)?.kind === 'project-root' ? 0 : 1)
       : replied && written !== null && written.trim() === WORD && noSurvivors ? 0 : 1;

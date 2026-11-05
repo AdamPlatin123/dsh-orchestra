@@ -7,6 +7,7 @@ import { isOver } from '../owned/codex-session.ts';
 import type { FeedEvent } from '../owned/feed.ts';
 import type { RestoredOwned } from '../owned/restored.ts';
 import type { Desk } from '../route/desk.ts';
+import type { Dispatcher, DispatchLevel } from '../route/dispatch.ts';
 import type { AgentRequest, Requests } from '../route/requests.ts';
 import { requesterName } from '../route/requests.ts';
 import type { Rec } from '../store/journal.ts';
@@ -56,13 +57,18 @@ import { makeOwnedHandlers } from './owned.ts';
 //   POST /api/agent-requests/:id/reject seat: you refuse an agent request (r4 A17; D8, only here); one that no
 //                                       longer waits is request-gone. Its `agent-request` record (rejected)
 //                                       joins the batch of the human records.
+//   POST /api/owned/:id/dispatch-grant  {level}: you set a session's dispatch permission (src/route/dispatch.ts; D8: only
+//                                       here and only by a person). Its `dispatch-grant` record joins the batch; it takes
+//                                       effect once that is committed. 你不在也派 is no level: the shape refuses it (r4 D20).
 //   POST /api/owned/new + requestId     seat: you dispatch an agent request: the text and harness must be the
 //                                       card's (request-mismatch) and it must still wait (request-gone); the
 //                                       session is bound to the request, and an `agent-request` record
 //                                       (dispatched, naming the RouteDecision) joins the batch. It runs where the
 //                                       card said: the request's runIn (its cwd, inside a project root), else
 //                                       its own ORCHESTRA_HOME\work\<id>; the spawn gate holds either to its table.
-//                                       Its session is tainted wherever it runs (r4 §8.5: the request came from an
+//                                       A request of an owned session (its dispatch tool) goes the same way, but is tainted
+//                                       only when that session is, and its cards name it (origin worker-dispatch).
+//                                       Else its session is tainted wherever it runs (r4 §8.5: the request came from an
 //                                       unbound sender): Claude asks for every tool call, reads in cwd too; Codex
 //                                       starts with the untrusted approval policy, echoed or policy-mismatch.
 //                                       Its approvals carry the source chain (origin: the requestId, the DSH
@@ -86,8 +92,10 @@ export type OwnedRoutesDeps = {
   desk?: Desk | null;
   /** Sessions an earlier orchestrad left for a harness that is off now (src/owned/restored.ts): listed read only. */
   restored?: readonly RestoredOwned[];
-  /** The agent requests (seat, src/route/requests.ts); null or absent: no agent port, a requestId is request-gone. */
+  /** The agent requests (seat and the dispatch tool, src/route/requests.ts); null or absent: a requestId is request-gone. */
   requests?: Requests | null;
+  /** The dispatch permission (src/route/dispatch.ts); null or absent: no session has the tool, and the route says owned-ended. */
+  dispatch?: Dispatcher | null;
   /** The limit of running sessions both harnesses share (codex-owned.ts OWNED_POOL_MAX); absent: each manager's own, summed. */
   maxOwned?: number;
   /** The project roots named at startup (--project-root, checked), canonical; absent or empty: none, every session runs in the work dir. */
@@ -131,7 +139,7 @@ function feedEntry(e: FeedEvent) {
 export function requestEntry(r: AgentRequest) {
   const g = r.suggestion;
   return {
-    requestId: r.requestId, harness: r.harness, label: r.label, text: r.text, cwd: r.cwd, runIn: r.runIn, runInWhy: r.runInWhy, requester: requesterName(r.requester), state: r.state,
+    requestId: r.requestId, harness: r.harness, label: r.label, text: r.text, cwd: r.cwd, runIn: r.runIn, runInWhy: r.runInWhy, requester: requesterName(r.requester), tainted: r.tainted, model: r.model, askWhy: r.askWhy, auto: r.auto, state: r.state,
     createdAt: r.createdWall, expiresAt: r.expiresWall, ownedId: r.ownedId, why: r.why, fetched: r.fetched,
     suggestion: g === null ? null : { routeId: g.routeId, router: g.router, models: g.models.map((m) => ({ ...m })), pick: g.pick },
     suggesting: r.suggesting,
@@ -179,7 +187,7 @@ export function cwdEntry(cwd: string, roots: readonly string[]): { path: string;
   return { path: cwd, kind: roots.some((r) => isWithin(cwd, r)) ? 'project-root' : 'work' };
 }
 
-export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'codexOff' | 'restored' | 'maxOwned' | 'brakeWhy' | 'requests' | 'projectRoots'>) {
+export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'codexOff' | 'restored' | 'maxOwned' | 'brakeWhy' | 'requests' | 'projectRoots' | 'dispatch'>) {
   const { codex, claude } = deps;
   const roots = deps.projectRoots ?? [];
   const queue = queueOf(deps);
@@ -200,6 +208,7 @@ export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'code
       lastSeq: s.feed.lastSeq, createdAt: meta?.createdAt ?? 0, brake: s.state !== 'unknown' && s.jobbed, cwd: cwdEntry(s.cwd, roots),
       // A root gone idle still has something to stop while a sub-agent of its is live, or over with a command open.
       stoppable: !FINAL(s) && 'stoppable' in s && s.stoppable,
+      dispatch: deps.dispatch == null || FINAL(s) ? null : { ...deps.dispatch.view(s.ownedId) },
     };
   });
   const enabled = ownedEnabled(deps);
@@ -212,6 +221,8 @@ export function ownedList(deps: Pick<OwnedRoutesDeps, 'codex' | 'claude' | 'code
     limits: { maxOwned: deps.maxOwned ?? (codex === null ? 0 : codex.maxActive) + (claude === null ? 0 : claude.maxActive), active: sessions.filter(({ s }) => !FINAL(s)).length },
     requests: (deps.requests?.list() ?? []).map(requestEntry),
     requestedGone: deps.requests?.requestedGone() ?? [],
+    sentGone: deps.requests?.sentGone() ?? [],
+    presence: deps.dispatch?.presence() ?? 'unknown',
   };
 }
 
@@ -222,6 +233,7 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
   const { codex, claude, log } = deps;
   const desk = deps.desk ?? null;
   const requests = deps.requests ?? null;
+  const dispatch = deps.dispatch ?? null;
   const session = (call: OwnedCall): AnySession | null => {
     if (call.id === null) return null;
     const id = call.id;
@@ -286,11 +298,15 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     // so every turn of its session is tainted, wherever it runs (a project root or its own work dir): a Claude
     // session asks for every tool call, reads in cwd too (host-core.mjs judge); a Codex one starts its thread
     // with the untrusted approval policy and ends as policy-mismatch unless thread/start echoes it.
-    const tainted = asked !== null;
-    // r4 §8.5: the source chain its cards show at the top (display only; the requester's id is its own word, null when it named none).
-    const origin = asked === null ? null : { kind: 'agent-request' as const, requestId: asked.requestId, requester: asked.requester.sessionId, label: asked.label };
+    // A request of an owned session is tainted only when that session is (the same project's clean musicians are clean, trust agent: r4 §8.5).
+    const tainted = asked !== null && asked.tainted;
+    // r4 §8.5: the source chain its cards show at the top (display only; a DSH requester's id is its own word, null when it named none).
+    const origin = asked === null ? null : asked.requester.kind === 'owned'
+      ? { kind: 'worker-dispatch' as const, requestId: asked.requestId, requester: asked.requester.sessionId, label: dispatch?.labelOf(asked.requester.sessionId) ?? null }
+      : { kind: 'agent-request' as const, requestId: asked.requestId, requester: asked.requester.sessionId, label: asked.label };
+    const model = typeof body.model === 'string' ? body.model : asked?.model ?? null;
     const made = manager.create({
-      text, uuid: call.actionId!, ...(typeof body.model === 'string' ? { model: body.model } : {}), ...(title === null ? {} : { title }), ...(cwd === undefined ? {} : { cwd }),
+      text, uuid: call.actionId!, ...(model === null ? {} : { model }), ...(title === null ? {} : { title }), ...(cwd === undefined ? {} : { cwd }),
       ...(tainted ? { tainted: true } : {}), ...(origin === null ? {} : { origin }),
     });
     if (!made.ok) {
@@ -304,6 +320,7 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     // The session runs the request from now on (bound in the same turn as the claim: no second dispatch gets it).
     if (asked !== null) {
       requests!.bind(asked.requestId, made.ownedId);
+      dispatch?.adopted(asked, made.ownedId);
       log.info('agent-request-dispatched', { requestId: asked.requestId, ownedId: made.ownedId });
     }
     // In a project root: where it works, bound to this dispatch (the card's runIn for a request).
@@ -330,6 +347,22 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     const sent = s.send(String(call.body!.text), call.actionId!);
     if (!sent.ok) return refuse(sent.reason === 'ended' ? 'owned-ended' : 'queue-full');
     return { ok: true, reply: { uuid: call.actionId!, queued: s.queued, via: sent.via } };
+  });
+
+  handlers.register('POST', '/api/owned/:id/dispatch-grant', (call) => {
+    const s = session(call);
+    if (s === null) return refuse('item-unknown');
+    // No dispatcher: no session here holds the tool, so none takes a level.
+    if (FINAL(s) || dispatch === null) return refuse('owned-ended');
+    const level = String(call.body!.level) as DispatchLevel;
+    log.info('dispatch-grant', { ownedId: s.ownedId, level });
+    return {
+      ok: true, reply: { level }, records: [{ kind: 'dispatch-grant', body: { actionId: call.actionId!, ownedId: s.ownedId, level } }],
+      after: () => {
+        dispatch.grant(s.ownedId, level, call.actionId!);
+        s.feed.push({ kind: 'note', ref: null, text: level, state: 'dispatch-grant' });
+      },
+    };
   });
 
   handlers.register('POST', '/api/owned/:id/interrupt', async (call) => {

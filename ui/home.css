@@ -59,7 +59,8 @@ code, pre { font-family: var(--code); }
 .tb:hover { background: var(--sunk); }
 .legacy { flex: none; color: var(--ink-3); font-size: 12.5px; }
 .alert { flex: none; padding: 5px 14px; background: var(--err-soft); color: var(--err); font-size: 13px; }
-.note { flex: none; padding: 4px 14px; background: var(--sunk); font-size: 13px; }
+/* Out of the flow: it comes and goes on a timer, and what is under the pointer must not move with it (an allow, a brake). */
+.note { position: absolute; top: 45px; z-index: 5; max-width: min(46%, 560px); padding: 4px 14px; border: solid var(--line); border-width: 0 1px 1px 0; border-radius: 0 0 8px 0; background: var(--sunk); font-size: 13px; }
 .lost { flex: none; padding: 4px 14px; border-bottom: 1px solid var(--line); background: var(--wait-soft); font-size: 13px; overflow-wrap: anywhere; }
 
 /* == the two halves: the right stays; a narrow window takes from the left list first */
@@ -142,6 +143,21 @@ code, pre { font-family: var(--code); }
 .dr[disabled] { cursor: default; color: var(--ink-3); }
 .dr:hover:not([disabled]), .msg[data-hot="1"] .dr { border-color: var(--act); }
 .dr:hover:not([disabled])::after, .msg[data-hot="1"] .dr::after { background: var(--act); box-shadow: none; }
+.dr-stop { justify-self: end; margin: 3px 7px 0 0; padding: 0 10px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--bg); font-size: 12.5px; color: var(--err); }
+.dr-stop:hover { border-color: var(--err); }
+.mem-go { grid-column: 2 / -1; justify-self: start; margin-top: 2px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: 7px; background: var(--bg); font-size: 12px; color: var(--act); white-space: nowrap; }
+/* A worker's dispatch permission, in its 资料. */
+.grant { max-height: 42vh; overflow: auto; padding: 8px 0 4px; scrollbar-width: thin; }
+.grant-h { font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.grant-st { padding: 2px 0 6px; overflow-wrap: anywhere; }
+.grant-lv { display: grid; gap: 4px; }
+.lv-b { display: grid; width: 100%; padding: 4px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); text-align: left; line-height: 1.45; overflow-wrap: anywhere; }
+.lv-b b { font-weight: 600; color: var(--ink); }
+.lv[data-on="1"] .lv-b { border-color: var(--act); box-shadow: inset 0 0 0 1px var(--act); }
+.lv-b[disabled] { cursor: default; color: var(--ink-3); }
+.lv-b[disabled] b { color: var(--ink-3); }
+.grant-kh { padding: 8px 0 2px; font-weight: 600; color: var(--ink-2); }
+.grant-keeps { padding-left: 16px; list-style: disc; color: var(--ink-2); overflow-wrap: anywhere; }
 .msg details { min-width: 0; }
 .msg summary { cursor: pointer; font: 12.5px var(--code); color: var(--ink-2); overflow-wrap: anywhere; }
 .ev-box { flex: 1 1 0; min-height: 0; overflow: auto; }
@@ -180,6 +196,11 @@ button.pin-go:hover { background: var(--sunk); }
 .pin-clock { font-variant-numeric: tabular-nums; color: var(--ink-3); white-space: nowrap; }
 .pin-hint { grid-column: 2 / -1; font-size: 12px; color: var(--ink-3); overflow-wrap: anywhere; }
 .pin-hint:empty, .pin-pv:empty, .pin-acts:empty, .card-note:empty { display: none; }
+/* A request's head: who asked can run long, so it wraps and the task goes below it; nothing pushes the buttons out. */
+.req-h { grid-template-columns: 20px minmax(0, 1fr) auto; }
+.req-h .pin-kind { min-width: 0; white-space: normal; overflow-wrap: anywhere; }
+.req-h .pin-path { grid-column: 2 / -1; grid-row: 2; }
+.req-h .pin-clock { grid-column: 3; grid-row: 1; }
 .pin-pv { flex: 1 1 100%; padding: 0 8px 4px 36px; }
 .pin-acts { display: flex; flex-wrap: wrap; gap: 6px; padding: 2px 8px 4px 36px; }
 .req-pv { flex: 1 1 100%; margin: 0 8px 4px 36px; max-height: 9em; overflow: auto; }
@@ -189,6 +210,7 @@ button.pin-go:hover { background: var(--sunk); }
 .card[data-tainted="1"] .card-h { color: var(--taint); font-weight: 600; }
 .card-h { display: flex; justify-content: space-between; gap: 10px; font-size: 12.5px; color: var(--ink-3); }
 .card-h > [data-slot=kind] { min-width: 0; overflow-wrap: anywhere; }
+.card-h > [data-slot=left] { flex: none; white-space: nowrap; }
 .card-t { margin: 2px 0; font-weight: 600; overflow-wrap: anywhere; }
 .pv { margin: 0 0 6px; padding: 5px 8px; max-height: 30vh; overflow: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--panel); }
 .pv, .pin-pv { font: 12.5px/1.45 var(--code); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -196,8 +218,9 @@ button.pin-go:hover { background: var(--sunk); }
 /* == composer and buttons (a held allow takes no long-press menu) */
 .dock { flex: none; display: grid; gap: 3px; padding: 6px 12px 8px; }
 .dock-to { overflow: hidden; font-size: 12.5px; color: var(--ink-2); text-overflow: ellipsis; white-space: nowrap; }
-.dock-note { font-size: 12.5px; color: var(--ink-3); }
-.dock-note:empty, .dock-st:empty { display: none; }
+/* Its line stays when empty: a draft brings a note, and the buttons above must not hop under the pointer. */
+.dock-note { min-height: 1.6em; font-size: 12.5px; color: var(--ink-3); }
+.dock-st:empty { display: none; }
 .dock-in, .dlg-in { width: 100%; padding: 4px 8px; border: 1px solid var(--line-2); border-radius: 6px; background: var(--panel); color: var(--ink); font: inherit; font-size: 13px; }
 .dock-in { display: block; height: 46px; resize: none; }
 .acts { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -309,6 +332,7 @@ button.pin-go:hover { background: var(--sunk); }
 @media (max-width: 899px) {
   body { display: block; height: auto; overflow: auto; }
   .top { flex-wrap: wrap; }
+  .note { position: static; max-width: none; border-width: 0; border-radius: 0; }
   .wings, .left { display: block; }
   .rail { max-height: 30vh; border-right: 0; border-bottom: 1px solid var(--line); }
   .rr { justify-content: flex-start; padding: 5px 7px; }

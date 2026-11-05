@@ -45,7 +45,16 @@
       </header>
       <p class="dt-gone" data-slot="gone" data-hide="1"></p>
       <p class="dt-empty" data-slot="empty"></p>
-      <details class="facts-box"><summary data-t="home.facts"></summary><dl class="facts" data-slot="facts"></dl></details>
+      <details class="facts-box"><summary data-t="home.facts"></summary>
+        <section class="grant" data-slot="grant" data-hide="1" aria-labelledby="grant-h">
+          <h4 id="grant-h" class="grant-h" data-t="grant.title"></h4>
+          <p class="grant-st" data-slot="st"></p>
+          <ul class="grant-lv" data-slot="lv"></ul>
+          <p class="grant-kh" data-t="grant.keepsH"></p>
+          <ul class="grant-keeps"><li data-t="grant.keep.1"></li><li data-t="grant.keep.2"></li><li data-t="grant.keep.3"></li><li data-t="grant.keep.4"></li><li data-t="grant.keep.5"></li></ul>
+        </section>
+        <dl class="facts" data-slot="facts"></dl>
+      </details>
       <section class="dt-sec" data-slot="actBox" data-hide="1"><h4 data-t="detail.activity"></h4><p class="dt-act" data-slot="act"></p></section>
       <section class="dt-sec own" data-slot="ownBox" data-hide="1">
         <p class="own-st" data-slot="ownSt"></p><p class="acts" data-slot="ownActs"></p>
@@ -87,7 +96,7 @@
     <p class="subs-note" data-slot="note" data-t="home.subsPick"></p>
     <ol class="fold-list" data-slot="list"></ol>
   </section>
-  <p class="rbar" data-t="home.grants"></p>
+  <p id="rbar" class="rbar"></p>
 </section>
 </main>
 
@@ -130,7 +139,8 @@
 <template id="tpl-cand"><li class="cand"><button type="button" class="cand-b" data-act="pick" aria-pressed="false" data-slot="b"><span class="cand-rank" data-slot="rank"></span><span class="cand-hm" data-slot="hm"></span><span class="cand-src" data-slot="src"></span><span class="cand-why" data-slot="why"></span></button></li></template>
 <template id="tpl-card"><li class="card" data-waiting="1"><p class="card-h"><span data-slot="kind"></span><span data-slot="left"></span></p><p class="card-t" data-slot="title"></p><pre class="pv" data-slot="pv"></pre><p class="card-note" data-slot="note"></p><p class="acts" data-slot="acts"></p></li></template>
 <template id="tpl-msg"><li class="msg"><span class="msg-who" data-slot="who"></span><span class="msg-tx" data-slot="tx"></span></li></template>
-<template id="tpl-disp"><li class="msg"><button type="button" class="dr" data-act="fold" aria-expanded="false" data-slot="b"><b data-slot="tx"></b><span class="sr" data-slot="who"></span></button></li></template>
+<template id="tpl-disp"><li class="msg"><button type="button" class="dr" data-act="fold" aria-expanded="false" data-slot="b"><b data-slot="tx"></b><span class="sr" data-slot="who"></span></button><button type="button" class="dr-stop" data-act="stop-worker" data-slot="stop" data-hide="1"></button></li></template>
+<template id="tpl-lv"><li class="lv"><button type="button" class="lv-b" data-act="grant" data-slot="b"><b data-slot="name"></b><span data-slot="note"></span></button></li></template>
 <template id="tpl-wire"><svg class="wire"><path data-slot="p" pathLength="1"></path><circle data-slot="c" r="2.5"></circle></svg></template>
 <template id="tpl-tool"><li class="msg"><details><summary data-slot="sum"></summary><pre class="pv" data-slot="body"></pre></details></li></template>
 <template id="tpl-req"><li class="pin req" data-waiting="1"><p class="pin-go req-h"><span class="ico" aria-hidden="true" data-t="icon.route"></span><span class="pin-kind" data-slot="kind"></span><span class="pin-path" data-slot="what"></span><span class="pin-clock" data-slot="clock"></span></p><pre class="pv req-pv" data-slot="pv"></pre><span class="pin-hint" data-slot="meta"></span><span class="pin-acts" data-slot="acts"></span></li></template>
@@ -140,6 +150,6 @@
 <template id="tpl-wk"><li class="wk"><button type="button" class="rr" data-act="worker" data-slot="b"><span class="av" aria-hidden="true" data-slot="av"><span data-slot="ch"></span><i class="bd" data-slot="bd"></i></span><span class="tx"><b data-slot="name"></b><small data-slot="l2"></small></span></button></li></template>
 <template id="tpl-fold"><li class="cw"><button type="button" class="fold" data-act="fold" aria-expanded="false" data-slot="b"><span class="fold-title" data-slot="title"></span><span class="fold-chev" aria-hidden="true"></span><span class="fold-meta"><span data-slot="kind"></span><span data-slot="n"></span><span data-slot="took"></span><span class="fold-flag fold-flag-wait" data-slot="fw" data-hide="1"></span><span class="fold-flag fold-flag-err" data-slot="fe" data-hide="1"></span></span><span class="fold-dots" role="img" data-slot="dots" data-hide="1"></span><span class="fold-bar" role="img" data-slot="bar" data-hide="1"></span></button><ul class="fold-body" data-slot="body" data-hide="1"></ul></li></template>
 <template id="tpl-fd"><i class="fd"></i></template>
-<template id="tpl-mem"><li class="mem"><i class="fd" aria-hidden="true" data-slot="dot"></i><span class="mem-n" data-slot="name"></span><span class="mem-st" data-slot="st"></span><span class="mem-t" data-slot="took"></span><span class="mem-m" data-slot="model"></span><span class="mem-a" data-slot="act"></span></li></template>
+<template id="tpl-mem"><li class="mem"><i class="fd" aria-hidden="true" data-slot="dot"></i><span class="mem-n" data-slot="name"></span><span class="mem-st" data-slot="st"></span><span class="mem-t" data-slot="took"></span><span class="mem-m" data-slot="model"></span><span class="mem-a" data-slot="act"></span><button type="button" class="mem-go" data-act="worker" data-slot="go" data-hide="1"></button></li></template>
 </body>
 </html>

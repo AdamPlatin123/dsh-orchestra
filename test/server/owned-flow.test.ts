@@ -381,7 +381,7 @@ test('interrupt: open approvals are declined first, then the turn stops; the rep
 test('brake (r4 D4/D8): the session Job ended, its open approval declined, the session ended as braked; a human record; a second brake finds it ended', async (t) => {
   const r = await rig(t, {
     brakeWhy: null,
-    job: () => Object.freeze({ name: `orchestra-job-${'e'.repeat(32)}`, endTree: async () => ({ ok: true as const, found: true, killed: 2, left: 0 }) }),
+    job: () => Object.freeze({ name: `orchestra-job-${'e'.repeat(32)}`, endTree: async () => ({ ok: true as const, found: true, killed: 2, left: 0 }), procs: async () => [] }),
   });
   const p = await page(r);
   const { ownedId, list } = await startAndAsk(r, p, 'run echo braked');

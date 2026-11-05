@@ -59,6 +59,8 @@ export const TOWER_ENUMS = frozen({
   basis: ['registry', 'log', 'mtime', 'none', 'owned'],
   /** A sub-agent of an owned session: its approval waits on its session; codex said its turn failed. */
   mark: ['asks', 'failed'],
+  /** How an owned session was sent out by another (src/route/dispatch.ts): on that one's permission, or by your 派出. */
+  sentVia: ['grant', 'person'],
   waitingKind: ['approval', 'question', 'route'],
   /** orchestra: Orchestra's own queue (owned sessions, with a deadline); native: the harness says so; inferred: a guess. */
   waitingSource: ['orchestra', 'native', 'inferred'],
@@ -126,9 +128,10 @@ export const TOWER_BOUNDS = frozen({
  *   before it is unlocked (the request itself, its text and who asked, only after the unlock).
  * @typedef {{ harness: 'codex' | 'claude', deadline: number }} Ask
  *   deadline: epoch ms the request is refused at if nobody dispatched it (D8: timeout = deny).
- * @typedef {{ title: string, at: number, harness: 'codex' | 'claude', model: string, node: NodeId | null }} Dispatch
+ * @typedef {{ title: string, at: number, harness: 'codex' | 'claude', model: string, node: NodeId | null, auto: boolean }} Dispatch
  *   title: its session's title; at: epoch ms of the dispatch; node: that session's node when this
- *   snapshot holds it, else null (a link never points at a node that is not there).
+ *   snapshot holds it, else null (a link never points at a node that is not there). auto: a worker sent it
+ *   out on your permission (src/route/dispatch.ts), no click of yours; this row is yours, so it says so.
  * @typedef {{ id: Hex20, name: string, basis: 'cwd' | 'slug', nodes: Node[], groups: Group[] }} Project
  *   nodes: every node of the project, in tree order (a parent before its subtree, siblings by
  *   STATE_RANK); groups: the folded rows among its root nodes.
@@ -142,7 +145,7 @@ export const TOWER_BOUNDS = frozen({
  *   counts: { children: number, errors: number, waiting: number },
  *   groups: Group[],
  *   ageMs: number | null, durationMs: number | null, model: string | null, agentType: string | null, batch: number | null,
- *   mark: 'asks' | 'failed' | null,
+ *   mark: 'asks' | 'failed' | null, sent: { by: NodeId, via: 'grant' | 'person', grantAt: number | null } | null,
  * }} Node
  *   counts: over the node's whole subtree below it (not itself): descendants, those in error, those
  *   that wait on you. groups: the folded rows among its children.
@@ -153,6 +156,8 @@ export const TOWER_BOUNDS = frozen({
  *   dispatch row carries the same); null when no spawn of the root named it, and on every other node.
  *   mark: what such a sub-agent's card must flag though its state cannot (it runs while it asks, it ended
  *   when it failed); null otherwise, and on every other node.
+ *   sent: the owned session that sent this one out through its dispatch tool, and how; grantAt: the wall time you opened
+ *   that session's 直接派出, set exactly with via grant. Null on every other node. It stays a worker of its own: no parent.
  * @typedef {{ kind: 'approval' | 'question' | 'route', source: 'orchestra' | 'native' | 'inferred', deadline: number | null }} Waiting
  *   deadline: epoch ms when Orchestra's queue denies it by itself; null for a native or inferred wait
  *   (no timer of ours runs on it).
@@ -276,7 +281,7 @@ function checkGroupShape(c, v, at) {
 
 /** @param {Checker} c @param {unknown} v @param {string} at */
 function checkNode(c, v, at) {
-  const n = c.obj(v, at, ['id', 'session', 'harness', 'ownership', 'layer', 'parent', 'depth', 'title', 'activity', 'state', 'basis', 'waiting', 'counts', 'groups', 'ageMs', 'durationMs', 'model', 'agentType', 'batch', 'mark']);
+  const n = c.obj(v, at, ['id', 'session', 'harness', 'ownership', 'layer', 'parent', 'depth', 'title', 'activity', 'state', 'basis', 'waiting', 'counts', 'groups', 'ageMs', 'durationMs', 'model', 'agentType', 'batch', 'mark', 'sent']);
   if (n === null) return null;
   c.re(n.id, `${at}.id`, NODE_ID_RE, 'node id');
   if (n.session !== null) c.re(n.session, `${at}.session`, TOWER_HEX20_RE, 'Hex20');
@@ -331,6 +336,16 @@ function checkNode(c, v, at) {
   if (n.mark !== null) {
     c.en(n.mark, `${at}.mark`, TOWER_ENUMS.mark);
     if (!member) c.bad(`${at}.mark`, 'only a sub-agent of an owned session has a mark');
+  }
+  if (n.sent !== null) {
+    const s = c.obj(n.sent, `${at}.sent`, ['by', 'via', 'grantAt']);
+    if (s !== null) {
+      c.re(s.by, `${at}.sent.by`, NODE_ID_RE, 'node id');
+      c.en(s.via, `${at}.sent.via`, TOWER_ENUMS.sentVia);
+      if (s.grantAt !== null) c.int(s.grantAt, `${at}.sent.grantAt`);
+      if ((s.via === 'grant') !== (s.grantAt !== null)) c.bad(`${at}.sent.grantAt`, 'set exactly when it went out on a permission');
+    }
+    if (n.ownership !== 'owned' || n.layer !== 'agent') c.bad(`${at}.sent`, 'only an owned session is sent out');
   }
   return { n, groups };
 }
@@ -539,13 +554,14 @@ export function validateTower(x) {
     c.en(router.kind, '$.router.kind', TOWER_ENUMS.routerKind);
     // The dispatch desk's last dispatch, or null before any.
     if (router.dispatch !== null) {
-      dispatch = c.obj(router.dispatch, '$.router.dispatch', ['title', 'at', 'harness', 'model', 'node']);
+      dispatch = c.obj(router.dispatch, '$.router.dispatch', ['title', 'at', 'harness', 'model', 'node', 'auto']);
       if (dispatch !== null) {
         c.text(dispatch.title, '$.router.dispatch.title', TOWER_BOUNDS.titleCp);
         c.int(dispatch.at, '$.router.dispatch.at');
         c.en(dispatch.harness, '$.router.dispatch.harness', ['codex', 'claude']);
         c.re(dispatch.model, '$.router.dispatch.model', TOWER_MODEL_RE, 'model');
         if (dispatch.node !== null) c.re(dispatch.node, '$.router.dispatch.node', NODE_ID_RE, 'NodeId');
+        if (typeof dispatch.auto !== 'boolean') c.bad('$.router.dispatch.auto', 'not a boolean');
       }
     }
     // The pending agent requests: harness and deadline only, soonest first, at most 16.

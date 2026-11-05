@@ -7,6 +7,8 @@ import type { TestContext } from 'node:test';
 import type { ChildPipe } from '../../src/os/child-pipe.ts';
 import type { CodexSession } from '../../src/owned/codex-session.ts';
 import type { FeedEvent } from '../../src/owned/feed.ts';
+import type { DispatchCall, DispatchNote, DispatchPort } from '../../src/route/dispatch.ts';
+import { DISPATCH_TOOL } from '../../src/route/dispatch.ts';
 import { childPipe } from '../../src/os/child-pipe.ts';
 import { makeSpawnGate } from '../../src/os/node-proc.ts';
 import { ENV_WHITELIST, FAKE_CODEX_SCRIPT, LIBUV_ADDED_ENV, resolveSystemRoot } from '../../src/os/spawn.ts';
@@ -39,7 +41,7 @@ type Rig = {
   answers(): [string, unknown][];
 };
 
-async function withRig(t: TestContext, body: (r: Rig) => Promise<void>, opts: { rpcLineMaxBytes?: number; ua?: string } = {}): Promise<void> {
+async function withRig(t: TestContext, body: (r: Rig) => Promise<void>, opts: { rpcLineMaxBytes?: number; ua?: string; dispatch?: DispatchPort } = {}): Promise<void> {
   const dir = fs.realpathSync.native(withTmp(t));
   const home = path.join(dir, 'orchestra');
   const workRoot = path.join(home, 'work');
@@ -85,6 +87,7 @@ async function withRig(t: TestContext, body: (r: Rig) => Promise<void>, opts: { 
         return { text: r.text, count: r.verdict.known + r.verdict.entropy + Object.values(r.verdict.format).reduce((a, b) => a + b, 0) };
       },
       ...(opts.rpcLineMaxBytes !== undefined ? { rpcLineMaxBytes: opts.rpcLineMaxBytes } : {}),
+      ...(opts.dispatch !== undefined ? { dispatch: opts.dispatch } : {}),
     }),
     received: () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').split('\n').filter((l) => l !== '').flatMap((l) => {
       try {
@@ -463,6 +466,82 @@ test('a server request Orchestra does not answer gets a JSON-RPC error, and the 
     await turn(s, 'tool-call', 1);
     assert.deepEqual(r.answers(), [['srv-1', { error: { code: UNANSWERED_REQUEST_CODE, message: 'Orchestra does not answer item/tool/call' } }]]);
     assert.ok(has(s, 'note', 'request-refused'));
+  });
+});
+
+/** A dispatch port that answers each call with `text`, and says what it was handed. */
+function fakePort(text = 'Dispatched: a test.', hold = false) {
+  const calls: { ownedId: string; raw: unknown }[] = [];
+  let cancelled = 0;
+  const port: DispatchPort = {
+    call(ownedId, raw, say: (n: DispatchNote) => void): DispatchCall {
+      calls.push({ ownedId, raw });
+      say({ state: 'worker-sent-grant', ref: `n:${'c'.repeat(20)}`, text: 'the child' });
+      let done: (v: { ok: boolean; text: string }) => void = () => {};
+      const reply = hold ? new Promise<{ ok: boolean; text: string }>((r) => { done = r; }) : Promise.resolve({ ok: true, text });
+      return {
+        reply,
+        cancel() {
+          cancelled++;
+          done({ ok: false, text: 'withdrawn' });
+        },
+      };
+    },
+    sentOf: () => null,
+  };
+  return { port, calls, cancelled: () => cancelled };
+}
+
+test('the dispatch tool: thread/start offers it, a call goes to the port under the session\'s own id, the answer comes back, and no tool row is left', async (t) => {
+  const p = fakePort();
+  await withRig(t, async (r) => {
+    const s = await newSession(r);
+    await s.ready;
+    const start = r.received().find((m) => m.method === 'thread/start');
+    assert.deepEqual(start?.params?.dynamicTools, [{ type: 'function', ...DISPATCH_TOOL }]);
+    await turn(s, 'dispatch', 1);
+    assert.deepEqual(p.calls, [{ ownedId: s.ownedId, raw: { task: 'say hi', harness: 'codex' } }]);
+    assert.deepEqual(r.answers(), [['srv-1', { contentItems: [{ type: 'inputText', text: 'Dispatched: a test.' }], success: true }]]);
+    assert.ok(has(s, 'note', 'worker-sent-grant'));
+    assert.ok(!has(s, 'tool') && !has(s, 'tool-result'), 'its row is the note');
+  }, { dispatch: p.port });
+});
+
+test('the dispatch tool from a thread that is not the root\'s is refused, and the port never hears it', async (t) => {
+  const p = fakePort();
+  await withRig(t, async (r) => {
+    const s = await newSession(r);
+    await s.ready;
+    await turn(s, 'dispatch-member', 1);
+    assert.deepEqual(p.calls, []);
+    assert.deepEqual(r.answers(), [['srv-1', { contentItems: [{ type: 'inputText', text: 'This tool is not available here.' }], success: false }]]);
+  }, { dispatch: p.port });
+});
+
+test('a stop gives up a dispatch still waiting, and the request is answered all the same; the session\'s end too', async (t) => {
+  const p = fakePort('x', true);
+  await withRig(t, async (r) => {
+    const s = await newSession(r);
+    await s.ready;
+    s.send('dispatch', U(1));
+    await until('the call', () => p.calls.length === 1);
+    await s.interrupt();
+    assert.equal(p.cancelled(), 1);
+    await until('the answer', () => r.answers().length === 1);
+    assert.deepEqual(r.answers(), [['srv-1', { contentItems: [{ type: 'inputText', text: 'withdrawn' }], success: false }]]);
+    await until('the turn to end', () => s.state === 'idle');
+    s.send('dispatch', U(2));
+    await until('the second call', () => p.calls.length === 2);
+    s.end();
+    assert.equal(p.cancelled(), 2);
+  }, { dispatch: p.port });
+});
+
+test('a session with no port offers no tool: thread/start as before', async (t) => {
+  await withRig(t, async (r) => {
+    const s = await newSession(r);
+    await s.ready;
+    assert.equal(Object.hasOwn(r.received().find((m) => m.method === 'thread/start')?.params ?? {}, 'dynamicTools'), false);
   });
 });
 

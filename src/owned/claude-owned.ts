@@ -1,6 +1,7 @@
 import * as crypto from 'node:crypto';
 import type { HostPipe } from '../os/owned-proc.ts';
 import type { ClockHub } from '../runtime/clock.ts';
+import type { DispatchPort } from '../route/dispatch.ts';
 import type { OwnedSeat } from '../sources/tower.ts';
 import type { ApprovalOrigin, Approvals } from './approvals.ts';
 import type { ClaudeEndReason, ClaudeSession, ClaudeSessionState } from './claude-session.ts';
@@ -10,8 +11,9 @@ import type { Redact } from './text.ts';
 import { APPROVAL_LIMITS } from './approvals.ts';
 import { isClaudeOver, startClaudeSession } from './claude-session.ts';
 import type { OwnedPool } from './codex-owned.ts';
-import { recentOf } from './codex-owned.ts';
+import { memberSeats, recentOf, sentSeat } from './codex-owned.ts';
 import { Feed } from './feed.ts';
+import { memberRecords, restoredMembers } from './members.ts';
 import { DEFAULT_CLAUDE_MODEL, isClaudeModel } from './models.ts';
 import { afterRestart } from './registry.ts';
 import { shown } from './text.ts';
@@ -25,7 +27,8 @@ import { frozen, frozenClass } from '../../shared/frozen.js';
 //
 // The registry is the one the owned Codex sessions use (ORCHESTRA_HOME\owned\<ownedId>.json, harness
 // claude); after a restart the sessions an earlier orchestrad left come back as unknown (daemon-restart)
-// when they had not ended, never resumed and never sent anything again (r4 §8.3 rule 5).
+// when they had not ended, never resumed and never sent anything again (r4 §8.3 rule 5). Their sub-agents (members.ts)
+// are kept with them, states and times only: one that was live comes back unknown, never running (T1).
 
 export const CLAUDE_OWNED_LIMITS = frozen({
   /** Claude sessions running at once when no shared pool is given (tests); with one (codex-owned.ts OWNED_POOL_MAX), the pool's total counts too. */
@@ -61,6 +64,8 @@ export type ClaudeOwnedOptions = {
   askTimeoutMs?: number;
   /** The limit both harnesses share (codex-owned.ts OWNED_POOL_MAX); without one only this manager's own count limits it. */
   pool?: OwnedPool;
+  /** Gives each session the dispatch tool (src/route/dispatch.ts); without one none has it. */
+  dispatch?: DispatchPort;
 };
 
 export type NewClaude =
@@ -156,10 +161,10 @@ export class ClaudeOwned {
     let kept = '';
     const keep = () => {
       if (mine === null || o.registry === undefined) return;
-      const key = `${mine.state}|${String(mine.endReason)}`;
+      const key = `${mine.state}|${String(mine.endReason)}|${mine.membersRev}`;
       if (key === kept) return;
       kept = key;
-      this.#save({ v: 1, ownedId, harness: 'claude', model, title, createdAt, state: mine.state, endReason: mine.endReason });
+      this.#save({ v: 1, ownedId, harness: 'claude', model, title, createdAt, state: mine.state, endReason: mine.endReason, ...memberRecords(mine) });
     };
     const started = startClaudeSession({
       ownedId, cwd, configDir, model, claudeExe: o.claudeExe, protectedRoots: o.protectedRoots, askTimeoutMs: o.askTimeoutMs ?? APPROVAL_LIMITS.timeoutMs,
@@ -171,6 +176,7 @@ export class ClaudeOwned {
       ...(o.judge !== undefined ? { judge: o.judge } : {}),
       ...(req.tainted === true ? { tainted: true } : {}),
       ...(req.origin != null ? { origin: req.origin } : {}),
+      ...(o.dispatch === undefined ? {} : { dispatch: o.dispatch }),
     }, req.text === undefined ? null : { text: req.text, uuid: req.uuid ?? '' });
     if (!started.ok) return started;
     mine = started.session;
@@ -197,12 +203,15 @@ export class ClaudeOwned {
   towerSeats(): OwnedSeat[] {
     const open = this.#opts.approvals.list();
     return this.list().map((s) => {
-      const first = open.filter((a) => a.ownedId === s.ownedId).sort((a, b) => a.deadlineWall - b.deadlineWall)[0] ?? null;
+      const mine = open.filter((a) => a.ownedId === s.ownedId);
+      const first = [...mine].sort((a, b) => a.deadlineWall - b.deadlineWall)[0] ?? null;
       return {
         ownedId: s.ownedId, harness: 'claude' as const, title: this.#meta.get(s.ownedId)?.title ?? '', state: s.state, endReason: s.endReason,
         waiting: first === null ? null : { kind: 'approval' as const, deadline: first.deadlineWall, title: first.title },
         lastAt: s.feed.lastAt,
         recent: recentOf(s.feed),
+        sent: sentSeat(this.#opts.dispatch, s.ownedId),
+        ...memberSeats(s, mine),
       };
     });
   }
@@ -246,7 +255,7 @@ export function restoredSession(r: OwnedRecord, now: () => number): ClaudeSessio
   feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'daemon-restart' });
   return Object.freeze({
     ownedId: r.ownedId, harness: 'claude' as const, model: r.model, cwd: '', state: r.state as ClaudeSessionState, endReason: r.endReason as ClaudeEndReason | null,
-    sessionId: null, tokens: null, costUsd: null, queued: 0, feed, ready: Promise.resolve(false), exited: Promise.resolve(),
+    sessionId: null, tainted: false, tokens: null, costUsd: null, queued: 0, members: restoredMembers(r), membersOver: r.membersOver ?? 0, membersRev: 0, stoppable: false, run: 'whole' as const, feed, ready: Promise.resolve(false), exited: Promise.resolve(),
     send: () => ({ ok: false as const, reason: 'ended' as const }),
     interrupt: async () => ({ withdrawn: 0, denied: 0 }),
     end: () => ({ denied: 0 }),

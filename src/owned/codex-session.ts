@@ -3,18 +3,20 @@ import type { ChildPipe } from '../os/child-pipe.ts';
 import type { JobOutcome } from '../os/procguard.ts';
 import type { ClockHub } from '../runtime/clock.ts';
 import type { Answer, AnswerCause, ApprovalKind, ApprovalOrigin, ApprovalRisk, Approvals } from './approvals.ts';
+import type { DispatchPort } from '../route/dispatch.ts';
+import { DISPATCH_TOOL } from '../route/dispatch.ts';
 import type { RpcClient, RpcExit, RpcId, RpcStats } from './codex-rpc.ts';
 import type { FeedInput, FeedTokens } from './feed.ts';
-import type { MemberEnd, MemberRecord, MemberState } from './registry.ts';
+import type { MemberBase, MemberRun, SessionMember } from './members.ts';
 import type { Redact } from './text.ts';
 import { isWithin } from '../fs/paths.ts';
 import { RpcError, makeRpcClient } from './codex-rpc.ts';
 import { guardedPlace } from './guarded.ts';
 import { Feed } from './feed.ts';
+import { MEMBERS_STOP_REF, MEMBER_LIMITS, memberRun, memberTable } from './members.ts';
 import { isOwnedModel } from './models.ts';
 import { REGISTRY_LIMITS, memberLive } from './registry.ts';
 import { oneShot } from '../runtime/clock.ts';
-import { memberNodeId } from '../sources/tower.ts';
 import { OWNED_TEXT_LIMITS, liveTail, shown, splitUtf8 } from './text.ts';
 import { frozen } from '../../shared/frozen.js';
 
@@ -78,6 +80,15 @@ const win = path.win32;
 //                          more than one, takes only the refusal;
 //   elicitation:           {action:'decline'} only (its accept needs content in an MCP server's schema).
 // Any other server request is answered with a JSON-RPC error.
+//
+// The dispatch tool (src/route/dispatch.ts; measured on codex-cli 0.165.0, 2026-11-05): thread/start's dynamicTools gives the
+// root thread orchestra_dispatch, on both v1 and v2 models. A call comes as the server request item/tool/call, with the
+// item/started and item/completed of a dynamicToolCall around it, and no approval comes first under on-request or untrusted.
+// A sub-agent's thread does not get the tool (measured: it said it had none); one that called anyway would be refused here.
+// The request may stay open: a reply 330 s later came through. turn/interrupt cancels it on codex's side, the item completes
+// failed and the turn interrupted, so a stop takes back a card still waiting and answers the request all the same. The
+// answer is {contentItems, success}: success false reaches the model with its text. The call's row in the feed is the note
+// dispatch.ts says, not a tool row: the tool's rows are left out as an Agent call's are.
 //
 // Sub-agents (measured on codex-cli 0.165.0, 2026-11-04, three real runs): a thread that is not the
 // session's own is one of its sub-agents, a member. Nothing needs turning on: the private CODEX_HOME's
@@ -164,14 +175,8 @@ export const CODEX_SESSION_LIMITS = frozen({
   stderrChars: 4096,
   /** A thread or turn id longer than this is not codex's. */
   idChars: REGISTRY_LIMITS.memberIdChars,
-  /** The sub-agents one session lists; past this they are only counted. */
-  members: REGISTRY_LIMITS.members,
-  /** Of those only counted, the thread ids kept to count each once; past this the count stands still. */
-  memberOverIds: 4096,
-  /** Of a sub-agent's name, the first this many UTF-8 bytes once shown. */
-  memberNameBytes: REGISTRY_LIMITS.memberNameBytes,
-  /** Of a sub-agent's model, the first this many UTF-8 bytes once shown. */
-  memberModelBytes: REGISTRY_LIMITS.memberModelBytes,
+  /** The sub-agents one session lists; past this they are only counted (members.ts). */
+  members: MEMBER_LIMITS.members,
   /** The file changes of sub-agents kept at once for their cards; past this the oldest goes, and its card offers only a refusal. */
   memberChanges: 64,
   /** Of the sub-agents' open items, those kept as asked about; the root's own bound. */
@@ -268,18 +273,15 @@ export type CodexSessionOptions = {
   tainted?: boolean;
   /** r4 §8.5: where its turns came from (a seat request), shown at the top of its cards; display only. */
   origin?: ApprovalOrigin | null;
+  /** Offers the root thread the dispatch tool, and takes its calls; absent: no such tool, thread/start as before. */
+  dispatch?: DispatchPort;
 };
 
 /** The approval policy thread/start asks for, and its reply must echo (codex-cli 0.165.0 AskForApproval: untrusted | on-request | never | {granular}). */
 export const codexApprovalPolicy = (tainted: boolean): 'untrusted' | 'on-request' => (tainted ? 'untrusted' : 'on-request');
 
-/** A sub-agent of the session as its driver knows it now: the registry's fields, and what lives only here. */
-export type CodexMember = MemberRecord & {
-  /** Wall ms of the last thing heard of it; null after a restart. */
-  readonly lastAt: number | null;
-  /** Its open approvals, oldest first. */
-  readonly asks: readonly string[];
-};
+/** A sub-agent of the session as its driver knows it now (members.ts). */
+export type CodexMember = SessionMember;
 
 export type SendResult = { ok: true; via: 'turn/start' | 'turn/steer' | 'queued' } | { ok: false; reason: 'ended' | 'queue-full' };
 
@@ -291,6 +293,8 @@ export type CodexSession = {
   readonly endReason: CodexEndReason | null;
   readonly threadId: string | null;
   readonly turnId: string | null;
+  /** r4 §8.5: its turns come from an unbound sender, as thread/start was told. */
+  readonly tainted: boolean;
   /** The root thread's latest total token usage as codex reported it, or null before any; a sub-agent's own usage is not in it. */
   readonly tokens: FeedTokens | null;
   /** Messages waiting here. */
@@ -303,6 +307,8 @@ export type CodexSession = {
   readonly membersRev: number;
   /** A stop has a member to reach: one live, or one over with something that may still run. */
   readonly stoppable: boolean;
+  /** Where its sub-agents leave the run a request waits on. */
+  readonly run: MemberRun;
   readonly feed: Feed;
   /** Settles true once the thread started, false when the session ended or failed before that. */
   readonly ready: Promise<boolean>;
@@ -333,14 +339,11 @@ const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 type Changes = { path: string; kind: string; diff: string }[];
 type Item = { type: string; command: string | null; changes: Changes | null; msg: string; out: string };
 
-type Member = { -readonly [K in Exclude<keyof CodexMember, 'asks'>]: CodexMember[K] } & {
-  asks: string[];
+type Member = MemberBase & {
   /** The turn codex last said ended, so a turn/started read after it does not revive the member. */
   endedTurn: string | null;
   /** The turn codex said started and not yet ended: what a stop interrupts. */
   turn: string | null;
-  /** Its dispatch event was told with no name: told again once one is known. */
-  unnamed: boolean;
   /** Its commands announced and not yet ended: they outlive an interrupted turn (measured). */
   commands: Set<string>;
   /** The last stop that reached it did not end with its list empty and its turn over. */
@@ -350,7 +353,7 @@ type Member = { -readonly [K in Exclude<keyof CodexMember, 'asks'>]: CodexMember
 };
 
 /** The refs of a stop's notes, live and final: the members', the root's own commands'. */
-const STOP_REF = 'members-stop';
+const STOP_REF = MEMBERS_STOP_REF;
 const ROOT_STOP_REF = 'root-stop';
 
 /** A root item that sends a sub-agent out: the one kind that leaves a batch open. */
@@ -363,9 +366,10 @@ const stopReaches = (m: Member) => m.state !== 'unknown' && (memberLive(m) || me
 
 /** Starts an owned Codex session; the child is running when this returns ok, the thread starting. */
 export function startCodexSession(opts: CodexSessionOptions): StartResult {
-  // A session with a source chain is tainted even if the caller left tainted out (r4 §8.5): its policy and its
-  // cards agree, and the owned contract (an origin only on a tainted entry) never fails the whole list over it.
-  if (opts.origin != null && opts.tainted !== true) opts = { ...opts, tainted: true };
+  // A session a seat request started is tainted even if the caller left tainted out (r4 §8.5): its policy and its
+  // cards agree, and the owned contract (such an origin only on a tainted entry) never fails the whole list over it.
+  // A worker's dispatch is no unbound sender: its session is tainted only when the caller says so (that worker is).
+  if (opts.origin?.kind === 'agent-request' && opts.tainted !== true) opts = { ...opts, tainted: true };
   if (!isOwnedModel(opts.model)) return { ok: false, reason: 'model-refused', detail: String(opts.model) };
   let pipe: ChildPipe;
   try {
@@ -411,13 +415,13 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   const askItem = new Map<string, string>();
   /** Items of this turn codex asked about (any answer, an automatic refusal too): a command or file change that ran without one is said (ran-unasked). */
   const askedItems = new Set<string>();
-  /** Sub-agents by thread id, in the order first heard of. */
-  const members = new Map<string, Member>();
-  /** Threads past the bound, each counted once. */
-  const overIds = new Set<string>();
-  let membersRev = 0;
   /** Approval -> the member that asked, while it is open. */
   const askMember = new Map<string, Member>();
+  /** Dispatch tool calls waiting for their answer: each one's way to take a card still waiting back. */
+  const calls = new Set<() => void>();
+  const dropCalls = () => {
+    for (const giveUp of [...calls]) giveUp();
+  };
   /** Sub-agents' file changes by thread and item, from their announcement to their end, for the card that may ask about them. */
   const memberChanges = new Map<string, Changes>();
   /** Sub-agents' items codex asked about (any answer, an automatic refusal too), by thread and item, until they end. */
@@ -426,10 +430,6 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   let memberUnasked = 0;
   /** A stop is on its way to the sub-agents: another press adds nothing to it. */
   let membersStopping = false;
-  /** Batches so far: the next dispatch's number. */
-  let batches = 0;
-  /** The dispatch the next spawn joins: of this turn, nothing else of the root's since. */
-  let dispatching: { batch: number; turn: string } | null = null;
   /** A stop is on its way to the root's commands. */
   let rootStopping = false;
   /** The root's commands a stop reached and that have not come back. */
@@ -546,87 +546,16 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   };
   /** A sub-agent's item: an id of its thread, which may mean something else on another. */
   const memberKey = (tid: string, iid: string) => `${tid}\n${iid}`;
-  /** The member of a thread, new if none is known and there is room; past the bound the thread is only counted. */
-  const memberOf = (tid: string): Member | null => {
-    const had = members.get(tid);
-    if (had !== undefined) return had;
-    if (members.size >= L.members) {
-      if (!overIds.has(tid) && overIds.size < L.memberOverIds) {
-        overIds.add(tid);
-        membersRev++;
-        feed.upsert('members-over', { kind: 'note', ref: null, text: `${overIds.size}`, state: 'members-over' });
-      }
-      return null;
-    }
+  /** Sub-agents by thread id, in the order first heard of (members.ts). */
+  const table = memberTable<Member>({
+    ownedId, feed, redact, idWord: 'thread', note,
+    extra: () => ({ endedTurn: null, turn: null, commands: new Set<string>(), stopLeft: false, nameAsked: false }),
     // Measured under on-request only: whether it takes this thread's untrusted or the config's on-request nobody knows.
-    if (members.size === 0 && opts.tainted === true) note('members-untrusted');
-    const m: Member = { threadId: tid, name: null, model: null, state: 'unknown', why: null, startedAt: null, endedAt: null, failed: 0, ranUnasked: 0, batch: null, lastAt: null, asks: [], endedTurn: null, turn: null, unnamed: false, commands: new Set(), stopLeft: false, nameAsked: false };
-    members.set(tid, m);
-    membersRev++;
-    return m;
-  };
-  const moveMember = (m: Member, state: MemberState, why: MemberEnd | null = null) => {
-    if (m.state === state && m.why === why) return;
-    m.state = state;
-    m.why = why;
-    membersRev++;
-  };
-  /** The first time codex gave for its start, and for its end; a time that came later does not replace it. */
-  const memberStart = (m: Member, at: number | null) => {
-    if (m.startedAt !== null || at === null) return;
-    m.startedAt = at;
-    membersRev++;
-  };
-  const memberEnd = (m: Member, at: number | null) => {
-    if (m.endedAt !== null || at === null) return;
-    m.endedAt = at;
-    membersRev++;
-  };
-  /** A member that was heard to run; one that reported or ended only a new turn revives. */
-  const memberRuns = (m: Member) => {
-    if (m.state === 'unknown' || m.state === 'idle') moveMember(m, 'running');
-  };
-  /** A report came back; a turn that failed or was interrupted stays that. */
-  const memberReturned = (m: Member, at: number | null) => {
-    if (m.state === 'ended') return;
-    moveMember(m, 'returned');
-    memberEnd(m, at);
-  };
-  const memberEnded = (m: Member, why: MemberEnd, at: number | null) => {
-    moveMember(m, 'ended', why);
-    memberEnd(m, at);
-  };
-  const memberName = (m: Member, raw: string | null) => {
-    if (raw === null || m.name !== null) return;
-    const s = shown(redact, raw.slice(0, 1024), L.memberNameBytes, 'head').text.replace(/\s+/g, ' ').trim();
-    if (s === '') return;
-    m.name = s;
-    membersRev++;
-    if (m.unnamed) tellDispatch(m);
-    m.unnamed = false;
-  };
-  /** The dispatch event of a member, as it is known now. */
-  const tellDispatch = (m: Member) => {
-    feed.push({ kind: 'note', ref: memberNodeId(ownedId, m.threadId), text: m.name, state: 'dispatch', batch: m.batch! });
-  };
-  /** The root sent it out: once a member, in the open batch if this turn has one (see the header), else in a new one. */
-  const dispatched = (m: Member, turn: string | null) => {
-    if (m.batch !== null) return;
-    m.batch = turn !== null && dispatching?.turn === turn ? dispatching.batch : ++batches;
-    dispatching = turn === null ? null : { batch: m.batch, turn };
-    membersRev++;
-    tellDispatch(m);
-    m.unnamed = m.name === null;
-  };
-  /** The model codex says it runs on, the first it says; one outside the owned list is said, its name beside it (nothing stops it: isOwnedModel never saw it). */
-  const memberModel = (m: Member, raw: string | null) => {
-    if (raw === null || m.model !== null) return;
-    const s = shown(redact, raw.slice(0, 1024), L.memberModelBytes, 'head').text.replace(/\s+/g, ' ').trim();
-    if (s === '') return;
-    m.model = s;
-    membersRev++;
-    if (!isOwnedModel(raw)) note('member-off-list', `${memberLabel(m, m.threadId)}: ${s}`);
-  };
+    onFirst: () => {
+      if (opts.tainted === true) note('members-untrusted');
+    },
+  });
+  const { all: members, over: overIds, of: memberOf, move: moveMember, started: memberStart, runs: memberRuns, returned: memberReturned, ended: memberEnded, name: memberName, dispatched, model: memberModel, label: memberLabel } = table;
   /** The session is gone: nobody can hear a member again, so one still live is unknown, never running (T1). */
   const loseMembers = () => {
     const stopping = feed.last((e) => e.live && e.ref === STOP_REF);
@@ -634,13 +563,9 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     const stoppingRoot = feed.last((e) => e.live && e.ref === ROOT_STOP_REF);
     if (stoppingRoot !== null) stopSaid(ROOT_STOP_REF, 'commands-stop-unanswered', stoppingRoot.text);
     askMember.clear();
-    for (const m of members.values()) {
-      m.asks = [];
-      if (memberLive(m)) moveMember(m, 'unknown');
-    }
+    table.lose();
+    dropCalls();
   };
-  /** A member as a card names it; the end of its thread id tells two of one name, or of none, apart. */
-  const memberLabel = (m: Member | null, tid: string) => `${m?.name ?? 'name unknown'} (thread …${tid.slice(-8)})`;
 
   /** The Job the child's tree runs in (null: procguard off). */
   const job = pipe.job ?? null;
@@ -944,6 +869,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       const s = shownFeed(changeSummary(it.changes ?? [], feedPath), 'head');
       const input: FeedInput = { kind: 'tool', ref: iid, text: s.text, state: 'file-change', redactions: s.redactions };
       toolEvents.set(iid, { seq: feed.push(input).seq, input, hidden: false, held: false });
+    } else if (type === 'dynamicToolCall' && item.tool === DISPATCH_TOOL.name) {
+      // Its row is the note the dispatcher says.
     } else if (type === 'mcpToolCall' || type === 'dynamicToolCall' || type === 'webSearch') {
       itemOf(iid, type);
       const what = type === 'mcpToolCall' ? `${str(item.server) ?? '?'} / ${str(item.tool) ?? '?'}` : type === 'webSearch' ? str(item.query) ?? '' : str(item.tool) ?? '?';
@@ -1003,6 +930,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       ranUnasked(iid, str(item.status), changeSummary(changes, feedPath));
       const s = shownFeed(changeSummary(changes, feedPath), 'head');
       feed.push({ kind: 'tool-result', ref: iid, text: s.text, state: STATUS[str(item.status) ?? ''] ?? 'unknown', redactions: s.redactions });
+    } else if (type === 'dynamicToolCall' && item.tool === DISPATCH_TOOL.name) {
+      // As at its start.
     } else if (type === 'mcpToolCall' || type === 'dynamicToolCall' || type === 'webSearch') {
       feed.push({ kind: 'tool-result', ref: iid, text: null, state: STATUS[str(item.status) ?? ''] ?? 'unknown' });
     }
@@ -1130,7 +1059,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     if (asked || (status !== 'completed' && status !== 'failed')) return;
     memberUnasked++;
     if (m !== null) m.ranUnasked++;
-    membersRev++;
+    table.bump();
     feed.upsert('members-ran-unasked', { kind: 'note', ref: null, text: `${memberUnasked}`, state: 'members-ran-unasked' });
   };
 
@@ -1189,13 +1118,13 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
         // A command a stop ended comes back failed after the interrupted turn (measured): not a step of its that failed.
         if (str(obj(p.item).status) === 'failed' && m.why !== 'interrupted') {
           m.failed++;
-          membersRev++;
+          table.bump();
         }
         return;
       case 'error':
         if (p.willRetry !== true) {
           m.failed++;
-          membersRev++;
+          table.bump();
         }
         return;
       default:
@@ -1210,10 +1139,10 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     const tid = str(p.threadId);
     const foreign = tid !== null && threadId !== null && tid !== threadId;
     if (foreign && (method.startsWith('turn/') || method.startsWith('item/') || method.startsWith('thread/') || method === 'error')) {
-      const was = membersRev;
+      const was = table.rev;
       const from = memberThread(tid);
       if (from !== null) memberHeard(method, p, from);
-      if (membersRev !== was) changed();
+      if (table.rev !== was) changed();
       return;
     }
     switch (method) {
@@ -1252,7 +1181,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
         return;
       }
       case 'item/started':
-        if (!spawns(obj(p.item))) dispatching = null;
+        if (!spawns(obj(p.item))) table.closeDispatch();
         memberItem(p, false, true);
         itemStarted(obj(p.item));
         changed();
@@ -1469,7 +1398,36 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     'mcpServer/elicitation/request': askElicitation,
   };
 
+  /** What item/tool/call answers. */
+  const toolReply = (ok: boolean, text: string) => ({ contentItems: [{ type: 'inputText', text }], success: ok });
+
+  /** A dispatch tool call of the root thread: orchestrad decides; the answer may be a person's, minutes away. */
+  const dispatchCall = (rid: RpcId, p: Obj) => {
+    const port = opts.dispatch!;
+    if (p.tool !== DISPATCH_TOOL.name || terminal() || memberThread(p.threadId) !== null) {
+      rpc.respond(rid, toolReply(false, 'This tool is not available here.'));
+      return;
+    }
+    const call = port.call(ownedId, p.arguments, (n) => {
+      if (terminal()) return;
+      const s = n.text === null ? null : shownFeed(n.text, 'head');
+      feed.push({ kind: 'note', ref: n.ref, text: s?.text ?? null, state: n.state, redactions: s?.redactions ?? 0 });
+      changed();
+    });
+    const giveUp = () => {
+      calls.delete(giveUp);
+      call.cancel();
+    };
+    calls.add(giveUp);
+    void call.reply.then((r) => {
+      calls.delete(giveUp);
+      rpc.respond(rid, toolReply(r.ok, r.text));
+      changed();
+    });
+  };
+
   rpc.onRequest((rid, method, params) => {
+    if (method === 'item/tool/call' && opts.dispatch !== undefined) return dispatchCall(rid, obj(params));
     const make = Object.hasOwn(ASKS, method) ? ASKS[method]! : null;
     if (make === null) {
       rpc.respondError(rid, UNANSWERED_REQUEST_CODE, `Orchestra does not answer ${method}`);
@@ -1523,7 +1481,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       }
       rpc.notify('initialized');
       const policy = codexApprovalPolicy(opts.tainted === true);
-      const r = obj(await rpc.request('thread/start', { cwd, model, approvalPolicy: policy, sandbox: 'workspace-write' }, D.startMs));
+      const r = obj(await rpc.request('thread/start', { cwd, model, approvalPolicy: policy, sandbox: 'workspace-write', ...(opts.dispatch === undefined ? {} : { dynamicTools: [{ type: 'function', ...DISPATCH_TOOL }] }) }, D.startMs));
       if (terminal()) return;
       const tid = id(obj(r.thread).id);
       const sandbox = str(obj(r.sandbox).type);
@@ -1570,6 +1528,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     get turnId() {
       return turnId;
     },
+    tainted: opts.tainted === true,
     get tokens() {
       return tokens;
     },
@@ -1577,16 +1536,19 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       return queue.length;
     },
     get members() {
-      return Object.freeze([...members.values()].map(({ endedTurn: _t, turn: _u, unnamed: _s, commands: _c, stopLeft: _l, nameAsked: _n, asks, ...m }) => Object.freeze({ ...m, asks: Object.freeze([...asks]) })));
+      return table.list();
     },
     get membersOver() {
       return overIds.size;
     },
     get membersRev() {
-      return membersRev;
+      return table.rev;
     },
     get stoppable() {
       return rootOut().length > 0 || [...members.values()].some(stopReaches);
+    },
+    get run() {
+      return memberRun(members.values(), false, terminal());
     },
     feed,
     ready,
@@ -1613,6 +1575,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       // interrupt is sent, not awaited: its outcome is the feed's (turn-interrupted, or interrupt-failed).
       const denied = approvals.declineOwned(ownedId, 'interrupt');
       const withdrawn = withdrawAll();
+      dropCalls();
       if (turnId !== null) void stopTurn(turnId, open);
       else {
         if (turnStarting) interruptWanted = true;

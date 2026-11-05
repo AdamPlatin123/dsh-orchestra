@@ -32,7 +32,7 @@ import { frozen } from '../../shared/frozen.js';
 // (its child is gone: ended by you, exited, never started), with its end reason as its activity; never
 // idle (it takes no message), never done (T2), never error (this build reads no failure: meta.detects.error
 // is false). A session an earlier orchestrad left (registry, state unknown) is unknown with basis none.
-// Its sub-agents (a Codex session's members, src/owned/codex-session.ts) are its children, depth 1, in the
+// Its sub-agents (its members, src/owned/members.ts, of either harness) are its children, depth 1, in the
 // fields a read-only subagent has, session null (they are threads of its child, with no file the stage
 // reads), owned, basis owned; their ids are a hash, so no thread id reaches the page. Running, idle or
 // returned as codex said; ended when their turn failed or was interrupted (no failure is read as error here
@@ -72,6 +72,8 @@ export type TowerNode = {
   model: string | null;
   agentType: string | null;
   batch: number | null;
+  /** The owned session that sent this one out through its dispatch tool (src/route/dispatch.ts); null on every other node. */
+  sent: { by: string; via: 'grant' | 'person'; grantAt: number | null } | null;
 };
 export type TowerSrc = { state: 'ok' | 'empty' | 'error'; total: number; shown: number; registry: number | null; error: string | null };
 export type Project = { id: string; name: string; basis: 'cwd' | 'slug' | 'owned'; nodes: TowerNode[]; groups: Group[] };
@@ -82,6 +84,8 @@ export type OwnedMember = {
   name: string | null;
   /** Shown text; null when codex did not say. */
   model: string | null;
+  /** The kind of sub-agent the harness named, shown text; null when it names none. */
+  agentType: string | null;
   state: 'running' | 'idle' | 'returned' | 'ended' | 'unknown';
   why: 'failed' | 'interrupted' | 'shutdown' | null;
   /** Wall ms; null when codex gave none. */
@@ -120,15 +124,17 @@ export type OwnedSeat = {
   members?: readonly OwnedMember[];
   /** Sub-agents past the driver's bound, counted and not listed. */
   membersOver?: number;
+  /** The owned session that sent this one out (ownedId), and how; null or absent for one a person started. */
+  sent?: { by: string; via: 'grant' | 'person'; grantAt: number | null } | null;
 };
 
 /**
  * The dispatch desk's last dispatch on the router row (orchestra app plan §3): its session's title, when
  * it was dispatched, where to, and the session's node when the snapshot shows it (null otherwise).
  */
-export type RouterDispatch = { title: string; at: number; harness: 'codex' | 'claude'; model: string; node: string | null };
+export type RouterDispatch = { title: string; at: number; harness: 'codex' | 'claude'; model: string; node: string | null; auto: boolean };
 /** What the composition root hands the tower for the router row: the last dispatch and its session's title. */
-export type LastDispatch = { ownedId: string; harness: 'codex' | 'claude'; model: string; at: number; title: string };
+export type LastDispatch = { ownedId: string; harness: 'codex' | 'claude'; model: string; at: number; title: string; auto: boolean };
 /**
  * A pending agent request (seat) as every paired page sees it, unlocked or not: its harness and the wall
  * time it is refused at (D8: timeout = deny). Never its text, cwd or requester: those wait for the unlock.
@@ -270,7 +276,7 @@ export function projectOf(lane: Lane): Project {
       activity: ((a) => (a === null ? null : clipCp(a, TOWER_BOUNDS.activityCp)))(activityOf(p, lane)),
       state, basis, waiting,
       counts: { children: 0, errors: 0, waiting: 0 }, groups: [],
-      ageMs: p.live.ageMs, durationMs: null, model: null, agentType: p.agentType, batch: null, mark: null,
+      ageMs: p.live.ageMs, durationMs: null, model: null, agentType: p.agentType, batch: null, mark: null, sent: null,
     };
     nodes.set(n.id, n);
   }
@@ -333,7 +339,7 @@ function memberNode(seat: OwnedSeat, m: OwnedMember, nowWall: number): TowerNode
     ageMs: m.lastAt === null ? null : Math.max(0, nowWall - m.lastAt),
     durationMs: m.startedAt === null || end === null || end < m.startedAt ? null : end - m.startedAt,
     model: m.model === null ? null : clipCp(m.model, TOWER_BOUNDS.textCp),
-    agentType: null, batch: m.batch,
+    agentType: m.agentType === null ? null : clipCp(m.agentType, TOWER_BOUNDS.textCp), batch: m.batch, sent: null,
     mark: m.asking !== null && m.asking !== '' ? 'asks' : state === 'ended' && m.why === 'failed' ? 'failed' : null,
   };
 }
@@ -368,6 +374,7 @@ function ownedTree(seat: OwnedSeat, nowWall: number): { root: TowerNode; kids: T
     state, basis: state === 'unknown' ? 'none' : 'owned', waiting,
     counts: { children: kids.length, errors: 0, waiting: 0 }, groups: foldSiblings(kids),
     ageMs: seat.lastAt === null ? null : Math.max(0, nowWall - seat.lastAt), durationMs: null, model: null, agentType: null, batch: null, mark: null,
+    sent: seat.sent == null ? null : { by: `n:${seat.sent.by}`, via: seat.sent.via, grantAt: seat.sent.grantAt },
   };
   return { root, kids };
 }
@@ -440,7 +447,7 @@ function routerDispatch(d: LastDispatch | null, nodes: readonly TowerNode[]): Ro
   if (d === null) return null;
   const id = `n:${d.ownedId}`;
   const title = d.title === '' ? text('untitled', 'owned session') : d.title;
-  return { title: clipCp(title, TOWER_BOUNDS.titleCp), at: d.at, harness: d.harness, model: d.model, node: nodes.some((n) => n.id === id) ? id : null };
+  return { title: clipCp(title, TOWER_BOUNDS.titleCp), at: d.at, harness: d.harness, model: d.model, node: nodes.some((n) => n.id === id) ? id : null, auto: d.auto };
 }
 
 /** Where the tower reads the owned sessions from: the driver's seats, the wall clock their ages are taken against, the desk's last dispatch, the pending agent requests. */

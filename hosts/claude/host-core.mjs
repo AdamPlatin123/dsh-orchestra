@@ -46,6 +46,49 @@ const READ_TOOLS = Object.freeze(['Read', 'Glob', 'Grep']);
 const SHELL_TOOLS = Object.freeze(['Bash', 'PowerShell']);
 
 /**
+ * The tool that starts a sub-agent: system/init lists it as Task, a call names it Agent (measured on CLI 2.1.287,
+ * 2026-11-05). It is let through only for a session whose whole tree runs in a procguard Job (the start frame's
+ * subagents); then every call of it is a card (judge), and every tool a sub-agent calls comes to the same hook and
+ * canUseTool as the session's own, with its agent id (measured: foreground, background, after the root's turn ended,
+ * nested, tainted, each of AGENT_TYPES). Without a Job it stays disallowed, as DISALLOWED_TOOLS says.
+ */
+export const SUBAGENT_TOOLS = Object.freeze(['Task', 'Agent']);
+/**
+ * The dispatch tool (src/route/dispatch.ts, whose DISPATCH_TOOL this restates: the host imports nothing, and a test holds
+ * the two equal): an in-process MCP server the start frame's dispatch turns on, written here by hand because the SDK's
+ * tool() takes only a zod schema, and a bare JSON schema is what both harnesses are given. Measured on CLI 2.1.287,
+ * 2026-11-05: the SDK calls instance.connect(transport), init then lists mcp__orchestra__dispatch and one server
+ * connected, a hook answer of allow runs it with no canUseTool, a call stays open as long as its answer takes, and an
+ * interrupt comes as notifications/cancelled. A sub-agent holds the tool too, with its agent id on the hook, and is refused.
+ * The call runs on orchestrad's word, not on a card: dispatch.ts decides, and every check of a dispatch is there.
+ */
+export const DISPATCH_SERVER = 'orchestra';
+export const DISPATCH_TOOL = Object.freeze({
+  name: 'dispatch',
+  description: 'Send a task to a new worker: a separate Codex or Claude session of Orchestra that works on its own. Use it only when the person asked for that or a separate worker clearly helps. '
+    + 'Orchestra decides: it may ask the person first, which can take minutes, or refuse. Read the result: it says whether the worker went out. The new worker does not report back to you; the person sees its result.',
+  inputSchema: {
+    type: 'object',
+    additionalProperties: false,
+    required: ['task', 'harness'],
+    properties: {
+      task: { type: 'string', description: 'What the new worker should do, complete in itself: it sees nothing of this conversation.' },
+      harness: { type: 'string', enum: ['codex', 'claude'], description: 'Which harness runs it.' },
+      model: { type: 'string', description: 'Optional: a model of the local gateway, like zcode/GLM-5.3. Left out, the harness default.' },
+      cwd: { type: 'string', description: 'Optional: an absolute folder inside a project root the person opened. Left out, the worker gets its own empty folder.' },
+    },
+  },
+});
+/** The dispatch tool's name as the CLI lists and calls it. */
+export const DISPATCH_TOOL_ID = `mcp__${DISPATCH_SERVER}__${DISPATCH_TOOL.name}`;
+/** What an Agent call may name; anything else is refused unseen by a person (agent-input). `isolation` runs it out of cwd, or out of the Job; `name` and `mode` were never measured. */
+const AGENT_INPUT_KEYS = Object.freeze(['description', 'prompt', 'subagent_type', 'model', 'run_in_background']);
+/** The kinds of sub-agent measured to come to the gate. statusline-setup would only edit a protected file, and `fork` was never seen. */
+export const AGENT_TYPES = Object.freeze(['general-purpose', 'Explore', 'Plan', 'claude']);
+/** The model names sessionEnv pins to the session's one model (measured: sonnet ran on it). `fable` has no such variable, so it is refused. */
+export const AGENT_MODELS = Object.freeze(['sonnet', 'opus', 'haiku']);
+
+/**
  * Passed as `disallowedTools`: the 20 non-core tools of the owned CLI 2.1.310 (probe §10 item 1), then
  * names of other CLI versions that start subagents, manage background shells, schedule, reach the
  * network or edit outside the core tools. The hook denies any non-core name anyway; this list keeps
@@ -82,6 +125,8 @@ const HEX20 = /^[0-9a-f]{20}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const REQ_ID = /^[0-9a-f]{32}$/;
 const DIGEST = /^[0-9a-f]{64}$/;
+/** task_updated's and task_notification's ends as a sub-start's end says them. */
+const TASK_ENDS = Object.freeze({ completed: 'completed', failed: 'failed', stopped: 'stopped', killed: 'stopped' });
 const LIFECYCLE_STATES = Object.freeze(['queued', 'started', 'completed', 'cancelled']);
 const MAX_PROTECTED_ROOTS = 64;
 const MAX_TOOL_USE_ID = 256;
@@ -98,7 +143,9 @@ const DENY_MESSAGES = Object.freeze({
   protected: 'This path is protected: tools in this session may not touch it.',
   background: 'Background commands are not allowed in this session.',
   disallowed: 'This tool is not available in this session.',
+  'agent-input': 'A sub-agent may be started only with description, prompt, an available subagent_type, and optionally run_in_background and model sonnet, opus or haiku. Nothing else is allowed in this session.',
   'bad-input': 'This tool call could not be shown to the user, so it was not allowed.',
+  'dispatch-subagent': 'A sub-agent may not dispatch: only the session itself may.',
 });
 
 const ENCODER = new TextEncoder();
@@ -462,7 +509,7 @@ function toolReach(toolName, input, cwd, home) {
 const isPlainObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v) && Object.getPrototypeOf(v) === Object.prototype;
 const onlyKeys = (o, allowed) => Object.keys(o).every((k) => allowed.includes(k));
 
-const START_KEYS = Object.freeze(['t', 'ownedId', 'model', 'cwd', 'configDir', 'resume', 'fork', 'resumeAt', 'appendSystem', 'tainted', 'claudeExe', 'protectedRoots', 'askTimeoutMs']);
+const START_KEYS = Object.freeze(['t', 'ownedId', 'model', 'cwd', 'configDir', 'resume', 'fork', 'resumeAt', 'appendSystem', 'tainted', 'claudeExe', 'protectedRoots', 'askTimeoutMs', 'subagents', 'dispatch']);
 
 /** The env value of `name`, matched case-insensitively as Windows does; undefined when absent. */
 function envValue(env, name) {
@@ -490,6 +537,8 @@ export function parseStart(f, env) {
   if (f.resumeAt !== undefined && (typeof f.resumeAt !== 'string' || !UUID.test(f.resumeAt) || f.fork !== true)) return bad('resumeAt');
   if (f.appendSystem !== undefined && (typeof f.appendSystem !== 'string' || f.appendSystem.length === 0)) return bad('appendSystem');
   if (typeof f.tainted !== 'boolean') return bad('tainted');
+  if (f.subagents !== undefined && typeof f.subagents !== 'boolean') return bad('subagents');
+  if (f.dispatch !== undefined && typeof f.dispatch !== 'boolean') return bad('dispatch');
   const claudeExe = winAbsolute(f.claudeExe);
   if (claudeExe === null || baseName(claudeExe).toLowerCase() !== 'claude.exe') return bad('claudeExe');
   if (!Array.isArray(f.protectedRoots) || f.protectedRoots.length > MAX_PROTECTED_ROOTS) return bad('protectedRoots');
@@ -513,7 +562,7 @@ export function parseStart(f, env) {
     ok: true,
     start: Object.freeze({
       ownedId: f.ownedId, model: f.model, cwd, configDir, resume: f.resume, fork: f.fork === true, resumeAt: f.resumeAt,
-      appendSystem: f.appendSystem, tainted: f.tainted, claudeExe, protectedRoots: Object.freeze(roots), askTimeoutMs, home,
+      appendSystem: f.appendSystem, tainted: f.tainted, subagents: f.subagents === true, dispatch: f.dispatch === true, claudeExe, protectedRoots: Object.freeze(roots), askTimeoutMs, home,
       hardRoots: Object.freeze([`${home}\\.claude`, `${home}\\.dsh`, configDir]),
       models: Object.freeze(smallFast === null || smallFast === f.model ? [f.model] : [f.model, smallFast]),
     }),
@@ -548,6 +597,20 @@ function sessionEnv(env, start) {
   return { ...out, ...set };
 }
 
+/** The tools a session keeps from the model: all of DISALLOWED_TOOLS, but for SUBAGENT_TOOLS where its tree is in a Job. */
+export function disallowedFor(subagents) {
+  return subagents === true ? DISALLOWED_TOOLS.filter((t) => !SUBAGENT_TOOLS.includes(t)) : DISALLOWED_TOOLS;
+}
+
+/** Whether an Agent call stays inside what was measured. */
+export function agentInputOk(input) {
+  if (!onlyKeys(input, AGENT_INPUT_KEYS)) return false;
+  if (typeof input.description !== 'string' || typeof input.prompt !== 'string') return false;
+  if (input.subagent_type !== undefined && !AGENT_TYPES.includes(input.subagent_type)) return false;
+  if (input.model !== undefined && !AGENT_MODELS.includes(input.model)) return false;
+  return input.run_in_background === undefined || typeof input.run_in_background === 'boolean';
+}
+
 /**
  * The SDK options of a session (design §2.2 with the probe's changes). Fixed except for what the start
  * frame names. Never: a bypassing or edit-accepting permission mode, permission prompt tools, a
@@ -560,9 +623,9 @@ export function sdkOptions(start, env, gate) {
     pathToClaudeCodeExecutable: start.claudeExe,
     settingSources: [],
     strictMcpConfig: true,
-    mcpServers: {},
+    mcpServers: start.dispatch ? { [DISPATCH_SERVER]: { type: 'sdk', name: DISPATCH_SERVER, instance: gate.dispatchServer } } : {},
     permissionMode: 'default',
-    disallowedTools: [...DISALLOWED_TOOLS],
+    disallowedTools: [...disallowedFor(start.subagents)],
     skills: [],
     env: sessionEnv(env, start),
     extraArgs: { 'no-chrome': null },
@@ -586,13 +649,15 @@ export function sdkOptions(start, env, gate) {
 }
 
 /** Why a system/init frame stops the session, or null when it passes (design §2.2 startup checks). */
-export function initProblem(m, model) {
+export function initProblem(m, model, subagents = false, dispatch = false) {
   if (m.claude_code_version !== CLI_VERSION) return 'cli-version';
   if (m.model !== model) return 'model';
   if (m.permissionMode !== 'default') return 'permission-mode';
   if (typeof m.session_id !== 'string' || !UUID.test(m.session_id)) return 'session-id';
-  if (!Array.isArray(m.tools) || m.tools.some((t) => typeof t !== 'string' || t.startsWith('mcp__') || DISALLOWED_TOOLS.includes(t))) return 'tools';
-  if (!Array.isArray(m.mcp_servers) || m.mcp_servers.length !== 0) return 'mcp-servers';
+  if (!Array.isArray(m.tools) || m.tools.some((t) => typeof t !== 'string' || (t.startsWith('mcp__') && !(dispatch && t === DISPATCH_TOOL_ID)) || disallowedFor(subagents).includes(t))) return 'tools';
+  if (dispatch && !m.tools.includes(DISPATCH_TOOL_ID)) return 'tools';
+  if (!Array.isArray(m.mcp_servers) || m.mcp_servers.length !== (dispatch ? 1 : 0)) return 'mcp-servers';
+  if (dispatch && (m.mcp_servers[0]?.name !== DISPATCH_SERVER || m.mcp_servers[0]?.status !== 'connected')) return 'mcp-servers';
   if (!Array.isArray(m.skills) || m.skills.some((s) => !PINNED_SKILLS.includes(s))) return 'skills';
   if (!Array.isArray(m.plugins) || m.plugins.some((p) => !PINNED_PLUGINS.includes(isPlainObject(p) ? p.name : p))) return 'plugins';
   return null;
@@ -680,6 +745,26 @@ export function runHost(powers) {
   const pending = new Map();
   const autoDenied = new Set();
   const sentUuids = new Set();
+  /** Tool calls the gate saw: a sub-agent's call that ran without it stops the session (onSubResult). */
+  const judged = new Set();
+  /** Tool calls the gate or a person refused: their error result is no failed step. */
+  const refused = new Set();
+  /** A sub-agent's tool call -> the task that made it. */
+  const toolOwner = new Map();
+  /** A root Agent call -> the model reply it came in: the calls of one reply are one dispatch. */
+  const replyOf = new Map();
+  /** Sub-agents by task id: the tool call that started each, and whether its model was told. */
+  const tasks = new Map();
+  /** The tool call that started a task -> the task. */
+  const taskByTool = new Map();
+  /** Tasks whose end was told. */
+  const endedTasks = new Set();
+  /** A sub-agent's foreground command (a local_bash task) -> the sub-agent. */
+  const commands = new Map();
+  /** Dispatch tool calls orchestrad has not answered yet, by callId: the JSON-RPC id of each. */
+  const dispatchCalls = new Map();
+  /** The dispatch server's way to the CLI, once the SDK connected it. */
+  let dispatchWire = null;
   let start = null;
   let started = false;
   let q = null;
@@ -708,6 +793,8 @@ export function runHost(powers) {
     finished = true;
     for (const p of pending.values()) p.settle({ behavior: 'deny', message: DENY_MESSAGES.ending });
     pending.clear();
+    for (const id of dispatchCalls.values()) mcpAnswer(id, false, DENY_MESSAGES.ending);
+    dispatchCalls.clear();
     inbox.end();
     if (q !== null) {
       if (reason === 'safety-stop') {
@@ -728,6 +815,52 @@ export function runHost(powers) {
   }
 
   const hexOf = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+
+  // ---- the dispatch tool -----------------------------------------------------------------------------
+
+  /** To the CLI; a query that closed first has nobody to hear it. */
+  function mcpSend(m) {
+    try {
+      Promise.resolve(dispatchWire?.send(m)).catch(() => {});
+    } catch {
+      // as above
+    }
+  }
+
+  function mcpAnswer(id, ok, text) {
+    mcpSend({ jsonrpc: '2.0', id, result: { content: [{ type: 'text', text }], ...(ok ? {} : { isError: true }) } });
+  }
+
+  /** The MCP messages the SDK hands over: the handshake, the one tool, a cancel. Everything else has no method here. */
+  function onMcp(m) {
+    const ok = (result) => mcpSend({ jsonrpc: '2.0', id: m.id, result });
+    if (m.method === 'initialize') return ok({ protocolVersion: m.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: DISPATCH_SERVER, version: '1.0.0' } });
+    if (m.method === 'tools/list') return ok({ tools: [DISPATCH_TOOL] });
+    if (m.method === 'tools/call') {
+      if (m.params?.name !== DISPATCH_TOOL.name || finished) return mcpAnswer(m.id, false, DENY_MESSAGES.disallowed);
+      const callId = hexOf(randomBytes(16));
+      dispatchCalls.set(callId, m.id);
+      return emit({ t: 'dispatch', callId, input: isPlainObject(m.params.arguments) ? m.params.arguments : {} });
+    }
+    if (m.method === 'notifications/cancelled') {
+      for (const [callId, id] of dispatchCalls) {
+        if (id !== m.params?.requestId) continue;
+        dispatchCalls.delete(callId);
+        emit({ t: 'dispatch-gone', callId });
+      }
+      return undefined;
+    }
+    if (m.id !== undefined) mcpSend({ jsonrpc: '2.0', id: m.id, error: { code: -32601, message: 'no such method' } });
+    return undefined;
+  }
+
+  const dispatchServer = Object.freeze({
+    async connect(transport) {
+      dispatchWire = transport;
+      transport.onmessage = onMcp;
+      await transport.start?.();
+    },
+  });
 
   // ---- the permission gate -------------------------------------------------------------------------
 
@@ -755,8 +888,18 @@ export function runHost(powers) {
    * asks for everything; Read, Glob and Grep inside cwd run by the CLI's default (which asks nobody);
    * everything else asks the human.
    */
-  async function judge(toolName, input) {
+  async function judge(toolName, input, agent) {
     if (typeof toolName !== 'string' || !isPlainObject(input)) return { verdict: 'deny', why: 'bad-input' };
+    // Not a call a card decides: orchestrad does, in dispatch.ts, whatever the session's taint.
+    if (toolName === DISPATCH_TOOL_ID) {
+      if (!start.dispatch) return { verdict: 'deny', why: 'disallowed' };
+      return agent === null ? { verdict: 'dispatch' } : { verdict: 'deny', why: 'dispatch-subagent' };
+    }
+    // Starting a sub-agent is a card like any other call that is no read inside cwd: a person sees its whole prompt.
+    if (SUBAGENT_TOOLS.includes(toolName)) {
+      if (!start.subagents) return { verdict: 'deny', why: 'disallowed' };
+      return agentInputOk(input) ? { verdict: 'ask' } : { verdict: 'deny', why: 'agent-input' };
+    }
     if (!CORE_TOOLS.includes(toolName)) return { verdict: 'deny', why: 'disallowed' };
     const { isProtected, inCwd } = await reachOf(input, toolName);
     if (isProtected) return { verdict: 'deny', why: 'protected' };
@@ -768,10 +911,21 @@ export function runHost(powers) {
     return { verdict: 'ask' };
   }
 
-  function deniedAuto(toolUseId, name, why) {
+  /** The sub-agent a gate input names, or null for the session's own call. */
+  const agentOf = (id) => (typeof id === 'string' && id.length > 0 && id.length <= MAX_TOOL_USE_ID ? id : null);
+
+  /** The gate saw this call. */
+  function sawTool(toolUseId, agent) {
+    if (typeof toolUseId !== 'string') return;
+    judged.add(toolUseId);
+    if (agent !== null) toolOwner.set(toolUseId, agent);
+  }
+
+  function deniedAuto(toolUseId, name, why, agent) {
     if (typeof toolUseId !== 'string' || autoDenied.has(toolUseId)) return;
     autoDenied.add(toolUseId);
-    emit({ t: 'denied-auto', toolUseId, name: typeof name === 'string' ? name : '', why });
+    refused.add(toolUseId);
+    emit({ t: 'denied-auto', toolUseId, name: typeof name === 'string' ? name : '', why, ...(agent === null ? {} : { agentId: agent }) });
   }
 
   const hookOut = (decision, reason) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: decision, permissionDecisionReason: reason } });
@@ -779,12 +933,15 @@ export function runHost(powers) {
   async function preToolUse(hookInput) {
     if (!isPlainObject(hookInput) || hookInput.hook_event_name !== 'PreToolUse') return {};
     const toolUseId = hookInput.tool_use_id;
+    const agent = agentOf(hookInput.agent_id);
+    sawTool(toolUseId, agent);
     if (finished) return hookOut('deny', DENY_MESSAGES.ending);
-    const j = await judge(hookInput.tool_name, hookInput.tool_input);
+    const j = await judge(hookInput.tool_name, hookInput.tool_input, agent);
     if (j.verdict === 'deny') {
-      deniedAuto(toolUseId, hookInput.tool_name, j.why);
+      deniedAuto(toolUseId, hookInput.tool_name, j.why, agent);
       return hookOut('deny', DENY_MESSAGES[j.why]);
     }
+    if (j.verdict === 'dispatch') return hookOut('allow', 'Orchestra decides this call itself.');
     if (j.verdict === 'ask') return hookOut('ask', 'Orchestra asks the user.');
     return {};
   }
@@ -813,14 +970,17 @@ export function runHost(powers) {
     const toolUseId = opts.toolUseID;
     const signal = opts.signal;
     if (typeof toolUseId !== 'string' || toolUseId.length === 0 || toolUseId.length > MAX_TOOL_USE_ID) return deny('bad-input');
+    const agent = agentOf(opts.agentID);
+    sawTool(toolUseId, agent);
     // The hook's rules again: a call that reaches canUseTool by any route is judged the same. A call
     // the CLI would have run by default is asked about here too: once it is here, a human decides.
-    const j = await judge(toolName, toolInput);
+    const j = await judge(toolName, toolInput, agent);
     if (finished) return deny('ending');
     if (j.verdict === 'deny') {
-      deniedAuto(toolUseId, toolName, j.why);
+      deniedAuto(toolUseId, toolName, j.why, agent);
       return deny(j.why);
     }
+    if (j.verdict === 'dispatch') return { behavior: 'allow', updatedInput: toolInput };
     let digest;
     let preview;
     let inputBytes;
@@ -829,7 +989,7 @@ export function runHost(powers) {
       inputBytes = utf8Length(canonicalJson(toolInput));
       preview = buildPreview(toolInput);
     } catch {
-      deniedAuto(toolUseId, toolName, 'bad-input');
+      deniedAuto(toolUseId, toolName, 'bad-input', agent);
       return deny('bad-input');
     }
     const reqId = hexOf(randomBytes(16));
@@ -847,6 +1007,7 @@ export function runHost(powers) {
         input: toolInput,
         digest,
         settle(result) {
+          if (result.behavior === 'deny') refused.add(toolUseId);
           cancelTimer();
           signal?.removeEventListener?.('abort', onAbort);
           resolve(result);
@@ -862,6 +1023,7 @@ export function runHost(powers) {
       emit({
         t: 'ask', reqId, toolName, toolUseId, preview: preview.preview, inputBytes, digest, redactions: preview.redactions, tooLong: preview.tooLong, risk: riskOf(toolName, false),
         ...askPlaces(toolName, toolInput),
+        ...(agent === null ? {} : { agentId: agent }),
       });
       if (signal?.aborted === true) onAbort();
       else signal?.addEventListener?.('abort', onAbort, { once: true });
@@ -872,10 +1034,77 @@ export function runHost(powers) {
 
   const stop = (check) => finish('safety-stop', check);
 
+  /** A line of what the model wrote for a member (its description, its kind), at most SUBJECT_MAX_BYTES. */
+  const memberText = (v) => (typeof v === 'string' ? splitUtf8(escapeInvisible(redactSecrets(v.split('\n', 1)[0]).text), SUBJECT_MAX_BYTES)[0] ?? null : null);
+
+  function endTask(taskId, status) {
+    if (!tasks.has(taskId) || endedTasks.has(taskId) || !Object.hasOwn(TASK_ENDS, status)) return;
+    endedTasks.add(taskId);
+    emit({ t: 'sub-end', taskId, status: TASK_ENDS[status] });
+  }
+
+  /**
+   * The life of a sub-agent. Only states go on: task_started's prompt, task_progress's and task_notification's
+   * summary are its words and stay here. local_agent is a sub-agent, local_bash a foreground command, each its own
+   * task (measured); any other kind is not read.
+   */
+  function onTask(m) {
+    const id = agentOf(m.task_id);
+    if (id === null) return;
+    if (m.subtype === 'task_started' && m.task_type === 'local_agent') {
+      const toolUseId = typeof m.tool_use_id === 'string' ? m.tool_use_id : null;
+      tasks.set(id, { modelTold: false });
+      if (toolUseId !== null) taskByTool.set(toolUseId, id);
+      emit({ t: 'sub-start', taskId: id, name: memberText(m.description), type: memberText(m.subagent_type), depth: Number.isSafeInteger(m.spawn_depth) ? m.spawn_depth : null, reply: replyOf.get(toolUseId) ?? null });
+    } else if (m.subtype === 'task_started' && m.task_type === 'local_bash') {
+      const owner = toolOwner.get(m.tool_use_id);
+      if (owner === undefined || !tasks.has(owner)) return;
+      commands.set(id, owner);
+      emit({ t: 'sub-cmd', taskId: owner, id, open: true });
+    } else if (m.subtype === 'task_progress') {
+      if (tasks.has(id)) emit({ t: 'sub-progress', taskId: id });
+    } else if (m.subtype === 'task_updated') {
+      if (isPlainObject(m.patch)) endTask(id, m.patch.status);
+    } else if (m.subtype === 'task_notification') {
+      endTask(id, m.status);
+      const owner = commands.get(id);
+      if (owner === undefined) return;
+      commands.delete(id);
+      emit({ t: 'sub-cmd', taskId: owner, id, open: false });
+    }
+  }
+
+  /** What a sub-agent's model wrote: its words stay here, the guard above read its model. */
+  function onSubAssistant(m, message) {
+    const taskId = taskByTool.get(m.parent_tool_use_id);
+    const task = taskId === undefined ? undefined : tasks.get(taskId);
+    if (task === undefined || task.modelTold || typeof message.model !== 'string' || message.model === SYNTHETIC_MODEL) return;
+    task.modelTold = true;
+    emit({ t: 'sub-model', taskId, model: message.model });
+  }
+
+  /**
+   * What came back of a sub-agent's tool calls. A result the gate never saw is a call that ran past the hook and
+   * canUseTool: nothing measured does that, and approvals are what let sub-agents run at all, so the session stops.
+   * A call that never ran (bad input, an unknown tool) has an error result and never reached the hook.
+   */
+  function onSubResult(m) {
+    const content = isPlainObject(m.message) && Array.isArray(m.message.content) ? m.message.content : [];
+    const taskId = taskByTool.get(m.parent_tool_use_id);
+    for (const b of content) {
+      if (!isPlainObject(b) || b.type !== 'tool_result' || typeof b.tool_use_id !== 'string') continue;
+      if (b.is_error !== true) {
+        if (!judged.has(b.tool_use_id)) return stop('unjudged-tool');
+      } else if (taskId !== undefined && !refused.has(b.tool_use_id)) {
+        emit({ t: 'sub-failed', taskId });
+      }
+    }
+  }
+
   function onMessage(m) {
     if (!isPlainObject(m)) return;
     if (m.type === 'system' && m.subtype === 'init') {
-      const problem = initProblem(m, start.model);
+      const problem = initProblem(m, start.model, start.subagents, start.dispatch);
       if (problem !== null) return stop(problem);
       if (m.session_id !== sessionId) {
         sessionId = m.session_id;
@@ -883,6 +1112,8 @@ export function runHost(powers) {
       }
       return;
     }
+    if (m.type === 'system' && typeof m.subtype === 'string' && m.subtype.startsWith('task_')) return onTask(m);
+    if (m.type === 'user' && typeof m.parent_tool_use_id === 'string') return onSubResult(m);
     if (m.type === 'command_lifecycle') {
       if (typeof m.command_uuid === 'string' && LIFECYCLE_STATES.includes(m.state)) emit({ t: 'lifecycle', uuid: m.command_uuid, state: m.state });
       return;
@@ -891,11 +1122,16 @@ export function runHost(powers) {
       if (sessionId === null) return stop('no-init');
       const message = isPlainObject(m.message) ? m.message : {};
       if (message.model !== undefined && !start.models.includes(message.model) && message.model !== SYNTHETIC_MODEL) return stop('model');
+      if (typeof m.parent_tool_use_id === 'string') return onSubAssistant(m, message);
       const uuid = typeof m.uuid === 'string' ? m.uuid : null;
       for (const b of Array.isArray(message.content) ? message.content : []) {
         if (!isPlainObject(b)) continue;
         if (b.type === 'text' && typeof b.text === 'string') for (const chunk of splitUtf8(b.text, TEXT_CHUNK_BYTES)) emit({ t: 'text', uuid, chunk });
-        if (b.type === 'tool_use' && typeof b.id === 'string' && typeof b.name === 'string') emit({ t: 'tool', toolUseId: b.id, name: b.name });
+        if (b.type !== 'tool_use' || typeof b.id !== 'string' || typeof b.name !== 'string') continue;
+        // A dispatch is told by its sub-start, not as a tool row. One reply's calls share message.id (sdk.d.ts).
+        if (SUBAGENT_TOOLS.includes(b.name)) replyOf.set(b.id, agentOf(message.id));
+        // A dispatch tool call is told by orchestrad's own note, not as a tool row.
+        else if (b.name !== DISPATCH_TOOL_ID) emit({ t: 'tool', toolUseId: b.id, name: b.name });
       }
       return;
     }
@@ -959,7 +1195,7 @@ export function runHost(powers) {
     guarded = roots;
     if (finished) return;
     try {
-      q = query({ prompt: inbox, options: sdkOptions(start, env, { preToolUse, canUseTool }) });
+      q = query({ prompt: inbox, options: sdkOptions(start, env, { preToolUse, canUseTool, dispatchServer }) });
     } catch {
       return finish('sdk-error');
     }
@@ -997,6 +1233,15 @@ export function runHost(powers) {
     }
     if (again !== p.digest || f.digest !== p.digest) return p.settle(deny('digest'));
     p.settle({ behavior: 'allow', updatedInput: p.input });
+  }
+
+  function onDispatchReply(f) {
+    if (!onlyKeys(f, ['t', 'callId', 'ok', 'text']) || typeof f.callId !== 'string' || !REQ_ID.test(f.callId) || typeof f.ok !== 'boolean' || typeof f.text !== 'string') return finish('bad-frame', 'dispatch-reply');
+    const id = dispatchCalls.get(f.callId);
+    // The CLI gave up on it first (a stop): its answer has nowhere to go.
+    if (id === undefined) return undefined;
+    dispatchCalls.delete(f.callId);
+    return mcpAnswer(id, f.ok, f.text);
   }
 
   function onInterrupt(f) {
@@ -1039,6 +1284,8 @@ export function runHost(powers) {
         return onPerm(f);
       case 'interrupt':
         return onInterrupt(f);
+      case 'dispatch-reply':
+        return onDispatchReply(f);
       case 'close':
         return onlyKeys(f, ['t']) ? finish('closed') : finish('bad-frame', 'close');
       default:

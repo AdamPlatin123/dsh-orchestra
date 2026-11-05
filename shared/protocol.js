@@ -23,7 +23,7 @@ export const PROTOCOL_V = 1;
 export const HUMAN_VERBS = Object.freeze(/** @type {const} */ ([
   'seen', 'snooze', 'acted', 'remind', 'brake', 'roots-add', 'roots-confirm', 'protect-add', 'protect-remove', 'dsh-connect', 'self-rating',
   'owned-new', 'owned-message', 'owned-interrupt', 'owned-end', 'owned-brake', 'owned-retry', 'approval-allow', 'approval-deny', 'import-claude', 'import-dsh',
-  'request-reject',
+  'request-reject', 'dispatch-grant',
 ]));
 /** @typedef {typeof HUMAN_VERBS[number]} HumanVerb */
 
@@ -53,6 +53,8 @@ export const HUMAN_VERB_ROUTES = Object.freeze(/** @type {const} */ ({
   'import-dsh': '/api/import/dsh',
   // seat: a person rejects an agent request (r4 A17; D8: only on this page). Its dispatch is owned-new with the requestId.
   'request-reject': '/api/agent-requests/:id/reject',
+  // A person sets a session's dispatch permission (src/route/dispatch.ts; D8: only on this page, never on the agent port).
+  'dispatch-grant': '/api/owned/:id/dispatch-grant',
 }));
 
 /**

@@ -94,6 +94,11 @@ export function describeChat(feed, over = false) {
   let lastText = null;
   for (const e of feed.events) {
     if (e.kind === 'note' && MSG.test(e.state ?? '')) continue;
+    // A worker it sent out: a row of its own, tied to that worker's card (ui/wings.js); the feed says how it went.
+    if (e.kind === 'note' && (e.state === 'worker-sent' || e.state === 'worker-sent-grant')) {
+      kids.push({ key: `w${e.ref}`, tpl: 'tpl-msg', data: { kind: 'disp', live: '0', batch: '', worker: e.ref, via: e.state === 'worker-sent-grant' ? 'grant' : 'person' }, slots: { who: { text: '' }, tx: { text: tk('fnote', e.state, 'fnote.other', { t: e.text ?? t('chat.unnamed') }) } } });
+      continue;
+    }
     if (e.kind === 'note' && e.state === 'dispatch') {
       let b = sent.get(e.batch);
       if (b === undefined) {
@@ -126,7 +131,8 @@ export function describeChat(feed, over = false) {
     }
     if (e.kind === 'tool-result') {
       const d = tools.get(k);
-      d.slots.sum.text += ` · ${join([tk('res', e.state, 'res.unknown'), e.exitCode !== null && t('chat.exit', { n: e.exitCode })])}`;
+      // Nothing runs on after the session: what it was doing at the end has no result, and no end was heard (T1).
+      d.slots.sum.text += ` · ${join([tk('res', over && e.state === 'running' ? 'over' : e.state, 'res.unknown'), e.exitCode !== null && t('chat.exit', { n: e.exitCode })])}`;
       if (tx !== '') d.slots.body.text = d.slots.body.text === '' ? tx : `${d.slots.body.text}\n\n${t('chat.out')}\n${tx}`;
       d.data.live = e.live ? '1' : '0';
     } else if (e.kind === 'you') {
@@ -140,6 +146,9 @@ export function describeChat(feed, over = false) {
     // An automatic refusal says its reason; one this page has no words for says its code, never "timed out" (T1).
     else if (e.kind === 'auto-denied') msg('', tk('chat', e.state, 'chat.autoOther', { t: tx }), 'auto');
     else if (e.kind === 'lifecycle') msg('', join([tk('life', over && e.state === 'daemon-restart' ? 'daemon-restart-over' : e.state, 'chat.life'), tx]), 'life');
+    else if (e.kind === 'note' && e.state === 'worker-asked') msg('', join([t('fnote.worker-asked'), e.text !== null && tk('askwhy', e.text, 'askwhy.other')], 'sep.notes'), 'note');
+    else if (e.kind === 'note' && e.state === 'worker-refused') msg('', t('fnote.worker-refused', { t: tk('dispwhy', tx, 'dispwhy.other') }), 'note');
+    else if (e.kind === 'note' && e.state === 'dispatch-grant') msg('', t('fnote.dispatch-grant', { t: tk('grant.level', tx, 'dash') }), 'note');
     else if (e.kind === 'note' && e.state !== 'tokens') msg('', tk('fnote', e.state, 'fnote.other', { t: tx }), 'note');
   }
   const shown = kids.slice(-200);
@@ -167,6 +176,8 @@ export const allowHow = (a) => (!a.high ? '0' : a.tainted === true ? '2' : '1');
 
 /** The pin's source chain cuts the requester's id and the label at this many characters each (the card shows them whole). */
 export const PIN_ORIGIN_CHARS = 16;
+/** A worker named where the words go on around it. */
+const WORKER_CHARS = 60;
 // Controls, format characters (bidi marks, embeddings, isolates, ALM, zero-width) and the line and paragraph
 // separators, written out as \u{..} should one ever arrive: never drawn as itself (r4 §5.3 rendering rule 2).
 // src/owned/text.ts escapeInvisible writes them out first and the contract refuses them in an origin's label;
@@ -193,10 +204,14 @@ const cutTo = (s, n) => {
  * session's own words too, said so, its 「」→ written out), and this session. ''
  * when the approval has no origin and its session is not tainted (a person's own sentence); a tainted one
  * without an origin says only that a DSH session asked. max: the pin's cut of the id and the label, which
- * the line then says (A16: never silently short).
+ * the line then says (A16: never silently short). A worker's dispatch names that worker: orchestrad knows it, nothing here is its word.
  */
 export function originLine(a, max = Infinity) {
   const o = a.origin;
+  if (o?.kind === 'worker-dispatch') {
+    const who = cutTo(quoted(o.label ?? o.requester ?? ''), max);
+    return t('appr.originWorker', { who: who.text }) + (who.cut ? t('appr.originCut') : '');
+  }
   if (o == null || o.kind !== 'agent-request') return a.tainted === true ? t('appr.tainted') : '';
   const id = o.requester === null ? null : cutTo(plain(o.requester), max);
   const label = o.label === null ? null : cutTo(quoted(o.label), max);
@@ -251,7 +266,7 @@ export function pinExtra(e, list, g, a = list?.approvals.find((x) => x.approvalI
   // r4 §8.5: a tainted session's pin says where its turns came from (the source chain, its id and label cut
   // at PIN_ORIGIN_CHARS, the cut said), with the same red bar as its card.
   const taint = mine && a !== undefined && (a.tainted === true || a.origin != null);
-  return { ...(taint ? { data: { tainted: '1' }, hint: { text: originLine(a, PIN_ORIGIN_CHARS) } } : {}), acts:{ kids: !mine ? [] : !g.unlocked ? [lockBtn()] : a === undefined ? [] : apprActs(a, g, 'pin') }, pv: { text: mine && g.unlocked && a !== undefined && pinWhole(a) ? a.preview : '' } };
+  return { ...(taint ? { data: { tainted: a.tainted === true || a.origin?.kind === 'agent-request' ? '1' : '0' }, hint: { text: originLine(a, PIN_ORIGIN_CHARS) } } : {}), acts:{ kids: !mine ? [] : !g.unlocked ? [lockBtn()] : a === undefined ? [] : apprActs(a, g, 'pin') }, pv: { text: mine && g.unlocked && a !== undefined && pinWhole(a) ? a.preview : '' } };
 }
 
 /** What waits in a session behind its first request: the bar has that one alone. @param {any} list */
@@ -290,12 +305,21 @@ export function withQueued(pins, list, g) {
  * desk, none given, failed: never one word for all four, T1).
  */
 export function requestModel(r) {
+  if (typeof r.model === 'string') return { model: r.model, src: 'req.src.worker' };
   const g = r.suggestion;
   const m = g == null ? undefined : g.models[g.pick ?? 0];
   if (m !== undefined && modelsOf(r.harness).includes(m.model)) return { model: m.model, src: m.source === 'model' ? 'req.src.model' : 'req.src.rule' };
   const why = Object.hasOwn(TOWER_TEXT, `req.src.${r.suggesting}`) ? r.suggesting : g == null ? 'asking' : 'ready';
   return { model: modelsOf(r.harness)[0], src: `req.src.${why}` };
 }
+
+/** The owned session a request came from, or null for a DSH session's. */
+const workerOf = (r) => (typeof r.requester === 'string' && r.requester.startsWith('owned:') ? r.requester.slice(6) : null);
+/** That session's title as the list has it, cut as the tower cuts one (it is the whole first message), or its id. */
+const workerName = (list, id) => { const s = entry(list, id)?.title; return s !== undefined && s !== '' ? cutTo(s, WORKER_CHARS).text : id; };
+
+/** Why a request went no further, in the talk's own words where it has them; a code it has none for stays a code (T1). */
+const reqWhy = (why) => (why == null ? t('dash') : tk('life', why.replace(/^session-/, ''), 'chat.life'));
 
 /** Who asked, as the card says it: the requester's own id, or 未知 when it named none. */
 const reqWho = (r) => (typeof r.requester === 'string' && r.requester.startsWith('dsh:') ? r.requester.slice(4) : t('req.whoNone'));
@@ -304,7 +328,8 @@ const reqWho = (r) => (typeof r.requester === 'string' && r.requester.startsWith
  * Where a request's session runs, as its card says it: in its cwd (inside a project root; per harness, what it may do there unasked), else
  * Orchestra's own work dir and why. Either way the session is held as untrusted (r4 §8.5: a DSH session asked), which the card says.
  */
-const reqWhere = (r) => (typeof r.runIn === 'string' ? t(r.harness === 'claude' ? 'req.cwdRootClaude' : 'req.cwdRoot', { cwd: r.cwd, run: r.runIn })
+const reqWhere = (r) => (workerOf(r) !== null ? join([typeof r.runIn === 'string' ? t('req.workerRoot', { cwd: r.cwd, run: r.runIn }) : r.cwd === '' ? t('req.workerWork') : t('req.cwd', { cwd: r.cwd, why: tk('cwdwhy', r.runInWhy ?? 'no-roots', 'cwdwhy.other') }), t(r.tainted === true ? 'req.workerTainted' : 'req.workerClean')], 'sep.notes')
+  : typeof r.runIn === 'string' ? t(r.harness === 'claude' ? 'req.cwdRootClaude' : 'req.cwdRoot', { cwd: r.cwd, run: r.runIn })
   : join([t('req.cwd', { cwd: r.cwd, why: tk('cwdwhy', r.runInWhy ?? 'no-roots', 'cwdwhy.other') }), t(r.harness === 'claude' ? 'req.untrustedClaude' : 'req.untrustedCodex')], 'sep.notes'));
 
 /** Where a session works, for its page: a project root or Orchestra's own dir; unknown from before a restart (T1); nothing from a list without the field. */
@@ -330,6 +355,7 @@ export function describeRequestPins(list, g) {
     const left = r.expiresAt - g.nowWall;
     const what = reqWhat(r);
     const m = requestModel(r);
+    const worker = workerOf(r);
     const acts = !g.unlocked ? [lockBtn()] : [
       btn('no', t('req.no'), { act: 'req-no', req: r.requestId }, { 'aria-disabled': busy(g), 'aria-label': t('req.noLabel', { what }) }),
       btn('go', t('req.go'), { act: 'req-go', req: r.requestId, model: m.model, settle: g.settle }, { 'aria-disabled': g.settle !== '' ? 'true' : busy(g), 'aria-label': t('req.goLabel', { what }) }),
@@ -337,11 +363,11 @@ export function describeRequestPins(list, g) {
     return {
       key: `req:${r.requestId}`, tpl: 'tpl-req', data: { req: r.requestId, harness: r.harness, due: String(r.expiresAt) },
       slots: {
-        kind: { text: t('req.kind', { h: t(`harness.${r.harness}`) }) },
+        kind: { text: worker === null ? t('req.kind', { h: t(`harness.${r.harness}`) }) : t('req.kindWorker', { who: workerName(list, worker), h: t(`harness.${r.harness}`) }) },
         what: { text: what },
         clock: { text: left > 0 ? t('req.left', { t: fmtLeft(left) }) : t('req.overdue') },
         pv: { text: r.text },
-        meta: { text: join([t('req.who', { who: reqWho(r) }), reqWhere(r), t('req.model', { m: m.model, src: t(m.src) })], 'sep.notes') },
+        meta: { text: join([worker === null ? t('req.who', { who: reqWho(r) }) : t('req.whoWorker', { who: workerName(list, worker) }), r.askWhy != null && tk('askwhy', r.askWhy, 'askwhy.other'), reqWhere(r), t('req.model', { m: m.model, src: t(m.src) })], 'sep.notes') },
         acts: { kids: acts },
       },
     };
@@ -360,7 +386,7 @@ export function describeAskPins(asks, g) {
     return {
       key: `ask:${i}`, tpl: 'tpl-req', data: { req: '', harness: a.harness, due: String(a.deadline) },
       slots: {
-        kind: { text: t('req.kind', { h: t(`harness.${a.harness}`) }) },
+        kind: { text: t('req.kindLocked', { h: t(`harness.${a.harness}`) }) },
         what: { text: t('req.lockedWhat') },
         clock: { text: left > 0 ? t('req.left', { t: fmtLeft(left) }) : t('req.overdue') },
         pv: { text: '' }, meta: { text: '' },
@@ -383,18 +409,25 @@ export function withRequests(pins, reqs, bar = []) {
   return { ...pins, data: { ...pins.data, hide: '0' }, slots: { ...pins.slots, n: { text: t('pin.n', { n: kids.length }) }, note: { text: t('pin.order') }, list: { kids } } };
 }
 
-/** A notification of a new pending request; never a dispatch in it (r4 §10.9). */
-export const notifyRequestText = (r, nowWall) => t('notify.reqBody', { h: t(`harness.${r.harness}`), t: fmtLeft(Math.max(0, r.expiresAt - nowWall)) });
+/** A notification of a new pending request: who asked, as its card says it; never a dispatch in it (r4 §10.9). */
+export const notifyRequestText = (r, nowWall, list = null) => {
+  const worker = workerOf(r);
+  const v = { h: t(`harness.${r.harness}`), t: fmtLeft(Math.max(0, r.expiresAt - nowWall)) };
+  return worker === null ? t('notify.reqBody', v) : t('notify.reqBodyWorker', { ...v, who: workerName(list, worker) });
+};
 
 /**
  * What a session page says of the agent request it was dispatched for (seat): you dispatched it at that
  * request, which names itself; once orchestrad no longer holds the request (evicted, a restart), that it
- * was one; '' for a session you started yourself.
+ * was one, and whether you dispatched it or a worker sent it out on your permission; '' for a session you started
+ * yourself. Nobody fetches a worker's result: it stays with the session.
  */
 export function requestOf(list, ownedId) {
   const r = list?.requests?.find((x) => x.ownedId === ownedId);
-  if (r === undefined) return Array.isArray(list?.requestedGone) && list.requestedGone.includes(ownedId) ? t('req.ofGone') : '';
-  const st = r.state === 'done' && r.fetched === true ? t('reqst.fetched') : tk('reqst', r.state, 'reqst.other', { why: r.why ?? t('dash') });
+  if (r === undefined) return list?.requestedGone?.includes(ownedId) === true ? t('req.ofGone') : list?.sentGone?.includes(ownedId) === true ? t('req.ofAutoGone') : '';
+  const worker = workerOf(r);
+  const st = r.state === 'done' ? t(worker !== null ? 'reqst.doneWorker' : r.fetched === true ? 'reqst.fetched' : 'reqst.done') : tk('reqst', r.state, 'reqst.other', { why: reqWhy(r.why) });
+  if (worker !== null) return t(r.auto === true ? 'req.ofAuto' : 'req.ofWorker', { who: workerName(list, worker), st });
   return t('req.of', { who: reqWho(r), st });
 }
 

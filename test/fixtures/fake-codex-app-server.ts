@@ -17,6 +17,8 @@
 //   ask             asks the person one question, then says the answer back
 //   elicit          an MCP server asks for form input
 //   tool-call       a server request Orchestra does not answer (item/tool/call)
+//   dispatch        the dispatch tool, as measured: a dynamicToolCall item around item/tool/call, then its answer said back
+//   dispatch-member the same call on a thread that is not the root's
 //   garbage         lines that are not JSON-RPC, a stray response, a line past 1 KiB, then says ok
 //   hold            the turn stays open until turn/interrupt
 //   sleeper         starts cmd.exe /c ping -t 127.0.0.1, says its pid (a grandchild-maker: the ping is a
@@ -146,6 +148,16 @@ async function runTurn(turnId: string, n: number, text: string): Promise<void> {
     }
     case 'elicit': {
       await ask('mcpServer/elicitation/request', { threadId: THREAD, turnId, serverName: 'forms', mode: 'form', message: 'Fill this in', requestedSchema: { type: 'object', properties: {} } });
+      endTurn(turnId);
+      return;
+    }
+    case 'dispatch':
+    case 'dispatch-member': {
+      const item = { type: 'dynamicToolCall', id: 'call_1', namespace: null, tool: 'orchestra_dispatch', arguments: { task: 'say hi', harness: 'codex' }, status: 'inProgress', contentItems: null, success: null, durationMs: null };
+      send({ method: 'item/started', params: { threadId: THREAD, turnId, item } });
+      const got = await ask('item/tool/call', { threadId: text === 'dispatch' ? THREAD : 'thread-other', turnId, callId: 'call_1', namespace: null, tool: 'orchestra_dispatch', arguments: item.arguments });
+      send({ method: 'item/completed', params: { threadId: THREAD, turnId, item: { ...item, status: 'completed', success: true } } });
+      say(turnId, String(got?.contentItems?.[0]?.text ?? ''), n);
       endTurn(turnId);
       return;
     }

@@ -17,6 +17,7 @@ import type { OwnedRegistry } from '../owned/registry.ts';
 import type { Redact } from '../owned/text.ts';
 import type { PathJudge } from '../owned/codex-session.ts';
 import type { Desk } from '../route/desk.ts';
+import type { Dispatcher, DispatchPort } from '../route/dispatch.ts';
 import type { Requests } from '../route/requests.ts';
 import type { AgentPort } from '../server/agent-port.ts';
 import type { CwdPolicySpec } from '../os/cwd.ts';
@@ -33,7 +34,7 @@ import type { StartupNote } from './startup.ts';
 import type { StdinEndWhy, StdinKind } from './stdin-end.ts';
 import type { PairingOutput, Profile } from './test-profile.ts';
 import { rootDenyList } from '../fs/harness-roots.ts';
-import { checkPath, pathKey } from '../fs/paths.ts';
+import { checkPath, isWithin, pathKey } from '../fs/paths.ts';
 import { makeRedactor, redactText } from '../store/redact.ts';
 import { openStore } from '../store/store.ts';
 import { oneShot } from './clock.ts';
@@ -417,6 +418,8 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
   let ownedRedact: Redact | null = null;
   /** Where an agent request's cwd would run (a project root, or null and why); null while the owned part is off. */
   let placeRun: ((cwd: string) => RunIn) | null = null;
+  /** The dispatch tool's way in, for the sessions the managers start; bound to its dispatcher below. Null: no page to decide on. */
+  let dispatchLink: { port: DispatchPort; bind(d: DispatchPort): void } | null = null;
   if (ctx.owned === true) {
     const { OWNED_POOL_MAX } = await import('../owned/codex-owned.ts');
     pool = Object.freeze({ max: OWNED_POOL_MAX, active: () => (codexOwned?.active() ?? 0) + (claudeOwned?.active() ?? 0) });
@@ -425,6 +428,11 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
       judgeOwned = shared.base.judge;
       ownedRedact = shared.base.redact;
       placeRun = shared.base.placeRun;
+      if (ctx.peekPort !== undefined) {
+        const { makeDispatchLink } = await import('../route/dispatch.ts');
+        dispatchLink = makeDispatchLink();
+        shared.base.dispatch = dispatchLink.port;
+      }
       if (projectRoots.length > 0) {
         log.info('project-roots', { roots: projectRoots });
         ctx.console.out(`orchestrad: project roots for owned sessions: ${projectRoots.join('; ')} (a session you start in one works there and may change its files once you allow it; an agent request whose cwd lies in one runs there)`);
@@ -526,12 +534,13 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
           restored: lastDispatchIn(store.db),
         });
       }
-      // seat (final.md §5.1): the agent requests, with --agent-port only, and only when some owned harness
-      // is on (an agent may only ask for what a person can grant here: D8, A17).
-      if (ctx.agentPort === true && ctx.owned === true) {
-        if ((codexOwned === null && claudeOwned === null) || ownedRedact === null) agentStatus = { on: false, why: 'owned-off', detail: null };
-        else {
-          const { makeRequests, requestedOwnedIn } = await import('../route/requests.ts');
+      // The agent requests, when some owned harness is on (an agent may only ask for what a person can grant here: D8,
+      // A17): an owned session's dispatch tool asks through them, and with --agent-port a DSH session too (seat, final.md §5.1).
+      if (ctx.owned === true) {
+        if ((codexOwned === null && claudeOwned === null) || ownedRedact === null) {
+          if (ctx.agentPort === true) agentStatus = { on: false, why: 'owned-off', detail: null };
+        } else {
+          const { autoOwnedIn, makeRequests, requestedOwnedIn } = await import('../route/requests.ts');
           const { endOwnedFor } = await import('../server/owned-handlers.ts');
           const redactOwned = ownedRedact!;
           requests = makeRequests({
@@ -546,12 +555,55 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
             ttlMs: AGENT_REQUEST_TTL_MS,
             onMove: (r, from) => log.info('agent-request', { requestId: r.requestId, from, to: r.state, why: r.why, harness: r.harness, ownedId: r.ownedId }),
             // A session page still says it was asked for after this restart forgot the request itself.
-            seeded: requestedOwnedIn(store.db),
+            seeded: requestedOwnedIn(store.db), seededAuto: autoOwnedIn(store.db),
           });
         }
       }
+      // Why a cwd a requester names is refused outright: the spawn gate's own table.
+      const judgeCwd = (cwd: string): string | null => {
+        const c = checkPath(cwd);
+        if (!c.ok) return `bad-path:${c.reason}`;
+        if (judgeOwned === null) return 'no-table';
+        return judgeOwned(c.path).hit;
+      };
+      // The dispatch tool (src/route/dispatch.ts): a page is there to decide, so the sessions' link gets its dispatcher.
+      const { makePresence } = await import('../route/presence.ts');
+      const presence = makePresence({ nowMono: () => wall.nowMono() });
+      let dispatcher: Dispatcher | null = null;
+      if (requests !== null && dispatchLink !== null) {
+        const { makeDispatcher } = await import('../route/dispatch.ts');
+        const { ownedCwdRec } = await import('../server/owned-handlers.ts');
+        const managerOf = (h: 'codex' | 'claude') => (h === 'claude' ? claudeOwned : codexOwned);
+        const held = (id: string) => codexOwned?.get(id) ?? claudeOwned?.get(id) ?? null;
+        const titleOf = (id: string) => codexOwned?.meta(id)?.title ?? claudeOwned?.meta(id)?.title ?? '';
+        dispatcher = makeDispatcher({
+          requests, desk, log, presence: () => presence.state(),
+          session: (id) => {
+            const s = held(id);
+            return s === null ? null : { title: titleOf(id), tainted: s.tainted, over: s.state === 'ended' || s.state === 'failed' || s.state === 'unknown' };
+          },
+          on: (h) => managerOf(h) !== null,
+          full: (h) => managerOf(h)?.full() ?? true,
+          start: (r) => {
+            const m = managerOf(r.harness);
+            if (m === null) return { ok: false, reason: 'spawn-refused', detail: 'harness off' };
+            const made = m.create({ text: r.text, uuid: r.uuid, model: r.model, origin: r.origin, ...(r.cwd === null ? {} : { cwd: r.cwd }) });
+            return made.ok ? { ok: true, ownedId: made.ownedId, model: made.session.model } : made;
+          },
+          end: (id) => held(id)?.end(),
+          judgeCwd,
+          ...(placeRun === null ? {} : { placeCwd: placeRun }),
+          cwdRecord: (d) => {
+            const root = projectRoots.find((r) => isWithin(d.cwd, r));
+            return root === undefined ? [] : [ownedCwdRec({ ...d, root })];
+          },
+          commit: (records) => void store.commit(records),
+          nowWall: () => wall.nowWall(),
+        });
+        dispatchLink.bind(dispatcher);
+      }
       const deps = {
-        codex: codexOwned, codexOff: ownedCodex.on ? 'on' : ownedCodex.why, claude: claudeOwned, desk, log, restored: restoredOff, requests,
+        codex: codexOwned, codexOff: ownedCodex.on ? 'on' : ownedCodex.why, claude: claudeOwned, desk, log, restored: restoredOff, requests, dispatch: dispatcher,
         // The roots the dispatch dialog offers (only when the owned part is on; none unless named).
         projectRoots: placeRun === null ? [] : projectRoots,
         // Why a new session has no brake (null: each runs in a Job of its own), read at each list: a
@@ -579,6 +631,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
           },
           enabled: ownedEnabled(deps),
           handlers: registerOwnedHandlers(deps),
+          presence,
         },
         ...(owners.length === 0 ? {} : {
           ownedSeats: {
@@ -591,10 +644,9 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
       });
       peek = server;
       ctx.console.out(`orchestrad: peek page at ${server.url} (read-only; pair with the code above)`);
-      if (requests !== null) {
+      if (requests !== null && ctx.agentPort === true) {
         const { AGENT_TOKEN_FILE, agentPipeName, startAgentPort } = await import('../server/agent-port.ts');
         const testName = ctx.profile.kind === 'test' ? win.basename(ctx.profile.testDir).slice(TEST_DIR_PREFIX.length) : null;
-        const judge = judgeOwned;
         const started = await startAgentPort({
           after: oneShot(ctx.clock, 'agent-port'),
           nowMono: () => wall.nowMono(),
@@ -607,12 +659,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
           },
           requests,
           // The cwd a requester names is shown on its card only; the spawn gate's own table still refuses a protected one.
-          judgeCwd: (cwd) => {
-            const c = checkPath(cwd);
-            if (!c.ok) return `bad-path:${c.reason}`;
-            if (judge === null) return 'no-table';
-            return judge(c.path).hit;
-          },
+          judgeCwd,
           // Inside a project root the session runs there; elsewhere in ORCHESTRA_HOME\work, as before (the card says which).
           ...(placeRun === null ? {} : { placeCwd: placeRun }),
           log,
@@ -622,8 +669,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
           agentStatus = { on: true, pipe: started.port.pipe, tokenFile: started.port.tokenFile };
           ctx.console.out(`orchestrad: agent request port on ${started.port.pipe} (token in ${started.port.tokenFile}, new at every start): an agent may only ask; each request waits for you on the page, ${AGENT_REQUEST_TTL_MS / 60000} minutes, then it is refused`);
         } else {
-          requests.close();
-          requests = null;
+          // The dispatch tool keeps its requests: only the DSH side is off.
           agentStatus = { on: false, why: started.why, detail: started.detail };
           ctx.console.out(`orchestrad: the agent request port is off: ${started.why} (${started.detail})`);
         }
@@ -748,6 +794,8 @@ type OwnedBase = {
   placeRun(cwd: string): RunIn;
   redact: Redact;
   now(): number;
+  /** Gives every session the dispatch tool; absent: there is no page to decide on (no --peek-port), and none has it. */
+  dispatch?: DispatchPort;
 };
 
 /**
@@ -959,6 +1007,7 @@ async function setUpOwnedCodex(ctx: WorkingContext, fence: WriteFence, home: str
       pool: base.pool,
       now: base.now,
       redact: base.redact,
+      ...(base.dispatch === undefined ? {} : { dispatch: base.dispatch }),
     });
     return { status: { on: true, exe: exe.path, codexHome, workRoot: base.workRoot, model: DEFAULT_CODEX_MODEL, gateway: MAGPIE_BASE_URL, restored: owned.restored, jobs: jobs !== null }, owned };
   } catch (e) {
@@ -1054,6 +1103,7 @@ async function setUpOwnedClaude(ctx: WorkingContext, fence: WriteFence, home: st
       pool: base.pool,
       now: base.now,
       redact: base.redact,
+      ...(base.dispatch === undefined ? {} : { dispatch: base.dispatch }),
     });
     return {
       status: { on: true, node: site.node, entry: site.entry, claudeExe: site.claudeExe, configRoot, model: DEFAULT_CLAUDE_MODEL, gateway: CLAUDE_GATEWAY_URL, restored: owned.restored, jobs: jobs !== null },

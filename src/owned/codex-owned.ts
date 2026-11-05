@@ -1,12 +1,15 @@
 import * as crypto from 'node:crypto';
 import type { ChildPipe } from '../os/child-pipe.ts';
 import type { ClockHub } from '../runtime/clock.ts';
+import type { DispatchPort, SentBy } from '../route/dispatch.ts';
 import type { OwnedSeat } from '../sources/tower.ts';
 import type { ApprovalOrigin, ApprovalView, Approvals } from './approvals.ts';
-import type { CodexEndReason, CodexMember, CodexSession, CodexSessionState, PathJudge } from './codex-session.ts';
+import type { CodexEndReason, CodexSession, CodexSessionState, PathJudge } from './codex-session.ts';
+import type { MemberHolder } from './members.ts';
 import type { OwnedRecord, OwnedRegistry } from './registry.ts';
 import type { Redact } from './text.ts';
 import { isOver, startCodexSession } from './codex-session.ts';
+import { memberRecords, restoredMembers } from './members.ts';
 import { Feed } from './feed.ts';
 import { DEFAULT_CODEX_MODEL, isOwnedModel } from './models.ts';
 import { afterRestart } from './registry.ts';
@@ -67,6 +70,8 @@ export type CodexOwnedOptions = {
   registry?: OwnedRegistry;
   /** The limit both harnesses share (OWNED_POOL_MAX); without one only this manager's own count limits it. */
   pool?: OwnedPool;
+  /** Gives each session the dispatch tool (src/route/dispatch.ts); without one none has it. */
+  dispatch?: DispatchPort;
 };
 
 export type NewOwned =
@@ -189,6 +194,7 @@ export class CodexOwned {
       ...(req.cwd !== undefined ? { projectRoot: true } : {}),
       ...(req.tainted === true ? { tainted: true } : {}),
       ...(req.origin != null ? { origin: req.origin } : {}),
+      ...(o.dispatch === undefined ? {} : { dispatch: o.dispatch }),
     });
     if (!started.ok) return started;
     mine = started.session;
@@ -223,6 +229,7 @@ export class CodexOwned {
         waiting: first === null ? null : { kind: first.kind === 'question' ? 'question' as const : 'approval' as const, deadline: first.deadlineWall, title: first.title },
         lastAt: s.feed.lastAt,
         recent: recentOf(s.feed),
+        sent: sentSeat(this.#opts.dispatch, s.ownedId),
         ...memberSeats(s, mine),
       };
     });
@@ -269,14 +276,11 @@ export function recentOf(feed: Feed): OwnedSeat['recent'] {
   return { kind: e.kind === 'text' ? 'text' : e.kind === 'you' ? 'you' : 'auto-denied', text: e.text };
 }
 
-/** A session's sub-agents as the registry keeps them; nothing when it has none, so its file stays as it was. */
-function memberRecords(s: CodexSession): Pick<OwnedRecord, 'members' | 'membersOver'> {
-  if (s.members.length === 0 && s.membersOver === 0) return {};
-  return { members: s.members.map(({ lastAt: _l, asks: _a, ...m }) => m), membersOver: s.membersOver };
-}
+/** How a session was sent out, as the tower draws it; null for one a person started. */
+export const sentSeat = (port: DispatchPort | undefined, ownedId: string): SentBy | null => port?.sentOf(ownedId) ?? null;
 
 /** A session's sub-agents as the tower draws them; `open` is the session's open approvals. */
-export function memberSeats(s: CodexSession, open: readonly ApprovalView[] = []): Pick<OwnedSeat, 'members' | 'membersOver'> {
+export function memberSeats(s: MemberHolder, open: readonly ApprovalView[] = []): Pick<OwnedSeat, 'members' | 'membersOver'> {
   return {
     members: s.members.map(({ asks, ...m }) => ({ ...m, asking: open.find((a) => asks.includes(a.approvalId))?.title ?? null })),
     membersOver: s.membersOver,
@@ -295,9 +299,9 @@ export function restoredSession(r: OwnedRecord, now: () => number): CodexSession
   feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'daemon-restart' });
   const state = r.state as CodexSessionState;
   const endReason = r.endReason as CodexEndReason | null;
-  const members: readonly CodexMember[] = Object.freeze((r.members ?? []).map((m) => Object.freeze({ ...m, lastAt: null, asks: Object.freeze([]) })));
+  const members = restoredMembers(r);
   return Object.freeze({
-    ownedId: r.ownedId, model: r.model, cwd: '', state, endReason, threadId: null, turnId: null, tokens: null, queued: 0, members, membersOver: r.membersOver ?? 0, membersRev: 0, stoppable: false, feed,
+    ownedId: r.ownedId, model: r.model, cwd: '', state, endReason, threadId: null, turnId: null, tainted: false, tokens: null, queued: 0, members, membersOver: r.membersOver ?? 0, membersRev: 0, stoppable: false, run: 'whole' as const, feed,
     ready: Promise.resolve(false),
     send: () => ({ ok: false as const, reason: 'ended' as const }),
     interrupt: async () => ({ withdrawn: 0, denied: 0 }),

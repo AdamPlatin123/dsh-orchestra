@@ -327,13 +327,13 @@ export function describeTower(rows, ctx) {
 }
 
 /**
- * The router row ("你"): the dispatch desk's last dispatch; else why there is none. The tower snapshot
+ * The router row ("你"): the dispatch desk's last dispatch, one a worker sent out on your permission said to be that; else why there is none. The tower snapshot
  * never says whether the desk is on: desk is what the owned list said (unlocked only), null before (T1:
  * then it is unknown, not "no desk"). desk.why is already the reason in words.
  * @param {any} d @param {number} nowWall @param {{ on: boolean, why?: string } | null} [desk]
  */
 export function routerNote(d, nowWall, desk = null) {
-  if (d !== null) return t('router.last', { t: d.title, h: t(`harness.${d.harness}`), m: d.model, ago: fmtAge(nowWall - d.at, 'ago') });
+  if (d !== null) return t(d.auto === true ? 'router.lastAuto' : 'router.last', { t: d.title, h: t(`harness.${d.harness}`), m: d.model, ago: fmtAge(nowWall - d.at, 'ago') });
   if (desk === null) return t('router.unknown');
   return desk.on ? t('router.none') : t('router.note', { why: desk.why ?? '' });
 }

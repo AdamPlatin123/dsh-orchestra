@@ -285,6 +285,26 @@ test('ownedJob: what the brake and the check after an end hear: counts, no Job l
   assert.throws(() => ownedJob('x', null), /not a job name/);
 });
 
+test('ownedJob: what the Job holds: its processes, none when it is gone, null when the resident cannot say (T1)', async () => {
+  const procs = [{ pid: 7, createTime: '1', image: 'ping.exe' }];
+  const answer = (o: unknown): Resident => ({
+    ready: Promise.resolve(true), up: true,
+    jobInfo: async () => {
+      if (o instanceof Error) throw o;
+      return o as never;
+    },
+    killJob: async () => ({ found: false }),
+    alive: async () => [],
+    stop: () => {},
+  });
+  assert.deepEqual(await ownedJob(JOB, answer({ found: true, active: 1, total: 1, procs })).procs(), procs);
+  assert.deepEqual(await ownedJob(JOB, answer({ found: false })).procs(), []);
+  assert.equal(await ownedJob(JOB, answer(new ProcguardError('timeout', 'x'))).procs(), null);
+  assert.equal(await ownedJob(JOB, null).procs(), null);
+  assert.equal(await ownedJob(JOB, { ...answer({ found: false }), up: false }).procs(), null);
+  assert.deepEqual(await jobTracker(answer({ found: false }), () => {}).job(JOB).procs(), [], 'a tracked Job reads the same');
+});
+
 test('resident: one that goes away after ready and unasked is heard (onGone, with how it ended); one asked to stop is not', async () => {
   const f = fakeResident();
   const gone: string[] = [];

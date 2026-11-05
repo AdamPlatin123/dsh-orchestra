@@ -59,8 +59,14 @@ export const OWNED_ENUMS = frozen({
    * place, a link on it, not there, not a directory, not known to be a directory (stat-refused: the read gate
    * would not look, or the lookup failed otherwise; T1, not "not there"), or hidden in part by the redactor.
    */
-  /** Where an approval's turns came from (r4 §8.5 source chain): a seat request, the one kind in this slice. */
-  originKind: ['agent-request'],
+  /** Where an approval's turns came from (r4 §8.5 source chain): a seat request, or an owned session that sent this one out. */
+  originKind: ['agent-request', 'worker-dispatch'],
+  /** A session's dispatch permission (src/route/dispatch.ts): 派前问你 or 直接派出. 你不在也派 is none: r4 D20. */
+  grantLevel: ['ask', 'free'],
+  /** Whether you are here (src/route/presence.ts, r4 Q-P3); unknown: no page was heard. */
+  presence: ['present', 'away', 'unknown'],
+  /** Why a request of a session at 直接派出 waits for you all the same. */
+  askWhy: ['tainted', 'away', 'presence-unknown'],
   runInWhy: ['no-roots', 'bad-path', 'dot-segments', 'outside-roots', 'protected', 'reparsed', 'not-found', 'not-a-directory', 'stat-refused', 'redacted'],
 });
 
@@ -141,7 +147,7 @@ export const OWNED_CODE_RE = frozen(/^[a-z][a-z0-9.-]{0,63}$/);
 export const REQUEST_ID_RE = frozen(/^[0-9a-f]{20}$/);
 /** Who asked, as the card names it: dsh:<its session id> (an id, never free text). */
 /** A requester as the list names it: dsh:<its session id>, or dsh when it named none. */
-export const REQUESTER_RE = frozen(/^dsh(?::[A-Za-z0-9][A-Za-z0-9_.:-]{0,127})?$/);
+export const REQUESTER_RE = frozen(/^(?:dsh(?::[A-Za-z0-9][A-Za-z0-9_.:-]{0,127})?|owned:[0-9a-f]{20})$/);
 /** The DSH session id a request named itself by, bare (src/route/requests.ts REQUESTER_ID_RE): an approval's origin.requester. */
 export const REQUESTER_SESSION_RE = frozen(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/);
 /** A model of the owned list (src/owned/models.ts OWNED_MODEL_RE). */
@@ -160,13 +166,14 @@ export function holdsControl(s) {
  *   v: 1, kind: 'owned-list', rev: number, enabled: boolean, disabledWhy: string | null, brakeWhy: string | null,
  *   harnesses: { codex: boolean, claude: boolean }, roots: string[],
  *   owned: OwnedEntry[], approvals: ApprovalEntry[], limits: { maxOwned: number, active: number }, requests: RequestEntry[],
- *   requestedGone: string[],
+ *   requestedGone: string[], sentGone: string[],
  * }} OwnedList
  *   roots: the project roots named at startup (--project-root, checked), in the order named; the dispatch
  *   dialog offers them and owned-new's root must be one of them. Empty: none, every session works in
  *   Orchestra's own work dir.
  *   requestedGone: ownedIds of sessions you dispatched for an agent request whose details orchestrad no longer
  *   holds (evicted from memory, or from before a restart, as the journal says); never one listed in requests.
+ *   sentGone: the same of sessions a worker sent out on your permission: no click of yours, so never in requestedGone.
  *   rev: the approval queue's revision; the page sends it back with an allow (stale-view otherwise).
  *   enabled: whether any harness can start a session now; disabledWhy says why not (null when enabled).
  *   brakeWhy: why a new session's tree runs without a procguard Job of its own, so it has no brake, or why
@@ -179,7 +186,7 @@ export function holdsControl(s) {
  *   cwd: { path: string, kind: 'project-root' | 'work' } | null,
  * }} OwnedEntry
  *   title: the first line of its first message, shown (possibly empty); waiting: an approvalId.
- *   stoppable: a sub-agent of it is live (running or idle), or over with a turn or command still open or its last stop unconfirmed, or a command of its own outlived its turn or its last stop, so the stop has something to reach even with no turn of its own running.
+ *   stoppable: a sub-agent of it is live (running or idle), past the list's bound with no end heard, or over with a turn or command still open or its last stop unconfirmed, or a command of its own outlived its turn or its last stop, so the stop has something to reach even with no turn of its own running.
  *   cwd: where it works, a project root (or a folder in one) or its own work dir; null when not known (T1).
  * @typedef {{ input: number, cachedInput: number, output: number, total: number }} Tokens
  * @typedef {{
@@ -205,13 +212,14 @@ export function holdsControl(s) {
  *   tainted: r4 §8.5, the session runs a seat request (an unbound sender): the card has a red bar and says
  *   where the request came from, and a high-risk allow takes the typed word only (no hold).
  *   origin: r4 §8.5's source chain, which the card and the pin write at the top: the seat request the session
- *   runs (null: a person's own sentence). Display only (outside the digest; nothing allows by it); only a
- *   tainted entry has one.
+ *   runs, or the worker that dispatched it (null: a person's own sentence). Display only (outside the digest;
+ *   nothing allows by it); a seat request's is only on a tainted entry, a worker's on either, as that worker is.
  *   deadline: the wall time (epoch ms) the queue declines it at (D8: a timeout is a refusal).
- * @typedef {{ kind: 'agent-request', requestId: string, requester: string | null, label: string | null }} ApprovalOrigin
+ * @typedef {{ kind: 'agent-request' | 'worker-dispatch', requestId: string, requester: string | null, label: string | null }} ApprovalOrigin
  *   requester: the DSH session id the request named itself by, its own word (the page says 自称, 未核实), or
- *   null when it named none (the page says 未知, T1). label: the request's label as its card showed it (one
- *   line, a cut ends in '…'), or null.
+ *   null when it named none (the page says 未知, T1); of a worker's dispatch, that session's ownedId, as orchestrad
+ *   knows it. label: the request's label as its card showed it, or that worker's title (one line, a cut ends in
+ *   '…'), or null.
  * @typedef {{
  *   v: 1, kind: 'owned-feed', ownedId: string, from: number, to: number, clipped: boolean, events: FeedEntry[],
  * }} OwnedFeed
@@ -306,12 +314,13 @@ function checkTokens(c, v, at) {
  */
 export function validateOwnedList(x) {
   const c = checker();
-  const s = c.obj(x, '$', ['v', 'kind', 'rev', 'enabled', 'disabledWhy', 'brakeWhy', 'harnesses', 'roots', 'owned', 'approvals', 'limits', 'requests', 'requestedGone']);
+  const s = c.obj(x, '$', ['v', 'kind', 'rev', 'enabled', 'disabledWhy', 'brakeWhy', 'harnesses', 'roots', 'owned', 'approvals', 'limits', 'requests', 'requestedGone', 'sentGone', 'presence']);
   if (s === null) return { ok: false, errors: c.errors };
   if (s.v !== OWNED_V) c.bad('$.v', `${JSON.stringify(s.v)}, not ${OWNED_V}`);
   if (s.kind !== 'owned-list') c.bad('$.kind', `${JSON.stringify(s.kind)}, not owned-list`);
   c.int(s.rev, '$.rev');
   c.bool(s.enabled, '$.enabled');
+  c.en(s.presence, '$.presence', OWNED_ENUMS.presence);
   if (s.disabledWhy !== null) c.re(s.disabledWhy, '$.disabledWhy', OWNED_CODE_RE, 'code');
   // T1: off says why; on has no why.
   if ((s.enabled === false) !== (s.disabledWhy !== null)) c.bad('$.disabledWhy', 'set exactly when enabled is false');
@@ -338,7 +347,7 @@ export function validateOwnedList(x) {
   const sessions = new Map();
   c.arr(s.owned, '$.owned').forEach((e, i) => {
     const at = `$.owned[${i}]`;
-    const o = c.obj(e, at, ['ownedId', 'harness', 'model', 'title', 'state', 'endReason', 'waiting', 'queued', 'tokens', 'lastSeq', 'createdAt', 'brake', 'cwd', 'stoppable']);
+    const o = c.obj(e, at, ['ownedId', 'harness', 'model', 'title', 'state', 'endReason', 'waiting', 'queued', 'tokens', 'lastSeq', 'createdAt', 'brake', 'cwd', 'stoppable', 'dispatch']);
     if (o === null) return;
     c.re(o.ownedId, `${at}.ownedId`, OWNED_ID_RE, 'owned id');
     if (sessions.has(o.ownedId)) c.bad(`${at}.ownedId`, `${String(o.ownedId)} listed twice`);
@@ -365,6 +374,18 @@ export function validateOwnedList(x) {
     c.bool(o.stoppable, `${at}.stoppable`);
     // Nothing can reach a sub-agent of a session that is over.
     if (over && o.stoppable === true) c.bad(`${at}.stoppable`, 'a session that is over has nothing to stop');
+    // Its dispatch permission: null when it has no dispatch tool (none here, or it is over).
+    if (o.dispatch !== null) {
+      const d = c.obj(o.dispatch, `${at}.dispatch`, ['level', 'grantAt', 'depth', 'tainted']);
+      if (d !== null) {
+        c.en(d.level, `${at}.dispatch.level`, OWNED_ENUMS.grantLevel);
+        if (d.grantAt !== null) c.int(d.grantAt, `${at}.dispatch.grantAt`);
+        c.int(d.depth, `${at}.dispatch.depth`);
+        c.bool(d.tainted, `${at}.dispatch.tainted`);
+        if (d.level === 'free' && d.grantAt === null) c.bad(`${at}.dispatch.grantAt`, 'only a person opens 直接派出, and that has a time');
+      }
+      if (over) c.bad(`${at}.dispatch`, 'a session that is over dispatches nothing');
+    }
     // Where it works; null when not known (a session an earlier orchestrad left: the registry keeps no path).
     if (o.cwd !== null) {
       const w = c.obj(o.cwd, `${at}.cwd`, ['path', 'kind']);
@@ -402,8 +423,8 @@ export function validateOwnedList(x) {
     c.bool(a.high, `${at}.high`);
     c.bool(a.tainted, `${at}.tainted`);
     checkOrigin(c, a.origin, `${at}.origin`);
-    // A source chain from an agent request is an unbound sender's: its session is tainted (r4 §8.5).
-    if (a.origin !== null && a.tainted !== true) c.bad(`${at}.origin`, 'a source chain from an agent request on an entry that is not tainted');
+    // A source chain from an agent request is an unbound sender's: its session is tainted (r4 §8.5). One from a clean owned session is not.
+    if (/** @type {any} */ (a.origin)?.kind === 'agent-request' && a.tainted !== true) c.bad(`${at}.origin`, 'a source chain from an agent request on an entry that is not tainted');
     c.int(a.rev, `${at}.rev`, 1);
     if (typeof a.rev === 'number' && typeof s.rev === 'number' && a.rev > s.rev) c.bad(`${at}.rev`, `${a.rev}, after the list's own ${s.rev}`);
     c.bool(a.canAccept, `${at}.canAccept`);
@@ -428,10 +449,12 @@ export function validateOwnedList(x) {
 
   checkRequests(c, s.requests);
   const listed = new Set(c.arr(s.requests, '$.requests').map((r) => (r !== null && typeof r === 'object' ? /** @type {any} */ (r).ownedId : null)));
-  c.arr(s.requestedGone, '$.requestedGone').forEach((id, i) => {
-    c.re(id, `$.requestedGone[${i}]`, OWNED_ID_RE, 'owned id');
-    if (listed.has(id)) c.bad(`$.requestedGone[${i}]`, `${String(id)} is a listed request's session`);
-  });
+  for (const key of /** @type {const} */ (['requestedGone', 'sentGone'])) {
+    c.arr(s[key], `$.${key}`).forEach((id, i) => {
+      c.re(id, `$.${key}[${i}]`, OWNED_ID_RE, 'owned id');
+      if (listed.has(id)) c.bad(`$.${key}[${i}]`, `${String(id)} is a listed request's session`);
+    });
+  }
 
   const limits = c.obj(s.limits, '$.limits', ['maxOwned', 'active']);
   if (limits !== null) {
@@ -481,7 +504,7 @@ function checkRequests(c, v) {
   const ids = new Set();
   c.arr(v, '$.requests').forEach((e, i) => {
     const at = `$.requests[${i}]`;
-    const r = c.obj(e, at, ['requestId', 'harness', 'label', 'text', 'cwd', 'runIn', 'runInWhy', 'requester', 'state', 'createdAt', 'expiresAt', 'ownedId', 'why', 'fetched', 'suggestion', 'suggesting']);
+    const r = c.obj(e, at, ['requestId', 'harness', 'label', 'text', 'cwd', 'runIn', 'runInWhy', 'requester', 'tainted', 'model', 'askWhy', 'auto', 'state', 'createdAt', 'expiresAt', 'ownedId', 'why', 'fetched', 'suggestion', 'suggesting']);
     if (r === null) return;
     c.re(r.requestId, `${at}.requestId`, REQUEST_ID_RE, 'request id');
     if (ids.has(r.requestId)) c.bad(`${at}.requestId`, `${String(r.requestId)} listed twice`);
@@ -498,6 +521,13 @@ function checkRequests(c, v) {
     if (r.runInWhy !== null) c.en(r.runInWhy, `${at}.runInWhy`, OWNED_ENUMS.runInWhy);
     if ((r.runIn === null) === (r.runInWhy === null)) c.bad(`${at}.runInWhy`, 'set exactly when runIn is null');
     c.re(r.requester, `${at}.requester`, REQUESTER_RE, 'requester');
+    c.bool(r.tainted, `${at}.tainted`);
+    if (r.model !== null) c.re(r.model, `${at}.model`, OWNED_MODEL_NAME_RE, 'model of the owned list');
+    if (r.askWhy !== null) c.en(r.askWhy, `${at}.askWhy`, OWNED_ENUMS.askWhy);
+    c.bool(r.auto, `${at}.auto`);
+    // Only a session's own call goes out on its permission: a DSH session's request never does, and a tainted one never does.
+    if (r.auto === true && (typeof r.requester !== 'string' || !r.requester.startsWith('owned:') || r.tainted === true)) c.bad(`${at}.auto`, 'only a clean owned session dispatches on its permission');
+    if (typeof r.requester === 'string' && r.requester.startsWith('dsh') && r.tainted !== true) c.bad(`${at}.tainted`, 'a DSH session is an unbound sender (r4 §8.5)');
     c.en(r.state, `${at}.state`, OWNED_ENUMS.requestState);
     c.int(r.createdAt, `${at}.createdAt`);
     c.int(r.expiresAt, `${at}.expiresAt`);
@@ -578,6 +608,8 @@ export function validateOwnedFeed(x) {
     if ((ev.batch !== null) !== dispatch) c.bad(`${at}.batch`, 'set exactly on a dispatch note');
     if (ev.batch !== null) c.int(ev.batch, `${at}.batch`, 1);
     if (dispatch) c.re(ev.ref, `${at}.ref`, MEMBER_REF_RE, 'node id');
+    // What a session sent out through its dispatch tool: its row names that session's node.
+    if (ev.kind === 'note' && (ev.state === 'worker-sent' || ev.state === 'worker-sent-grant')) c.re(ev.ref, `${at}.ref`, MEMBER_REF_RE, 'node id');
   });
   return { ok: c.errors.length === 0, errors: c.errors };
 }

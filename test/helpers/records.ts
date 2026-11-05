@@ -91,6 +91,14 @@ export function agentRequestRec(actionId: string, over: Record<string, unknown> 
   };
 }
 
+/** A worker dispatched a session on its permission (the `auto` record): no person's act. */
+function autoRec(actionId: string, grantActionId: string) {
+  return {
+    kind: 'auto',
+    body: { actionId, requestId: 'abcdef0123456789abcd', by: '4123456789abcdef0123', ownedId: '5123456789abcdef0123', harness: 'codex', model: 'codex/gpt-6.1-sol', grantActionId, depth: 1, textDigest: 'a'.repeat(64), decisionId: null },
+  };
+}
+
 /** Where a session a person started works, in a project root (the `owned-cwd` record): the sha256 of its cwd and of the root. */
 export function ownedCwdRec(actionId: string, over: Record<string, unknown> = {}): Rec {
   return {
@@ -131,6 +139,13 @@ export function oneOfEach(): Rec[][] {
       R.human(uuidOf('each-cwd'), 'owned-new', '3123456789abcdef0123'), R.result(uuidOf('each-cwd'), 'owned-new', '3123456789abcdef0123'),
       ownedCwdRec(uuidOf('each-cwd')),
     ],
+    // A person sets a session's dispatch permission: dispatch-grant's human records and its record, one batch.
+    [
+      R.human(uuidOf('each-grant'), 'dispatch-grant', '4123456789abcdef0123'), R.result(uuidOf('each-grant'), 'dispatch-grant', '4123456789abcdef0123'),
+      { kind: 'dispatch-grant', body: { actionId: uuidOf('each-grant'), ownedId: '4123456789abcdef0123', level: 'free' } },
+    ],
+    // A worker dispatches on that permission: an `auto` record, with no human record.
+    [autoRec(uuidOf('each-auto'), uuidOf('each-grant'))],
   ];
 }
 

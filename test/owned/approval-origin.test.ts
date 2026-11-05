@@ -1,10 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { ChildPipe } from '../../src/os/child-pipe.ts';
-import { VirtualClock } from '../../src/runtime/clock.ts';
+import { VirtualClock, oneShot } from '../../src/runtime/clock.ts';
 import { Approvals, type ApprovalOrigin } from '../../src/owned/approvals.ts';
 import { CodexOwned } from '../../src/owned/codex-owned.ts';
 import { DEFAULT_CLAUDE_MODEL } from '../../src/owned/models.ts';
+import { makeDispatcher } from '../../src/route/dispatch.ts';
+import { makeDesk } from '../../src/route/desk.ts';
+import { makeRequests } from '../../src/route/requests.ts';
 import { canonicalDigest } from '../../src/store/canonical-json.ts';
 import { ownedList } from '../../src/server/owned-handlers.ts';
 import { validateOwnedList } from '../../shared/owned-contract.js';
@@ -101,12 +104,12 @@ test('CodexOwned.create hands the origin down: the approval its session raises l
 function listWith(origin: unknown, tainted = true) {
   return {
     v: 1, kind: 'owned-list', rev: 1, enabled: true, disabledWhy: null, brakeWhy: null, harnesses: { codex: true, claude: false }, roots: [],
-    owned: [{ ownedId: 'a'.repeat(20), harness: 'codex', model: 'codex/gpt-6.1-sol', title: 't', state: 'running', endReason: null, waiting: 'b'.repeat(32), queued: 0, tokens: null, lastSeq: 1, createdAt: 1, brake: false, stoppable: false, cwd: null }],
+    owned: [{ dispatch: null, ownedId: 'a'.repeat(20), harness: 'codex', model: 'codex/gpt-6.1-sol', title: 't', state: 'running', endReason: null, waiting: 'b'.repeat(32), queued: 0, tokens: null, lastSeq: 1, createdAt: 1, brake: false, stoppable: false, cwd: null }],
     approvals: [{
       approvalId: 'b'.repeat(32), ownedId: 'a'.repeat(20), kind: 'command', title: 'npm test', preview: 'command: npm test', tooLong: false, redactions: 0,
       digest: 'c'.repeat(64), risk: 'shell', high: true, tainted, origin, rev: 1, canAccept: true, canText: false, deadline: 5,
     }],
-    limits: { maxOwned: 4, active: 1 }, requests: [], requestedGone: [],
+    limits: { maxOwned: 4, active: 1 }, requests: [], requestedGone: [], sentGone: [], presence: 'unknown',
   };
 }
 
@@ -234,6 +237,89 @@ test('Approvals (review fix): an origin without tainted is tainted anyway, so th
   assert.deepEqual([v.tainted, v.origin], [true, ORIGIN]);
   assert.equal(add(approvals, { tainted: false, origin: ORIGIN }).tainted, true);
   assert.equal(add(approvals).tainted, false, 'no origin, no taint unless said');
+});
+
+const WORKER: ApprovalOrigin = { kind: 'worker-dispatch', requestId: REQ, requester: 'a'.repeat(20), label: '修登录页' };
+
+test('Approvals: a worker\'s origin taints nothing by itself (r4 §8.5: the same project\'s clean musicians are clean); a tainted worker\'s stays tainted', () => {
+  const clock = new VirtualClock({ mono: 1_000, wall: 1_800_000_000_000 });
+  const approvals = new Approvals({ hub: clock, settleMs: 0 });
+  assert.deepEqual([add(approvals, { origin: WORKER }).tainted, add(approvals, { origin: WORKER }).origin], [false, WORKER]);
+  assert.equal(add(approvals, { tainted: true, origin: WORKER }).tainted, true);
+});
+
+test('a clean worker, its title as long as a title goes, dispatches at 直接派出: the session is clean, as on-request as yours, and its card leaves GET /api/owned whole', async () => {
+  const clock = new VirtualClock({ mono: 1_000, wall: 1_800_000_000_000 });
+  const port = clock.port(null);
+  const pipes: { m: ReturnType<typeof memPipe>; written: string[] }[] = [];
+  const owned = new CodexOwned({
+    approvals: new Approvals({ hub: clock, settleMs: 0 }), makeWorkDir: (id) => `D:\\work\\owned\\${id}`,
+    launch: () => {
+      const m = memPipe();
+      const written: string[] = [];
+      pipes.push({ m, written });
+      return { ...m.pipe, write: (s: string) => {
+        written.push(String(s));
+      } } as ChildPipe;
+    },
+    now: () => clock.wall, redact: (text) => ({ text, count: 0 }), hub: clock,
+  });
+  const requests = makeRequests({
+    after: oneShot(clock, 'origin-test'), nowMono: () => port.nowMono(), nowWall: () => port.nowWall(), redact: (text) => ({ text, count: 0 }),
+    observe: () => ({ state: 'starting', endReason: null, feed: { since: () => ({ clipped: false, events: [] }) } }), endOwned: () => true,
+  });
+  const desk = makeDesk({ post: null, routerModel: 'zcode/GLM-5.3', on: () => ({ codex: true, claude: true }), redact: (s) => s, nowMono: () => port.nowMono(), nowWall: () => port.nowWall() });
+  // The composition root's wiring (src/runtime/working.ts): the title from the manager's meta, the start without tainted.
+  const dispatch = makeDispatcher({
+    requests, desk, log: { info: () => {}, warn: () => {} }, presence: () => 'present',
+    session: (id) => {
+      const s = owned.get(id);
+      return s === null ? null : { title: owned.meta(id)?.title ?? '', tainted: s.tainted, over: false };
+    },
+    on: () => true, full: () => false,
+    start: (r) => {
+      const made = owned.create({ text: r.text, uuid: r.uuid, model: r.model, origin: r.origin });
+      return made.ok ? { ok: true, ownedId: made.ownedId, model: made.session.model } : made;
+    },
+    end: () => {}, judgeCwd: () => null, cwdRecord: () => [], commit: () => {}, nowWall: () => port.nowWall(),
+  });
+  const parent = owned.create({ text: '修'.repeat(100), uuid: U(1) });
+  assert.ok(parent.ok);
+  assert.ok(Buffer.byteLength(owned.meta(parent.ownedId)!.title) > 120, 'longer than a label may be');
+  dispatch.grant(parent.ownedId, 'free', U(2));
+  const reply = await dispatch.call(parent.ownedId, { task: 'reply pong', harness: 'codex', model: 'zcode/GLM-5.3' }, () => {}).reply;
+  assert.equal(reply.ok, true, reply.text);
+  const child = pipes[1]!;
+  await settle();
+  child.m.send({ id: 1, result: { userAgent: 'orchestra/0.165.0 (Windows 10.0.26200; x86_64) unknown (orchestra; 0.2.0)' } });
+  await settle();
+  const sent = child.written.join('').split('\n').filter((l) => l.trim() !== '').map((l) => JSON.parse(l));
+  assert.equal(sent.find((m) => m.method === 'thread/start')?.params?.approvalPolicy, 'on-request', JSON.stringify(sent));
+  child.m.send({ id: 2, result: { thread: { id: 'thr' }, approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: { type: 'readOnly' } } });
+  await settle();
+  child.m.send({ id: 'srv-0', method: 'item/commandExecution/requestApproval', params: { threadId: 'thr', turnId: 't1', itemId: 'cmd_1', command: 'Get-Content notes.txt', cwd: 'D:\\work\\owned\\x' } });
+  await settle();
+  const list = ownedList({ codex: owned, claude: null, codexOff: 'on', dispatch });
+  assert.deepEqual(validateOwnedList(list).errors, []);
+  assert.equal(list.approvals.length, 1);
+  const a = list.approvals[0]!;
+  assert.equal(a.tainted, false);
+  assert.equal(a.origin!.kind, 'worker-dispatch');
+  assert.ok(a.origin!.label!.endsWith('…') && Buffer.byteLength(a.origin!.label!) <= 120, a.origin!.label!);
+  assert.equal(list.owned.find((o) => o.ownedId === a.ownedId)!.dispatch!.tainted, false, 'and so a level of its own can open');
+  owned.endAll();
+});
+
+test('Claude: a worker\'s origin leaves the session clean, a seat request\'s taints it, and one a tainted worker sent stays tainted', async (t) => {
+  const r = claudeRig(t);
+  const made = (over: { tainted?: boolean; origin: ApprovalOrigin }, n: number) => {
+    const m = r.owned.create({ text: 'x', uuid: U(n), ...over });
+    assert.ok(m.ok);
+    return m.session.tainted;
+  };
+  assert.equal(made({ origin: WORKER }, 1), false);
+  assert.equal(made({ origin: ORIGIN }, 2), true);
+  assert.equal(made({ tainted: true, origin: WORKER }, 3), true);
 });
 
 test('CodexOwned.create (review fix): an origin alone makes the session tainted: untrusted policy, tainted cards, a list the contract takes', async () => {

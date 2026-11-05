@@ -242,8 +242,8 @@ test('the RouteDecision: the candidates, the pick, the reason chip, mode manual;
 
   // A dispatch is what the router row shows; a stored body gives it back.
   d.dispatched({ ownedId: 'abcdefabcdefabcdefab', harness: 'codex', model: 'codex/gpt-6.1-sol' });
-  assert.deepEqual(d.last(), { ownedId: 'abcdefabcdefabcdefab', harness: 'codex', model: 'codex/gpt-6.1-sol', at: 1_761_868_800_000 });
-  assert.deepEqual(dispatchOf(rec.body, 42), { ownedId: 'abcdefabcdefabcdefab', harness: 'codex', model: 'codex/gpt-6.1-sol', at: 42 });
+  assert.deepEqual(d.last(), { ownedId: 'abcdefabcdefabcdefab', harness: 'codex', model: 'codex/gpt-6.1-sol', at: 1_761_868_800_000, auto: false });
+  assert.deepEqual(dispatchOf(rec.body, 42), { ownedId: 'abcdefabcdefabcdefab', harness: 'codex', model: 'codex/gpt-6.1-sol', at: 42, auto: false });
   assert.equal(dispatchOf({ ownedId: 1 }, 42), null);
 });
 
@@ -299,7 +299,7 @@ test('a dispatch with no suggestion for its sentence is a RouteDecision too (r4 
     candidates: [], chosen: { harness: 'claude', model: 'zcode/GLM-5.3' }, pick: null, reason: 'manual', router: 'not-asked', routerModel: null, routerWhy: null, mode: 'manual',
   });
   assert.equal(checkBody('route', rec.body, null), null);
-  assert.deepEqual(dispatchOf(rec.body, 7), { ownedId: 'abcdefabcdefabcdefab', harness: 'claude', model: 'zcode/GLM-5.3', at: 7 });
+  assert.deepEqual(dispatchOf(rec.body, 7), { ownedId: 'abcdefabcdefabcdefab', harness: 'claude', model: 'zcode/GLM-5.3', at: 7, auto: false });
   // The journal holds the fields together: not-asked exactly without a routeId; a why exactly for no-answer; a model named only when asked.
   assert.equal(checkBody('route', { ...rec.body, router: 'off' }, null)?.reason, 'consistency');
   assert.equal(checkBody('route', { ...rec.body, routeId: 'aaaaaaaaaaaaaaaaaaaa' }, null)?.reason, 'consistency');

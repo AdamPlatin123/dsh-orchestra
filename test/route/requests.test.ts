@@ -4,7 +4,7 @@ import { VirtualClock, oneShot } from '../../src/runtime/clock.ts';
 import { Feed } from '../../src/owned/feed.ts';
 import type { FeedInput } from '../../src/owned/feed.ts';
 import type { Observed, RequestsDeps } from '../../src/route/requests.ts';
-import { REQUEST_LIMITS, lastMessage, makeRequests, requestedOwnedIn } from '../../src/route/requests.ts';
+import { REQUEST_LIMITS, autoOwnedIn, lastMessage, makeRequests, requestedOwnedIn } from '../../src/route/requests.ts';
 import type { SuggestReply } from '../../src/route/desk.ts';
 
 // seat's agent requests (final.md §5.1; r4 A17: an agent may only ask, and a person decides): the state
@@ -12,7 +12,7 @@ import type { SuggestReply } from '../../src/route/desk.ts';
 // withdrawal that ends the session the normal way and never by the brake. Synthetic text only.
 
 const MIN = 60_000;
-type Fake = { state: Observed['state']; endReason: string | null; feed: Feed };
+type Fake = { state: Observed['state']; endReason: string | null; run?: Observed['run']; feed: Feed };
 
 function fixture(over: Partial<RequestsDeps> = {}) {
   const clock = new VirtualClock({ mono: 1000, wall: 1_800_000_000_000 });
@@ -162,6 +162,58 @@ test('a turn that fails, or a session that ends first, is failed with why; never
   assert.deepEqual([fx.requests.get(two)!.state, fx.requests.get(two)!.why], ['failed', 'session-braked']);
 });
 
+test('a run with something out is not over at its first turn: the request stays running, and the newest turn\'s end says how it went', () => {
+  const fx = fixture();
+  const first = made(fx.requests.create(ask));
+  const id = first.request.requestId;
+  const s = fx.session(OID);
+  fx.requests.bind(id, OID);
+  s.state = 'idle';
+  s.run = 'out';
+  push(s.feed, { kind: 'text', ref: 'm1', text: 'sent one out', state: 'final' });
+  push(s.feed, { kind: 'lifecycle', ref: 't1', state: 'turn-ended' });
+  fx.clock.advanceBy(REQUEST_LIMITS.watchMs);
+  assert.deepEqual([fx.requests.get(id)!.state, fx.requests.get(id)!.output], ['running', null], 'a dispatched one moves on, with nothing to hand back yet');
+  push(s.feed, { kind: 'text', ref: 'm2', text: 'what it found', state: 'final' });
+  push(s.feed, { kind: 'lifecycle', ref: 't2', state: 'turn-ended' });
+  s.run = 'whole';
+  fx.clock.advanceBy(REQUEST_LIMITS.watchMs);
+  assert.deepEqual([fx.requests.get(id)!.state, fx.requests.get(id)!.output], ['done', 'what it found']);
+  // A later turn that failed is how the run went.
+  const second = made(fx.requests.create(from(2)));
+  const s2 = fx.session('b'.repeat(20));
+  fx.requests.bind(second.request.requestId, 'b'.repeat(20));
+  s2.run = 'out';
+  push(s2.feed, { kind: 'lifecycle', state: 'turn-failed' });
+  fx.clock.advanceBy(REQUEST_LIMITS.watchMs);
+  assert.equal(fx.requests.get(second.request.requestId)!.state, 'running', 'a failed turn with something out decides nothing yet');
+  push(s2.feed, { kind: 'lifecycle', state: 'turn-ended' });
+  s2.run = 'whole';
+  fx.clock.advanceBy(REQUEST_LIMITS.watchMs);
+  assert.equal(fx.requests.get(second.request.requestId)!.state, 'done');
+});
+
+test('a run cut short is failed, whatever turn ended before it: stopped, or the session gone with something out', () => {
+  const fx = fixture();
+  const one = made(fx.requests.create(ask)).request.requestId;
+  const two = made(fx.requests.create(from(2))).request.requestId;
+  const s1 = fx.session(OID);
+  const s2 = fx.session('b'.repeat(20));
+  fx.requests.bind(one, OID);
+  fx.requests.bind(two, 'b'.repeat(20));
+  for (const s of [s1, s2]) {
+    push(s.feed, { kind: 'text', ref: 'm1', text: 'sent one out', state: 'final' });
+    push(s.feed, { kind: 'lifecycle', state: 'turn-ended' });
+    s.run = 'cut';
+  }
+  s1.state = 'idle';
+  s2.state = 'ended';
+  s2.endReason = 'you-ended';
+  fx.clock.advanceBy(REQUEST_LIMITS.watchMs);
+  assert.deepEqual([fx.requests.get(one)!.state, fx.requests.get(one)!.why, fx.requests.get(one)!.output], ['failed', 'turn-interrupted', null]);
+  assert.deepEqual([fx.requests.get(two)!.state, fx.requests.get(two)!.why, fx.requests.get(two)!.output], ['failed', 'session-you-ended', null]);
+});
+
 test('withdraw: only the submitter\'s key; a pending request goes; a dispatched or running one ends its session by the normal stop order (owned-end), never the brake', () => {
   // Every dep the store ever reads is recorded: it reads only its own, and none of them is a brake.
   const read = new Set<string>();
@@ -205,7 +257,7 @@ test('withdraw: only the submitter\'s key; a pending request goes; a dispatched 
   store.close();
   assert.deepEqual(ended, [OID]);
   assert.ok(!read.has('brake'), [...read].join());
-  for (const k of read) assert.ok(['after', 'nowMono', 'nowWall', 'redact', 'observe', 'endOwned', 'suggest', 'ttlMs', 'onMove', 'seeded'].includes(k), k);
+  for (const k of read) assert.ok(['after', 'nowMono', 'nowWall', 'redact', 'observe', 'endOwned', 'suggest', 'ttlMs', 'onMove', 'seeded', 'seededAuto'].includes(k), k);
 });
 
 test('limits per requester: at most 4 pending from one requester (as it names itself); the others still ask', () => {
@@ -289,6 +341,34 @@ test('the journal remembers which sessions were dispatched for a request: reques
   assert.deepEqual(fx.requests.requestedGone(), [...seeded, OID]);
 });
 
+test('what a worker sent out on your permission is no session you dispatched: sentGone names it once its request is gone, requestedGone never; the journal\'s auto records seed it', () => {
+  const rows = [{ body: JSON.stringify({ ownedId: 'c'.repeat(20) }) }, { body: 'not json' }, { body: JSON.stringify({ ownedId: 'd'.repeat(20) }) }];
+  const seededAuto = autoOwnedIn({ all: () => rows });
+  assert.deepEqual(seededAuto, ['d'.repeat(20), 'c'.repeat(20)]);
+  const fx = fixture({ seededAuto });
+  assert.deepEqual([fx.requests.requestedGone(), fx.requests.sentGone()], [[], seededAuto]);
+  const m = made(fx.requests.create({ ...ask, auto: true }));
+  fx.session(OID);
+  fx.requests.bind(m.request.requestId, OID);
+  assert.deepEqual(fx.requests.sentGone(), seededAuto, 'a request still held is not "gone"');
+  fx.requests.withdraw(m.request.requestId, m.withdrawKey);
+  let n = 1;
+  for (let i = 0; i < 16; i++) {
+    if (i % REQUEST_LIMITS.perWindow === 0) fx.clock.advanceBy(REQUEST_LIMITS.windowMs);
+    assert.ok(fx.requests.create(from(n++)).ok);
+  }
+  assert.equal(fx.requests.ofOwned(OID), null);
+  assert.deepEqual([fx.requests.requestedGone(), fx.requests.sentGone()], [[], [...seededAuto, OID]]);
+});
+
+test('label(): a card\'s label, however it came: the first line, cut and said to be cut; null for nothing', () => {
+  const fx = fixture();
+  assert.equal(fx.requests.label('a\nb'), 'a');
+  assert.equal(fx.requests.label(''), null);
+  const cut = fx.requests.label('修'.repeat(80))!;
+  assert.ok(cut.endsWith('…') && Buffer.byteLength(cut) <= REQUEST_LIMITS.labelBytes, cut);
+});
+
 test('the desk\'s suggestion for the request\'s harness reaches the card; close() ends every open request and wakes every wait', async () => {
   let asked: { text: string; harness: string } | null = null;
   const reply = {
@@ -326,4 +406,20 @@ test('where the suggestion stands is said, never one word for all: no desk, the 
   await new Promise((r) => setImmediate(r));
   assert.deepEqual([empty.requests.get(e)!.suggesting, empty.requests.get(e)!.suggestion], ['none', null]);
   assert.deepEqual([failing.requests.get(f)!.suggesting, failing.requests.get(f)!.suggestion], ['failed', null]);
+});
+
+test('an owned session\'s request: clean when its session is, and an auto one asks no desk and fails only while it waits', async () => {
+  let asked = 0;
+  const fx = fixture({ suggest: async () => { asked++; return null; } });
+  const r = fx.requests.create({ ...ask, requester: { kind: 'owned', sessionId: OID }, tainted: false, model: 'zcode/GLM-5.3', auto: true });
+  assert.ok(r.ok);
+  assert.deepEqual([r.request.tainted, r.request.model, r.request.auto, r.request.suggesting], [false, 'zcode/GLM-5.3', true, 'no-desk']);
+  assert.equal(asked, 0);
+  assert.equal(fx.requests.fail(r.request.requestId, 'start-failed'), true);
+  assert.deepEqual([fx.requests.get(r.request.requestId)!.state, fx.requests.get(r.request.requestId)!.why], ['failed', 'start-failed']);
+  assert.equal(fx.requests.fail(r.request.requestId, 'start-failed'), false);
+  const seat = fx.requests.create(ask);
+  assert.ok(seat.ok);
+  assert.deepEqual([seat.request.tainted, seat.request.auto, seat.request.askWhy], [true, false, null], 'a DSH session is an unbound sender');
+  assert.equal(asked, 1);
 });

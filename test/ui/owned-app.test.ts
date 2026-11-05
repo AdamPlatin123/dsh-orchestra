@@ -183,7 +183,7 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     assert.equal(pins().length, 6);
     const ask = pins()[0]!;
     assert.ok(ask.classList.contains('req'));
-    assert.equal(ask.querySelector('[data-slot=kind]')!.textContent, '以 DSH 名义请求派 Codex：');
+    assert.equal(ask.querySelector('[data-slot=kind]')!.textContent, '有请求要派 Codex：');
     assert.equal(ask.querySelector('[data-slot=what]')!.textContent, TOWER_TEXT['req.lockedWhat']);
     assert.equal(ask.querySelector('[data-slot=clock]')!.textContent, '剩 7:00 自动拒');
     assert.deepEqual(btns(ask).map((b) => b.textContent), [TOWER_TEXT['op.lock']]);
@@ -676,6 +676,9 @@ test('the router row ("你") with no dispatch: unknown before the unlock (T1), "
   assert.ok(off.includes('--owned'), 'without --owned it still says so');
   const d = { title: '写发布说明', at: 0, harness: 'codex', model: 'codex/gpt-6.1-sol', node: null };
   for (const desk of [null, { on: true }, { on: false, why: 'x' }]) assert.ok(routerNote(d, 60_000, desk).startsWith('最近派活：写发布说明'), 'a dispatch shown whatever the desk');
+  // The row is 你: what a worker sent out on your permission says it was not your click, and mine says nothing of it.
+  assert.ok(routerNote({ ...d, auto: true }, 60_000).includes('worker 按你开的权限派的，不是你点的'), routerNote({ ...d, auto: true }, 60_000));
+  assert.ok(!routerNote({ ...d, auto: false }, 60_000).includes('权限'));
   // The entry is called 派活 everywhere: the bar, its locked form, the dialog's title.
   assert.equal(TOWER_TEXT['bar.new'], '派活');
   assert.ok(TOWER_TEXT['bar.newLocked']!.startsWith('派活'));
@@ -848,7 +851,9 @@ test('seat: request cards say who asked as its own word, why there is no suggest
   assert.equal(requestOf(own, 'a'.repeat(20)), `你应 DSH 请求派出的会话（请求方自称 s1，未核实）· 请求现在${TOWER_TEXT['reqst.done']}`);
   assert.ok(TOWER_TEXT['reqst.done'].includes('未知'), 'done says nobody knows whether the requester took it (T1)');
   assert.equal(requestOf(own, 'd'.repeat(20)), `你应 DSH 请求派出的会话（请求方自称 s1，未核实）· 请求现在${TOWER_TEXT['reqst.fetched']}`);
-  assert.equal(requestOf(own, 'b'.repeat(20)), '你应 DSH 请求派出的会话（请求方自称 s1，未核实）· 请求现在没有返回结果（turn-failed）');
+  assert.equal(requestOf(own, 'b'.repeat(20)), `你应 DSH 请求派出的会话（请求方自称 s1，未核实）· 请求现在没有返回结果（${TOWER_TEXT['life.turn-failed']}）`);
+  assert.ok(requestOf({ ...own, requests: [{ ...r, state: 'failed', ownedId: 'b'.repeat(20), why: 'session-braked' }] }, 'b'.repeat(20)).includes(TOWER_TEXT['life.braked']), 'the end of the session in the words of the talk');
+  assert.ok(requestOf({ ...own, requests: [{ ...r, state: 'failed', ownedId: 'b'.repeat(20), why: 'session-new-reason' }] }, 'b'.repeat(20)).endsWith('（new-reason）'), 'one it has no words for stays a code (T1)');
   assert.equal(requestOf(own, 'e'.repeat(20)), TOWER_TEXT['req.ofGone'], 'a request evicted or from before a restart is still named');
   assert.equal(requestOf(own, 'c'.repeat(20)), '', 'a session you started yourself names none');
   for (const [k, v] of Object.entries(TOWER_TEXT)) if (k.startsWith('req') ) assert.ok(!v.includes('完成'), k);

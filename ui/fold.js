@@ -50,7 +50,7 @@ export function tookOf(members) {
 export const stateWord = (n) => (guessed(n) ? `${t('mark.inferred')} ${t(`state.${n.state}`)}` : t(`state.${n.state}`));
 
 /** One row of an open card: its state, time and model, each unknown said as unknown. @param {Node} n @param {number} depth below the card's level @returns {import('./dom.js').Desc} */
-function memberRow(n, depth) {
+function memberRow(n, depth, opens = false) {
   return {
     key: n.id, tpl: 'tpl-mem', data: { depth: String(Math.min(depth, 3)) },
     slots: {
@@ -60,6 +60,7 @@ function memberRow(n, depth) {
       took: { text: n.durationMs === null ? t('fold.noTook') : fmtAge(n.durationMs) },
       model: { text: n.model ?? t('fold.noModel') },
       act: { text: n.activity === null ? '' : activityOf(n) },
+      go: { text: t('home.goWorker'), data: { hide: opens ? '0' : '1', node: n.id } },
     },
   };
 }
@@ -67,7 +68,7 @@ function memberRow(n, depth) {
 /**
  * A card: `members` in list order, each with its depth under the worker. The count, the marks and the open list
  * all come from that one array, so they cannot disagree (T3).
- * @param {{ key: string, title: string, kind?: string, members: readonly { node: Node, depth: number }[], open: boolean, fresh?: boolean }} o
+ * @param {{ key: string, title: string, kind?: string, members: readonly { node: Node, depth: number }[], open: boolean, fresh?: boolean, opens?: boolean }} o opens: the first member is a worker of its own, with a way to its talk
  * @returns {import('./dom.js').Desc}
  */
 export function describeFold(o) {
@@ -86,7 +87,7 @@ export function describeFold(o) {
       fw: { text: t('fold.flagWait', { n: asking }), data: { hide: asking > 0 ? '0' : '1' } },
       fe: { text: t('fold.flagErr', { n: errs }), data: { hide: errs > 0 ? '0' : '1' } },
       dots, bar,
-      body: { data: { hide: o.open ? '0' : '1' }, kids: o.open ? o.members.map((m) => memberRow(m.node, m.depth)) : [] },
+      body: { data: { hide: o.open ? '0' : '1' }, kids: o.open ? o.members.map((m, i) => memberRow(m.node, m.depth, o.opens === true && i === 0)) : [] },
     },
   };
 }

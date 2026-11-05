@@ -97,7 +97,7 @@ const seatOf = (s: CodexSession, over: Partial<OwnedSeat> = {}): OwnedSeat => ({
   ownedId: OWNED, harness: 'codex', title: 'a session', state: s.state, endReason: s.endReason, waiting: null, lastAt: s.feed.lastAt, ...memberSeats(s), ...over,
 });
 const member = (n: number, over: Partial<OwnedMember> = {}): OwnedMember => ({
-  threadId: `thread-${n}`, name: `/root/m${n}`, model: null, state: 'returned', why: null, startedAt: 1_000, endedAt: 4_000, lastAt: 4_000, failed: 0, ranUnasked: 0, batch: null, asking: null, ...over,
+  threadId: `thread-${n}`, name: `/root/m${n}`, model: null, agentType: null, state: 'returned', why: null, startedAt: 1_000, endedAt: 4_000, lastAt: 4_000, failed: 0, ranUnasked: 0, batch: null, asking: null, ...over,
 });
 const towerOf = (seats: OwnedSeat[], nowWall = 10_000) => towerFromStage(busyStage(), { seats, nowWall });
 const memberRows = (nodes: readonly TowerNode[]) => nodes.filter((n) => n.layer === 'subagent');
@@ -276,6 +276,16 @@ test('a stop, as measured: the member gets its interrupt, then the clean; sent i
   assert.equal(s.state, 'running', 'what the root\'s turn does is its own');
   assert.equal(feedText(s).includes(CHILD_WORDS), false);
   assert.equal(towerOf([seatOf(s)]).projects[0]!.nodes[1]!.activity, '已结束：被打断了，没有回报');
+});
+
+test('the run a request reads: a member whose turn runs is out, one a stop ended cuts it short', async () => {
+  const x = await session();
+  assert.equal(x.s.run, 'whole');
+  await x.play([activity('started', 'started', T0), childTurn('turn/started')]);
+  assert.equal(x.s.run, 'out');
+  await x.s.interrupt();
+  await codexStops(x, { interrupted: STOP_INTERRUPTED, cleaned: STOP_CLEANED });
+  assert.equal(x.s.run, 'cut');
 });
 
 test('a command nobody asked about that a stop ended still counts as run unasked; only its failure is the stop\'s', async () => {
@@ -562,7 +572,7 @@ test('a member over with a command still open stays in the stop\'s reach, howeve
   // However many it leaves open, what is kept of them stands still, and none of it reaches the record.
   const f = await session();
   await f.play([...open, ...Array.from({ length: CODEX_SESSION_LIMITS.memberChanges + 8 }, (_, i) => ran(CHILD, `i${i}`)[0]!), childTurn('turn/completed')]);
-  assert.deepEqual(Object.keys(only(f.s)).sort(), ['asks', 'batch', 'endedAt', 'failed', 'lastAt', 'model', 'name', 'ranUnasked', 'startedAt', 'state', 'threadId', 'why']);
+  assert.deepEqual(Object.keys(only(f.s)).sort(), ['agentType', 'asks', 'batch', 'endedAt', 'failed', 'lastAt', 'model', 'name', 'ranUnasked', 'startedAt', 'state', 'threadId', 'why']);
   assert.equal(stoppable(f), true);
 });
 
@@ -702,7 +712,7 @@ test('the session goes while a member is live: unknown, never running, whichever
     ['brake', (x) => x.s.brake()],
   ];
   for (const [how, go] of cases) {
-    const x = await session({ name: `orchestra-job-${'d'.repeat(32)}`, endTree: async () => ({ ok: true, found: true, killed: 2, left: 0 }) });
+    const x = await session({ name: `orchestra-job-${'d'.repeat(32)}`, endTree: async () => ({ ok: true, found: true, killed: 2, left: 0 }), procs: async () => [] });
     await x.play([activity('started', 'started', T0), childTurn('turn/started'), activity('started', 'started', T0, 'thread-two', '/root/two'), statusOf('idle', 'thread-two'), activity('started', 'completed', T0 + 5, 'thread-three', '/root/three')]);
     x.m.send(childApproval(0));
     await settle();

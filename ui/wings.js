@@ -146,7 +146,9 @@ const byName = (a, b) => a.title.localeCompare(b.title, undefined, { numeric: tr
  * claims no dispatch. Each member comes with what it sent in turn. Keys and order hold from poll to poll, so a card
  * never jumps: its members go by name, not by the snapshot's rank, which changes on every event and would swap the
  * card's title and the row being read.
- * @param {TowerSnapshot} snap @param {string | null} sel @returns {{ key: string, label: string | null, batch: number | null, members: { node: Node, depth: number }[] }[]}
+ * A session it sent out through its dispatch tool is a worker of its own on the left and a card of its own here, with
+ * what it sent in turn; those come last, by key.
+ * @param {TowerSnapshot} snap @param {string | null} sel @returns {{ key: string, label: string | null, batch: number | null, worker?: string, members: { node: Node, depth: number }[] }[]}
  */
 export function subCards(snap, sel) {
   const hit = sel === null ? undefined : indexOf(snap).byId.get(sel);
@@ -157,7 +159,7 @@ export function subCards(snap, sel) {
   for (const kids of under.values()) kids.sort(byName);
   /** @param {Node} n @param {number} depth @returns {{ node: Node, depth: number }[]} */
   const walk = (n, depth) => [{ node: n, depth }, ...(under.get(n.id) ?? []).flatMap((k) => walk(k, depth + 1))];
-  /** @type {Map<string, { key: string, label: string | null, batch: number | null, members: { node: Node, depth: number }[] }>} */
+  /** @type {Map<string, { key: string, label: string | null, batch: number | null, worker?: string, members: { node: Node, depth: number }[] }>} */
   const cards = new Map();
   for (const n of under.get(hit.node.id) ?? []) {
     const key = n.batch === null ? `${hit.node.id}:${n.agentType ?? ''}` : `${hit.node.id}#${n.batch}`;
@@ -165,7 +167,13 @@ export function subCards(snap, sel) {
     card.members.push(...walk(n, 0));
     cards.set(key, card);
   }
+  for (const n of hit.project.nodes) {
+    if (n.sent?.by !== hit.node.id) continue;
+    const key = `${hit.node.id}~${n.id}`;
+    cards.set(key, { key, label: null, batch: null, worker: n.id, members: walk(n, 0) });
+  }
   return [...cards.values()].sort((a, b) => {
+    if (a.worker !== undefined || b.worker !== undefined) return a.worker === undefined ? -1 : b.worker === undefined ? 1 : a.key < b.key ? -1 : 1;
     if (a.batch !== null || b.batch !== null) return (a.batch ?? Infinity) - (b.batch ?? Infinity);
     return a.label === null ? 1 : b.label === null ? -1 : a.label < b.label ? -1 : a.label > b.label ? 1 : 0;
   });
@@ -177,17 +185,26 @@ const titleOf = (members) => { const who = members[0]?.node.title ?? ''; return 
 /**
  * The talk's dispatch rows for the home page: each a button that opens its card. Its words are the card's, so what it
  * says is what it opens (T3); a row whose card this snapshot does not hold says what the feed said, and opens nothing.
- * @param {readonly Desc[]} kids describeChat's rows @param {ReturnType<typeof subCards>} cards @param {ReadonlySet<string>} open @returns {Desc[]}
+ * A worker's row is the receipt: how it went out, whose permission and when, and a stop while it has something to stop.
+ * @param {readonly Desc[]} kids describeChat's rows @param {ReturnType<typeof subCards>} cards @param {ReadonlySet<string>} open
+ * @param {(ms: number) => string} [at] a wall time as the receipt says it @returns {Desc[]}
  */
-export function wireRows(kids, cards, open) {
+export function wireRows(kids, cards, open, at = String) {
   return kids.map((k) => {
     if (k.data?.kind !== 'disp') return k;
-    const c = cards.find((x) => String(x.batch) === k.data?.batch);
+    const worker = k.data?.worker;
+    const c = cards.find((x) => (worker === undefined ? String(x.batch) === k.data?.batch : x.worker === worker));
+    const lead = c?.members[0]?.node;
+    // A worker's row only: a batch of sub-agents is no session a stop could name. All of it counts: a background
+    // sub-agent outlives its root's turn, and the stop reaches it.
+    const held = worker !== undefined && c !== undefined && c.members.some((m) => m.node.state === 'running' || m.node.state === 'waiting');
+    const how = lead?.sent?.grantAt == null ? t('home.sentPerson') : t('home.sentGrant', { at: at(lead.sent.grantAt) });
     return {
       ...k, tpl: 'tpl-disp',
       slots: {
         ...k.slots,
-        ...(c === undefined ? {} : { tx: { text: sentText(c.members.map((m) => m.node.title)) } }),
+        ...(c === undefined ? {} : { tx: { text: worker === undefined ? sentText(c.members.map((m) => m.node.title)) : `${sentText([lead?.title ?? ''])}${t('sep.parts')}${how}` } }),
+        stop: { text: t('home.stopWorker'), data: { hide: held ? '0' : '1', owned: lead === undefined ? '' : ownedIdOf(lead) ?? '' }, attr: { 'aria-label': t('home.stopWorkerLabel', { t: lead?.title ?? '' }) } },
         b: { data: { fold: c?.key ?? '' }, attr: { 'aria-expanded': c === undefined ? null : open.has(c.key) ? 'true' : 'false', disabled: c === undefined ? '' : null, title: c === undefined ? t('home.wireNoCard') : null } },
       },
     };
@@ -249,11 +266,55 @@ export function describeSubs(snap, sel, ctx) {
       list: {
         kids: cards.map((c) => describeFold({
           key: c.key, members: c.members, open: ctx.open.has(c.key), fresh: ctx.fresh.has(c.key),
-          title: c.label ?? titleOf(c.members),
+          title: c.worker === undefined ? c.label ?? titleOf(c.members) : c.members[0]?.node.title ?? '',
+          ...(c.worker === undefined ? {} : { kind: t('home.kindWorker'), opens: true }),
         })),
       },
     },
   };
+}
+
+/**
+ * The bar under the right half: how many of the workers running go on which level, each count the workers the list has
+ * for that level (T3); with no list it says why: locked, or not read yet (T1).
+ * @param {any} list GET /api/owned's reply, or null @param {boolean} [unlocked] @returns {string}
+ */
+export function grantsLine(list, unlocked = false) {
+  if (list === null || !Array.isArray(list.owned)) return t(unlocked ? 'home.grantsUnread' : 'home.grantsLocked');
+  const live = list.owned.filter((/** @type {any} */ o) => o.dispatch != null);
+  if (live.length === 0) return t('home.grantsNone');
+  const free = live.filter((/** @type {any} */ o) => o.dispatch.level === 'free').length;
+  return t('home.grants', { free, ask: live.length - free });
+}
+
+/**
+ * A worker's dispatch permission in its 资料: the two levels you may set, the one r4 D20 does not allow, what its level
+ * does now. Hidden on a read-only session.
+ * @param {string | null} id the selected session, null for none of Orchestra's own @param {any} list GET /api/owned's reply, or null
+ * @param {{ unlocked: boolean, fmt: (ms: number) => string, maxDepth: number }} ctx @returns {Paint}
+ */
+export function describeGrant(id, list, ctx) {
+  if (id === null) return { data: { hide: '1' } };
+  const o = list?.owned?.find((/** @type {any} */ x) => x.ownedId === id);
+  const d = o?.dispatch ?? null;
+  const row = (/** @type {string} */ level, /** @type {boolean} */ can) => ({
+    key: level, tpl: 'tpl-lv', data: { on: d?.level === level ? '1' : '0', can: can ? '1' : '0' },
+    slots: {
+      b: { data: { level, owned: id }, attr: { 'aria-pressed': d?.level === level ? 'true' : 'false', disabled: can && ctx.unlocked && d !== null ? null : '', title: ctx.unlocked || !can ? null : t('grant.locked') } },
+      name: { text: t(`grant.level.${level}`) },
+      note: { text: t(`grant.note.${level}`) },
+    },
+  });
+  const here = list == null ? '' : t(`grant.here.${list.presence ?? 'unknown'}`);
+  // No level here: the list has not read this session (or does not know its state), it ended, or it has no tool (T1).
+  const none = o === undefined || o.state === 'unknown' ? 'grant.unknown' : o.state === 'ended' || o.state === 'failed' ? 'grant.over' : 'grant.none';
+  const says = !ctx.unlocked ? [t('grant.locked')] : d === null ? [t(none)] : [
+    d.grantAt === null ? t('grant.default') : t('grant.since', { at: ctx.fmt(d.grantAt) }),
+    d.tainted === true && t('grant.tainted'),
+    d.depth >= ctx.maxDepth && t('grant.depth', { d: d.depth }),
+    here,
+  ];
+  return { data: { hide: '0' }, slots: { st: { text: says.filter(Boolean).join(t('sep.notes')) }, lv: { kids: [row('ask', true), row('free', true), row('away', false)] } } };
 }
 
 /**

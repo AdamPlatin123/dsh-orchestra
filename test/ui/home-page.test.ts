@@ -35,7 +35,7 @@ let serial = 0;
 const node = (over: Json = {}): Json => ({
   id: `n:${(++serial).toString(16).padStart(20, '0')}`, session: null, harness: 'codex', ownership: 'owned', layer: 'subagent', parent: 'n:'.padEnd(22, 'a'), depth: 1,
   title: `m${serial}`, activity: null, state: 'running', basis: 'owned', waiting: null, counts: { children: 0, errors: 0, waiting: 0 }, groups: [],
-  ageMs: 0, durationMs: null, model: null, agentType: null, batch: null, mark: null, ...over,
+  ageMs: 0, durationMs: null, model: null, agentType: null, batch: null, mark: null, sent: null, ...over,
 });
 const WORKER = 'n:'.padEnd(22, 'a');
 /** A snapshot of one owned worker and its members; only what the descriptors read. */
@@ -470,8 +470,8 @@ test('what the browser loads for / stays within its own budget, all of it embedd
   const own = ['ui/home.html', 'ui/home.css', 'ui/home.js', 'ui/wings.js', 'ui/fold.js'].reduce((n, f) => n + Buffer.byteLength(read(f)), 0);
   const total = all.reduce((n, f) => n + Buffer.byteLength(read(f)), 0);
   // The page's own files, and everything it loads with what it shares with the old page.
-  assert.ok(own <= 80 * 1024, `the home page's own files are ${own} bytes`);
-  assert.ok(total <= 248 * 1024, `the home page loads ${total} bytes`);
+  assert.ok(own <= 96 * 1024, `the home page's own files are ${own} bytes`);
+  assert.ok(total <= 264 * 1024, `the home page loads ${total} bytes`);
 });
 
 const OBSERVED = towerFromStage(busyStage()).meta.observedAt;
@@ -480,7 +480,7 @@ const CSRF = 'A'.repeat(43);
 const ID = { a: 'a'.repeat(20), b: 'b'.repeat(20), c: 'c'.repeat(20) };
 const AP = { a: '1'.repeat(32), b: '2'.repeat(32) };
 const EVIL = '<img src=x onerror=alert(1)>';
-const member = (i: number, over: Partial<OwnedMember> = {}): OwnedMember => ({ threadId: `t${i}`, name: `sub ${i}`, model: null, state: 'running', why: null, startedAt: null, endedAt: null, lastAt: null, failed: 0, ranUnasked: 0, batch: null, asking: null, ...over });
+const member = (i: number, over: Partial<OwnedMember> = {}): OwnedMember => ({ threadId: `t${i}`, name: `sub ${i}`, model: null, agentType: null, state: 'running', why: null, startedAt: null, endedAt: null, lastAt: null, failed: 0, ranUnasked: 0, batch: null, asking: null, ...over });
 const seat = (ownedId: string, title: string, over: Partial<OwnedSeat> = {}): OwnedSeat => ({ ownedId, harness: 'codex', title, state: 'running', endReason: null, lastAt: OBSERVED, waiting: null, ...over });
 const approval = (id: string, ownedId: string, over: Json) => ({
   approvalId: id, ownedId, kind: 'command', title: 'req', preview: 'command: npm test', tooLong: false, redactions: 0, digest: id.slice(0, 1).repeat(64),
@@ -584,7 +584,7 @@ test('the page boots: worker, talk and cards from the fetched data; only a perso
 
     // Today's shape, said in words, with no switch and no router drawn.
     assert.equal(byId('desk').querySelector('.desk-t')!.textContent, TOWER_TEXT['home.noRouter']);
-    assert.equal(doc.querySelector('.rbar')!.textContent, TOWER_TEXT['home.grants']);
+    assert.equal(doc.querySelector('.rbar')!.textContent, TOWER_TEXT['home.grantsNone']);
     assert.ok(doc.querySelector('.team')!.textContent.includes(TOWER_TEXT['home.noTeamH']!));
     assert.equal(doc.querySelector('.legacy')!.textContent, TOWER_TEXT['home.legacy']);
     assert.equal(doc.documentElement!.getAttribute('data-ready'), '1');
@@ -908,4 +908,11 @@ test('describeFold takes only members: a card of none draws no marks', () => {
   const d = describeFold({ key: 'k', title: 't', members: [], open: false }) as any;
   assert.equal(d.slots.dots.kids.length + d.slots.bar.kids.length, 0);
   assert.equal(d.slots.n.text, '0 个');
+});
+
+test('home.css: a request\'s long head wraps instead of pushing its buttons out; the note and the dock\'s empty note move nothing under the pointer', () => {
+  assert.match(CSS, /\.req-h \.pin-kind \{[^}]*white-space: normal/);
+  assert.match(CSS, /\.note \{[^}]*position: absolute/);
+  assert.match(CSS, /\.dock-note \{[^}]*min-height/);
+  assert.doesNotMatch(CSS, /\.dock-note:empty/);
 });

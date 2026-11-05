@@ -51,7 +51,7 @@
 
 ### 3. 路由（superagent 层）
 - 「派活台」：人输入一句话 → 先跑确定性规则（D9：确定性规则先、LLM 后），再请 magpie 上的路由模型（默认 `zcode/GLM-5.3`，chat completions，只要 JSON）给出建议：harness、模型、cwd、标题、理由。
-- 建议只是「Route to?」卡片：人点「派出」才起会话；从不自动派（r4 Route to?：拿不准时出卡请你选，绝不默认派活）。每次派活写一条 RouteDecision（候选、理由、模式=manual）：带建议派出的记候选和人选了哪个；没要建议、建议过期或改过句子再派出的，也记一条（没有候选，router 记 not-asked），对应 r4 §9.5「M1 起每次派活都记一条 mode=manual 的 RouteDecision」。
+- 建议只是「Route to?」卡片：人点「派出」才起会话；从不自动派（r4 Route to?：拿不准时出卡请你选，绝不默认派活）。2026-11-05 起例外：worker 有你开的「直接派出」权限时不经人点，见「派活权限」一节。每次派活写一条 RouteDecision（候选、理由、模式=manual）：带建议派出的记候选和人选了哪个；没要建议、建议过期或改过句子再派出的，也记一条（没有候选，router 记 not-asked），对应 r4 §9.5「M1 起每次派活都记一条 mode=manual 的 RouteDecision」。
 - 路由模型拿不到时退回纯规则，卡片照出。
 
 ### 4. 审批（D8）
@@ -204,8 +204,159 @@
 - **子代理的数量**：Orchestra 这边没有上限，32 只是列表上限，超过的继续跑，只计数。Codex 有没有自己的上限配置还是未知：除 features 开关外只试过 `[agents] max_threads = 1` 一次，三个子代理照样都跑了，但任务很短，可能没有重叠，也没核对这个键是否生效，说明不了什么。
 - **子代理的文件改动**：2026-11-04 实跑过一次 on-request 和一次 untrusted：子代理用 apply_patch 写文件，卡片带改动内容、可批，批后文件内容对。
 - **token**：会话用量只含根线程。子代理的用量没有显示。
-- **Claude 自有会话**：还没接子代理，子节点数是 0，这个 0 的意思是没看，不是没有。
+- **Claude 自有会话**：~~还没接子代理，子节点数是 0，这个 0 的意思是没看，不是没有。~~ 2026-11-05 已接上，见「子代理（Claude，2026-11-05 接上）」一节。
 - **沙箱**：`CodexSandboxService` 真启用沙箱时，进程会不会跑到 Job 外，查不到。
+
+### 子代理（Claude，2026-11-05 接上）
+
+**为什么之前禁。** 理由都在 alpha 0.2 切片设计里，r4 没有写禁它。r4 只说乐手内部照常可以用原生 subagent，M1 钳制、M2 看见、M3 管住（r4 第 57 行）。切片设计的理由有三条：
+
+- 没有 procguard 的 Job 回收时少留孙进程（§2.1 防孤儿、§8 第 3 条）。
+- 不经审批的工具要收口（§5 安全表，依据 D8：批准、拒绝、拍板、刹车只有人在配对页上能做，超时即拒）。
+- 模型白名单和花费：Task 会换型号（S8），会并行放大（S20）。
+
+后来 Job 接上了，第一条只对没有 Job 的会话还成立。另外两条要实测。
+
+**实测**（CLI 2.1.287，SDK 0.3.287，2026-11-05，走 magpie。14 次探针直接跑 host 逻辑，私有配置目录和假 home 都在临时目录。Job 的结论来自下面的冒烟。）
+
+| 问题 | 结果 |
+|---|---|
+| subagent 的工具调用走不走闸 | 全走。每次都先到 PreToolUse，要问的再到 `canUseTool`，两边都带 agent id，它和 `task_id` 是同一个值 |
+| 根线程回合结束后还走吗 | 走。默认就是后台（`is_backgrounded: true`），根线程先结束，之后的调用照样到闸 |
+| 能到 Orchestra 的审批队列吗 | 能。拒绝生效：两个写操作都拒了，两个文件都不存在 |
+| 受污染会话（r4 §8.5，seat 请求开的会话）每次都问吗 | 问。前台和后台各一次，Read、Glob、Grep 在 cwd 内也问，孙代理也问 |
+| 别的 agent 类型 | `Explore`、`Plan`、`claude` 都有 PowerShell，都到闸。`statusline-setup` 没有 shell。不写 `subagent_type` 时是 `general-purpose` |
+| 嵌套 | 这版能嵌套（`spawn_depth` 2）。孙代理的调用也走闸，派孙代理本身也要问 |
+| 后台命令、受保护路径 | subagent 发的 `run_in_background` 和 `~/.claude` 下的读都被拒，没出卡。WebFetch、TodoWrite、Skill 它手里没有 |
+| 换型号 | 模型自己传过 `model: sonnet`，实际跑的是会话的型号（环境变量钉住了）。`fable` 没有对应的变量，所以拒 |
+| 逃出 Job | 没有。它在 `claude.exe` 进程里跑，它的 ping、powershell、cmd 都在 Job 里。它用 `Start-Process` 放出去的 `ping -t` 也在 Job 里，刹车杀掉 8 个进程，按 pid 加创建时间一个不剩 |
+| `interrupt` 管到它吗 | 管到。根线程在等它、根线程 idle 都一样。探针里任务当场停，ping 500 ms 内没了，之后没有再唤醒模型（看了 17 秒）。外层的 cmd 和 powershell 慢一些，冒烟里 3.4 到 3.7 秒后 Job 才清空（Codex 约 260 ms）。`stopTask` 也行，但之后会唤醒模型（实测 26 秒后说了一句），所以用 `interrupt` |
+
+结论：没有绕过审批，也没有逃出 Job，放开。`mode`、`name`、`isolation` 这三个字段模型一直没传，没实测，host 直接拒。
+
+**做了什么**
+
+- **只给有 Job 的会话**：`claude-session.ts` 在 start 帧写 `subagents: job !== null`。没有 Job 时 `Task`、`Agent` 还在禁用清单里，提供它们照样 safety-stop，和以前一样。这版 init 里叫 `Task`，调用时叫 `Agent`，两个名字一起放。
+- **派一个要批**（`hosts/claude/host-core.mjs`）：别的工具都是不问就不跑，`Agent` 也一样，卡上是完整 prompt，受污染会话也一样。这比 Codex 严，Codex 派子代理不问。输入只认 `description`、`prompt`、`subagent_type`、`model`、`run_in_background`。`isolation`（`remote` 跑到 Job 外）、`mode`、`name`、别的类型、`fable` 都直接拒，不出卡（`agent-input`）。
+- **文字不进对话流**：带 `parent_tool_use_id` 的 assistant 消息只过型号守卫，不写 `text` 和 `tool` 帧。根线程的 `Agent` 调用也不写工具行，派发行代替它。`task_started` 的 prompt、`task_progress` 和 `task_notification` 的 summary 留在 host 里。
+- **绊线**：subagent 的成功结果，如果闸没见过这个调用，会话 safety-stop（`unjudged-tool`）。没跑成的调用（参数错）本来到不了 hook，结果是错误，不算。实测没触发过。
+- **成员**：表抽到 `src/owned/members.ts`，Codex 和 Claude 共用（状态怎么走、名字、派发和批次、上限 32、丢失写未知、落盘）。Codex 只留协议相关的部分。名字是模型给的 `description`，类型是 `subagent_type`（`MemberRecord` 新增 `agentType`，老文件读成 null，文件上限 32 KiB 放到 40 KiB），起止时间是 Orchestra 听到的时间。`completed` 写已回报，`failed` 写已结束（失败），`stopped` 和 `killed` 写已结束（被打断）。失败步数是真跑了但报错的调用，人或闸拒的不算，停止切断的不算。`ranUnasked` 恒为 0：绊线在前。
+- **批次**：协议有字段。一次模型回复里的 `Agent` 调用共用 `message.id`，这就是一批，不用像 Codex 那样猜。`--pair` 实测两个一批。孙代理（深度 2）不写派发行，批次是 null，平铺在会话下面。
+- **审批卡**：预览第一行 `from subagent: <名字> (task …末 8 位)`，在摘要覆盖的范围内。对话流的 ask 行和 auto-denied 行带同样的来路。塔上成员的活动写「在等你审批」，等待留在会话节点上（T3：计数等于它链接的列表长度）。
+- **停止**：有成员还活着时，就算根线程没回合也发 `interrupt`。超出列表上限（32 个）的成员，没听到结束的也算，停止键亮着，发帧，停不下就写 `members-not-stopped`；听到结束的不算，停止键不会一直亮。`stoppable` 从成员算。对话流先写 `members-stopping`，2 秒后读结果，分两层：成员停没停看 CLI 的帧，命令清没清看 Job（`job.procs()`，常驻进程以外还有没有东西）。Job 里还有东西就每 2 秒再读，最长 6 秒。空了才写 `members-stopped`（文字说「后台命令清掉了」，所以按 T1，不知道写未知，只有这时能写）。到 6 秒还有写 `members-job-left`，Job 读不到写 `members-job-unsure`。等结果期间和这两种结果下，停止键都留着。成员 ended 但命令（`local_bash` 任务）没收到结束，算没确认，停止键留着。
+- **唤醒回合**：后台成员结束后 CLI 会把模型叫起来说一轮，这轮没有用户消息。根线程在没有回合时出声，会话写 `running`，消息排队，停止管得到，它的 `result` 之后回 idle。出声算文字、工具行，也算根线程自己的 ask 和 auto-denied：`Agent` 调用不写工具行，「A 完了再派 B」这种只回一个 `Agent` 的回复，到会话这边只有 ask 这一帧。
+- **seat 请求**（DSH 会话向 orchestrad 请求派一个自有会话的通道）：根线程派完当轮就结束，第一个 `turn-ended` 那句只是「已派出」。所以 `session.run` 告诉请求这一趟的情况：`out`（成员在跑，或 CLI 还欠一个唤醒回合）时请求留在 running，撤回照样结束会话；成员回报、唤醒回合说完才 done，结果取最新一个回合结束前的话；`cut`（成员被停止，或会话没等到就结束了）写 failed，不把半截话当结果。成员在回合中结束时，下一个 `result` 后再等 45 秒看有没有单独的唤醒回合。Codex 走同一段判定：成员的回合还开着就留在 running。
+- **重启**：成员跟着 `ORCHESTRA_HOME\owned\<ownedId>.json` 落盘，重启后还活着的写未知。
+- **页面**：没改布局。折叠卡、线、详情的类型和耗时都是现成的。右半边那句改成「还没看到它派出 subagent。派一个要你批，这个会话的进程不在 Job 里时不能派」。
+- `scripts/live-smoke.ts`：`--subagent`、`--subagent --pair`、`--subagent-stop` 支持 `--harness claude`，判定和 Codex 一样。Claude 多等唤醒回合。新增 `--brake --via-subagent`。
+
+**冒烟**（测试 profile，走 magpie，`zcode/GLM-5.3`，退出码都是 0，`leftovers` 全 0）
+
+| 跑法 | 结果 |
+|---|---|
+| `--subagent` | 在跑 → 已回报，19.7 s，有名字和类型，型号 `zcode/GLM-5.3`。派发行 1 条，节点批次一致。卡 2 张（派它 1 张，它的 ping 1 张，后者写了来路）。对话流没有工具行 |
+| `--subagent --pair` | 2 条派发行，1 批，都已回报。第 2 个回合是唤醒回合 |
+| `--subagent-stop` | 根线程在等（前台）和根线程 idle（后台）两轮都过：`members-stopped=1`，节点在跑 → 已结束，会话 idle，停止键收起，失败 0 步，收尾后 Job 里什么也不剩 |
+| `--brake --via-subagent` | 刹车杀 8 个进程，`left` 0，幸存 0 |
+| `--subagent-stop --loose`（新加，2026-11-05 复核后） | 命令先放出一个外壳已退出的 `ping -t`，再跑前台 ping，这时按停止：成员已结束，前台 ping 和外壳没了，放出去的 ping 还在 Job 里，对话流写 `members-job-left=1`，停止键留着，收尾时 Job 带走它，幸存 0。放出去时外壳还活着的（`Start-Process` 直接跟 ping），1 次里跟外壳一起被 interrupt 带走了 |
+
+这几种各跑了 2 次，只有 `--brake --via-subagent` 跑了 3 次。那 1 次和 `--pair` 同时跑，6 分钟里 Job 里一直没出现 ping，脚本到时间退出 1，原因没查到（那次没留记录）。事后本机没有 PING.EXE，所以不是逃出 Job。回归：Claude 的默认任务、`--brake`，Codex 的 `--subagent`、`--subagent-stop` 各跑一次，退出码都是 0（`members.ts` 动了 Codex 的代码）。
+
+没用到的：`SubagentStart`、`SubagentStop` 钩子。`task_*` 事件已经够，少一条路。
+
+**残余**
+
+- **`max_turns`**：`MAX_TURNS` 50 只管根线程的一条消息。subagent 自己的轮数上限没查到。cwd 内的读不问，所以它可以只读不停地烧 token，要靠停止或刹车。
+- **数量**：Orchestra 没有并发上限，但每派一个都要批，孙代理也是。子代理不算进 3 个并发上限。
+- **花费**：`total_cost_usd` 含不含 subagent 没核实。实测里唤醒回合的累计数比第一回合大，像是含的。
+- **唤醒回合的竞态**：唤醒回合第一帧（文字、工具行、根线程的 ask）到之前，会话还是 idle。这段时间写出去的消息和唤醒回合分不清，第一个 `result` 同时结束两边。下一条消息可能排进 CLI，这时按停止会读到 `stillQueued` 不为 0，会话被关掉。结果是偏安全的。窗口是模型第一次回话之前，卡开着的那段已经不在里面。
+- **seat 等唤醒回合**：成员在回合中结束，CLI 是在这轮里告诉模型，还是回合后单独再叫一轮，没测，所以 `result` 后等 45 秒（`wakeWaitMs`）。单独那轮开口比 45 秒还慢，结果会是前一轮的话。成员在根线程 idle 时结束，就一直等到有 `result`。CLI 不叫，请求就留在 running，直到 seat 自己的时限撤回。这条路径只有假管道测试（真模块、假 host 帧），没有经 DSH 实跑；Codex 的成员结束后根线程会不会再说一轮也没测，它的请求拿到的是根线程最后说的话。
+- **`interrupt` 停后台成员**：探针 1 次，冒烟 2 次，SDK 文档没写这个保证。CLI 版本一变，`cli-version` 检查会先停会话。
+- **放出去的进程**：外壳已退出的进程，CLI 没有任务记录，`interrupt` 够不着，只有收尾或刹车能带走。Job 读得到它，所以页面不说清掉了，但停止键再按也停不了它，按了只是重读一次 Job。成员已回报、停止键没亮时放出去的进程，没有人提示，和 Codex 文件头写的残余一样。Job 里判断是不是命令靠映像名（`CLAUDE_JOB_RESIDENTS`）：node.exe 多于一个才算命令，`conhost.exe`、`claude.exe` 不分是不是命令起的。
+- **没测到的状态**：`failed`（任务本身失败）没跑出来过，映射是读类型定的。步骤失败实测过（`exit 3`，读不存在的文件）。
+- **`mode`、`name`、`isolation`、`fork`**：拒了，没测过。
+- **`model: opus`、`haiku`**：放行，靠环境变量钉住，实测只跑过 `sonnet`。运行时型号守卫也读 subagent 的消息，换了型号会话 safety-stop。
+- **根线程的长命令**：Claude 的 `--root-stop` 这次没做，只在 Codex 上跑过。
+- **`msg-withdrawn`**：根线程回合被打断时，CLI 对这条消息发 `cancelled`，对话流会在 `msg-sent` 之后多一条「撤回」。这不是这次引入的。
+- **页面**：这次没有在浏览器里走一遍 Claude 成员的折叠卡和线，靠塔接口的契约校验（冒烟里每次都是 200）和页面已有的测试。
+
+### 派活权限（2026-11-05 接上）
+
+用户的话：「这里不应该限制派出，至少允许打开相关权限让bot自由派出」。规则见 `docs/design/mocks/2026-11-03-ensemble/round3/BRIEF.md` 第 1.1 节。
+
+**实测**（走 magpie，私有 CODEX_HOME 和假 home，都在临时目录；Codex 探针 8 次，Claude 探针 6 次，2026-11-05）
+
+| 问题 | Codex（codex-cli 0.165.0） | Claude（CLI 2.1.287，SDK 0.3.287） |
+|---|---|---|
+| 怎么给工具 | `thread/start` 的 `dynamicTools: [{type:'function', name, description, inputSchema}]`，要 `experimentalApi`（本来就开着）。`zcode/GLM-5.3` 和 `codex/gpt-6.1-sol` 都能用 | 进程内 MCP：`mcpServers: {orchestra: {type:'sdk', name, instance}}`。SDK 只调 `instance.connect(transport)`，所以手写一个 instance，不用 `createSdkMcpServer`（它的 `tool()` 只收 zod，host 不引 zod）。init 里多一个 `mcp__orchestra__dispatch` 和一个 connected 的 server |
+| 调用怎么来 | 服务端请求 `item/tool/call`：`threadId`、`turnId`、`callId`、`tool`、`arguments`，前后各一条 `dynamicToolCall` 的 item。on-request 和 untrusted 下都不先问 | PreToolUse 钩子先到（`allow` 就不走 `canUseTool`），然后 `tools/call`，`_meta` 里有 tool_use id |
+| 回什么 | `{contentItems:[{type:'inputText',text}], success}`。`success:false` 模型照样读得到文字 | `{content:[{type:'text',text}]}`，失败加 `isError:true` |
+| 能等多久 | 330 秒后回，照常走 | 310 秒后回，照常走（文档说默认基本不限时） |
+| 打断时 | `turn/interrupt` 后 item 写 failed，回合 interrupted，没有 `serverRequest/resolved`。之后再回这条请求没有副作用，下一回合照常（1 次） | 收到 `notifications/cancelled`，回合 `error_during_execution` |
+| 子代理有没有这个工具 | 没有，1 次：子线程说手里没这个工具 | **有**，1 次：钩子带 agent id，所以 host 拒掉 |
+
+结论：两边都能做，请求方都是 orchestrad 自己知道的（Codex 是这条管道的会话，Claude 是这个 host 的会话），不靠模型自报。r4 §8.5 本来就写 Claude 乐章用进程内 MCP。
+
+**做了什么**
+
+- **工具**：`orchestra_dispatch`（Claude 里叫 `mcp__orchestra__dispatch`），参数是任务文字、harness、型号（可选）、工作目录（可选）。每个自有会话都有，但没有配对页（不带 `--peek-port`）就不给。结果不回给 worker：回复写明「它的结果不回给你，人看得到」。
+- **`src/route/dispatch.ts`**：判定都在这里。`gateOf` 决定走哪一档，`dispatchArgs` 查参数。驱动只拿到 `DispatchPort`（`call`、`sentOf`），上面没有改权限的方法，有测试钉住。
+- **权限**：每个会话一档，`ask` 派前问你（默认）或 `free` 直接派出。`POST /api/owned/:id/dispatch-grant`，人类动词 `dispatch-grant`，和别的自有动作同一条检查链（Host、配对 cookie、Origin、Sec-Fetch-Site、操控令牌、actionId 去重），`human`、`human.result`、新 kind `dispatch-grant` 同一批写进 journal，写完才生效。`level` 只收这两个值，`away` 是 400。
+- **派前问你**：工具调用走 `requests.create`，就是现有的请求卡，`requester` 是 `owned:<ownedId>`。工具一直等到人点。点派出走原来的 `POST /api/owned/new`，写 `route`（manual）和 `agent-request`（`requesterKind` 新增 owned）。拒绝、超时（10 分钟）、回合被停，worker 都读到一句固定的话。卡上来路写「Orchestra 自己的会话 X（orchestrad 看到的，不是它自报的）」，不写「自称」。
+- **直接派出**：不出卡，走 `requests.create`（`auto`，不问路由模型）取得同一份脱敏和速率限制，再查型号（`isOwnedModel`，Claude 还要 `isClaudeModel`）、项目根（`judgeCwd`、`placeRunIn`，点名的目录不在根里就拒，没有卡可以说它改到哪去跑）、上限，然后 `manager.create`，也就过了 spawn 闸。journal 写 `auto`（`by`、`ownedId`、`grantActionId` 指向人开权限那一步、`depth`、任务的 digest）和 `route`（`mode: auto`，`reason: worker`），没有 `human`。写不进去就把刚起的会话结束，告诉 worker。
+- **不放开的**：
+  - 受污染的会话（seat 请求开的）一律退回派前问你，新会话照受污染处理，卡上写退回的原因。
+  - 被派出的会话从派前问你开始，不继承（A17）。
+  - 派出的深度上限 2：你开的会话算第 0 层，第 2 层再派就拒，两档都拒。
+  - 你不在时退回派前问你，见下面的「在场」。
+  - seat 请求口不读权限：它的 body 里 `kind` 是常量 dsh，也没有 `auto`，有反向断言。
+  - 命令和改文件的批准一点没变。派出的会话要批什么，和同一个 harness 你自己开的会话一样。
+  - 子代理不能派：Codex 没给它工具，Claude 由 host 拒（`dispatch-subagent`）。
+- **在场**（`src/route/presence.ts`）：今天没有现成的判定，只有 `POST /api/client-state` 的路由，页面也没在发，所以做了 r4 Q-P3 那一条（在场 = UI 心跳 + 30 分钟内一次 UI 操作）的最小版。心跳是解锁页面读 `GET /api/owned`（前台 2 秒，后台 10 秒，30 秒没读算不在），操作是任何一条人手记录。一次都没听到页面写未知，也退回派前问你。任务书说没有判定就写未知并退回，但那样直接派出永远走不到，所以补了这个，依据是 r4 Q-P3。
+- **超过上限**：拒绝并告诉 worker，不排队。任务书两种都允许。排队的话调用要占着 worker 的回合，而 worker 自己就占一个名额，三个 worker 一起等只能等到超时。所以 `R3.keeps` 第 4 条在页面上改成「超过的不派，告诉 worker，不丢」。
+- **来路**：审批卡的 `origin` 新增 `worker-dispatch`，写「来路：worker「X」派出的 → 这个会话」。干净 worker 派出的会话不算受污染（r4 §8.5：同一项目里来源链干净的自有乐手之间是 clean，仍是 `trust: agent`），卡上没有红条。
+  - 2026-11-05 复核后补的：`codex-session.ts`、`claude-session.ts`、`approvals.ts` 里「有来路就算受污染」收窄到 `kind === 'agent-request'`，原来这三处让干净 worker 派出的会话全部受污染。受污染 worker 派出的还是受污染，由调用方传 `tainted`。
+  - 2026-11-05 复核后补的：来路的 label 不再直接用标题。标题上限 240 字节，契约里 label 上限 120 字节，超长时 `GET /api/owned` 整页 500。现在走 `requests.label`，和 seat 请求的 label 同一条路，截断处标 …。
+- **记录上分开**（2026-11-05 复核后补的）：塔的 `router.dispatch` 多一个 `auto`，旧页面「你」那一行写「worker 按你开的权限派的，不是你点的」，重启后从 `route` 行的 `mode` 读回。`GET /api/owned` 多一个 `sentGone`：按权限派出、请求详情已不在内存的会话，`requestedGone` 只留你点过的；重启后从 journal 的 `auto` 记录读回。
+- **首页**：
+  - 权限面板在 worker 的「资料」里：三档（第三档不能按，写 D20 不允许）、谁什么时候改的、现在在不在、不放开的五条。
+  - 对话流里派出的回执是一行 `tpl-disp`，写「权限派的：「直接派出」是你 HH:MM:SS 开的」或「你点的派出」，被派出的会话或它的 subagent 还在跑时有「停」（根线程 idle 而后台 subagent 在跑也算），走它的 `interrupt`。subagent 批次的行没有「停」：那不是一个会话，没有东西可发。
+  - 被派出的会话在右半边是一张类型 worker 的折叠卡，线从回执拉过去，卡里有「打开」。它在左边还是一个 worker。塔节点多一个 `sent`。
+  - 右栏底下那句改成真实计数，解锁前写未知。标题改成「X 派出的 worker 和 subagent」。
+  - 锁着的占位卡原来写「以 DSH 名义」，现在可能是 worker 的请求，改成「有请求要派 X」。
+- **`requests` 不再只跟 `--agent-port`**：只要自有会话开着就有，端口还是要 `--agent-port`。
+
+**冒烟**（`scripts/live-smoke.ts --dispatch-tool`，测试 profile，走 magpie）一次跑完：派前问你、直接派出、到上限、你不在（32 秒不读列表）、seat 请求和受污染退回，22 项判定，然后读 journal 核对，`leftovers` 全 0。
+
+| 跑法 | 结果 |
+|---|---|
+| `--harness claude --dispatch-tool`（`zcode/GLM-5.3`） | 22 项全过，退出码 0。journal：`auto` 1 条，`route` manual 4 条、auto 1 条，`dispatch-grant` 2 条，`agent-request` 是 owned 派出 2、owned 拒绝 1、dsh 派出 1 |
+| `--harness codex --dispatch-tool`（`codex/gpt-6.1-sol`） | 同上 |
+| `--harness codex --model zcode/GLM-5.3 --dispatch-tool` | 同上 |
+
+Claude 完整跑通 2 次，Codex 两个型号各 1 次（`zcode/GLM-5.3` 之前还有 2 次跑到 seat 那步，因为脚本把目录写错退出 1，前面的判定都过）。回归：`--harness claude`、`--harness codex`、两边的 `--subagent` 各跑 1 次，退出码都是 0（每个会话现在都多了这个工具）。
+
+**分歧**（这些由用户的话取代，r4 没改，等用户改）
+
+| 文件 | 写的是 | 现在 |
+|---|---|---|
+| r4 A17（第 794、2417、2447 行，R40） | agent 只能请求新建乐手，只生成一条条目，由你批准；agent 不能自我复制 | 「直接派出」时 worker 不经你批准就起一个新会话。留下的部分：权限只有你能开，派出的会话不继承，深度有上限 |
+| r4 §9.5 和 Q11（第 1515 行，第 2911 行） | 自动派活要经 shadow，最近 50 条一致率 ≥80%、blocked→noticed 中位 <2 分钟才进 active | 没有门槛，只要你开了权限。那条说的是路由模型替你选，这里是 worker 自己要派，机制不同，但结果都是不经你点就派出，算分歧。`route` 的 `mode` 新增 `auto`，和 r4 的 shadow、active 不是一回事 |
+| 本计划（任务书写第 169 行） | 派出只有人点 | 第 169 行现在不是这句话。写这个意思的是「### 3. 路由」的「人点「派出」才起会话；从不自动派」、seat 第 1 步的「派出、批准、刹车只能由人在配对页面上做」、「项目根」的「派出仍只有人在配对页上点」。这三处留着当历史，这一节取代它们 |
+
+没有分歧的：r4 D20（默认有人值守：你不在时不派新的执行 Task）照旧，「你不在也派」没有做，页面写明不允许。D8（批准、拒绝、拍板、刹车只有人在配对页上能做，超时即拒）照旧：开权限是人在页面上做的，agent 侧没有这条路由。
+
+**残余**
+
+- **受污染只认来源**：Orchestra 今天只知道会话是不是 seat 请求开的。r4 §8.5 说读过项目根外的文件、抓过网页也算污染，这些没有跟踪，这样的会话在直接派出里算干净。
+- **派出的结果不回 worker**：worker 只知道派出去了。要回传得另做。
+- **重启**：权限、深度和派出关系都在内存里。重启后会话本来就不恢复，但页面上看不到谁派的谁，journal 里有。
+- **速率限制是共用的**：`perWindow` 6 条每分钟，worker 和 seat 一起算，worker 派满了 seat 会吃到 429。
+- **在场只看这一页**：r4 说在终端或 IDE 里忙也算不在，这里也算不在，偏安全。多个页面没有分开算。页面隐藏也算心跳，r4 就是这么写的。
+- **模型自己决定用不用**：工具说明写了「人要求或确实需要才用」，这只是提示。派前问你时它能一直发卡，每个 worker 最多 4 张等着，每分钟 6 条。
+- **子代理 1 次**：两边「子代理有没有这个工具」都只测了 1 次。Codex 那边万一有，`dispatchCall` 按线程拒掉。
+- **`route` 的 `taskClass`**：auto 也按规则算，和人手的一样，这份标签以后给路由模型用时要分开。
+- **页面**：配对后的真实页面这次没走：浏览器里看的是真的 `ui/` 文件加合成数据（桩服务，CSP 只限了 self），1280 宽：回执、线、折叠卡、「打开」、「停」、权限切换、请求卡都点过，这一步抓到页面的 POST 路径表漏了新路由（`bad-id`），已修，有测试。派出和拒绝在真页面上走的是原来的按钮。375 宽、浅色主题没看。
 
 ### 项目根（--project-root）
 
@@ -333,7 +484,7 @@
 
 1. ~~线没有画。~~ 2026-11-04 已接上，见下一节「派发和拉线」。
 2. ~~折叠卡按 agentType 分，不是真实的一次派发。~~ 同上：自有 Codex 会话现在一次派发一张卡。只读会话的数据里没有派发批次，还是按 agentType 分。
-3. Claude 自有会话的 subagent 还没接进塔，右半边写了「这里空着，不等于它没派」。
+3. ~~Claude 自有会话的 subagent 还没接进塔，右半边写了「这里空着，不等于它没派」。~~ 2026-11-05 已接上，见「子代理（Claude，2026-11-05 接上）」一节。
 4. 派发的五件事（派给谁、做什么、为什么、要交回什么、现在怎样）没有做：真实数据里写不全。
 5. 「关于数据」只在旧页面有；新页面的上限提示指向那里。`/session` 页的返回链接文字还写「回到塔」，实际回 `/`。
 6. 新页面用合成数据和页面真实 CSP 在浏览器里看过（1024 宽无横向滚动，浅深色）；没有在测试 profile 的 orchestrad 上走过一遍真实配对、解锁和批准，这几步只有假 DOM 测试和 HTTP 测试。屏幕阅读器没测过。

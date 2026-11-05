@@ -94,7 +94,7 @@ function sample(r: Route): { path: string; body: Record<string, unknown> | null 
   if (r.method === 'GET') return { path, body: null };
   const extra: Record<string, Record<string, unknown>> = {
     'owned-new': { text: 'hello', harness: 'codex' }, 'owned-message': { text: 'hello' }, 'approval-allow': { digest: 'a'.repeat(64), rev: 1 },
-    'import-claude': { stageId: STAGE, mode: 'fork', cwdShown: 'G:\\work\\x' }, 'import-dsh': { stageId: STAGE },
+    'import-claude': { stageId: STAGE, mode: 'fork', cwdShown: 'G:\\work\\x' }, 'import-dsh': { stageId: STAGE }, 'dispatch-grant': { level: 'ask' },
   };
   // A POST that writes no human record carries no actionId (POST /api/route/suggest).
   if (r.human === null) return { path, body: { text: 'hello' } };

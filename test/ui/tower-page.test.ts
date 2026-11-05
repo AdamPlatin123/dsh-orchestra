@@ -246,3 +246,7 @@ test('what the browser loads for /tower stays within budget: its ui/ files and t
   assert.ok(uiBytes <= 200 * 1024, `ui/ is ${uiBytes} bytes`);
   assert.ok(uiBytes + bytes(shared) <= 240 * 1024, `the page loads ${uiBytes + bytes(shared)} bytes`);
 });
+
+test('the detail is positioned: its .sr live lines stay in its own scroll and do not stretch the page past the window', () => {
+  assert.match(CSS, /\n\.detail \{ position: relative;/);
+});

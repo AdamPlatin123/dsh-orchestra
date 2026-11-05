@@ -10,6 +10,7 @@ import { CLAUDE_DEADLINES } from '../../src/owned/claude-session.ts';
 import { DEFAULT_CLAUDE_MODEL } from '../../src/owned/models.ts';
 import { ownedList } from '../../src/server/owned-handlers.ts';
 import { validateOwnedFeed, validateOwnedList } from '../../shared/owned-contract.js';
+import { DISPATCH_SERVER, DISPATCH_TOOL_ID } from '../../hosts/claude/host-core.mjs';
 import { initMessage } from '../fixtures/fake-sdk.ts';
 import { HOST_ENTRY, claudeRig, until } from '../helpers/claude-host.ts';
 
@@ -31,6 +32,44 @@ async function begun(r: ReturnType<typeof claudeRig>, text = 'write a.txt then r
   await until('the first message reaches the SDK', () => r.host.calls.length === 1 && r.host.calls[0]!.sdk.queries.length === 1 && r.q().received.length === 1);
   return { s, ownedId: made.ownedId };
 }
+
+test('the dispatch tool: the start frame offers it, a call goes to the port under the session\'s own id, the answer comes back; a stop gives up one still waiting', async (t) => {
+  const calls: { ownedId: string; raw: unknown }[] = [];
+  let cancelled = 0;
+  let release: (v: { ok: boolean; text: string }) => void = () => {};
+  const port = {
+    call: (ownedId: string, raw: unknown, say: (n: { state: 'worker-sent-grant'; ref: string; text: string }) => void) => {
+      calls.push({ ownedId, raw });
+      say({ state: 'worker-sent-grant', ref: `n:${'c'.repeat(20)}`, text: 'the child' });
+      return { reply: new Promise<{ ok: boolean; text: string }>((res) => { release = res; }), cancel: () => { cancelled++; release({ ok: false, text: 'withdrawn' }); } };
+    },
+    sentOf: () => null,
+  };
+  const r = claudeRig(t, { dispatch: port as never });
+  const { s, ownedId } = await begun(r);
+  r.q().emit(init({ tools: ['Edit', 'Glob', 'Grep', 'PowerShell', 'Read', 'Write', DISPATCH_TOOL_ID], mcp_servers: [{ name: DISPATCH_SERVER, status: 'connected' }] }));
+  await until('init', () => s.state === 'running');
+  const server = r.q().options.mcpServers[DISPATCH_SERVER];
+  assert.equal(server.type, 'sdk');
+  const sent: any[] = [];
+  const wire: { onmessage?: (m: unknown) => void; send(m: unknown): void } = { send: (m) => sent.push(m) };
+  await server.instance.connect(wire);
+  wire.onmessage!({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+  assert.deepEqual(sent[0].result.tools.map((x: { name: string }) => x.name), ['dispatch']);
+  wire.onmessage!({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'dispatch', arguments: { task: 'x', harness: 'codex' } } });
+  await until('the call', () => calls.length === 1);
+  assert.deepEqual(calls, [{ ownedId, raw: { task: 'x', harness: 'codex' } }]);
+  assert.ok(s.feed.since(0).events.some((e) => e.kind === 'note' && e.state === 'worker-sent-grant'));
+  release({ ok: true, text: 'Dispatched: a test.' });
+  await until('the answer', () => sent.length === 2);
+  assert.deepEqual(sent[1], { jsonrpc: '2.0', id: 2, result: { content: [{ type: 'text', text: 'Dispatched: a test.' }] } });
+  wire.onmessage!({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'dispatch', arguments: { task: 'y', harness: 'claude' } } });
+  await until('the second call', () => calls.length === 2);
+  await s.interrupt();
+  assert.equal(cancelled, 1);
+  await until('its answer', () => sent.length === 3);
+  assert.equal(sent[2].result.isError, true);
+});
 
 test('handshake: the gate starts node.exe with [host.mjs] in the work dir, with its whitelist, the extras and its fixed env; the start frame and the first message follow; init makes it run', async (t) => {
   const r = claudeRig(t);
@@ -158,6 +197,7 @@ test('interrupt: open approvals are declined first, waiting messages withdrawn, 
   assert.equal(s.state, 'running', 'the turn ends with its result');
   r.q().emit({ type: 'result', subtype: 'error_during_execution', total_cost_usd: 0, user_message_uuid: U(1) });
   await until('idle', () => s.state === 'idle');
+  assert.ok(kinds(s).includes('lifecycle:turn-interrupted') && !kinds(s).includes('lifecycle:turn-failed'), 'the turn your stop cut off is no failure');
 
   // The CLI says it still holds a message: the session is ended (design §2.5).
   s.send('again', U(4));

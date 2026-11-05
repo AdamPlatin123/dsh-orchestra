@@ -3,6 +3,7 @@ import { frozen } from '../../shared/frozen.js';
 import type { After } from '../net/magpie.ts';
 import type { RunInWhy } from '../os/project-roots.ts';
 import type { FeedEvent } from '../owned/feed.ts';
+import type { MemberRun } from '../owned/members.ts';
 import type { Redact } from '../owned/text.ts';
 import { headUtf8, shown, utf8Length } from '../owned/text.ts';
 import type { RouteHarness } from './rules.ts';
@@ -16,15 +17,19 @@ import type { SuggestReply } from './desk.ts';
 // `ttlMs` (default 10 minutes, the composition root may set another), D8's "timeout = deny".
 //
 // The state machine (one way only):
-//   pending ──you dispatch──▶ dispatched ──its first turn starts──▶ running ──that turn ends──▶ done
+//   pending ──you dispatch──▶ dispatched ──its first turn starts──▶ running ──its run ends──▶ done
 //      │                         │                                    │
 //      ├─you reject─▶ rejected   ├─the session ends or the turn fails─┴─▶ failed
 //      ├─time is up─▶ expired    └─the requester withdraws (dispatched or running)─▶ withdrawn
 //      └─the requester withdraws─▶ withdrawn
-// `done` is the requester's word for "the run it asked for came back": the end of one turn, never a
-// verdict on the work (D19: no agent declares done; the page never says 完成, T2). What goes back is
-// A16's thin completion: the state, the last agent message of that turn (redacted, at most
-// OUTPUT_MAX_BYTES, `truncated` when anything was cut, `cuts` saying where) and why, never the transcript.
+// `done` is the requester's word for "the run it asked for came back", never a verdict on the work (D19: no
+// agent declares done; the page never says 完成, T2). A run is its first turn, and, when that left sub-agents
+// out, everything up to the turn that ends with none out and no turn owed (Observed.run; a Claude root ends its
+// turn with a background sub-agent still running, and the answer comes in the turn its end wakes). Until then
+// the request stays running, so a withdraw still ends the session. A sub-agent stopped or lost on the way is no
+// answer: failed (T1). What goes back is A16's thin completion: the state, the last agent message of the turn
+// that ended it (redacted, at most OUTPUT_MAX_BYTES, `truncated` when anything was cut, `cuts` saying where)
+// and why, never the transcript.
 // Whether the requester fetched it is `fetched`: set only when the port's GET handed a done reply to the
 // pipe (T1: until then the page says nobody knows whether it was taken).
 //
@@ -38,6 +43,11 @@ import type { SuggestReply } from './desk.ts';
 // at the port checks it (final.md §6.3 B: no pipe-client-pid in this first slice), so the page says
 // "自称" and "未核实". Limits are per requester too (at most `perRequester` pending), so one loop cannot
 // fill the whole list; a process that lies about its id is held by the global limits only.
+//
+// An owned session asks here too, through its dispatch tool (src/route/dispatch.ts): kind owned, and that one is no
+// word of its own: orchestrad knows which session's tool was called. Such a request may be `auto`, on the permission a
+// person gave that session: it is bound the moment it is made, no card, no person (the journal's `auto` record, never
+// a `human` one). The seat's port has no way to make one: its body's kind is the constant dsh, and it never sets auto.
 //
 // Text from the agent is redacted and its invisible characters written out the moment it arrives: what
 // the card shows, what the router model is asked and what a dispatch sends as the session's first
@@ -89,13 +99,16 @@ export const REQUESTER_ID_RE = frozen(/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/);
 /** Why a request is where it is (a code, never source text), or null while nothing needs saying. */
 export type RequestWhy =
   | 'you-rejected' | 'expired' | 'requester-withdrew' | 'daemon-stop'
-  | 'turn-interrupted' | 'turn-failed' | 'turn-max-turns' | 'turn-unknown'
+  | 'turn-interrupted' | 'turn-failed' | 'turn-max-turns' | 'turn-unknown' | 'start-failed'
   | `session-${string}`;
 
-/** Who asked, as it said itself (never checked: final.md §6.3 B); sessionId null when it named none. */
-export type Requester = { readonly kind: 'dsh'; readonly sessionId: string | null };
-/** The requester as the card names it: dsh:<id>, or dsh when it named none (the page says 未知). */
+/** Who asked: a DSH session, as it said itself (never checked: final.md §6.3 B; sessionId null when it named none), or an owned session, as orchestrad knows it. */
+export type Requester = { readonly kind: 'dsh'; readonly sessionId: string | null } | { readonly kind: 'owned'; readonly sessionId: string };
+/** The requester as the card names it: dsh:<id>, dsh when it named none (the page says 未知), or owned:<ownedId>. */
 export const requesterName = (r: Requester): string => (r.sessionId === null ? r.kind : `${r.kind}:${r.sessionId}`);
+
+/** Why a request of a session whose permission is 直接派出 still waits for you (src/route/dispatch.ts). */
+export type AskWhy = 'tainted' | 'away' | 'presence-unknown';
 
 /** The router model's and the rules' suggestion for the request's harness (src/route/desk.ts), as the card shows it. */
 export type RequestSuggestion = {
@@ -122,12 +135,20 @@ export type AgentRequest = {
   readonly runIn: string | null;
   readonly runInWhy: RunInWhy | null;
   readonly requester: Requester;
+  /** r4 §8.5: its text comes from a tainted source: a DSH session always, an owned session when that session is tainted. What it dispatches is tainted too. */
+  readonly tainted: boolean;
+  /** The model an owned session named for it, checked; null when it named none (the card's suggestion or default). */
+  readonly model: string | null;
+  /** Why it waits for you though its session may dispatch freely; null when that is no question. */
+  readonly askWhy: AskWhy | null;
+  /** Made and bound on a session's permission, with no person's click. */
+  readonly auto: boolean;
   readonly state: RequestState;
   readonly createdWall: number;
   /** The wall time a pending request expires at (the card's countdown). */
   readonly expiresWall: number;
   readonly ownedId: string | null;
-  /** The last agent message of the first turn; null when the turn left none, or (truncated, feed-clipped) when it is not known. */
+  /** The last agent message of the run; null when it left none, or (truncated, feed-clipped) when it is not known. */
   readonly output: string | null;
   readonly truncated: boolean;
   /** Why it is truncated (empty when it is not). */
@@ -143,11 +164,19 @@ export type AgentRequest = {
 export type Observed = {
   readonly state: 'starting' | 'idle' | 'running' | 'ended' | 'failed' | 'unknown';
   readonly endReason: string | null;
+  /** Where its sub-agents leave the run; absent: it has none. */
+  readonly run?: MemberRun;
   readonly feed: { since(after: number): { clipped: boolean; events: readonly FeedEvent[] } };
 };
 
-/** runIn and runInWhy: the port's placeRunIn of the raw cwd; absent, the session runs in the work dir (no-roots). */
-export type NewRequest = { harness: RouteHarness; text: string; cwd: string; label: string | null; requester: Requester; runIn?: string | null; runInWhy?: RunInWhy | null };
+/**
+ * runIn and runInWhy: the port's placeRunIn of the raw cwd; absent, the session runs in the work dir (no-roots).
+ * tainted: absent is true (a DSH session's words); model, askWhy, auto: an owned session's (src/route/dispatch.ts); auto asks no desk.
+ */
+export type NewRequest = {
+  harness: RouteHarness; text: string; cwd: string; label: string | null; requester: Requester; runIn?: string | null; runInWhy?: RunInWhy | null;
+  tainted?: boolean; model?: string | null; askWhy?: AskWhy | null; auto?: boolean;
+};
 
 export type RequestRefusal = 'full' | 'rate' | 'stopped' | 'requester-full' | 'text-too-long' | 'cwd-too-long';
 export type ClaimRefusal = 'request-gone' | 'request-mismatch';
@@ -170,6 +199,8 @@ export type RequestsDeps = {
   onMove?(r: AgentRequest, from: RequestState): void;
   /** Sessions the journal says were dispatched for an agent request (requestedOwnedIn), from before this start. */
   seeded?: Iterable<string>;
+  /** The same of sessions a worker sent out on your permission (autoOwnedIn): no click of yours, so never in requestedGone. */
+  seededAuto?: Iterable<string>;
 };
 
 export type Requests = {
@@ -181,6 +212,8 @@ export type Requests = {
   ofOwned(ownedId: string): AgentRequest | null;
   /** Sessions dispatched for a request whose details are gone (evicted, or from before this start). */
   requestedGone(): string[];
+  /** requestedGone's other half: sessions a worker sent out on your permission whose request is no longer held. */
+  sentGone(): string[];
   /** The port handed a done reply of `requestId` to the pipe. */
   fetched(requestId: string): void;
   /** Settles on the next move of the request, or after `ms`, whichever comes first. */
@@ -189,8 +222,12 @@ export type Requests = {
   claim(requestId: string, text: string, harness: RouteHarness): { ok: true; request: AgentRequest } | { ok: false; why: ClaimRefusal };
   /** The person dispatched it: `ownedId` now runs it. */
   bind(requestId: string, ownedId: string): boolean;
+  /** Text as a card's label shows it: one line, at most labelBytes, a cut ending in '…'; null when nothing is left. */
+  label(raw: string): string | null;
   /** The person rejected it (pending only). */
   reject(requestId: string): boolean;
+  /** An `auto` request whose session did not start (pending only). */
+  fail(requestId: string, why: RequestWhy): boolean;
   /** The requester withdrew it (with its key); a dispatched or running one ends its session's normal way. */
   withdraw(requestId: string, withdrawKey: string): { ok: true; request: AgentRequest } | { ok: false; why: 'request-unknown' | 'not-requester' };
   /** orchestrad stops: every request still open is over, every wait settles. */
@@ -242,12 +279,17 @@ export function makeRequests(deps: RequestsDeps): Requests {
   const all = new Map<string, Mut>();
   const waiters = new Map<string, Set<() => void>>();
   const made: number[] = [];
-  /** Sessions dispatched for a request, kept after the request goes (bounded; the journal's first). */
+  /** Sessions you dispatched for a request, and those a worker sent out on your permission, kept after the request goes (bounded; the journal's first). */
   const asked: string[] = [...(deps.seeded ?? [])].slice(-REQUEST_LIMITS.rememberedOwned);
-  const remember = (ownedId: string) => {
-    if (asked.includes(ownedId)) return;
-    asked.push(ownedId);
-    if (asked.length > REQUEST_LIMITS.rememberedOwned) asked.shift();
+  const sent: string[] = [...(deps.seededAuto ?? [])].slice(-REQUEST_LIMITS.rememberedOwned);
+  const remember = (kept: string[], ownedId: string) => {
+    if (kept.includes(ownedId)) return;
+    kept.push(ownedId);
+    if (kept.length > REQUEST_LIMITS.rememberedOwned) kept.shift();
+  };
+  const gone = (kept: readonly string[]): string[] => {
+    const here = new Set([...all.values()].map((m) => m.ownedId));
+    return kept.filter((id) => !here.has(id));
   };
   let watching: (() => void) | null = null;
   let closed = false;
@@ -277,13 +319,17 @@ export function makeRequests(deps: RequestsDeps): Requests {
     if (BOUND.includes(to) && !OVER.includes(to)) watch();
   };
 
-  /** A dispatched or running request reads its session: the turn's start, its end, the session's end. */
+  /** A dispatched or running request reads its session: the turn's start, its run's end, the session's end. */
   const look = (m: Mut) => {
     if (m.ownedId === null || (m.state !== 'dispatched' && m.state !== 'running')) return;
     const s = deps.observe(m.ownedId);
     if (s === null) return move(m, 'failed', 'session-gone');
     const page = s.feed.since(0);
-    const end = page.events.find((e) => e.kind === 'lifecycle' && e.state !== null && TURN_END.test(e.state));
+    const over = s.state === 'ended' || s.state === 'failed' || s.state === 'unknown';
+    const run = s.run ?? 'whole';
+    if (run === 'cut') return move(m, 'failed', over ? `session-${s.endReason ?? s.state}` : 'turn-interrupted');
+    // The newest end: with nothing out, the first is the only one but for a turn a second after it.
+    const end = run === 'out' ? undefined : page.events.filter((e) => e.kind === 'lifecycle' && e.state !== null && TURN_END.test(e.state)).at(-1);
     if (end !== undefined) {
       if (end.state === 'turn-ended') {
         const msg = lastMessage(page, end.seq);
@@ -294,8 +340,8 @@ export function makeRequests(deps: RequestsDeps): Requests {
       }
       return move(m, 'failed', (['turn-interrupted', 'turn-failed', 'turn-max-turns'].includes(end.state!) ? end.state : 'turn-unknown') as RequestWhy);
     }
-    if (s.state === 'ended' || s.state === 'failed' || s.state === 'unknown') return move(m, 'failed', `session-${s.endReason ?? s.state}`);
-    if (m.state === 'dispatched' && (s.state === 'running' || page.events.some((e) => e.kind === 'lifecycle' && e.state === 'turn-started'))) move(m, 'running');
+    if (over) return move(m, 'failed', `session-${s.endReason ?? s.state}`);
+    if (m.state === 'dispatched' && (s.state === 'running' || run === 'out' || page.events.some((e) => e.kind === 'lifecycle' && e.state === 'turn-started'))) move(m, 'running');
   };
   const active = () => [...all.values()].filter((m) => m.state === 'dispatched' || m.state === 'running');
   function watch(): void {
@@ -325,7 +371,10 @@ export function makeRequests(deps: RequestsDeps): Requests {
     });
   };
 
+  const labelOf = (raw: string): string | null => cleanLabel(deps.redact, raw.split('\n', 1)[0] ?? '', REQUEST_LIMITS.labelBytes) || null;
+
   return Object.freeze({
+    label: labelOf,
     create(req: NewRequest) {
       if (closed) return { ok: false as const, why: 'stopped' as const };
       const now = deps.nowMono();
@@ -344,16 +393,17 @@ export function makeRequests(deps: RequestsDeps): Requests {
       made.push(now);
       const requestId = crypto.randomBytes(10).toString('hex');
       const key = crypto.randomBytes(16).toString('base64url');
-      const label = req.label === null ? null : cleanLabel(deps.redact, req.label.split('\n', 1)[0] ?? '', REQUEST_LIMITS.labelBytes);
+      const label = req.label === null ? null : labelOf(req.label);
       // The card shows the cwd as redacted; a run in a project root only when that is the very path (nothing hidden, nothing written out).
       const placed: { runIn: string | null; runInWhy: RunInWhy | null } = typeof req.runIn === 'string'
         ? (cwd.text === req.cwd ? { runIn: req.runIn, runInWhy: null } : { runIn: null, runInWhy: 'redacted' })
         : { runIn: null, runInWhy: req.runInWhy ?? 'no-roots' };
       const m: Mut = {
-        requestId, harness: req.harness, text: text.text, label: label === '' ? null : label,
-        cwd: cwd.text, ...placed, requester: Object.freeze({ ...req.requester }), state: 'pending', createdWall: deps.nowWall(),
+        requestId, harness: req.harness, text: text.text, label,
+        cwd: cwd.text, ...placed, requester: Object.freeze({ ...req.requester }), tainted: req.tainted ?? true, model: req.model ?? null, askWhy: req.askWhy ?? null, auto: req.auto === true,
+        state: 'pending', createdWall: deps.nowWall(),
         expiresWall: deps.nowWall() + ttl, expiresMono: now + ttl, ownedId: null, output: null, truncated: false, cuts: [], fetched: false, why: null,
-        suggestion: null, suggesting: deps.suggest === undefined ? 'no-desk' : 'asking',
+        suggestion: null, suggesting: deps.suggest === undefined || req.auto === true ? 'no-desk' : 'asking',
         cancelExpiry: () => {}, withdrawKey: Buffer.from(key, 'ascii'),
       };
       m.cancelExpiry = deps.after(ttl, () => {
@@ -362,7 +412,7 @@ export function makeRequests(deps: RequestsDeps): Requests {
       all.set(requestId, m);
       // The card shows the suggestion when it comes; a request never waits on it.
       const ask = deps.suggest;
-      if (ask !== undefined) {
+      if (ask !== undefined && req.auto !== true) {
         void ask(m.text, m.harness).then((reply) => {
           m.suggesting = reply === null ? 'none' : 'ready';
           if (reply !== null && m.state === 'pending') m.suggestion = suggestion(reply, m.harness);
@@ -390,10 +440,8 @@ export function makeRequests(deps: RequestsDeps): Requests {
       const m = [...all.values()].find((x) => x.ownedId === ownedId);
       return m === undefined ? null : view(m);
     },
-    requestedGone(): string[] {
-      const here = new Set([...all.values()].map((m) => m.ownedId));
-      return asked.filter((id) => !here.has(id));
-    },
+    requestedGone: () => gone(asked),
+    sentGone: () => gone(sent),
     fetched(requestId: string): void {
       const m = all.get(requestId);
       if (m !== undefined && m.state === 'done') m.fetched = true;
@@ -425,7 +473,7 @@ export function makeRequests(deps: RequestsDeps): Requests {
       const m = all.get(requestId);
       if (m === undefined || m.state !== 'pending') return false;
       m.ownedId = ownedId;
-      remember(ownedId);
+      remember(m.auto ? sent : asked, ownedId);
       move(m, 'dispatched', null);
       return true;
     },
@@ -433,6 +481,12 @@ export function makeRequests(deps: RequestsDeps): Requests {
       const m = all.get(requestId);
       if (m === undefined || m.state !== 'pending') return false;
       move(m, 'rejected', 'you-rejected');
+      return true;
+    },
+    fail(requestId: string, why: RequestWhy): boolean {
+      const m = all.get(requestId);
+      if (m === undefined || m.state !== 'pending') return false;
+      move(m, 'failed', why);
       return true;
     },
     withdraw(requestId: string, withdrawKey: string) {
@@ -466,12 +520,20 @@ export function makeRequests(deps: RequestsDeps): Requests {
  */
 export function requestedOwnedIn(db: { all(sql: string): { body?: unknown }[] }): string[] {
   // SQL text is a literal (scan rule sql-text-literal-only): 512 is twice REQUEST_LIMITS.rememberedOwned (a rejection names no session).
-  const rows = db.all("SELECT body FROM event WHERE kind = 'agent-request' ORDER BY jseq DESC LIMIT 512");
+  return ownedIn(db.all("SELECT body FROM event WHERE kind = 'agent-request' ORDER BY jseq DESC LIMIT 512"), (b) => b.verdict === 'dispatched');
+}
+
+/** The sessions the journal says a worker sent out on your permission (its `auto` records), the same way. */
+export function autoOwnedIn(db: { all(sql: string): { body?: unknown }[] }): string[] {
+  return ownedIn(db.all("SELECT body FROM event WHERE kind = 'auto' ORDER BY jseq DESC LIMIT 256"), () => true);
+}
+
+function ownedIn(rows: readonly { body?: unknown }[], counts: (b: { verdict?: unknown }) => boolean): string[] {
   const out: string[] = [];
   for (const r of rows) {
     try {
       const b = JSON.parse(String(r.body)) as { verdict?: unknown; ownedId?: unknown };
-      if (b.verdict === 'dispatched' && typeof b.ownedId === 'string' && /^[0-9a-f]{20}$/.test(b.ownedId) && !out.includes(b.ownedId)) out.push(b.ownedId);
+      if (counts(b) && typeof b.ownedId === 'string' && /^[0-9a-f]{20}$/.test(b.ownedId) && !out.includes(b.ownedId)) out.push(b.ownedId);
     } catch {
       // A body that does not parse names no session.
     }

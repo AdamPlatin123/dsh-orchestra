@@ -279,7 +279,7 @@ export function makeDrive(state, dom, host) {
       if (r.state !== 'pending') continue;
       if (!state.told.has(r.requestId) && can()) {
         try {
-          new Notification(t('notify.reqTitle'), { body: notifyRequestText(r, nowWall()), tag: r.requestId });
+          new Notification(t('notify.reqTitle'), { body: notifyRequestText(r, nowWall(), list), tag: r.requestId });
         } catch {} // as above
       }
       state.told.add(r.requestId);
@@ -453,6 +453,23 @@ export function makeDrive(state, dom, host) {
     said(a, t('req.rejected'));
   }
 
+  /** A worker's dispatch permission: a person, this page (D8). @param {HTMLElement} el */
+  async function setGrant(el) {
+    const id = el.dataset.owned ?? '';
+    const level = el.dataset.level ?? '';
+    if (!/^[0-9a-f]{20}$/.test(id) || (level !== 'ask' && level !== 'free')) return;
+    const a = await op(`owned/${id}/dispatch-grant`, { level });
+    said(a, t('grant.set', { l: t(`grant.level.${level}`) }));
+  }
+
+  /** The stop on a receipt: the same order as the session's own, for the worker the row names. @param {HTMLElement} el */
+  async function stopWorker(el) {
+    const id = el.dataset.owned ?? '';
+    if (!/^[0-9a-f]{20}$/.test(id)) return;
+    const a = await op(`owned/${id}/interrupt`, {});
+    said(a, t('op.done', { what: t('dock.interrupt') }));
+  }
+
   async function sendMsg() {
     const to = state.to ?? selTo();
     const text = val('dock-in');
@@ -592,6 +609,8 @@ export function makeDrive(state, dom, host) {
     }
     if (a === 'req-go') return void requestGo(t0), true;
     if (a === 'req-no') return void requestNo(t0), true;
+    if (a === 'grant') return void setGrant(t0), true;
+    if (a === 'stop-worker') return void stopWorker(t0), true;
     if (a === 'theme') {
       state.theme = state.theme === 'auto' ? 'light' : state.theme === 'light' ? 'dark' : 'auto';
       setTheme(state.theme);

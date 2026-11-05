@@ -34,10 +34,14 @@ export const ROUTER_STATES = frozen(['answered', 'no-answer', 'skipped', 'off'] 
 export type RouterState = (typeof ROUTER_STATES)[number];
 /** What a RouteDecision record says of the router model: a suggestion's state, or not-asked (a dispatch with no suggestion for its sentence). */
 export const ROUTE_RECORD_ROUTER = frozen([...ROUTER_STATES, 'not-asked'] as const);
-/** The one dispatch mode the desk has (r4 §9.5: manual from M1; shadow and active come later). */
-export const ROUTE_MODES = frozen(['manual'] as const);
-/** A RouteDecision's reason chip: the rule of the candidate taken, router-model for the model's pick, manual for a choice by hand. */
-export const ROUTE_REASONS = frozen([...RULE_IDS, 'router-model', 'manual'] as const);
+/**
+ * The dispatch modes: manual, a person dispatched it (r4 §9.5, from M1); auto, a worker did, on the permission a person
+ * gave it (src/route/dispatch.ts; the user's word of 2026-11-03, against r4 §9.5's shadow and Q11's gate: orchestra app
+ * plan 派活权限). Shadow and active come later.
+ */
+export const ROUTE_MODES = frozen(['manual', 'auto'] as const);
+/** A RouteDecision's reason chip: the rule of the candidate taken, router-model for the model's pick, manual for a choice by hand, worker for a worker's own (mode auto). */
+export const ROUTE_REASONS = frozen([...RULE_IDS, 'router-model', 'manual', 'worker'] as const);
 
 /** The model a short question goes to: the fast one Claude takes. */
 export const CHEAP_MODEL = 'zcode/GLM-5.3-Flash';

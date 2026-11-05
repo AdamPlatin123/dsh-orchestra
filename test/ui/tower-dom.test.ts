@@ -315,7 +315,7 @@ test('an owned session\'s sub-agents: rows under it, folded like any subagent; a
   const { doc, ui, render } = page();
   const s = golden();
   const ownedId = 'a'.repeat(20);
-  const m = (n: number, over: Record<string, unknown> = {}) => ({ threadId: `t${n}`, name: `/root/m${n}`, model: null, state: 'returned' as const, why: null, startedAt: 1_000, endedAt: 66_000, lastAt: 66_000, failed: 0, ranUnasked: 0, asking: null, ...over });
+  const m = (n: number, over: Record<string, unknown> = {}) => ({ threadId: `t${n}`, name: `/root/m${n}`, model: null, agentType: null, state: 'returned' as const, why: null, startedAt: 1_000, endedAt: 66_000, lastAt: 66_000, failed: 0, ranUnasked: 0, asking: null, ...over });
   const mine = ownedProject([{ ownedId, harness: 'codex', title: 'a session', state: 'idle', endReason: null, waiting: null, lastAt: 1, members: [m(1), m(2), m(3, { state: 'running', endedAt: null, startedAt: null })], membersOver: 0 }], 100_000)!;
   s.projects.unshift(structuredClone(mine) as any);
   ui.sel = mine.nodes[1]!.id;

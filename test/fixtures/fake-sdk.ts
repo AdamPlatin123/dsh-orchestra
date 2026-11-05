@@ -83,18 +83,18 @@ export class FakeQuery {
     return this.received;
   }
 
-  /** One tool call, the way the CLI makes it. */
-  async callTool(name: string, input: Record<string, unknown>, toolUseId: string): Promise<ToolCall> {
+  /** One tool call, the way the CLI makes it; `agentId` when a sub-agent makes it (measured: the hook's agent_id, canUseTool's agentID). */
+  async callTool(name: string, input: Record<string, unknown>, toolUseId: string, agentId?: string): Promise<ToolCall> {
     const controller = new AbortController();
     let hook: HookOutput = {};
     for (const matcher of this.options.hooks?.PreToolUse ?? []) {
       for (const fn of matcher.hooks) {
-        hook = await fn({ hook_event_name: 'PreToolUse', session_id: 'fake', transcript_path: '', cwd: this.options.cwd, tool_name: name, tool_input: input, tool_use_id: toolUseId }, toolUseId, { signal: controller.signal });
+        hook = await fn({ hook_event_name: 'PreToolUse', session_id: 'fake', transcript_path: '', cwd: this.options.cwd, tool_name: name, tool_input: input, tool_use_id: toolUseId, ...(agentId === undefined ? {} : { agent_id: agentId, agent_type: 'general-purpose' }) }, toolUseId, { signal: controller.signal });
       }
     }
     const decision = hook.hookSpecificOutput?.permissionDecision ?? 'default';
     const reaches = decision === 'ask' || (decision === 'default' && !RUNS_BY_DEFAULT.includes(name));
-    const permission = reaches ? this.options.canUseTool(name, input, { signal: controller.signal, toolUseID: toolUseId, suggestions: [{ type: 'addRules' }] }) : null;
+    const permission = reaches ? this.options.canUseTool(name, input, { signal: controller.signal, toolUseID: toolUseId, suggestions: [{ type: 'addRules' }], ...(agentId === undefined ? {} : { agentID: agentId }) }) : null;
     return { hook, decision, permission, abort: () => controller.abort() };
   }
 

@@ -18,7 +18,7 @@ const busy = (): Json => JSON.parse(JSON.stringify(towerFromStage(busyStage())))
 const withMember = (): Json => JSON.parse(JSON.stringify(towerFromStage(busyStage(), {
   seats: [{
     ownedId: 'a'.repeat(20), harness: 'codex', title: 'a session', state: 'running', endReason: null, waiting: null, lastAt: 1, membersOver: 0,
-    members: [{ threadId: 't1', name: '/root/a', model: 'codex/gpt-6.1-sol', state: 'returned', why: null, startedAt: 1_000, endedAt: 4_000, lastAt: 4_000, failed: 0, ranUnasked: 0, batch: 1, asking: null }],
+    members: [{ threadId: 't1', name: '/root/a', model: 'codex/gpt-6.1-sol', agentType: null, state: 'returned', why: null, startedAt: 1_000, endedAt: 4_000, lastAt: 4_000, failed: 0, ranUnasked: 0, batch: 1, asking: null }],
   }],
   nowWall: 10_000,
 }))) as Json;
@@ -200,7 +200,8 @@ test('tree: references stay in the project, depth and harness follow the parent,
     [ns[a], ns[b]] = [ns[b], ns[a]];
   }, 'after');
   broken(golden, (s) => { s.router.dispatch = { open: true }; }, '$.router.dispatch: unknown key open');
-  const dispatch = { title: 'x', at: 1, harness: 'codex', model: 'codex/gpt-6.1-sol', node: null };
+  const dispatch = { title: 'x', at: 1, harness: 'codex', model: 'codex/gpt-6.1-sol', node: null, auto: false };
+  broken(golden, (s) => { s.router.dispatch = { ...dispatch, auto: 'yes' }; }, '$.router.dispatch.auto');
   broken(golden, (s) => { s.router.dispatch = { ...dispatch, model: 'gpt-4' }; }, '$.router.dispatch.model');
   broken(golden, (s) => { s.router.dispatch = { ...dispatch, harness: 'dsh' }; }, '$.router.dispatch.harness');
   broken(golden, (s) => { s.router.dispatch = { ...dispatch, node: 'n:00000000000000000000' }; }, 'is not a node of this snapshot');
@@ -228,4 +229,21 @@ test('folding: never-fold rows stay out, each group holds what it says, and noth
   broken(busy, (s) => { const g = byName(s, 'lead').groups[1]; g.ids.push(g.ids[0]); g.count++; }, 'in two groups');
   broken(busy, (s) => { const g = shop(s).groups[0]; g.ids[0] = nid('ex1'); }, 'is not among these siblings');
   broken(busy, (s) => { byName(s, 'lead').groups[1].label = 'x'; }, 'set exactly for a same-type group');
+});
+
+test('a session sent out by another names who and how: grantAt exactly with via grant, and only on an owned session', () => {
+  const golden = JSON.parse(fs.readFileSync(new URL('../fixtures/tower-snapshot.json', import.meta.url), 'utf8'));
+  const owned = golden.projects.flatMap((p: { nodes: Record<string, unknown>[] }) => p.nodes).find((n: { ownership: string; layer: string }) => n.ownership === 'owned' && n.layer === 'agent');
+  if (owned !== undefined) {
+    owned.sent = { by: 'n:'.padEnd(22, 'a'), via: 'grant', grantAt: 5 };
+    assert.equal(validateTower(golden).ok, true, validateTower(golden).errors.join(' | '));
+    owned.sent = { by: 'n:'.padEnd(22, 'a'), via: 'grant', grantAt: null };
+    assert.ok(validateTower(golden).errors.some((e: string) => e.includes('set exactly when it went out on a permission')));
+    owned.sent = { by: 'n:'.padEnd(22, 'a'), via: 'person', grantAt: 5 };
+    assert.equal(validateTower(golden).ok, false);
+    owned.sent = null;
+  }
+  const seen = golden.projects.flatMap((p: { nodes: Record<string, unknown>[] }) => p.nodes).find((n: { ownership: string }) => n.ownership === 'observed');
+  seen.sent = { by: 'n:'.padEnd(22, 'a'), via: 'person', grantAt: null };
+  assert.ok(validateTower(golden).errors.some((e: string) => e.includes('only an owned session is sent out')));
 });

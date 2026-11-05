@@ -1,10 +1,12 @@
 import * as path from 'node:path';
 import type { After, HostPipe } from '../os/owned-proc.ts';
 import type { ClockHub, Fired } from '../runtime/clock.ts';
+import type { DispatchPort } from '../route/dispatch.ts';
 import type { Answer, AnswerCause, ApprovalKind, ApprovalOrigin, ApprovalRisk, Approvals } from './approvals.ts';
 import type { PathJudge } from './codex-session.ts';
 import type { FeedInput, FeedTokens } from './feed.ts';
-import type { JobOutcome } from '../os/procguard.ts';
+import type { MemberBase, MemberRun, SessionMember } from './members.ts';
+import type { JobOutcome, JobProc } from '../os/procguard.ts';
 import type { OwnedBrake } from './codex-session.ts';
 import { treeNote } from './codex-session.ts';
 import type { Redact } from './text.ts';
@@ -12,7 +14,9 @@ import { isWithin } from '../fs/paths.ts';
 import { endHostNow, stopHostInOrder } from '../os/owned-proc.ts';
 import { Feed } from './feed.ts';
 import { guardedPlace } from './guarded.ts';
+import { MEMBERS_STOP_REF, memberRun, memberTable } from './members.ts';
 import { isClaudeModel } from './models.ts';
+import { memberLive } from './registry.ts';
 import { OWNED_TEXT_LIMITS, shown } from './text.ts';
 import { frozen } from '../../shared/frozen.js';
 
@@ -57,6 +61,49 @@ const win = path.win32;
 // Paths an ask names are judged by the spawn gate's own cwd table (PathJudge, as codex-session.ts does):
 // a protected row is declined at once without a card; a place outside the work dir is a card of risk
 // protected (held or typed, r4 §10.9).
+//
+// Sub-agents (measured on CLI 2.1.287, 2026-11-05; the list itself is members.ts, shared with codex-session.ts): a
+// session whose tree runs in a Job may start them (the start frame's subagents; host-core.mjs SUBAGENT_TOOLS), and only
+// then. They run inside claude.exe; every tool call of theirs comes to the host's hook and canUseTool with their agent
+// id, so what they ask is a card here like the session's own, and it says which (from subagent: <name> (task …), inside
+// what the digest covers). Starting one is a card too. The host passes on states only: what a sub-agent says stays out
+// of the feed. A member is known from its sub-start, by task id (the agent id on its asks is the same); its name is the
+// description the model gave it, its type the subagent_type, its times when Orchestra heard them. A report makes it
+// returned, a failure or a stop ended (T2: nothing is ever done); a step that failed and that nobody refused is counted
+// (member.failed). When the session goes, a member still live turns unknown (T1).
+//
+// The dispatch tool (src/route/dispatch.ts; measured on CLI 2.1.287, 2026-11-05): the host offers it as an in-process MCP
+// server when the start frame says dispatch, and a call of the root comes here as a dispatch frame; the answer goes back as
+// a dispatch-reply frame. A sub-agent's call is refused by the host (it holds the tool, measured). A stop takes back a card
+// still waiting; the CLI cancels the call itself (dispatch-gone) and the turn ends.
+//
+// A dispatch: the root's Agent calls of one model reply (one message.id, which the host passes on as reply) are a batch;
+// a sub-agent's own spawn (depth 2) has no row and no batch.
+//
+// A background sub-agent outlives the root's turn, its default (measured): the turn ends, the session stands idle, and
+// when the sub-agent ends the CLI wakes the model into a turn nobody's message opened. It comes with no user frame, and
+// anything of the root's says it began: text, a tool row, an ask or a refusal of the root's own (an Agent call has no tool
+// row, so a reply that only dispatches the next one shows as its ask). Such a turn counts as running (wake), so messages
+// wait and a stop reaches it. Until the first such frame the session stands idle: a message written then is not told from
+// it, the first result ends both here, and the next message may then wait in the CLI, which a stop reads as still queued
+// and closes the session.
+//
+// So a run is not over at its first result: a turn is owed (owed) from a sub-agent's end with no turn open until the next
+// result. One that ended while a turn ran may have been told in that turn, or get a turn of its own right after (not
+// measured), so after that turn's result the session waits CLAUDE_DEADLINES.wakeWaitMs for one. session.run tells a
+// request (src/route/requests.ts) that, and whether a stop or the session's end cut the run short.
+//
+// A stop: the interrupt frame ends every sub-agent, in a turn or with the root idle, and the foreground commands they run
+// (measured: the task stopped within 250 ms, its ping gone; no wake follows). What the shell of a running command started
+// goes with it (measured once), but a process let go whose shell is gone has no task and no frame ever names it: it stays
+// in the Job until the session ends or the brake (measured, --subagent-stop --loose). So a stop with a member in reach,
+// listed or past the bound, sends it whether or not a turn runs, and what it did is read twice over. The
+// CLI's frames say which members ended; the Job says whether a command's process is left, and only an empty one lets the
+// feed say the commands are gone (T1). The frames come first (measured: the outer shells took 3.4 to 3.7 s to go), so the
+// Job is read again every stopSettleMs up to stopJobMs. Sending says nothing: the feed says members-stopping (live), then
+// members-stopped (ended, no command open, nothing of a command in the Job), members-job-left or members-job-unsure
+// (ended, and the Job holds something or could not be read), and members-not-stopped (the rest, those of unknown state
+// and those past the bound with no end heard); all but members-stopped keep the stop on offer, as a stop on its way does.
 
 export const CLAUDE_SESSION_LIMITS = frozen({
   /** Messages waiting for the turn to end. */
@@ -67,7 +114,25 @@ export const CLAUDE_SESSION_LIMITS = frozen({
   stderrChars: 4096,
 });
 
-export const CLAUDE_DEADLINES = frozen({ initMs: 120_000 });
+export const CLAUDE_DEADLINES = frozen({
+  initMs: 120_000,
+  /** How long after a stop what it did is read, and how often the Job is read again. */
+  stopSettleMs: 2_000,
+  /** How long a stop waits for the Job to hold no command's process (measured: 3.4 to 3.7 s). */
+  stopJobMs: 6_000,
+  /** How long after a result a turn of its own is awaited for a sub-agent that ended in that turn. */
+  wakeWaitMs: 45_000,
+});
+
+/** What stays in a session's Job with no command running (measured 2026-11-05): the wrapper, the host and claude.exe, with their consoles. */
+export const CLAUDE_JOB_RESIDENTS = frozen(['procguard.exe', 'node.exe', 'claude.exe', 'conhost.exe']);
+
+/** How many of a Job's processes are a command's: all but the residents, the host being one node.exe of those there are. */
+export function commandsOf(procs: readonly JobProc[]): number {
+  const image = (p: JobProc) => (p.image ?? '').toLowerCase();
+  const nodes = procs.filter((p) => image(p) === 'node.exe').length;
+  return procs.filter((p) => !CLAUDE_JOB_RESIDENTS.includes(image(p))).length + Math.max(0, nodes - 1);
+}
 
 export type ClaudeSessionState = 'starting' | 'idle' | 'running' | 'ended' | 'failed' | 'unknown';
 /**
@@ -108,6 +173,8 @@ export type ClaudeSessionOptions = {
   tainted?: boolean;
   /** r4 §8.5: where its turns came from (a seat request), shown at the top of its cards; display only. */
   origin?: ApprovalOrigin | null;
+  /** Offers the session the dispatch tool, and takes its calls; absent: no such tool, the start frame as before. */
+  dispatch?: DispatchPort;
 };
 
 export type ClaudeSendResult = { ok: true; via: 'turn/start' | 'queued' } | { ok: false; reason: 'ended' | 'queue-full' };
@@ -120,11 +187,23 @@ export type ClaudeSession = {
   readonly state: ClaudeSessionState;
   readonly endReason: ClaudeEndReason | null;
   readonly sessionId: string | null;
+  /** r4 §8.5: its turns come from an unbound sender, as the start frame said. */
+  readonly tainted: boolean;
   /** The host reports cost, not tokens: always null (T1: not a 0). */
   readonly tokens: FeedTokens | null;
   /** The cost the last result reported (USD), or null before any. */
   readonly costUsd: number | null;
   readonly queued: number;
+  /** Its sub-agents, in the order they were first heard of. */
+  readonly members: readonly SessionMember[];
+  /** Sub-agents past the bound, counted and not listed. */
+  readonly membersOver: number;
+  /** Moves whenever what the registry keeps of the members changes. */
+  readonly membersRev: number;
+  /** A stop has a member to reach: one live, past the bound with no end heard, or over with a command still open or its last stop unconfirmed. */
+  readonly stoppable: boolean;
+  /** Where its sub-agents leave the run a request waits on. */
+  readonly run: MemberRun;
   readonly feed: Feed;
   /** Settles true once init passed, false when the session ended or failed before that. */
   readonly ready: Promise<boolean>;
@@ -143,6 +222,18 @@ export type ClaudeSession = {
 };
 
 export type ClaudeStartResult = { ok: true; session: ClaudeSession } | { ok: false; reason: 'model-refused' | 'spawn-refused'; detail: string };
+
+type Member = MemberBase & {
+  /** Its foreground commands that have not ended. */
+  commands: Set<string>;
+  /** The last stop did not see it end with no command open. */
+  stopLeft: boolean;
+};
+
+/** Something of its may still run, whatever its state says. */
+const memberBusy = (m: Member) => m.state === 'running' || m.commands.size > 0 || m.stopLeft;
+/** A stop has something to send it. */
+const stopReaches = (m: Member) => m.state !== 'unknown' && (memberLive(m) || memberBusy(m));
 
 type Obj = Record<string, unknown>;
 const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -171,9 +262,10 @@ function endOf(reason: string): ClaudeEndReason {
 
 /** Starts an owned Claude session; the host is running when this returns ok, the session starting. */
 export function startClaudeSession(opts: ClaudeSessionOptions, first: { text: string; uuid: string } | null = null): ClaudeStartResult {
-  // A session with a source chain is tainted even if the caller left tainted out (r4 §8.5): its host and its
-  // cards agree, and the owned contract (an origin only on a tainted entry) never fails the whole list over it.
-  if (opts.origin != null && opts.tainted !== true) opts = { ...opts, tainted: true };
+  // A session a seat request started is tainted even if the caller left tainted out (r4 §8.5): its host and its
+  // cards agree, and the owned contract (such an origin only on a tainted entry) never fails the whole list over it.
+  // A worker's dispatch is no unbound sender: its session is tainted only when the caller says so (that worker is).
+  if (opts.origin?.kind === 'agent-request' && opts.tainted !== true) opts = { ...opts, tainted: true };
   if (!isClaudeModel(opts.model)) return { ok: false, reason: 'model-refused', detail: String(opts.model) };
   let pipe: HostPipe;
   try {
@@ -199,6 +291,15 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
   let costUsd: number | null = null;
   /** A user frame went to the host and its result has not come. */
   let turn = false;
+  /** A turn nobody's message opened runs (see the header). */
+  let wake = false;
+  /** A stop went to a turn: its result says so. */
+  let cutOff = false;
+  /** A turn nobody's message opened is due or under way (see the header); the next result settles it. */
+  let owed = false;
+  let cancelOwed: () => void = () => {};
+  /** A sub-agent ended while a turn ran: the result may be followed by a turn about it. */
+  let endedInTurn = false;
   let closed = false;
   let stderrTail = '';
   const queue: { text: string; uuid: string }[] = [];
@@ -210,6 +311,20 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
   const toolEvents = new Map<string, { seq: number; input: FeedInput; hidden: boolean }>();
   /** approvalId -> the tool call it decides. */
   const askTool = new Map<string, string>();
+  /** approvalId -> the sub-agent that asked, while it is open. */
+  const askMember = new Map<string, Member>();
+  /** Dispatch tool calls waiting for their answer, by callId: each one's way to take a card still waiting back. */
+  const calls = new Map<string, () => void>();
+  const dropCalls = () => {
+    for (const giveUp of [...calls.values()]) giveUp();
+  };
+  /** A sub-agent's approval left the queue, however it did. */
+  const settled = (approvalId: string) => {
+    const m = askMember.get(approvalId);
+    if (m === undefined) return;
+    askMember.delete(approvalId);
+    m.asks = m.asks.filter((a) => a !== approvalId);
+  };
 
   let settleReady!: (ok: boolean) => void;
   const ready = new Promise<boolean>((r) => {
@@ -281,6 +396,31 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
   const confirmAll = () => {
     for (const uuid of [...written]) fate(uuid, 'msg-sent');
   };
+  const table = memberTable<Member>({
+    ownedId, feed, redact, idWord: 'task', note,
+    extra: () => ({ commands: new Set<string>(), stopLeft: false }),
+  });
+  /** A stop's final word on the sub-agents: it replaces the live note, and a page keeps that until one of its ref comes. */
+  const stopSaid = (stateName: string, text: string | null) => {
+    feed.settle(MEMBERS_STOP_REF);
+    feed.push({ kind: 'note', ref: MEMBERS_STOP_REF, text, state: stateName });
+  };
+  /** Of those past the bound, the ones whose end was heard. */
+  const overEnded = new Set<string>();
+  /** Those past the bound with no end heard: listed nowhere, and a stop reaches them all the same. */
+  const overOut = () => table.over.size - overEnded.size;
+  /** The members a stop waits to hear of, until it reads what came back; `overs` of those past the bound, `reads` of the Job so far. */
+  let stopping: { reached: Member[]; busy: Member[]; overs: number; reads: number } | null = null;
+  let cancelStopRead: () => void = () => {};
+  /** The session is gone: nobody can hear a member again, so one still live is unknown, never running (T1). */
+  const loseMembers = () => {
+    cancelStopRead();
+    cancelOwed();
+    if (stopping !== null) stopSaid('members-stop-unanswered', `${stopping.busy.length + stopping.overs}`);
+    stopping = null;
+    table.lose();
+    dropCalls();
+  };
   const hideTool = (id: string | null) => {
     const t = id === null ? undefined : toolEvents.get(id);
     if (t === undefined || t.hidden) return;
@@ -339,6 +479,8 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     endReason = reason;
     failure = detail;
     turn = false;
+    wake = false;
+    loseMembers();
     withdrawAll();
     unsureAll();
     showAllTools();
@@ -360,6 +502,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     approvals.forgetOwned(ownedId);
     asked.clear();
     askTool.clear();
+    loseMembers();
     if (terminal()) {
       changed();
       return;
@@ -370,6 +513,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     endReason = exitFrame === null ? 'exited' : endOf(exitFrame.reason);
     failure = why;
     turn = false;
+    wake = false;
     feed.push({ kind: 'lifecycle', ref: null, text: shownFeed(why, 'head').text, state: endReason });
     withdrawAll();
     unsureAll();
@@ -393,15 +537,151 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     fate(m.uuid, 'msg-written');
   };
   const pump = () => {
-    if (terminal() || turn || queue.length === 0) return;
+    if (terminal() || turn || wake || queue.length === 0) return;
     sendNow(queue.shift()!);
     changed();
   };
 
   // --- what the host says ----------------------------------------------------------------------------
 
+  /** A dispatch tool call: orchestrad decides; the answer may be a person's, minutes away. */
+  const onDispatch = (f: Obj) => {
+    const id = str(f.callId);
+    if (id === null || !/^[0-9a-f]{32}$/.test(id)) return;
+    const port = opts.dispatch;
+    if (port === undefined || terminal()) {
+      write({ t: 'dispatch-reply', callId: id, ok: false, text: 'This tool is not available here.' });
+      return;
+    }
+    woke();
+    const call = port.call(ownedId, f.input, (n) => {
+      if (terminal()) return;
+      const s = n.text === null ? null : shownFeed(n.text, 'head');
+      feed.push({ kind: 'note', ref: n.ref, text: s?.text ?? null, state: n.state, redactions: s?.redactions ?? 0 });
+      changed();
+    });
+    calls.set(id, () => {
+      calls.delete(id);
+      call.cancel();
+    });
+    void call.reply.then((r) => {
+      calls.delete(id);
+      write({ t: 'dispatch-reply', callId: id, ok: r.ok, text: r.text });
+      changed();
+    });
+  };
+
+  /** The root speaks with no message of ours in flight: the CLI woke it. */
+  const woke = () => {
+    if (turn || wake || state !== 'idle') return;
+    cancelOwed();
+    wake = true;
+    owed = true;
+    state = 'running';
+  };
+  /** A sub-agent ended by itself: the CLI tells the model (a stop's end wakes nothing, measured). */
+  const memberOver = (status: unknown) => {
+    if ((status !== 'completed' && status !== 'failed') || stopping !== null) return;
+    if (turn || wake) {
+      endedInTurn = true;
+    } else {
+      cancelOwed();
+      owed = true;
+    }
+  };
+  /** The member a gate frame names; `via` is how a card says which, null for the session's own call. */
+  const askerOf = (f: Obj): { member: Member | null; via: string | null } => {
+    const tid = str(f.agentId);
+    if (tid === null || tid.length > TOOL_ID_MAX) return { member: null, via: null };
+    const member = table.of(tid);
+    if (member !== null) member.lastAt = opts.now();
+    return { member, via: table.label(member, tid) };
+  };
+  /** A call as the feed tells it: a sub-agent's under its name, so what it asked is never taken for the session's. */
+  const told = (via: string | null, title: string) => (via === null ? title : `${via}: ${title}`);
+
+  /** What the host says of a sub-agent: its state, never its words. */
+  const onMember = (f: Obj) => {
+    const tid = str(f.taskId);
+    if (tid === null || tid.length > TOOL_ID_MAX) return;
+    const now = opts.now();
+    const m = f.t === 'sub-start' ? table.of(tid) : (table.all.get(tid) ?? null);
+    if (f.t === 'sub-end') memberOver(f.status);
+    if (m === null) {
+      if (f.t === 'sub-end' && table.over.has(tid)) overEnded.add(tid);
+      return;
+    }
+    m.lastAt = now;
+    switch (f.t) {
+      case 'sub-start':
+        table.name(m, str(f.name));
+        table.type(m, str(f.type));
+        table.started(m, now);
+        table.runs(m);
+        // A sub-agent's own spawn is not the root's act.
+        if (f.depth === 1) table.dispatched(m, str(f.reply));
+        return;
+      case 'sub-model':
+        table.model(m, str(f.model));
+        return;
+      case 'sub-failed':
+        // What a stop cut short is no step of its that failed.
+        if (m.state === 'running' && stopping === null) {
+          m.failed++;
+          table.bump();
+        }
+        return;
+      case 'sub-cmd': {
+        const cmd = str(f.id);
+        if (cmd === null) return;
+        if (f.open === true) m.commands.add(cmd);
+        else m.commands.delete(cmd);
+        return;
+      }
+      case 'sub-end':
+        if (f.status === 'completed') table.returned(m, now);
+        else if (f.status === 'failed') table.ended(m, 'failed', now);
+        else if (f.status === 'stopped') table.ended(m, 'interrupted', now);
+        else table.move(m, 'unknown');
+        return;
+      default:
+    }
+  };
+
+  /** How many of the Job's processes are a command's; null when the Job could not be read. */
+  const commandsInJob = async (): Promise<number | null> => {
+    const procs = job === null ? [] : await job.procs();
+    return procs === null ? null : commandsOf(procs);
+  };
+  /** What a stop did, read from what came back and from the Job. */
+  const readStop = async () => {
+    const was = stopping;
+    if (was === null) return;
+    was.reads++;
+    const inJob = await commandsInJob();
+    // The session went while the Job was read: what it said at its end stands.
+    if (stopping !== was) return;
+    if (inJob !== null && inJob > 0 && was.reads * CLAUDE_DEADLINES.stopSettleMs < CLAUDE_DEADLINES.stopJobMs) {
+      cancelStopRead = after(CLAUDE_DEADLINES.stopSettleMs, () => void readStop());
+      return;
+    }
+    stopping = null;
+    const left = was.reached.filter((m) => m.state === 'running' || m.state === 'unknown' || m.commands.size > 0);
+    for (const m of was.reached) m.stopLeft = left.includes(m) || (inJob !== 0 && was.busy.includes(m));
+    const stopped = was.busy.filter((m) => !left.includes(m)).length + Math.max(0, was.overs - overOut());
+    // Of one in an unknown state, or past the bound with no end heard, nothing is known (T1).
+    const unsure = [...table.all.values()].filter((m) => m.state === 'unknown' && !was.reached.includes(m)).length + overOut();
+    if (stopped > 0) {
+      if (inJob === 0) stopSaid('members-stopped', `${stopped}`);
+      else if (inJob === null) stopSaid('members-job-unsure', `${stopped}`);
+      else stopSaid('members-job-left', `${inJob}`);
+    }
+    if (left.length + unsure > 0) stopSaid('members-not-stopped', `${left.length + unsure}`);
+    changed();
+  };
+
   /** The card of an ask frame, or the reason it is declined without one. */
-  const askOf = (f: Obj) => {
+  const askOf = (f: Obj, via: string | null) => {
     const toolName = str(f.toolName) ?? '';
     const paths = Array.isArray(f.paths) ? f.paths.filter((p): p is string => typeof p === 'string') : [];
     const placed = paths.map((p) => {
@@ -425,6 +705,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     const risk: ApprovalRisk = away.length > 0 || f.unplaced === true || guarded.length > 0 || (hostRisk === 'read' && !readInside) ? 'protected'
       : hostRisk === 'shell' ? 'shell' : hostRisk === 'write' ? 'write' : hostRisk === 'net' ? 'net' : 'other';
     const lines = [
+      ...(via === null ? [] : [`from subagent: ${via}`]),
       `tool: ${toolName}`,
       ...(guarded.length > 0 ? [`changes a protected path in the work dir (r4 §7.4, run by other programs outside this session): ${guarded.join(', ')}`] : []),
       ...away.map((x) => `outside the work dir: ${x.p}`),
@@ -448,6 +729,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
       return;
     }
     const perm = (allow: boolean) => write({ t: 'perm', reqId, allow, digest });
+    const { member, via } = terminal() ? { member: null, via: null } : askerOf(f);
     // A session that is ending answers what still arrives with the refusal, no card (as codex-session.ts does).
     if (terminal()) {
       perm(false);
@@ -456,11 +738,13 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
       changed();
       return;
     }
-    const a = askOf(f);
+    // The root's own call: with no tool row for an Agent call, this may be the first a woken turn says.
+    if (via === null) woke();
+    const a = askOf(f, via);
     if (a.hit !== null) {
       // A protected row of the spawn gate's table: declined at once, no card (D8 forbids only automatic allows).
       perm(false);
-      const s = shownFeed(`${a.title} (${a.hit})`, 'head');
+      const s = shownFeed(told(via, `${a.title} (${a.hit})`), 'head');
       feed.push({ kind: 'auto-denied', ref: toolUseId, text: s.text, state: 'protected', redactions: s.redactions });
       changed();
       return;
@@ -473,6 +757,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
       risk: a.risk, canAccept: !a.tooLong, canText: false, tainted: opts.tainted === true, origin: opts.origin ?? null,
       answer: (ans: Answer, cause: AnswerCause) => {
         asked.delete(reqId);
+        settled(approvalId);
         perm(ans.decision === 'accept');
         feed.push({ kind: cause === 'human' ? 'answer' : 'auto-denied', ref: approvalId, text: null, state: cause === 'human' ? ans.decision : cause });
         askTool.delete(approvalId);
@@ -483,8 +768,13 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     approvalId = view.approvalId;
     asked.set(reqId, approvalId);
     askTool.set(approvalId, toolUseId);
+    if (member !== null) {
+      member.asks.push(approvalId);
+      askMember.set(approvalId, member);
+      table.runs(member);
+    }
     hideTool(toolUseId);
-    feed.push({ kind: 'ask', ref: approvalId, text: shownFeed(a.title, 'head').text, state: kindOf(a.toolName) });
+    feed.push({ kind: 'ask', ref: approvalId, text: shownFeed(told(via, a.title), 'head').text, state: kindOf(a.toolName) });
     changed();
   };
 
@@ -514,6 +804,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
       case 'text': {
         const chunk = str(f.chunk);
         if (chunk === null) return;
+        woke();
         const s = shownFeed(chunk, 'head');
         feed.push({ kind: 'text', ref: str(f.uuid), text: s.text, state: 'final', redactions: s.redactions });
         return;
@@ -522,6 +813,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
         const id = str(f.toolUseId);
         const name = str(f.name);
         if (id === null || name === null || id.length > TOOL_ID_MAX) return;
+        woke();
         const s = shownFeed(name, 'head');
         const input: FeedInput = { kind: 'tool', ref: id, text: s.text, state: toolState(name), redactions: s.redactions };
         toolEvents.set(id, { seq: feed.push(input).seq, input, hidden: false });
@@ -536,14 +828,25 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
         if (approvalId === undefined) return;
         asked.delete(reqId!);
         if (approvals.forget(approvalId)) feed.push({ kind: 'note', ref: approvalId, text: null, state: 'ask-withdrawn' });
+        settled(approvalId);
         showTool(askTool.get(approvalId) ?? null);
         askTool.delete(approvalId);
         return;
       }
       case 'denied-auto': {
-        const s = shownFeed(str(f.name) ?? '', 'head');
+        const { via } = askerOf(f);
+        if (via === null) woke();
+        const s = shownFeed(told(via, str(f.name) ?? ''), 'head');
         const why = str(f.why);
         feed.push({ kind: 'auto-denied', ref: str(f.toolUseId), text: s.text, state: why !== null && /^[a-z-]{1,32}$/.test(why) ? why : 'host', redactions: s.redactions });
+        return;
+      }
+      case 'dispatch':
+        onDispatch(f);
+        return;
+      case 'dispatch-gone': {
+        const id = str(f.callId);
+        if (id !== null) calls.get(id)?.();
         return;
       }
       case 'interrupted': {
@@ -555,12 +858,32 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
         }
         return;
       }
+      case 'sub-start':
+      case 'sub-model':
+      case 'sub-progress':
+      case 'sub-failed':
+      case 'sub-cmd':
+      case 'sub-end':
+        onMember(f);
+        return;
       case 'result': {
         turn = false;
+        wake = false;
+        cancelOwed();
+        owed = endedInTurn;
+        if (endedInTurn) {
+          cancelOwed = after(CLAUDE_DEADLINES.wakeWaitMs, () => {
+            owed = false;
+          });
+        }
+        endedInTurn = false;
         confirmAll();
         if (state === 'running') state = 'idle';
         const sub = str(f.subtype) ?? '';
-        feed.push({ kind: 'lifecycle', ref: str(f.uuid), text: null, state: TURN_END[sub] ?? 'turn-unknown' });
+        // The CLI calls the turn a stop cut off an error (measured): it is your stop, not a failure.
+        const ended = cutOff && sub === 'error_during_execution' ? 'turn-interrupted' : TURN_END[sub] ?? 'turn-unknown';
+        cutOff = false;
+        feed.push({ kind: 'lifecycle', ref: str(f.uuid), text: null, state: ended });
         if (typeof f.costUsd === 'number' && Number.isFinite(f.costUsd) && f.costUsd >= 0) {
           costUsd = f.costUsd;
           feed.upsert('cost', { kind: 'note', ref: null, text: `$${f.costUsd.toFixed(4)}`, state: 'cost' });
@@ -629,7 +952,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
   // --- start -----------------------------------------------------------------------------------------
   write({
     t: 'start', ownedId, model, cwd, configDir: opts.configDir, tainted: opts.tainted === true, claudeExe: opts.claudeExe,
-    protectedRoots: [...opts.protectedRoots], askTimeoutMs: opts.askTimeoutMs,
+    protectedRoots: [...opts.protectedRoots], askTimeoutMs: opts.askTimeoutMs, subagents: job !== null, ...(opts.dispatch === undefined ? {} : { dispatch: true }),
   });
   if (first !== null) {
     const s = shownFeed(first.text, 'head');
@@ -646,6 +969,8 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     state = 'ended';
     endReason = why;
     turn = false;
+    wake = false;
+    loseMembers();
     withdrawAll();
     unsureAll();
     showAllTools();
@@ -670,6 +995,7 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     get sessionId() {
       return sessionId;
     },
+    tainted: opts.tainted === true,
     tokens: null,
     get costUsd() {
       return costUsd;
@@ -677,12 +1003,27 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
     get queued() {
       return queue.length;
     },
+    get members() {
+      return table.list();
+    },
+    get membersOver() {
+      return table.over.size;
+    },
+    get membersRev() {
+      return table.rev;
+    },
+    get stoppable() {
+      return !terminal() && (overOut() > 0 || [...table.all.values()].some(stopReaches));
+    },
+    get run() {
+      return memberRun(table.all.values(), owed || overOut() > 0, terminal());
+    },
     feed,
     ready,
     exited,
     send(text: string, uuid: string): ClaudeSendResult {
       if (terminal()) return { ok: false, reason: 'ended' };
-      const now = !turn && queue.length === 0;
+      const now = !turn && !wake && queue.length === 0;
       if (!now && queue.length >= L.queue) return { ok: false, reason: 'queue-full' };
       const s = shownFeed(text, 'head');
       feed.push({ kind: 'you', ref: null, uuid, text: s.text, state: s.cut ? 'cut' : null, redactions: s.redactions });
@@ -706,7 +1047,27 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
       // Design §2.5: the approvals first, then the waiting messages, then the turn.
       const denied = approvals.declineOwned(ownedId, 'interrupt');
       const withdrawn = withdrawAll();
-      if (turn) write({ t: 'interrupt' });
+      dropCalls();
+      const reached = [...table.all.values()].filter(stopReaches);
+      const overs = overOut();
+      if (turn || wake || reached.length > 0 || overs > 0) {
+        write({ t: 'interrupt' });
+        cutOff = turn || wake;
+        // After it no wake follows (measured); a woken turn still has its result to come.
+        if (!wake) {
+          cancelOwed();
+          owed = false;
+        }
+        endedInTurn = false;
+      }
+      if ((reached.length > 0 || overs > 0) && stopping === null) {
+        const busy = reached.filter(memberBusy);
+        stopping = { reached, busy, overs, reads: 0 };
+        // Unconfirmed until it is read, so the stop stays on offer meanwhile.
+        for (const m of busy) m.stopLeft = true;
+        if (busy.length + overs > 0) feed.upsert(MEMBERS_STOP_REF, { kind: 'note', ref: MEMBERS_STOP_REF, text: `${busy.length + overs}`, state: 'members-stopping' });
+        cancelStopRead = after(CLAUDE_DEADLINES.stopSettleMs, () => void readStop());
+      }
       changed();
       return { withdrawn, denied };
     },
@@ -727,6 +1088,8 @@ function run(opts: ClaudeSessionOptions, pipe: HostPipe, first: { text: string; 
         state = 'ended';
         endReason = 'braked';
         turn = false;
+        wake = false;
+        loseMembers();
         withdrawAll();
         unsureAll();
         showAllTools();

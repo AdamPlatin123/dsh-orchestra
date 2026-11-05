@@ -244,6 +244,14 @@ function applyRecord(c: Ctx): void {
       // Where a session a person started works, when in a project root: an event row beside its human records.
       eventRow(c, { actionId: str(b.actionId) }, false);
       return;
+    case 'dispatch-grant':
+      // A person set a session's dispatch permission: an event row beside its human records.
+      eventRow(c, { actionId: str(b.actionId) }, false);
+      return;
+    case 'auto':
+      // A worker dispatched a session on its permission: an event row beside its `route` line, with no human record.
+      eventRow(c, { actionId: str(b.actionId) }, false);
+      return;
     case 'command': {
       const h = b.harness as Record<string, unknown>;
       if (db.get('SELECT id FROM command WHERE id = ?', str(b.commandId)) !== undefined) throw new ApplyError('duplicate', jseq, `command ${str(b.commandId)} exists`);

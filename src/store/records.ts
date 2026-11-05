@@ -81,6 +81,10 @@ export const PROTECT_REASONS = Object.freeze(['tuning', 'config'] as const);
 export const NOTIFY_VIA = Object.freeze(['browser', 'toast'] as const);
 /** What a person did with an agent request (seat): dispatched it, or rejected it. Expiry and withdrawal are no human decision and write no record. */
 export const AGENT_VERDICTS = Object.freeze(['dispatched', 'rejected'] as const);
+/** Who an agent request came from: a DSH session over the agent port (seat), or an owned session through its dispatch tool (src/route/dispatch.ts). */
+export const REQUESTER_KINDS = Object.freeze(['dsh', 'owned'] as const);
+/** What a person may set a session's dispatch permission to (src/route/dispatch.ts): 你不在也派 is not one, r4 D20 does not allow it. */
+export const GRANT_LEVELS = Object.freeze(['ask', 'free'] as const);
 
 /** A human action's target: an item, root or other id, or pid:createTime. */
 export const TARGET_RE = frozen(/^(?:[A-Za-z0-9][A-Za-z0-9_-]{0,63}|[1-9][0-9]{0,9}:[1-9][0-9]{0,19})$/);
@@ -200,7 +204,7 @@ export const BODY_SCHEMAS = frozen({
   // this kind existed must still replay. The requester's session id is not source free text a body may
   // keep: only its sha256 (over "dsh:" and the id) is, enough to tie two decisions to one requester.
   'agent-request': obj({
-    requestId: id, actionId: uuid, verdict: en(AGENT_VERDICTS), harness: en(ROUTE_HARNESSES), requesterKind: en(['dsh']), requesterDigest: digest,
+    requestId: id, actionId: uuid, verdict: en(AGENT_VERDICTS), harness: en(ROUTE_HARNESSES), requesterKind: en(REQUESTER_KINDS), requesterDigest: digest,
     ownedId: nul(id), decisionId: nul(digest),
   }),
   // Project roots (orchestra app plan 项目根): where an owned session a person started works, when that is a
@@ -211,6 +215,16 @@ export const BODY_SCHEMAS = frozen({
   // text a body may keep: only the sha256 of the cwd and of the root it lies in. A new kind, not new fields
   // of `agent-request`: every field of a kind is required, and an older journal must still replay.
   'owned-cwd': obj({ actionId: uuid, ownedId: id, requestId: nul(id), cwdDigest: digest, rootDigest: digest }),
+  // A person set a session's dispatch permission (src/route/dispatch.ts): in the batch of its dispatch-grant `human`
+  // records, which say who and when; this says what to. An open grant is what every `auto` record below names.
+  'dispatch-grant': obj({ actionId: uuid, ownedId: id, level: en(GRANT_LEVELS) }),
+  // A worker dispatched a session on its permission, with no person's click: no `human` record exists for it, so
+  // none of its fields can be read as a person's act. actionId is orchestrad's own, the same on its `route` line (mode
+  // auto). by: the session that called the tool; grantActionId: the person's dispatch-grant it went on; textDigest: the
+  // task, which is source free text. decisionId is null when no desk made a RouteDecision.
+  auto: obj({
+    actionId: uuid, requestId: id, by: id, ownedId: id, harness: en(ROUTE_HARNESSES), model: { t: 'model' }, grantActionId: uuid, depth: int(1, 64), textDigest: digest, decisionId: nul(digest),
+  }),
 } satisfies Record<string, Schema>);
 
 export type Kind = keyof typeof BODY_SCHEMAS;
@@ -403,7 +417,7 @@ function consistency(kind: Kind, b: Record<string, unknown>): BodyError | null {
       // The model is named when it was asked: always when it answered, never when it was off, skipped or not asked.
       if (b.router === 'answered' && b.routerModel === null) return bad('$.routerModel');
       if (b.router !== 'answered' && b.router !== 'no-answer' && b.routerModel !== null) return bad('$.routerModel');
-      if (b.pick === null) return b.reason === 'manual' ? null : bad('$.reason');
+      if (b.pick === null) return b.reason === (b.mode === 'auto' ? 'worker' : 'manual') ? null : bad('$.reason');
       const c = cands[b.pick as number];
       if (c === undefined) return bad('$.pick');
       if (c.harness !== chosen.harness || c.model !== chosen.model) return bad('$.chosen');
