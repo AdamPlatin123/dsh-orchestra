@@ -2,10 +2,10 @@
 
 ## Facts
 - Owner: AdamPlatin123
-- When: 2026-11-05（总台之后，用户准备启动真实 profile）
+- When: 2026-11-05（总台复核修复合入之后）
 - Machine: 550W备份1号机
 - Branch: claude/orchestra-app（从 `claude/alpha-0.2-interactive` 的 76807ec 切出）
-- Commit: 随本文件一起提交，上一提交 bcb7bd3（Claude 子代理和派活权限）。再往前 05ad22c 派发行和拉线、 8b2e8fb 新首页和停止、 580143a Codex 子代理、 2a67fbf 第三轮方案、 88194f3 第二轮方案、 ad4c923 页面评审修正、eb8d621 来源链复核修正，之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
+- Commit: 随本文件一起提交，上一提交 6ef515a（总台复核修复）。再往前 73237b5 总台、bcb7bd3 Claude 子代理和派活权限、 05ad22c 派发行和拉线、 8b2e8fb 新首页和停止、 580143a Codex 子代理、 2a67fbf 第三轮方案、 88194f3 第二轮方案、 ad4c923 页面评审修正、eb8d621 来源链复核修正，之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
 - Pushed: no（远端还没有这条分支。76807ec 之后的提交只在这台机器上）
 - Uncommitted on that machine: `.claude/launch.json`（未跟踪，本机某次会话的预览配置，不要提交）。主检出目录里 r4 规格有用户本人的未提交改动，见 Do not touch。
 
@@ -66,7 +66,8 @@
 - 总台（`src/route/front-desk.ts`、`ui/front.js`）：全局最多一个的特殊 Claude 会话，人点开启，工具只有 `mcp__orchestra__status` 和 `mcp__orchestra__dispatch`，多一个就 safety-stop。全量 1767 项，通过 1764，失败 0，跳过 1，待办 2；`live-smoke --router` 跑了 2 次，退出码 0。
 
 ## Unverified（做了但没验证，或验证没过）
-- **总台没有经过独立复核，也没有完整浏览器走查：** 两路复核和走查都因上游 502 失败，只有实现者自己在测试 profile 里走过一遍。在复核完之前，不建议在真实 profile 上开启。开启后别的会话的标题（过 redact、截到 120 字节）会经 magpie 发给模型提供方。回报不主动来，派单只在内存里，规划 worker 这个角色还没做。
+- 总台：复核 9 条真问题和走查 7 处都修了（9fa20c7..6ef515a），测试 profile 上真模型走过开启、问进展、派单、拒绝、结束。总台派出的 worker 一律按受污染跑；只读观察的会话不发标题；自有会话的标题和等你摘要会经 magpie 发给模型提供方，页面写明。残余：派出后 DSH 请求的第一句仍以标题回到总台；Codex worker 批准之后的路径没走；回报不主动来，只取第一个非空行；派单只在内存里；规划 worker 这个角色还没做。
+- `live-smoke --dispatch-tool` 在最终代码上 Codex 默认模型第一次报 no reply within 120 s，重跑通过，另外两种跑法也通过，原因没查实。
 - 派活权限：污染只认 seat 来源，抓过网页、读过项目根外文件的 worker 派出的会话算干净（r4 §8.5 这部分没跟踪），这是这次放宽的缺口；权限和派出关系只在内存，重启后要看 journal；派出结果不回给 worker；空闲会话也占 3 个名额；你不在时退回、来源不可信的页面路径没在浏览器走过；Claude 的派活工具没在页面上走过。
 - 走查里第一轮第一次点「刹车」落到了「中断这一回合」，原因没查实，之后修了版面跳动，复走没再出现。
 - 派发批次是推断：模型逐步派、中间没有别的 item 时分不开。派发行超出对话流上限或重启后会丢，这时没有线。刹车、拒绝、亮色主题、手机宽度这次没走。
