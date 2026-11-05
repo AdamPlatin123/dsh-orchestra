@@ -1,7 +1,15 @@
 // The live end-to-end run of an owned session (orchestra app step 4): orchestrad in the test profile with
 // --owned, driven over HTTP exactly as the page drives it, against the real codex.exe or the Claude host
 // and the local magpie gateway (http://127.0.0.1:3425, no key). Not part of the test run.
-//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--outside | --brake | --daemon-stop | --daemon-kill | --project-root] [--keep]
+//   node scripts/live-smoke.ts --harness codex|claude [--model <id>] [--outside | --brake | --daemon-stop | --daemon-kill | --project-root | --subagent] [--keep]
+//
+// --subagent (orchestra app plan 子代理, codex only): the task is to spawn one sub-agent that runs one ping and
+// to wait for it. Each round the run reads GET /api/tower (it answers only what passes the tower contract), and
+// reports the states the sub-agent's node went through, whether it had a name and a duration, its model, how
+// many of its steps ran unasked, whether the feed stayed the root's (no tool row), and whether each card said
+// which sub-agent asked. Its node's state after the session ended is read too. Never the name itself: the
+// model chose it. It passes only if every sub-agent got to returned, named, with a duration, one card said
+// which, the feed holds no tool row and every tower read answered 200.
 //
 // --daemon-kill (orchestra app plan 进程树的 Job 回收, residual 2): orchestrad is killed while a turn runs.
 // The task is to run `ping -n 60 127.0.0.1` and wait for it; once the approval was given and PING.EXE is
@@ -80,8 +88,10 @@ const BRAKE_TASK = 'Run exactly this one shell command, once, and then reply wit
   + 'powershell -NoProfile -Command "Start-Process -WindowStyle Hidden -FilePath ping.exe -ArgumentList \'-t\',\'127.0.0.1\'"';
 
 const KILL_TASK = 'Run exactly this one shell command, once, wait until it has finished, and then reply with the single word finished: ping -n 60 127.0.0.1';
+const SUBAGENT_TASK = 'Spawn exactly one sub-agent with the task name ping_once. Its task: run exactly this one shell command, once, and report back: ping -n 2 127.0.0.1. '
+  + 'Do not run the command yourself. Wait for the sub-agent to finish, and then reply with the single word finished.';
 
-function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean; outside: boolean; brake: boolean; daemonStop: boolean; daemonKill: boolean; projectRoot: boolean } {
+function args(): { harness: 'codex' | 'claude'; model: string | null; keep: boolean; outside: boolean; brake: boolean; daemonStop: boolean; daemonKill: boolean; projectRoot: boolean; subagent: boolean } {
   const a = process.argv.slice(2);
   let harness: string | null = null;
   let model: string | null = null;
@@ -91,6 +101,7 @@ function args(): { harness: 'codex' | 'claude'; model: string | null; keep: bool
   let daemonStop = false;
   let daemonKill = false;
   let projectRoot = false;
+  let subagent = false;
   for (let i = 0; i < a.length; i++) {
     if (a[i] === '--harness') harness = a[++i] ?? null;
     else if (a[i] === '--model') model = a[++i] ?? null;
@@ -100,11 +111,13 @@ function args(): { harness: 'codex' | 'claude'; model: string | null; keep: bool
     else if (a[i] === '--daemon-stop') daemonStop = true;
     else if (a[i] === '--daemon-kill') daemonKill = true;
     else if (a[i] === '--project-root') projectRoot = true;
+    else if (a[i] === '--subagent') subagent = true;
     else throw new Error(`live-smoke: unknown argument ${a[i]}`);
   }
   if (harness !== 'codex' && harness !== 'claude') throw new Error('live-smoke: --harness codex|claude');
-  if ([outside, brake, daemonStop, daemonKill, projectRoot].filter(Boolean).length > 1) throw new Error('live-smoke: one of --outside, --brake, --daemon-stop, --daemon-kill, --project-root');
-  return { harness, model, keep, outside, brake, daemonStop, daemonKill, projectRoot };
+  if ([outside, brake, daemonStop, daemonKill, projectRoot, subagent].filter(Boolean).length > 1) throw new Error('live-smoke: one of --outside, --brake, --daemon-stop, --daemon-kill, --project-root, --subagent');
+  if (subagent && harness !== 'codex') throw new Error('live-smoke: --subagent is for --harness codex');
+  return { harness, model, keep, outside, brake, daemonStop, daemonKill, projectRoot, subagent };
 }
 
 function freePort(): Promise<number> {
@@ -193,7 +206,7 @@ async function connect(d: Daemon): Promise<Api> {
 const isPing = (p: { image: string | null }) => (p.image ?? '').toLowerCase() === 'ping.exe';
 
 async function main(): Promise<number> {
-  const { harness, model, keep, outside, brake, daemonStop, daemonKill, projectRoot } = args();
+  const { harness, model, keep, outside, brake, daemonStop, daemonKill, projectRoot, subagent } = args();
   const testDir = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), 'orchestra-test-smoke-'));
   fs.mkdirSync(path.join(testDir, 'roots'));
   // --project-root: a project root inside the test dir (the test profile takes roots only there).
@@ -226,7 +239,7 @@ async function main(): Promise<number> {
       root = Array.isArray(roots) && typeof roots[0] === 'string' ? roots[0] : null;
       if (root === null) throw new Error('live-smoke: GET /api/owned lists no project root');
     }
-    const made = await post('/api/owned/new', { text: outside ? outsideTask(probeFile) : brake ? BRAKE_TASK : daemonKill ? KILL_TASK : TASK, harness, ...(model === null ? {} : { model }), ...(root === null ? {} : { root }) });
+    const made = await post('/api/owned/new', { text: outside ? outsideTask(probeFile) : brake ? BRAKE_TASK : daemonKill ? KILL_TASK : subagent ? SUBAGENT_TASK : TASK, harness, ...(model === null ? {} : { model }), ...(root === null ? {} : { root }) });
     if (made.status !== 200) throw new Error(`live-smoke: new answered ${made.status} ${made.body}`);
     const id = String(made.json.ownedId);
     ownedId = id;
@@ -241,6 +254,22 @@ async function main(): Promise<number> {
     // r4 §8.5: each card's source chain as GET /api/owned listed it (a session a person opened has none: null).
     const origins: Record<string, number> = {};
     const seenAppr = new Set<string>();
+    /** --subagent: what the tower said of the session's sub-agent nodes, and how many cards named one. */
+    const memberStates: Record<string, string[]> = {};
+    const memberFacts = { named: false, durationMs: null as number | null, models: new Set<string | null>(), towerAnswers: new Set<number>() };
+    let cardsFromSubagent = 0;
+    const readMembers = async () => {
+      const tower = await get('/api/tower');
+      memberFacts.towerAnswers.add(tower.status);
+      const nodes: { id: string; parent: string | null; ownership: string; state: string; title: string; durationMs: number | null; model: string | null }[] = (tower.json?.projects ?? []).flatMap((p: { nodes: unknown[] }) => p.nodes);
+      for (const n of nodes.filter((x) => x.parent === `n:${ownedId}`)) {
+        const seen = (memberStates[n.id] ??= []);
+        if (seen.at(-1) !== n.state) seen.push(n.state);
+        if (!n.title.startsWith('子代理（')) memberFacts.named = true;
+        if (n.durationMs !== null) memberFacts.durationMs = n.durationMs;
+        memberFacts.models.add(n.model);
+      }
+    };
     let after = 0;
     const events: { kind: string; state: string | null; text: string | null }[] = [];
     let replied = false;
@@ -256,6 +285,7 @@ async function main(): Promise<number> {
           seenAppr.add(a.approvalId);
           const k = a.origin === undefined ? 'absent' : a.origin === null ? 'null' : 'set';
           origins[k] = (origins[k] ?? 0) + 1;
+          if (String(a.preview).startsWith('from subagent: ')) cardsFromSubagent++;
         }
         if (!a.canAccept) {
           await post(`/api/approvals/${a.approvalId}/deny`, {});
@@ -269,6 +299,7 @@ async function main(): Promise<number> {
         if (r.status === 200) allowed[`${a.kind}/${a.risk}`] = (allowed[`${a.kind}/${a.risk}`] ?? 0) + 1;
         else refusals[String(r.json?.error ?? r.status)] = (refusals[String(r.json?.error ?? r.status)] ?? 0) + 1;
       }
+      if (subagent) await readMembers();
       const feed = (await get(`/api/owned/${id}/feed?after=${after}`)).json;
       for (const e of feed.events) events.push({ kind: e.kind, state: e.state, text: e.text });
       after = feed.to;
@@ -404,12 +435,23 @@ async function main(): Promise<number> {
       fileWritten: written !== null, fileContentAsAsked: written !== null && written.trim() === WORD,
     });
     if (outside) report.ranUnasked = events.filter((e) => e.kind === 'note' && e.state === 'ran-unasked').length;
+    const toolRowsInFeed = events.filter((e) => e.kind === 'tool' || e.kind === 'tool-result').length;
+    if (subagent) {
+      await readMembers();
+      report.subagent = {
+        states: Object.values(memberStates), named: memberFacts.named, durationMs: memberFacts.durationMs, models: [...memberFacts.models], cardsFromSubagent, towerAnswers: [...memberFacts.towerAnswers], toolRowsInFeed,
+        ranUnasked: Number(events.findLast((e) => e.kind === 'note' && e.state === 'members-ran-unasked')?.text ?? 0),
+      };
+    }
     if (!daemonStop && !daemonKill) report.treeNotes = ((await get(`/api/owned/${id}/feed`)).json?.events ?? []).filter((e: { kind: string; state: string }) => e.kind === 'note' && /^tree-|children-may-remain|host-killed/.test(e.state)).map((e: { state: string; text: string | null }) => `${e.state}${e.text === null ? '' : `=${e.text}`}`);
     const noSurvivors = pg === null || report.survivors === 0;
     const ds = report.daemonStop as { how: string; code: number | null } | undefined;
     const dsRecord = report.daemonStopRecord as { endReason: string | null } | null | undefined;
     const restarted = report.afterRestart as { state: string; endReason: string | null } | null | undefined;
-    code = daemonKill
+    code = subagent
+      ? (replied && Object.keys(memberStates).length > 0 && Object.values(memberStates).every((s) => s.includes('returned')) && memberFacts.named && memberFacts.durationMs !== null
+        && cardsFromSubagent > 0 && toolRowsInFeed === 0 && memberFacts.towerAnswers.size === 1 && memberFacts.towerAnswers.has(200) ? 0 : 1)
+      : daemonKill
       ? (report.survivors === 0 && held.length > 0 && report.aliveBeforeKill === held.length &&Number((report.jobBeforeEnd as { images: Record<string, number> } | null)?.images?.['ping.exe'] ?? 0) > 0
         && (report.jobAfterKill as { found: boolean } | undefined)?.found === false && restarted?.state === 'unknown' && restarted.endReason === 'daemon-restart' ? 0 : 1)
       : daemonStop

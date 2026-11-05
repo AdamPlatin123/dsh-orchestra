@@ -2,7 +2,7 @@ import type { OwnedSeat } from '../sources/tower.ts';
 import type { ClaudeSession } from './claude-session.ts';
 import type { CodexSession } from './codex-session.ts';
 import type { OwnedRecord, OwnedRegistry } from './registry.ts';
-import { recentOf } from './codex-owned.ts';
+import { memberSeats, recentOf } from './codex-owned.ts';
 import { afterRestart } from './registry.ts';
 
 // The sessions an earlier orchestrad left, for a harness that is off in this one (orchestra app plan
@@ -63,6 +63,7 @@ export function restoredOwned(harness: 'codex' | 'claude', registry: OwnedRegist
     towerSeats: (): OwnedSeat[] => [...sessions.values()].map((s) => ({
       ownedId: s.ownedId, harness, title: meta.get(s.ownedId)?.title ?? '', state: s.state, endReason: s.endReason,
       waiting: null, lastAt: s.feed.lastAt, recent: recentOf(s.feed),
+      ...('members' in s ? memberSeats(s) : {}),
     })),
   });
 }

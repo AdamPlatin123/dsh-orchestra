@@ -729,6 +729,10 @@ test('owned descriptors (review fixes): words for notes and fates, unknown outco
   const gone = describeOwnedDock({ id: o.ownedId }, { ...list, owned: [{ ...o, state: 'unknown', endReason: 'daemon-restart' }] }, g, false, false) as any;
   assert.equal(gone.note.text, TOWER_TEXT['dock.unknown']);
   assert.ok((describeOwned(o.ownedId, { ...list, owned: [{ ...o, state: 'unknown', endReason: 'daemon-restart' }] }, undefined, g) as any).ownSt.text.includes(TOWER_TEXT['life.daemon-restart']!));
+  // A Codex session's usage line says it is the root thread's alone; a Claude session's has no such thing to say.
+  const usage = (harness: string) => (describeOwned(o.ownedId, { ...list, owned: [{ ...o, harness, tokens: { input: 1, cachedInput: 0, output: 1, total: 2 } }] }, undefined, g) as any).ownSt.text as string;
+  assert.ok(usage('codex').includes(TOWER_TEXT['own.tokensRoot']!.replace('{n}', '2')), usage('codex'));
+  assert.ok(usage('claude').includes(TOWER_TEXT['own.tokens']!.replace('{n}', '2')), usage('claude'));
   // Every id in the page is one element's: a label names the control it is for.
   const ids = [...HTML.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
   assert.deepEqual(ids.filter((x, i) => ids.indexOf(x) !== i), [], 'no id twice');

@@ -2,8 +2,8 @@ import * as crypto from 'node:crypto';
 import type { ChildPipe } from '../os/child-pipe.ts';
 import type { ClockHub } from '../runtime/clock.ts';
 import type { OwnedSeat } from '../sources/tower.ts';
-import type { ApprovalOrigin, Approvals } from './approvals.ts';
-import type { CodexEndReason, CodexSession, CodexSessionState, PathJudge } from './codex-session.ts';
+import type { ApprovalOrigin, ApprovalView, Approvals } from './approvals.ts';
+import type { CodexEndReason, CodexMember, CodexSession, CodexSessionState, PathJudge } from './codex-session.ts';
 import type { OwnedRecord, OwnedRegistry } from './registry.ts';
 import type { Redact } from './text.ts';
 import { isOver, startCodexSession } from './codex-session.ts';
@@ -25,6 +25,11 @@ import { frozen, frozenClass } from '../../shared/frozen.js';
 /**
  * The running owned sessions of both harnesses together (slice design §2.4: "同时最多 3 个活动的自有会话",
  * a total, and §4's text "同时最多 3 个，先结束一个"). The composition root hands both managers one pool.
+ * A sub-agent is not counted: it runs inside its session's codex.exe and holds no seat of its own. Nothing
+ * here bounds how many a session spawns: CODEX_SESSION_LIMITS.members bounds the list, and those past it run
+ * on, counted. Whether codex has a limit of its own, and a key to set it, is unknown, not none: besides the
+ * features switches (codex-home.ts) only agents.max_threads = 1 was tried, once, and three short sub-agents
+ * still ran, which says little (they may not have overlapped). Until it is known only the brake stops them.
  */
 export const OWNED_POOL_MAX = 3;
 /** What both managers count against: the total that may run, and how many run now (every harness). */
@@ -166,10 +171,10 @@ export class CodexOwned {
     let kept = '';
     const keep = () => {
       if (mine === null || o.registry === undefined) return;
-      const key = `${mine.state}|${String(mine.endReason)}`;
+      const key = `${mine.state}|${String(mine.endReason)}|${mine.membersRev}`;
       if (key === kept) return;
       kept = key;
-      this.#save({ v: 1, ownedId, harness: 'codex', model, title, createdAt, state: mine.state, endReason: mine.endReason });
+      this.#save({ v: 1, ownedId, harness: 'codex', model, title, createdAt, state: mine.state, endReason: mine.endReason, ...memberRecords(mine) });
     };
     const started = startCodexSession({
       ownedId, cwd, model, launch: () => o.launch(cwd), approvals: o.approvals, now: o.now, redact: o.redact,
@@ -218,6 +223,7 @@ export class CodexOwned {
         waiting: first === null ? null : { kind: first.kind === 'question' ? 'question' as const : 'approval' as const, deadline: first.deadlineWall, title: first.title },
         lastAt: s.feed.lastAt,
         recent: recentOf(s.feed),
+        ...memberSeats(s, mine),
       };
     });
   }
@@ -260,6 +266,20 @@ export function recentOf(feed: Feed): OwnedSeat['recent'] {
   return { kind: e.kind === 'text' ? 'text' : e.kind === 'you' ? 'you' : 'auto-denied', text: e.text };
 }
 
+/** A session's sub-agents as the registry keeps them; nothing when it has none, so its file stays as it was. */
+function memberRecords(s: CodexSession): Pick<OwnedRecord, 'members' | 'membersOver'> {
+  if (s.members.length === 0 && s.membersOver === 0) return {};
+  return { members: s.members.map(({ lastAt: _l, asks: _a, ...m }) => m), membersOver: s.membersOver };
+}
+
+/** A session's sub-agents as the tower draws them; `open` is the session's open approvals. */
+export function memberSeats(s: CodexSession, open: readonly ApprovalView[] = []): Pick<OwnedSeat, 'members' | 'membersOver'> {
+  return {
+    members: s.members.map(({ asks, ...m }) => ({ ...m, asking: open.find((a) => asks.includes(a.approvalId))?.title ?? null })),
+    membersOver: s.membersOver,
+  };
+}
+
 /** The failure text of a session listed again after a restart. */
 const RESTORED = 'listed again after a restart';
 
@@ -272,8 +292,9 @@ export function restoredSession(r: OwnedRecord, now: () => number): CodexSession
   feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'daemon-restart' });
   const state = r.state as CodexSessionState;
   const endReason = r.endReason as CodexEndReason | null;
+  const members: readonly CodexMember[] = Object.freeze((r.members ?? []).map((m) => Object.freeze({ ...m, lastAt: null, asks: Object.freeze([]) })));
   return Object.freeze({
-    ownedId: r.ownedId, model: r.model, cwd: '', state, endReason, threadId: null, turnId: null, tokens: null, queued: 0, feed,
+    ownedId: r.ownedId, model: r.model, cwd: '', state, endReason, threadId: null, turnId: null, tokens: null, queued: 0, members, membersOver: r.membersOver ?? 0, membersRev: 0, feed,
     ready: Promise.resolve(false),
     send: () => ({ ok: false as const, reason: 'ended' as const }),
     interrupt: async () => ({ withdrawn: 0, denied: 0 }),

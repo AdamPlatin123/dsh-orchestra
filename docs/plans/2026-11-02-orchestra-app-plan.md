@@ -158,6 +158,43 @@
   - `integrations/dsh-seat/README.md` 加了「装进你日常用的 DSH profile」一节，由用户本人决定和动手（D11、Q5a）。
   - `package.json` 删掉 `build:procguard`：它指向的 `scripts/build-procguard.ts` 从来不存在（M0 计划第 1218 行列过，没写）。procguard 没有单独的编译步骤，由 orchestrad 每次带 `--owned` 启动时自己编（`src/os/procguard.ts` 的 `ensureProcguard`，系统 csc，产物进数据目录），所以没有作用一致的东西可以指向。改了 `native/procguard/ProcGuard.cs` 之后要跑的是 `node scripts/pin-procguard.ts`（重写 `src/os/procguard-pins.ts` 里钉住的源码 sha256），它是钉校验值，不是编译，所以没把它改名顶替进去。
 
+### 子代理（Codex，2026-11-04 接上）
+
+做了什么：
+
+- **成员表**（`src/owned/codex-session.ts`）：不是根线程的线程都算这个会话的子代理（成员）。记线程 id、名字、型号、状态、开始和结束时间、失败的步骤数、没来问就跑的步数。别的线程说的话不进这个会话的对话流，连它的 `error` 通知的文字也不进，只取状态；例外是它发来的请求的标题，只带着它的名字出现（ask 行、auto-denied 行）。
+- **名字**：v2 模型用 `agentPath`；v1 模型的通知里没有名字，轮到它开 turn 时发一次 `thread/read`（不带 `includeTurns`）取 `agentNickname`。名字过 redact。
+- **状态**：在跑、空闲、已回报（`returned`）、已结束（`ended`，带原因：回合失败、被打断、被关掉）、未知。后到的事件不把已回报或已结束改回在跑，只有新 turn 能。
+- **失败**：`meta.detects.error` 仍是 false（这版没有规则读失败，出错数不显示），所以没有节点是 `error`。回合失败写 `ended` 加说明。回合完成但步骤失败（实测第 3 次）写已回报，说明里写「其中 N 步失败」。
+- **上限**：一个会话列 32 个，超过的只计数。对话流有一条提示，会话那行的活动写「另有 N 个……没列出」，`meta.clipped.nodes` 也加上。
+- **结束和重启**：会话没了，还活着的成员写未知，不写在跑。成员跟着 `ORCHESTRA_HOME\owned\<ownedId>.json` 落盘（只有状态和时间，文件上限从 4 KiB 放到 32 KiB），重启后还列得出来；没有成员的文件和以前一样。
+- **审批卡**：子代理发来的请求，预览第一行写 `from subagent: <名字> (thread …末 8 位)`，放在预览里，所以摘要盖得到。对话流的 ask 一行和受保护路径的 auto-denied 一行都带上这个来路，所以这条记录不会算到主线程头上。五种请求都这样，实测过的只有命令审批。文件改动的内容只来自子线程的 `item/started`，单独记着（根 turn 结束不清），只用于卡片，不进对话流。
+- **塔表**：成员是自有会话的子节点，深度 1，字段和只读 subagent 一样，折叠规则也一样；节点 id 是哈希，线程 id 不上页面。节点多了 `durationMs`：从开始到结束，在跑时到现在，算不出写 null，页面写「未知」。只读节点全是 null。
+- **等你**：成员节点不进等你。这条审批的等待留在会话节点上，成员的活动写「在等你审批：……」。原因是等你栏的卡挂在会话节点上，一个会话只出最早的一条，两边都挂就是一条审批算两次（T3：计数等于它链接的列表长度）。契约里加了这条。
+- **配置**：`codex-home.ts` 没加开关。实测不需要，也没找到能在默认模型上关掉它的开关。子代理不算进 3 个并发上限，已写进 `codex-home.ts` 和 `codex-owned.ts`。
+- **页面**：没改布局。`ownedIdOf` 不再把成员当会话（否则页面会拿哈希当会话 id 去发消息）。详情多一行「耗时」，用量那行写明只算主线程。
+
+实测依据：codex-cli 0.165.0，3 次真实运行和 11 次干跑（2026-11-04）。事件序列抄进了 `test/fixtures/codex-subagent-frames.ts`，只有字段和状态。接完后 `node scripts/live-smoke.ts --harness codex --subagent` 两个模型各跑了两次，测试 profile，走 magpie，退出码都是 0。下表是最后一次：
+
+| 模型 | 节点状态 | 有名字 | 耗时 | 卡上写了来路 | 对话流里子代理的工具行 | Job 里剩下的进程 |
+|---|---|---|---|---|---|---|
+| `codex/gpt-6.1-sol`（v2） | 在跑 → 已回报 | 是 | 11.7 s | 1 张 | 0 | 0 |
+| `zcode/GLM-5.3`（v1） | 在跑 → 已回报 | 是（`thread/read`） | 17.6 s | 1 张 | 0 | 0 |
+
+残余风险：
+
+- **关不掉**：默认模型上子代理没有开关，自有会话随时能派。现在靠 Codex 自己的系统指令（用户或 AGENTS.md 没要求就不派）。
+- **模型白名单**：`spawn_agent` 的 `model` 参数不经过 `isOwnedModel`。实测都继承父模型，没测过模型自己换型号。不拦，但 `subAgentActivity` 里报的型号记在成员上：详情写型号（没报写未知），名单外的型号写进节点活动和对话流。
+- **停止**：`turn/interrupt` 只发给根线程。根 turn 被打断时子代理会怎样没测成。根 idle 时停止什么也发不出去，所以停止时对话流写还有几个在跑，要全停用刹车。
+- **没测到的状态**：回合失败、`errored`、`interrupted`、`shutdown`、`notFound`、`interacted` 只在类型里见过，映射是读类型定的。嵌套子代理也没测过，现在平铺在会话下面。
+- **没来问就跑的命令**：根线程的 `ran-unasked` 提示带命令文字，子线程的文字不进对话流，所以子代理走单独的计数：成员上记 `ranUnasked`，节点活动写「其中 N 步没来问就跑了」，对话流写总数，都不带命令文字。
+- **受污染会话的子代理**（seat 请求开的会话，r4 §8.5）：`thread/start` 传 `untrusted`，`config.toml` 写 `on-request`，子代理跟哪个还是未知。2026-11-04 在测试 profile 补测 8 次（scratch 副本里把会话强制成 untrusted，根线程和子代理、两种策略都跑；`Get-ChildItem` 和 apply_patch）：全部出卡，没有一次没来问就跑。这里 on-request 下也没找到不问的命令（`echo`、`dir`、`git --version`、`Get-Date` 都问），所以分不开两种策略，不算证明。发现成员时对话流写一句，没来问就跑的步数照常记。
+- **子代理的数量**：Orchestra 这边没有上限，32 只是列表上限，超过的继续跑，只计数。Codex 有没有自己的上限配置还是未知：除 features 开关外只试过 `[agents] max_threads = 1` 一次，三个子代理照样都跑了，但任务很短，可能没有重叠，也没核对这个键是否生效，说明不了什么。
+- **子代理的文件改动**：2026-11-04 实跑过一次 on-request 和一次 untrusted：子代理用 apply_patch 写文件，卡片带改动内容、可批，批后文件内容对。
+- **token**：会话用量只含根线程。子代理的用量没有显示。
+- **Claude 自有会话**：还没接子代理，子节点数是 0，这个 0 的意思是没看，不是没有。
+- **沙箱**：`CodexSandboxService` 真启用沙箱时，进程会不会跑到 Job 外，查不到。
+
 ### 项目根（--project-root）
 
 2026-11-03 加。以前自有会话（orchestrad 自己拉起并驱动的 Codex / Claude 会话）只能在 orchestrad 自建的 `ORCHESTRA_HOME\work\<id>` 里跑，碰不到主人真正的项目；DSH 经 seat（DSH 会话向 orchestrad 请求派一个自有会话的通道）传来的 `cwd` 只显示在卡片上。现在主人可以在启动时点名项目根，全部是 opt-in：不带这个参数，行为和以前一样（有反向断言的测试）。

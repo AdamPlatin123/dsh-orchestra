@@ -14,6 +14,14 @@ const GOLDEN = fileURLToPath(new URL('../fixtures/tower-snapshot.json', import.m
 type Json = Record<string, any>;
 const golden = (): Json => JSON.parse(fs.readFileSync(GOLDEN, 'utf8')) as Json;
 const busy = (): Json => JSON.parse(JSON.stringify(towerFromStage(busyStage()))) as Json;
+/** An owned session with one sub-agent. The golden file is the stage fixture's tower to the letter, which has none. */
+const withMember = (): Json => JSON.parse(JSON.stringify(towerFromStage(busyStage(), {
+  seats: [{
+    ownedId: 'a'.repeat(20), harness: 'codex', title: 'a session', state: 'running', endReason: null, waiting: null, lastAt: 1, membersOver: 0,
+    members: [{ threadId: 't1', name: '/root/a', model: 'codex/gpt-6.1-sol', state: 'returned', why: null, startedAt: 1_000, endedAt: 4_000, lastAt: 4_000, failed: 0, ranUnasked: 0, asking: null }],
+  }],
+  nowWall: 10_000,
+}))) as Json;
 
 /** Mutates a fresh sample and returns the validator's errors, which must name `want`. */
 function broken(make: () => Json, mutate: (s: Json) => void, want: string): void {
@@ -31,6 +39,7 @@ const shop = (s: Json): Json => s.projects.find((p: Json) => p.name === 'shop');
 test('the golden file and the busy synthetic tower pass; the tables are frozen', () => {
   assert.deepEqual(validateTower(golden()), { ok: true, errors: [] });
   assert.deepEqual(validateTower(busy()), { ok: true, errors: [] });
+  assert.deepEqual(validateTower(withMember()), { ok: true, errors: [] });
   assert.deepEqual([...TOWER_ENUMS.state], ['waiting', 'error', 'running', 'unknown', 'returned', 'idle', 'ended'], 'returned is the furthest a node gets; ended is an owned session whose child is gone, never done (T2)');
   assert.ok(Object.isFrozen(TOWER_ENUMS) && Object.isFrozen(TOWER_ENUMS.state) && Object.isFrozen(TOWER_BOUNDS) && Object.isFrozen(STATE_RANK));
   assert.ok(NODE_ID_RE.test('n:0123456789abcdef0123') && !NODE_ID_RE.test('p:0123456789abcdef0123'));
@@ -121,6 +130,34 @@ test('T3: tally, group counts, subtree counts and the waiting bar each equal the
   broken(golden, (s) => { s.waitingBar.push({ ...s.waitingBar[0] }); }, 'listed twice');
   broken(golden, (s) => { s.waitingBar[0].kind = 'route'; }, 'the node says');
   broken(golden, (s) => { s.waitingBar[0].node = nodes(s).find((n) => n.waiting === null)!.id; }, 'does not wait');
+});
+
+test('durationMs: on every node, a whole number of ms or null (T1: not known), never a guess in another shape', () => {
+  broken(golden, (s) => { delete s.projects[0].nodes[0].durationMs; }, 'missing durationMs');
+  broken(golden, (s) => { s.projects[0].nodes[0].durationMs = -1; }, 'durationMs');
+  broken(golden, (s) => { s.projects[0].nodes[0].durationMs = 'unknown'; }, 'durationMs');
+  for (const n of golden().projects.flatMap((p: Json) => p.nodes)) assert.equal(n.durationMs, null, 'no read-only node can tell how long it took');
+  // Only a sub-agent of an owned session has one: the payload holds that itself, whichever producer wrote it.
+  const owned = (s: Json, layer: string) => nodes(s).find((n) => n.ownership === 'owned' && n.layer === layer)!;
+  assert.equal(owned(withMember(), 'subagent').durationMs, 3_000);
+  broken(withMember, (s) => { owned(s, 'agent').durationMs = 5; }, 'only a sub-agent of an owned session has a duration');
+  broken(golden, (s) => { nodes(s).find((n) => n.layer === 'subagent')!.durationMs = 5; }, 'only a sub-agent of an owned session has a duration');
+});
+
+test('model: a sub-agent of an owned session says it or null; no other node has one', () => {
+  const owned = (s: Json, layer: string) => nodes(s).find((n) => n.ownership === 'owned' && n.layer === layer)!;
+  assert.equal(owned(withMember(), 'subagent').model, 'codex/gpt-6.1-sol');
+  broken(golden, (s) => { delete s.projects[0].nodes[0].model; }, 'missing model');
+  broken(withMember, (s) => { owned(s, 'subagent').model = 7; }, 'model');
+  broken(withMember, (s) => { owned(s, 'subagent').model = 'x'.repeat(TOWER_BOUNDS.textCp + 1); }, 'at most');
+  broken(withMember, (s) => { owned(s, 'agent').model = 'codex/gpt-6.1-sol'; }, 'only a sub-agent of an owned session has a model');
+  broken(golden, (s) => { nodes(s).find((n) => n.layer === 'subagent')!.model = 'codex/gpt-6.1-sol'; }, 'only a sub-agent of an owned session has a model');
+});
+
+test('an owned node names no session file: the stage reads none for it, session or sub-agent', () => {
+  const owned = (s: Json, layer: string) => nodes(s).find((n) => n.ownership === 'owned' && n.layer === layer)!;
+  broken(withMember, (s) => { owned(s, 'agent').session = '0'.repeat(20); }, 'an owned node has no file the stage reads');
+  broken(withMember, (s) => { owned(s, 'subagent').session = '0'.repeat(20); }, 'an owned node has no file the stage reads');
 });
 
 test('waits: set exactly when waiting; only Orchestra\'s queue has a deadline, and only on an owned session', () => {

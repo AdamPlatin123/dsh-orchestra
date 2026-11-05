@@ -7,7 +7,7 @@ import { makePatcher } from '../../ui/dom.js';
 import { buildRows, freeze, groupKey, matched, navigate, pathOf, projectKey, type Row } from '../../ui/tree.js';
 import { EVENTS_SHOWN, describeAbout, describeBar, describeDetail, describeDock, describePins, describeTower, clippedSessions, detectsError, fmtAge, fmtLeft, groupText, srcText, t } from '../../ui/view.js';
 import { TOWER_TEXT } from '../../shared/strings.js';
-import { towerFromStage } from '../../src/sources/tower.ts';
+import { ownedProject, towerFromStage } from '../../src/sources/tower.ts';
 import { busyStage, nid } from '../helpers/tower-fixture.ts';
 
 // ui/dom.js patches the real ui/tower.html (its templates, parsed by test/helpers/fake-dom.ts) with the
@@ -309,6 +309,44 @@ test('an Orchestra wait counts down against the daemon time: 剩 m:ss 自动拒'
   assert.equal(slotText(pin, 'hint'), '');
   assert.equal(fmtLeft(-5), '0:00');
   assert.equal(fmtLeft(3_725_000), '1:02:05');
+});
+
+test('an owned session\'s sub-agents: rows under it, folded like any subagent; a member is no session of its own, and says how long it took or that nobody knows', () => {
+  const { doc, ui, render } = page();
+  const s = golden();
+  const ownedId = 'a'.repeat(20);
+  const m = (n: number, over: Record<string, unknown> = {}) => ({ threadId: `t${n}`, name: `/root/m${n}`, model: null, state: 'returned' as const, why: null, startedAt: 1_000, endedAt: 66_000, lastAt: 66_000, failed: 0, ranUnasked: 0, asking: null, ...over });
+  const mine = ownedProject([{ ownedId, harness: 'codex', title: 'a session', state: 'idle', endReason: null, waiting: null, lastAt: 1, members: [m(1), m(2), m(3, { state: 'running', endedAt: null, startedAt: null })], membersOver: 0 }], 100_000)!;
+  s.projects.unshift(structuredClone(mine) as any);
+  ui.sel = mine.nodes[1]!.id;
+  render(s);
+  const rows = doc.querySelectorAll('[data-kind=node]').map((r) => r.getAttribute('data-key'));
+  assert.equal(rows.includes(`n:${ownedId}`), true);
+  assert.equal(rows.includes(mine.nodes[1]!.id), true, 'the running one stands as a row');
+  assert.equal(rows.includes(mine.nodes[2]!.id), false, 'the returned ones are folded');
+  assert.equal(doc.querySelectorAll('[data-kind=group]').some((g) => g.textContent!.includes(TOWER_TEXT['group.returned'].replace('{n}', '2'))), true);
+  const facts = (d: FakeElement | null) => Object.fromEntries(d!.querySelectorAll('.kv').map((kv) => [kv.querySelector('dt')!.textContent, kv.querySelector('dd')!.textContent]));
+  const running = facts(doc.getElementById('detail'));
+  assert.equal(running[TOWER_TEXT['detail.took']], TOWER_TEXT['detail.noTook']);
+  assert.equal(running[TOWER_TEXT['detail.session']], TOWER_TEXT['detail.ownedMember']);
+  assert.equal(running[TOWER_TEXT['detail.owner']], TOWER_TEXT['own.ownedMemberLong']);
+  assert.equal(running[TOWER_TEXT['detail.model']], TOWER_TEXT['detail.noModel'], 'not said: unknown (T1)');
+  ui.sel = mine.nodes[2]!.id;
+  render(s);
+  assert.equal(facts(doc.getElementById('detail'))[TOWER_TEXT['detail.took']], TOWER_TEXT['age.m'].replace('{n}', '1'));
+  s.projects[0]!.nodes[2]!.model = 'codex/gpt-6.1-sol';
+  render(s);
+  assert.equal(facts(doc.getElementById('detail'))[TOWER_TEXT['detail.model']], 'codex/gpt-6.1-sol');
+  // The peek too: a member's says it has only a state here, never that its conversation is below; its session's says that.
+  ui.peek = new Set([`n:${ownedId}`, mine.nodes[1]!.id]);
+  render(s);
+  const peek = (id: string) => slotText(doc.querySelectorAll('[data-kind=node]').find((r) => r.getAttribute('data-key') === id)!, 'pkSession');
+  assert.equal(peek(mine.nodes[1]!.id), TOWER_TEXT['detail.ownedMember']);
+  assert.equal(peek(`n:${ownedId}`), TOWER_TEXT['detail.ownedSession']);
+  // Only a member has the row: a read-only subagent says nothing of a model.
+  ui.sel = nodes(s).find((n) => n.ownership === 'observed' && n.layer === 'subagent')!.id;
+  render(s);
+  assert.equal(TOWER_TEXT['detail.model'] in facts(doc.getElementById('detail')), false);
 });
 
 test('detail: a node shows its fields and basis, unknown said as unknown, its last events newest first', () => {

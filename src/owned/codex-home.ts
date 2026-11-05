@@ -18,6 +18,22 @@ const win = path.win32;
 // codex from unpacking its own system skills into the private home. Neither a [[skills.config]] entry
 // for the root nor the skip_host_skill_discovery feature took the root out. Whether codex still scans
 // the directory itself (reading the files' front matter) is unknown: nothing of it reaches the model.
+//
+// Sub-agents (measured on codex-cli 0.165.0, 2026-11-04): no key here turns them on, and none is added,
+// because none is needed: under this config the default model already has spawn_agent. Nor did any key
+// tried turn them off there: features.multi_agent = false took the tools away from zcode/GLM-5.3 only, and
+// neither it nor multi_agent_v2 = false did on codex/gpt-6.1-sol. codex's own instructions say not to
+// spawn unless the user or AGENTS.md asks. What that means for permissions: in those runs, all on-request,
+// a sub-agent ran under on-request and the session's sandbox, its model calls took the same provider to the
+// same gateway, its commands came to the same approval queue and ran in the same Job, and it counts toward
+// no limit of Orchestra's (OWNED_POOL_MAX, codex-owned.ts). Those runs cannot tell whether it takes its
+// parent thread's policy or this file's: they are the same there. Under a tainted session they are not
+// (thread/start says untrusted, this file on-request; r4 §8.5), and that is still unknown. Eight more runs
+// (2026-11-04, the root and a sub-agent, each under both policies) did not tell: every command tried and the
+// file change asked under both, so nothing here runs unasked under on-request to set the two apart. A
+// sub-agent there may ask less than its parent, so the feed says so (members-untrusted) and counts what ran unasked.
+// spawn_agent takes a model of its own, which does not pass isOwnedModel; in the runs each inherited its
+// parent's, and a change of model was not measured: one outside the list is said, not stopped.
 
 export const OWNED_DIRS = frozen({ codexHome: 'codex-home', work: 'work' });
 

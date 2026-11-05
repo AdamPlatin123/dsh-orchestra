@@ -267,6 +267,9 @@ function actWithCwd(n, ctx) {
   return a === '' ? where : `${a}${t('sep.parts')}${where}`;
 }
 
+/** What a node without a session file says in its place. @param {Node} n */
+const noSession = (n) => t(n.ownership !== 'owned' ? 'detail.noSession' : n.layer === 'subagent' ? 'detail.ownedMember' : 'detail.ownedSession');
+
 /** @param {Row} r @param {Record<string, string | null>} attr @param {Record<string, string>} base @param {RowCtx} ctx @returns {Desc} */
 function nodeRow(r, attr, base, ctx) {
   const n = /** @type {Node} */ (r.node);
@@ -298,7 +301,7 @@ function nodeRow(r, attr, base, ctx) {
       pkState: { text: t('peek.state', { s: state, b: t(`basis.${n.basis}`) }) },
       pkType: { text: n.agentType === null ? '' : t('peek.type', { t: n.agentType }) },
       pkAct: { text: n.activity === null ? '' : t('peek.act', { a: n.activity }) },
-      pkSession: { text: n.session === null ? t(n.ownership === 'owned' ? 'detail.ownedSession' : 'detail.noSession') : t('peek.session', { id: n.session }) },
+      pkSession: { text: n.session === null ? noSession(n) : t('peek.session', { id: n.session }) },
     },
   };
 }
@@ -365,12 +368,14 @@ export function describeDetail(snap, sel, rows, detail, ctx) {
       facts.push(kv('wait', t(`wait.${w.kind}`)));
       facts.push(kv('waitSrc', w.source === 'orchestra' ? `${t('source.orchestra')} · ${clockOf(w, node.harness, ctx.nowWall)}` : t(`source.${w.source}`, { h: harnessName(node.harness) })));
     }
-    facts.push(kv('harness', harnessName(node.harness)), kv('owner', t(`own.${node.ownership}Long`)), kv('layer', layer));
-    if (node.layer === 'subagent') facts.push(kv('type', node.agentType ?? t('detail.noType')));
+    const member = node.ownership === 'owned' && node.layer === 'subagent';
+    facts.push(kv('harness', harnessName(node.harness)), kv('owner', t(member ? 'own.ownedMemberLong' : `own.${node.ownership}Long`)), kv('layer', layer));
+    if (node.layer === 'subagent') facts.push(kv('type', node.agentType ?? t('detail.noType')), kv('took', node.durationMs === null ? t('detail.noTook') : fmtAge(node.durationMs)));
+    if (member) facts.push(kv('model', node.model ?? t('detail.noModel')));
     facts.push(
       kv('kids', kidsSr(node.counts, detectsError(snap))),
       kv('age', fmtAge(node.ageMs, 'ago')),
-      kv('session', node.session ?? t(node.ownership === 'owned' ? 'detail.ownedSession' : 'detail.noSession')),
+      kv('session', node.session ?? noSession(node)),
       kv('project', project?.name ?? t('dash')),
     );
     return {

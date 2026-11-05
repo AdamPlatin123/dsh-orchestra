@@ -2,10 +2,10 @@
 
 ## Facts
 - Owner: AdamPlatin123
-- When: 2026-11-03（审批卡来源链、键入放行实测之后；本机 shell 报的时区是 GMT）
+- When: 2026-11-04（Codex 子代理接上之后）
 - Machine: 550W备份1号机
 - Branch: claude/orchestra-app（从 `claude/alpha-0.2-interactive` 的 76807ec 切出）
-- Commit: 随本文件一起提交，上一提交 88194f3（第二轮方案）。再往前 ad4c923 页面评审修正、eb8d621 来源链复核修正，之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
+- Commit: 随本文件一起提交，上一提交 2a67fbf（第三轮方案）。再往前 88194f3 第二轮方案、 ad4c923 页面评审修正、eb8d621 来源链复核修正，之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
 - Pushed: no（远端还没有这条分支。76807ec 之后的提交只在这台机器上）
 - Uncommitted on that machine: `.claude/launch.json`（未跟踪，本机某次会话的预览配置，不要提交）。主检出目录里 r4 规格有用户本人的未提交改动，见 Do not touch。
 
@@ -53,7 +53,10 @@
 
 - 第三轮方案（`docs/design/mocks/2026-11-03-ensemble/round3/`）：用户要 bot 式界面（左 worker、右 team，派发时延伸）和派活权限（可以开权限让 bot 直接派出）。21 通讯录加右栏、22 左 worker 右 team、23 延伸行，共用 `round3/scenario3.js`。每个方案由独立检查员走完第二轮 10 个画面和第三轮 4 个画面（含回放里 subagent 等你、出错冒到顶层），1024、1280 无横向滚动。都是假交互，权限只在 mock 里，代码没动。
 
+- Codex 子代理接进自有会话和塔表（细节见计划「子代理（Codex，2026-11-04 接上）」）：成员表、塔表子节点、耗时、型号、审批卡写明是哪个子代理、没来问就跑的步数。验证：全量 1577 项，通过 1574，失败 0，跳过 1，待办 2；`scripts/live-smoke.ts --harness codex --subagent` 在测试 profile 上默认模型和 `zcode/GLM-5.3` 各跑一次，退出码 0，Job 没有残留。
+
 ## Unverified（做了但没验证，或验证没过）
+- Codex 子代理：关不掉（默认模型上找不到开关，只靠 Codex 系统指令约束）；不算进 3 个并发上限，数量上限未知；`spawn_agent` 的 `model` 参数不经过 `isOwnedModel`，名单外型号只显示不拦截；根 turn 被打断时子代理怎样、受污染会话（untrusted）的子代理跟哪个策略、嵌套子代理、`errored` 等状态都没实测，后几种只从类型映射；页面上的「耗时」「型号」行只在假 DOM 里验证过；tsc 不可用，类型没检查。
 - **真实 profile 只由用户启动过一次**（代-2：只能由用户在可见控制台里启动；配对和解锁走通，见 Done），还没派过会话。真实 profile 下自有会话能不能起停、`start-orchestra.cmd` 实际启动（等 5 秒开浏览器、Ctrl+C 只停 orchestrad、退出后停在「按任意键」）、带 `--project-root` 的真实启动，全部未知。
 - 项目根：seat 派出的会话按 r4 §8.5 记为 tainted（d212b86：Codex 用 untrusted 审批策略启动并校验回显，Claude 每次工具调用都问），这些都已 live 跑过（见 Done）；untrusted 下读文件先问人只在 Orchestra 外的探针里测过一次（Get-Content、列目录、写，3/3 先问），别的读法未测；tainted 会话的审批卡、来源链和键入放行都在页面上实测过（见 Done），但人在真实浏览器的原生确认框里亲手键入没有测（测试是覆盖 window.prompt 交的确认词）；服务器不区分按住和键入，「必须键入」只在页面这一侧生效；来源链挂在会话上，不是逐回合；受保护路径的卡是「按住或键入」确认，不是 §7.4 说的「必须键入」；`package.json` 整个文件算受保护；`.git/config` 不在清单里；r4 §10.8 双写者告警没做；根只能用启动参数给，改根要重启（原计划写「在设置里登记」，已记分歧）。
 - seat 装进日常 DSH profile 的步骤（README 新一节）没在真 DSH 上走过；卸载命令写的是「未知」。
@@ -77,7 +80,7 @@
 
 ## Open questions
 - 派活权限落到代码要先定两件事：一是改 r4（A17 agent 只能请求新建、由你批准，§9.5 / Q11 自动派活要过门槛，D20 你不在时不派新的执行 Task，计划第 169 行派出只有人点）；二是 seat 请求口不走权限。请求口的请求方是自报的，没有校验管道对端进程，之所以接受就是因为每条都要人点（计划第 135 行）。今天自有 worker 没有派活工具，所以要先给自有 worker 加派活工具，权限才有东西可管。
-- 折叠卡接真实数据：只读会话约五成（没有耗时、没有红点，名字退回类型）；自有 worker 零成（Claude 禁了 Task 和 Agent，host-core 的 sha256 是钉住的；Codex 把协作事件丢了，`codex-session.ts` 第 626 行起）。
+- 折叠卡接真实数据：只读会话约五成（没有耗时、没有红点，名字退回类型）；Codex 自有 worker 已接上（2026-11-04）；Claude 自有 worker 还是零成（Claude 禁了 Task 和 Agent，host-core 的 sha256 是钉住的）。
 - `docs/research/ds-bot.md` 第 87 行「没有任务对象」和 `2026-10-30-ds-bot-noticed.md` 第 88、119 行（转发上限、Continue 按钮）对 0.2.7 已过时，这次只读代码发现，没改文档。
 - r4 要不要跟着改：用户定了总台不规划，但 r4 §8.9 (c) 写规划者是主代理（M1–M3）、M4 起可为 Maestro，§9.1 同样写 Maestro 可当规划者。r4 由用户本人改，本分支没动。
 - 哪个 DSH profile 是日常用的、要不要把 seat 装进去：由用户定（D11 / Q5a：先在隔离 DSH_HOME 验过同一版本，再由主人自己装）。Q5a 和 seat 对不上的三处（没有 Tuning 页；seat 加的是能提请求的工具，不是只读；DS-Bot 已换桌面版要重核）记在计划分歧一节。
@@ -87,6 +90,7 @@
 - 0.2 交接文件（`docs/handoff/claude--alpha-0.2-interactive.md`）里列的设计 §8 待定项仍没有逐条问过用户。
 
 ## Divergence（接手者填写：交接与现实的差异）
+- 2026-11-04 AdamPlatin123：用户的真实 orchestrad（2026-11-03 记的 pid 57456、7470 端口）这时已不在运行，agent 没有动过它，什么时候停的不知道。Next 1 里「先关旧 orchestrad」可能已不需要，先查 7470 端口。
 - 2026-11-03 AdamPlatin123（规划交给 worker）：第二轮 88194f3 的数据里，总台其实还在写验收 7 条、提议拆 Task 5，和当时对用户说的「mock 里总台只转述计划」不符。发现后已改数据。
 - 2026-11-03 AdamPlatin123（项目根之后）：上一份交接写在 99deb75（Commit 4d7387e），之后 461ac11、8bc1bd9、e483824、73bad96、7f71981、75e2942、e850a20、a3cf458 没有更新交接；本次一并补上，旧的 Unverified（Claude 后端、10 分钟到期、标题计数、浏览器走查、`--dispatch`、`build:procguard`）移进 Done 或删除，Next 重排。项目根是启动参数而不是原计划的「在设置里登记」，记在计划里。
 - 2026-11-03 AdamPlatin123（seat 复核修正）：复核 28 条里没照做的三条和理由记在计划「seat 复核修正」一条。

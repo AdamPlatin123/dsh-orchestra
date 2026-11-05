@@ -114,6 +114,18 @@ export const OWNED_TOWER_TEXT = frozen({
   'act.file-change': '改文件：',
   'act.you': '你说：',
   'act.auto-denied': '自动拒绝了：',
+  // Its sub-agents (src/sources/tower.ts memberNode). Nothing here says how the work went: a report is not a verdict (T2).
+  'member.unnamed': '子代理（名字未知）',
+  'member.asking': '在等你审批：',
+  'member.unheard': '还没听到它的状态',
+  'member.gone': '会话结束时它还没回报，现在怎样不知道',
+  'member.end.failed': '已结束：它这一轮失败了，没有回报',
+  'member.end.interrupted': '已结束：被打断了，没有回报',
+  'member.end.shutdown': '已结束：被关掉了，没有回报',
+  'member.failed': '其中 {n} 步失败',
+  'member.ran-unasked': '其中 {n} 步没来问就跑了',
+  'member.off-list': '用了名单外的型号：{m}',
+  'members-over': '另有 {n} 个子代理超出上限，没列出',
 });
 
 export const OWNED_ID_RE = frozen(/^[0-9a-f]{20}$/);

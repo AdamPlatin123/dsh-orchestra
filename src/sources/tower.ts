@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { Harness, Lane, Player, StageSnapshot } from './stage.ts';
 import { STAGE_LIMITS } from './stage.ts';
+import { isOwnedModel } from '../owned/models.ts';
 import { STATE_RANK, TOWER_BOUNDS } from '../../shared/tower-contract.js';
 import { OWNED_TOWER_TEXT } from '../../shared/owned-contract.js';
 import { frozen } from '../../shared/frozen.js';
@@ -31,6 +32,19 @@ import { frozen } from '../../shared/frozen.js';
 // (its child is gone: ended by you, exited, never started), with its end reason as its activity; never
 // idle (it takes no message), never done (T2), never error (this build reads no failure: meta.detects.error
 // is false). A session an earlier orchestrad left (registry, state unknown) is unknown with basis none.
+// Its sub-agents (a Codex session's members, src/owned/codex-session.ts) are its children, depth 1, in the
+// fields a read-only subagent has, session null (they are threads of its child, with no file the stage
+// reads), owned, basis owned; their ids are a hash, so no thread id reaches the page. Running, idle or
+// returned as codex said; ended when their turn failed or was interrupted (no failure is read as error here
+// either: meta.detects.error stays false, and the activity says why); unknown when nothing says, or when
+// the session went while they were live, never running (T1). A member never waits: the wait stays on its
+// session, because the waiting bar's card is the session's one earliest approval, and a wait on both
+// would count one approval twice (T3); the member's activity says it is the one asking. Nested sub-agents
+// (not measured) stand beside the others under the session.
+// durationMs is from a member's start to its end, or to now while it runs; null when codex gave no time.
+// model is the one codex said it runs on, null when it did not say (a v1 model, T1). Its activity says first
+// what the person should not miss: a model outside the owned list (nothing stopped it), and how many of its
+// steps ran though codex never asked (a count: their words stay out, as everything of its thread does).
 // With owned sessions the snapshot's observedAt is the driver's wall clock now, not the stage's (which
 // its throttle may hold up to 2 s back): the page counts the queue's deadlines down from it.
 // Then the tree is ordered (waits on you, failed, runs, unknown, returned, idle), counted per
@@ -49,10 +63,36 @@ export type TowerNode = {
   waiting: Waiting | null;
   counts: { children: number; errors: number; waiting: number };
   groups: Group[];
-  ageMs: number | null; agentType: string | null;
+  ageMs: number | null;
+  /** How long it took, or runs so far; null when that cannot be told (T1). */
+  durationMs: number | null;
+  /** The model a sub-agent of an owned session runs on; null when codex did not say (T1), and on every other node. */
+  model: string | null;
+  agentType: string | null;
 };
 export type TowerSrc = { state: 'ok' | 'empty' | 'error'; total: number; shown: number; registry: number | null; error: string | null };
 export type Project = { id: string; name: string; basis: 'cwd' | 'slug' | 'owned'; nodes: TowerNode[]; groups: Group[] };
+
+/** A sub-agent of an owned session (src/owned/codex-owned.ts memberSeats); its name and what it asks are shown text already. */
+export type OwnedMember = {
+  threadId: string;
+  name: string | null;
+  /** Shown text; null when codex did not say. */
+  model: string | null;
+  state: 'running' | 'idle' | 'returned' | 'ended' | 'unknown';
+  why: 'failed' | 'interrupted' | 'shutdown' | null;
+  /** Wall ms; null when codex gave none. */
+  startedAt: number | null;
+  endedAt: number | null;
+  /** Wall ms of the last thing heard of it; null after a restart. */
+  lastAt: number | null;
+  /** Its steps that failed. */
+  failed: number;
+  /** Its commands and file changes that ran though codex never asked. */
+  ranUnasked: number;
+  /** The title of its oldest open approval, or null. */
+  asking: string | null;
+};
 
 /**
  * An owned session as the driver knows it (src/owned/codex-owned.ts towerSeats): its title and the
@@ -71,6 +111,10 @@ export type OwnedSeat = {
   lastAt: number | null;
   /** The newest thing it said or did that a person reads (shown text already); null or absent when none. */
   recent?: { kind: 'text' | 'command' | 'file-change' | 'you' | 'auto-denied'; text: string } | null;
+  /** Its sub-agents; absent for a harness that does not report them. */
+  members?: readonly OwnedMember[];
+  /** Sub-agents past the driver's bound, counted and not listed. */
+  membersOver?: number;
 };
 
 /**
@@ -221,7 +265,7 @@ export function projectOf(lane: Lane): Project {
       activity: ((a) => (a === null ? null : clipCp(a, TOWER_BOUNDS.activityCp)))(activityOf(p, lane)),
       state, basis, waiting,
       counts: { children: 0, errors: 0, waiting: 0 }, groups: [],
-      ageMs: p.live.ageMs, agentType: p.agentType,
+      ageMs: p.live.ageMs, durationMs: null, model: null, agentType: p.agentType,
     };
     nodes.set(n.id, n);
   }
@@ -259,8 +303,38 @@ export function projectOf(lane: Lane): Project {
 
 const text = (key: string, fallback: string): string => (Object.hasOwn(OWNED_TOWER_TEXT, key) ? (OWNED_TOWER_TEXT as Record<string, string>)[key]! : fallback);
 
-/** One owned session as a node: the driver's word, basis owned. */
-export function ownedNode(seat: OwnedSeat, nowWall: number): TowerNode {
+/** A member's node id: 20 hex over its session and thread, stable across snapshots and restarts. */
+export const memberNodeId = (ownedId: string, threadId: string) => `n:${createHash('sha256').update(`orchestra:owned-member:${ownedId}:${threadId}`).digest('hex').slice(0, 20)}`;
+
+/** One sub-agent of an owned session as a node under it. */
+function memberNode(seat: OwnedSeat, m: OwnedMember, nowWall: number): TowerNode {
+  const gone = seat.state === 'ended' || seat.state === 'failed' || seat.state === 'unknown';
+  const state: TowerState = gone && (m.state === 'running' || m.state === 'idle') ? 'unknown' : m.state;
+  const said = m.asking !== null && m.asking !== '' ? `${text('member.asking', '')}${m.asking}`
+    : state === 'ended' ? text(`member.end.${m.why ?? 'unknown'}`, text('end.unknown', 'ended'))
+      : state === 'unknown' ? text(gone ? 'member.gone' : 'member.unheard', 'unknown')
+        : null;
+  const steps = m.failed > 0 ? text('member.failed', '{n}').replace('{n}', String(m.failed)) : null;
+  const off = m.model !== null && !isOwnedModel(m.model) ? text('member.off-list', '{m}').replace('{m}', () => m.model!) : null;
+  const unasked = m.ranUnasked > 0 ? text('member.ran-unasked', '{n}').replace('{n}', String(m.ranUnasked)) : null;
+  // What must not be clipped goes first.
+  const activity = [off, unasked, said, steps].filter((s) => s !== null).join('；');
+  const end = m.endedAt ?? (state === 'running' ? nowWall : null);
+  return {
+    id: memberNodeId(seat.ownedId, m.threadId), session: null, harness: seat.harness, ownership: 'owned', layer: 'subagent', parent: `n:${seat.ownedId}`, depth: 1,
+    title: clipCp(m.name ?? text('member.unnamed', 'subagent'), TOWER_BOUNDS.titleCp), activity: activity === '' ? null : clipCp(activity, TOWER_BOUNDS.activityCp),
+    state, basis: state === 'unknown' ? 'none' : 'owned', waiting: null,
+    counts: { children: 0, errors: 0, waiting: 0 }, groups: [],
+    ageMs: m.lastAt === null ? null : Math.max(0, nowWall - m.lastAt),
+    durationMs: m.startedAt === null || end === null || end < m.startedAt ? null : end - m.startedAt,
+    model: m.model === null ? null : clipCp(m.model, TOWER_BOUNDS.textCp),
+    agentType: null,
+  };
+}
+
+/** One owned session as a node, the driver's word, basis owned; and its sub-agents, in sibling order. */
+function ownedTree(seat: OwnedSeat, nowWall: number): { root: TowerNode; kids: TowerNode[] } {
+  const kids = (seat.members ?? []).map((m) => memberNode(seat, m, nowWall)).sort(byRank);
   const waiting: Waiting | null = seat.waiting === null ? null : { kind: seat.waiting.kind, source: 'orchestra', deadline: seat.waiting.deadline };
   const over = seat.state === 'ended' || seat.state === 'failed';
   const state: TowerState = waiting !== null ? 'waiting'
@@ -275,26 +349,36 @@ export function ownedNode(seat: OwnedSeat, nowWall: number): TowerNode {
     const line = seat.recent.text.replace(/\s+/g, ' ').trim();
     activity = seat.recent.kind === 'text' ? line : `${text(`act.${seat.recent.kind}`, '')}${line}`;
   }
+  // Sub-agents past the driver's bound are named nowhere: their count goes first, so a clip never takes it.
+  const unlisted = seat.membersOver ?? 0;
+  if (unlisted > 0) {
+    const left = text('members-over', '{n}').replace('{n}', String(unlisted));
+    activity = activity === null ? left : `${left}；${activity}`;
+  }
   const title = seat.title === '' ? text('untitled', 'owned session') : seat.title;
-  return {
+  const root: TowerNode = {
     id: `n:${seat.ownedId}`, session: null, harness: seat.harness, ownership: 'owned', layer: 'agent', parent: null, depth: 0,
     title: clipCp(title, TOWER_BOUNDS.titleCp), activity: activity === null ? null : clipCp(activity, TOWER_BOUNDS.activityCp),
     state, basis: state === 'unknown' ? 'none' : 'owned', waiting,
-    counts: { children: 0, errors: 0, waiting: 0 }, groups: [],
-    ageMs: seat.lastAt === null ? null : Math.max(0, nowWall - seat.lastAt), agentType: null,
+    counts: { children: kids.length, errors: 0, waiting: 0 }, groups: foldSiblings(kids),
+    ageMs: seat.lastAt === null ? null : Math.max(0, nowWall - seat.lastAt), durationMs: null, model: null, agentType: null,
   };
+  return { root, kids };
 }
+
+/** One owned session's node (ownedTree without its sub-agents' nodes; its counts and groups still hold them). */
+export const ownedNode = (seat: OwnedSeat, nowWall: number): TowerNode => ownedTree(seat, nowWall).root;
 
 /** The owned sessions' project, or null when there is none. Seats with an id outside the grammar are left out. */
 export function ownedProject(seats: readonly OwnedSeat[], nowWall: number): Project | null {
-  const nodes = seats.filter((s) => OWNED_ID_RE.test(s.ownedId)).map((s) => ownedNode(s, nowWall)).sort(byRank);
-  if (nodes.length === 0) return null;
-  return { id: OWNED_PROJECT_ID, name: text('project', 'Orchestra'), basis: 'owned', nodes, groups: foldSiblings(nodes) };
+  const trees = seats.filter((s) => OWNED_ID_RE.test(s.ownedId)).map((s) => ownedTree(s, nowWall)).sort((a, b) => byRank(a.root, b.root));
+  if (trees.length === 0) return null;
+  return { id: OWNED_PROJECT_ID, name: text('project', 'Orchestra'), basis: 'owned', nodes: trees.flatMap((t) => [t.root, ...t.kids]), groups: foldSiblings(trees.map((t) => t.root)) };
 }
 
 /** 16 hex over the snapshot without its time fields: unchanged data, unchanged rev. */
 function revOf(body: unknown): string {
-  const timeless = JSON.stringify(body, (k, v) => (k === 'rev' || k === 'observedAt' || k === 'ageMs' ? undefined : v));
+  const timeless = JSON.stringify(body, (k, v) => (k === 'rev' || k === 'observedAt' || k === 'ageMs' || k === 'durationMs' ? undefined : v));
   return createHash('sha256').update(timeless).digest('hex').slice(0, 16);
 }
 
@@ -331,7 +415,7 @@ export function towerFromStage(stage: StageSnapshot, owned: { seats: readonly Ow
       // does not say), so no node is ever error and an error count of 0 would only mean "not looked".
       detects: { error: false },
       sources: { claude: src('claude'), dsh: src('dsh'), codex: src('codex') },
-      clipped: { projects: stage.clipped.lanes, nodes: stage.clipped.players, sessions: { ...stage.clipped.sessions } },
+      clipped: { projects: stage.clipped.lanes, nodes: stage.clipped.players + (owned?.seats ?? []).reduce((n, s) => n + (s.membersOver ?? 0), 0), sessions: { ...stage.clipped.sessions } },
       // The stage's rules as they are, for the page's about view (T4: untested however often they fired).
       rules: stage.rules.map((r) => ({ id: r.id, hits: r.hits, n: r.n, status: r.status })),
     },

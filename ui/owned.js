@@ -28,7 +28,8 @@ const on = { data: { hide: '0' } };
 const entry = (list, id) => list?.owned.find((x) => x.ownedId === id);
 const busy = (g) => (g.busy ? 'true' : null);
 
-export const ownedIdOf = (n) => (n?.ownership === 'owned' && /^n:[0-9a-f]{20}$/.test(n.id) ? n.id.slice(2) : null);
+/** The owned session a node is; a sub-agent under one is none (its id is a hash, and it takes no message). */
+export const ownedIdOf = (n) => (n?.ownership === 'owned' && n.layer !== 'subagent' && /^n:[0-9a-f]{20}$/.test(n.id) ? n.id.slice(2) : null);
 export const isOwnedList = (b) => b?.kind === 'owned-list' && Array.isArray(b.owned) && Array.isArray(b.approvals) && Number.isSafeInteger(b.rev);
 export const isFeed = (b) => b?.kind === 'owned-feed' && Array.isArray(b.events) && Number.isSafeInteger(b.to);
 /** No reply or a 5xx (maybe after the effect) is unknown, not a failure (T1). */
@@ -356,7 +357,7 @@ export function describeOwned(id, list, feed, g) {
     ownSt: {
       text: join([
         t('own.st', { model: o.model, state: tk('state', o.state, 'state.unknown') }), o.endReason === 'daemon-restart' && t('life.daemon-restart'),
-        o.queued > 0 && t('own.queued', { n: o.queued }), o.tokens !== null && t('own.tokens', { n: o.tokens.total }), cwdText(o), requestOf(list, id),
+        o.queued > 0 && t('own.queued', { n: o.queued }), o.tokens !== null && t(o.harness === 'codex' ? 'own.tokensRoot' : 'own.tokens', { n: o.tokens.total }), cwdText(o), requestOf(list, id),
       ]),
     },
     cardsH: { data: { hide: mine.length > 0 ? '0' : '1' }, text: t('own.cards', { n: mine.length }) },

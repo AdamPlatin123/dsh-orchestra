@@ -15,11 +15,40 @@ const win = path.win32;
 // orchestrad that is gone; whether its child still runs nobody here knows. It comes back as unknown with
 // endReason daemon-restart, and is never resumed and no message is sent again (r4 §8.3 rule 5: what has
 // an unknown outcome is never resent automatically). One that had ended or failed comes back as it was.
+//
+// A Codex session's sub-agents (its members, codex-session.ts) are kept with it, states and times only, so
+// the tower still lists them after a restart: one the record says was running or idle comes back unknown,
+// never running. A file without them (a Claude session, a session that spawned none, an earlier build's)
+// reads as before.
 
 export const REGISTRY_DIR = 'owned';
-export const REGISTRY_LIMITS = frozen({ fileBytes: 4096 });
+/** 32 members of at most 200 + 240 + 240 characters written out (a thread id; a name and a model that are all quotes) fit. */
+export const REGISTRY_LIMITS = frozen({ fileBytes: 32 * 1024, members: 32, memberIdChars: 200, memberNameBytes: 120, memberModelBytes: 120 });
 
 export type OwnedRecordState = 'starting' | 'idle' | 'running' | 'ended' | 'failed' | 'unknown';
+/** running and idle are what codex last said of a live thread; the rest stay true once its session is gone. */
+export type MemberState = 'running' | 'idle' | 'returned' | 'ended' | 'unknown';
+/** Why a member ended without a report: its turn failed, it was interrupted, or it was shut down. */
+export type MemberEnd = 'failed' | 'interrupted' | 'shutdown';
+/** One sub-agent of a session as the registry keeps it: never a word it said. */
+export type MemberRecord = {
+  readonly threadId: string;
+  /** Shown text (redacted); null when codex named it nowhere (T1). */
+  readonly name: string | null;
+  /** The model codex said it runs on, shown text; null when codex did not say (T1). */
+  readonly model: string | null;
+  readonly state: MemberState;
+  /** Set exactly when the state is ended. */
+  readonly why: MemberEnd | null;
+  /** Wall ms codex gave for its start and its end; null when it gave none (T1). */
+  readonly startedAt: number | null;
+  readonly endedAt: number | null;
+  /** Its steps (commands, file changes, tool calls) that failed, and errors that took no retry: a report can come back all the same. */
+  readonly failed: number;
+  /** Its commands and file changes that ran though codex never asked. */
+  readonly ranUnasked: number;
+};
+
 export type OwnedRecord = {
   readonly v: 1;
   readonly ownedId: string;
@@ -29,9 +58,30 @@ export type OwnedRecord = {
   readonly createdAt: number;
   readonly state: OwnedRecordState;
   readonly endReason: string | null;
+  /** Its sub-agents, at most REGISTRY_LIMITS.members; absent when none was seen. */
+  readonly members?: readonly MemberRecord[];
+  /** Sub-agents past that bound: named nowhere, counted here. */
+  readonly membersOver?: number;
 };
 
 const KEYS = ['v', 'ownedId', 'harness', 'model', 'title', 'createdAt', 'state', 'endReason'] as const;
+const MEMBER_KEYS = ['threadId', 'name', 'model', 'state', 'why', 'startedAt', 'endedAt', 'failed', 'ranUnasked'] as const;
+const MEMBER_STATES: readonly unknown[] = ['running', 'idle', 'returned', 'ended', 'unknown'];
+const MEMBER_ENDS: readonly unknown[] = ['failed', 'interrupted', 'shutdown'];
+const stamp = (v: unknown) => v === null || (Number.isSafeInteger(v) && (v as number) >= 0);
+
+/** One member of a registry file, or null when it is not one this build wrote. */
+function parseMember(v: unknown): MemberRecord | null {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  if (Object.keys(o).length !== MEMBER_KEYS.length || !MEMBER_KEYS.every((k) => Object.hasOwn(o, k))) return null;
+  if (typeof o.threadId !== 'string' || o.threadId === '' || o.threadId.length > REGISTRY_LIMITS.memberIdChars) return null;
+  if (o.name !== null && (typeof o.name !== 'string' || o.name === '' || utf8Length(o.name) > REGISTRY_LIMITS.memberNameBytes)) return null;
+  if (o.model !== null && (typeof o.model !== 'string' || o.model === '' || utf8Length(o.model) > REGISTRY_LIMITS.memberModelBytes)) return null;
+  if (!MEMBER_STATES.includes(o.state) || (o.state === 'ended' ? !MEMBER_ENDS.includes(o.why) : o.why !== null)) return null;
+  if (!stamp(o.startedAt) || !stamp(o.endedAt) || !Number.isSafeInteger(o.failed) || (o.failed as number) < 0 || !Number.isSafeInteger(o.ranUnasked) || (o.ranUnasked as number) < 0) return null;
+  return Object.freeze({ ...o }) as unknown as MemberRecord;
+}
 
 /** One registry file's text, or null when it is not a record this build wrote (it is then left alone). */
 export function parseOwnedRecord(text: string): OwnedRecord | null {
@@ -44,23 +94,40 @@ export function parseOwnedRecord(text: string): OwnedRecord | null {
   }
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
-  if (Object.keys(o).length !== KEYS.length || !KEYS.every((k) => Object.hasOwn(o, k))) return null;
+  const withMembers = Object.hasOwn(o, 'members') && Object.hasOwn(o, 'membersOver');
+  if (Object.keys(o).length !== KEYS.length + (withMembers ? 2 : 0) || !KEYS.every((k) => Object.hasOwn(o, k))) return null;
   if (o.v !== 1 || typeof o.ownedId !== 'string' || !OWNED_ID_RE.test(o.ownedId) || (o.harness !== 'codex' && o.harness !== 'claude')) return null;
   if (typeof o.model !== 'string' || !isOwnedModel(o.model)) return null;
   if (typeof o.title !== 'string' || utf8Length(o.title) > OWNED_BOUNDS.titleBytes) return null;
   if (!Number.isSafeInteger(o.createdAt) || (o.createdAt as number) < 0) return null;
   if (typeof o.state !== 'string' || !(OWNED_ENUMS.state as readonly string[]).includes(o.state)) return null;
   if (o.endReason !== null && (typeof o.endReason !== 'string' || !(OWNED_ENUMS.endReason as readonly string[]).includes(o.endReason))) return null;
+  let members: MemberRecord[] | null = null;
+  if (withMembers) {
+    if (!Array.isArray(o.members) || o.members.length > REGISTRY_LIMITS.members || !Number.isSafeInteger(o.membersOver) || (o.membersOver as number) < 0) return null;
+    members = o.members.map(parseMember).filter((m) => m !== null);
+    if (members.length !== o.members.length || new Set(members.map((m) => m.threadId)).size !== members.length) return null;
+  }
   return Object.freeze({
     v: 1, ownedId: o.ownedId, harness: o.harness, model: o.model, title: o.title, createdAt: o.createdAt as number,
     state: o.state as OwnedRecordState, endReason: o.endReason as string | null,
+    ...(members === null ? {} : { members: Object.freeze(members), membersOver: o.membersOver as number }),
   });
 }
 
-/** What a record says after a restart: a session that had not ended is unknown (daemon-restart). */
+/** Whether codex last said this member's thread is alive: then nobody here knows how it stands once its session is gone (T1). */
+export const memberLive = (m: Pick<MemberRecord, 'state'>): boolean => m.state === 'running' || m.state === 'idle';
+
+/** What a record says after a restart: a session that had not ended is unknown (daemon-restart), and so is any member still live in it. */
 export function afterRestart(r: OwnedRecord): OwnedRecord {
-  if (r.state === 'ended' || r.state === 'failed' || r.state === 'unknown') return r;
-  return Object.freeze({ ...r, state: 'unknown', endReason: 'daemon-restart' });
+  const over = r.state === 'ended' || r.state === 'failed' || r.state === 'unknown';
+  const loose = r.members?.some(memberLive) === true;
+  if (over && !loose) return r;
+  return Object.freeze({
+    ...r,
+    ...(over ? {} : { state: 'unknown' as const, endReason: 'daemon-restart' }),
+    ...(loose ? { members: Object.freeze(r.members!.map((m) => (memberLive(m) ? Object.freeze({ ...m, state: 'unknown' as const }) : m))) } : {}),
+  });
 }
 
 /** The registry's file io: the composition root hands in the write fence and the read gate. */
@@ -84,6 +151,10 @@ export function makeOwnedRegistry(io: RegistryIo): OwnedRegistry {
       if (!OWNED_ID_RE.test(r.ownedId)) throw new Error(`owned registry: not an owned id: ${String(r.ownedId)}`);
       const body: Record<string, unknown> = {};
       for (const k of KEYS) body[k] = r[k];
+      if (r.members !== undefined) {
+        body.members = r.members.map((m) => Object.fromEntries(MEMBER_KEYS.map((k) => [k, m[k]])));
+        body.membersOver = r.membersOver ?? 0;
+      }
       io.writeAtomic(win.join(io.dir, `${r.ownedId}.json`), `${JSON.stringify(body)}\n`);
     },
     load(): OwnedRecord[] {

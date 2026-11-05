@@ -5,12 +5,14 @@ import type { ClockHub } from '../runtime/clock.ts';
 import type { Answer, AnswerCause, ApprovalKind, ApprovalOrigin, ApprovalRisk, Approvals } from './approvals.ts';
 import type { RpcClient, RpcExit, RpcId, RpcStats } from './codex-rpc.ts';
 import type { FeedInput, FeedTokens } from './feed.ts';
+import type { MemberEnd, MemberRecord, MemberState } from './registry.ts';
 import type { Redact } from './text.ts';
 import { isWithin } from '../fs/paths.ts';
 import { RpcError, makeRpcClient } from './codex-rpc.ts';
 import { guardedPlace } from './guarded.ts';
 import { Feed } from './feed.ts';
 import { isOwnedModel } from './models.ts';
+import { REGISTRY_LIMITS, memberLive } from './registry.ts';
 import { OWNED_TEXT_LIMITS, liveTail, shown, splitUtf8 } from './text.ts';
 import { frozen } from '../../shared/frozen.js';
 
@@ -69,6 +71,36 @@ const win = path.win32;
 //                          more than one, takes only the refusal;
 //   elicitation:           {action:'decline'} only (its accept needs content in an MCP server's schema).
 // Any other server request is answered with a JSON-RPC error.
+//
+// Sub-agents (measured on codex-cli 0.165.0, 2026-11-04, three real runs): a thread that is not the
+// session's own is one of its sub-agents, a member. Nothing needs turning on: the private CODEX_HOME's
+// default model can spawn them (codex-home.ts). They run in the same codex.exe, inside the same Job, under
+// the same approval policy (measured on on-request sessions only: under a tainted session's untrusted it
+// was not, and the feed says so, members-untrusted); their requests come here with their own threadId. Only
+// their state is read: what another thread says never enters this feed, but for the title of a request it
+// makes, always under its name (the ask row, an automatic refusal). A member is known from whichever comes first:
+//   v2 models:  subAgentActivity items on the root thread: started names agentThreadId and agentPath,
+//               completed says it reported back; there is no kind for a failure;
+//   v1 models:  a collabAgentToolCall spawnAgent names it only when it completes (receiverThreadIds), and
+//               wait and closeAgent carry agentsStates; no subAgentActivity, and no name anywhere but
+//               thread/read (agentNickname), asked once when its turn starts;
+//   both:       its own thread/status/changed and turn/started and turn/completed; no thread/started or
+//               thread/closed ever came for one, and in v1 its first status came 3 ms before the spawn's
+//               item/completed, so a thread nobody announced is taken as it is.
+// How the state moves: a turn that starts makes it running, and only a new turn revives one that is over;
+// a report makes it returned (T2: nothing is ever done); a turn that failed or was interrupted makes it
+// ended with that reason, whatever said otherwise before. Its own steps can fail and its turn still
+// complete (measured: exit code 1, turn and activity completed), so those are counted apart (failed).
+// When the session goes, a member still live turns unknown (T1), never running: the root going idle says
+// nothing about one (measured: an approval came from a member after the root turn had ended), and a stop
+// reaches the root thread only, so the feed says how many still run; the brake ends them with the Job.
+// More members than the bound are counted (members-over), never dropped in silence. A request from a
+// member says which on its card, inside what the digest covers; a file change it announced is kept for that
+// card apart from the session's own items, whose end is the root turn's, and a member outlives that (measured).
+// A step of its that ran though codex never asked is counted (member.ranUnasked, members-ran-unasked),
+// without its words. The model codex says it runs on is kept: spawn_agent's model never meets isOwnedModel,
+// so one outside the list is said (member-off-list), not stopped. session.tokens is the root thread's only:
+// each member reports its own count, which is not added in.
 
 export const CODEX_SESSION_LIMITS = frozen({
   /** Messages waiting for the thread or for a turn/start in flight. */
@@ -84,7 +116,19 @@ export const CODEX_SESSION_LIMITS = frozen({
   /** The tail of the child's stderr kept for the report of a failure. */
   stderrChars: 4096,
   /** A thread or turn id longer than this is not codex's. */
-  idChars: 200,
+  idChars: REGISTRY_LIMITS.memberIdChars,
+  /** The sub-agents one session lists; past this they are only counted. */
+  members: REGISTRY_LIMITS.members,
+  /** Of those only counted, the thread ids kept to count each once; past this the count stands still. */
+  memberOverIds: 4096,
+  /** Of a sub-agent's name, the first this many UTF-8 bytes once shown. */
+  memberNameBytes: REGISTRY_LIMITS.memberNameBytes,
+  /** Of a sub-agent's model, the first this many UTF-8 bytes once shown. */
+  memberModelBytes: REGISTRY_LIMITS.memberModelBytes,
+  /** The file changes of sub-agents kept at once for their cards; past this the oldest goes, and its card offers only a refusal. */
+  memberChanges: 64,
+  /** Of the sub-agents' open items, those kept as asked about; the root's own bound. */
+  memberAsked: 4096,
 });
 
 export const CODEX_CLIENT_INFO = frozen({ name: 'orchestra', title: 'Orchestra', version: '0.2.0' });
@@ -182,6 +226,14 @@ export type CodexSessionOptions = {
 /** The approval policy thread/start asks for, and its reply must echo (codex-cli 0.165.0 AskForApproval: untrusted | on-request | never | {granular}). */
 export const codexApprovalPolicy = (tainted: boolean): 'untrusted' | 'on-request' => (tainted ? 'untrusted' : 'on-request');
 
+/** A sub-agent of the session as its driver knows it now: the registry's fields, and what lives only here. */
+export type CodexMember = MemberRecord & {
+  /** Wall ms of the last thing heard of it; null after a restart. */
+  readonly lastAt: number | null;
+  /** Its open approvals, oldest first. */
+  readonly asks: readonly string[];
+};
+
 export type SendResult = { ok: true; via: 'turn/start' | 'turn/steer' | 'queued' } | { ok: false; reason: 'ended' | 'queue-full' };
 
 export type CodexSession = {
@@ -192,10 +244,16 @@ export type CodexSession = {
   readonly endReason: CodexEndReason | null;
   readonly threadId: string | null;
   readonly turnId: string | null;
-  /** The latest total token usage codex reported, or null before any. */
+  /** The root thread's latest total token usage as codex reported it, or null before any; a sub-agent's own usage is not in it. */
   readonly tokens: FeedTokens | null;
   /** Messages waiting here. */
   readonly queued: number;
+  /** Its sub-agents, in the order they were first heard of. */
+  readonly members: readonly CodexMember[];
+  /** Sub-agents past the bound, counted and not listed. */
+  readonly membersOver: number;
+  /** Moves whenever what the registry keeps of the members changes. */
+  readonly membersRev: number;
   readonly feed: Feed;
   /** Settles true once the thread started, false when the session ended or failed before that. */
   readonly ready: Promise<boolean>;
@@ -217,10 +275,22 @@ const obj = (v: unknown): Obj => (typeof v === 'object' && v !== null && !Array.
 const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
 const id = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 && v.length <= CODEX_SESSION_LIMITS.idChars ? v : null);
 const count = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+/** A time codex gave in ms, or in seconds (a turn's), as wall ms; null when it gave none. */
+const atMs = (v: unknown): number | null => (count(v) ? v : null);
+const atSecs = (v: unknown): number | null => (count(v) && Number.isSafeInteger(v * 1000) ? v * 1000 : null);
 const rpcKey = (rid: RpcId) => (typeof rid === 'number' ? `n:${rid}` : `s:${rid}`);
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-type Item = { type: string; command: string | null; changes: { path: string; kind: string; diff: string }[] | null; msg: string; out: string };
+type Changes = { path: string; kind: string; diff: string }[];
+type Item = { type: string; command: string | null; changes: Changes | null; msg: string; out: string };
+
+type Member = { -readonly [K in Exclude<keyof CodexMember, 'asks'>]: CodexMember[K] } & {
+  asks: string[];
+  /** The turn codex last said ended, so a turn/started read after it does not revive the member. */
+  endedTurn: string | null;
+  /** thread/read was asked for its name (once). */
+  nameAsked: boolean;
+};
 
 /** Starts an owned Codex session; the child is running when this returns ok, the thread starting. */
 export function startCodexSession(opts: CodexSessionOptions): StartResult {
@@ -272,6 +342,19 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   const askItem = new Map<string, string>();
   /** Items of this turn codex asked about (any answer, an automatic refusal too): a command or file change that ran without one is said (ran-unasked). */
   const askedItems = new Set<string>();
+  /** Sub-agents by thread id, in the order first heard of. */
+  const members = new Map<string, Member>();
+  /** Threads past the bound, each counted once. */
+  const overIds = new Set<string>();
+  let membersRev = 0;
+  /** Approval -> the member that asked, while it is open. */
+  const askMember = new Map<string, Member>();
+  /** Sub-agents' file changes by thread and item, from their announcement to their end, for the card that may ask about them. */
+  const memberChanges = new Map<string, Changes>();
+  /** Sub-agents' items codex asked about (any answer, an automatic refusal too), by thread and item, until they end. */
+  const memberAsked = new Set<string>();
+  /** Steps of sub-agents, listed or only counted, that ran though codex never asked. */
+  let memberUnasked = 0;
 
   let settleReady!: (ok: boolean) => void;
   const ready = new Promise<boolean>((r) => {
@@ -363,6 +446,90 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     if (lost.length > 0) note('withdrawn', `${lost.length}`);
     return lost.length;
   };
+  /** The thread id, if it is a thread of a sub-agent. */
+  const memberThread = (v: unknown): string | null => {
+    const t = id(v);
+    return t === null || threadId === null || t === threadId ? null : t;
+  };
+  /** A sub-agent's item: an id of its thread, which may mean something else on another. */
+  const memberKey = (tid: string, iid: string) => `${tid}\n${iid}`;
+  /** The member of a thread, new if none is known and there is room; past the bound the thread is only counted. */
+  const memberOf = (tid: string): Member | null => {
+    const had = members.get(tid);
+    if (had !== undefined) return had;
+    if (members.size >= L.members) {
+      if (!overIds.has(tid) && overIds.size < L.memberOverIds) {
+        overIds.add(tid);
+        membersRev++;
+        feed.upsert('members-over', { kind: 'note', ref: null, text: `${overIds.size}`, state: 'members-over' });
+      }
+      return null;
+    }
+    // Measured under on-request only: whether it takes this thread's untrusted or the config's on-request nobody knows.
+    if (members.size === 0 && opts.tainted === true) note('members-untrusted');
+    const m: Member = { threadId: tid, name: null, model: null, state: 'unknown', why: null, startedAt: null, endedAt: null, failed: 0, ranUnasked: 0, lastAt: null, asks: [], endedTurn: null, nameAsked: false };
+    members.set(tid, m);
+    membersRev++;
+    return m;
+  };
+  const moveMember = (m: Member, state: MemberState, why: MemberEnd | null = null) => {
+    if (m.state === state && m.why === why) return;
+    m.state = state;
+    m.why = why;
+    membersRev++;
+  };
+  /** The first time codex gave for its start, and for its end; a time that came later does not replace it. */
+  const memberStart = (m: Member, at: number | null) => {
+    if (m.startedAt !== null || at === null) return;
+    m.startedAt = at;
+    membersRev++;
+  };
+  const memberEnd = (m: Member, at: number | null) => {
+    if (m.endedAt !== null || at === null) return;
+    m.endedAt = at;
+    membersRev++;
+  };
+  /** A member that was heard to run; one that reported or ended only a new turn revives. */
+  const memberRuns = (m: Member) => {
+    if (m.state === 'unknown' || m.state === 'idle') moveMember(m, 'running');
+  };
+  /** A report came back; a turn that failed or was interrupted stays that. */
+  const memberReturned = (m: Member, at: number | null) => {
+    if (m.state === 'ended') return;
+    moveMember(m, 'returned');
+    memberEnd(m, at);
+  };
+  const memberEnded = (m: Member, why: MemberEnd, at: number | null) => {
+    moveMember(m, 'ended', why);
+    memberEnd(m, at);
+  };
+  const memberName = (m: Member, raw: string | null) => {
+    if (raw === null || m.name !== null) return;
+    const s = shown(redact, raw.slice(0, 1024), L.memberNameBytes, 'head').text.replace(/\s+/g, ' ').trim();
+    if (s === '') return;
+    m.name = s;
+    membersRev++;
+  };
+  /** The model codex says it runs on, the first it says; one outside the owned list is said, its name beside it (nothing stops it: isOwnedModel never saw it). */
+  const memberModel = (m: Member, raw: string | null) => {
+    if (raw === null || m.model !== null) return;
+    const s = shown(redact, raw.slice(0, 1024), L.memberModelBytes, 'head').text.replace(/\s+/g, ' ').trim();
+    if (s === '') return;
+    m.model = s;
+    membersRev++;
+    if (!isOwnedModel(raw)) note('member-off-list', `${memberLabel(m, m.threadId)}: ${s}`);
+  };
+  /** The session is gone: nobody can hear a member again, so one still live is unknown, never running (T1). */
+  const loseMembers = () => {
+    askMember.clear();
+    for (const m of members.values()) {
+      m.asks = [];
+      if (memberLive(m)) moveMember(m, 'unknown');
+    }
+  };
+  /** A member as a card names it; the end of its thread id tells two of one name, or of none, apart. */
+  const memberLabel = (m: Member | null, tid: string) => `${m?.name ?? 'name unknown'} (thread …${tid.slice(-8)})`;
+
   /** The Job the child's tree runs in (null: procguard off). */
   const job = pipe.job ?? null;
   /** The brake took the tree: the check after the close is its own, not repeated. */
@@ -397,6 +564,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     failure = detail;
     withdrawAll();
     turnId = null;
+    // Nothing yet: a failure here comes before the thread's id, and without it no thread is a member. For whatever fails later.
+    loseMembers();
     feed.push({ kind: 'lifecycle', ref: null, text: shownFeed(detail, 'head').text, state: reason });
     rpc.stop();
     residue();
@@ -419,6 +588,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     endReason = 'exited';
     failure = what;
     turnId = null;
+    loseMembers();
     feed.push({ kind: 'lifecycle', ref: null, text: what, state: 'exited' });
     withdrawAll();
     residue();
@@ -515,7 +685,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     return it;
   };
 
-  const changesOf = (v: unknown): { path: string; kind: string; diff: string }[] | null => {
+  const changesOf = (v: unknown): Changes | null => {
     if (!Array.isArray(v)) return null;
     return v.map((c) => {
       const o = obj(c);
@@ -620,14 +790,185 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
 
   const TURN_END: Readonly<Record<string, string>> = { completed: 'turn-ended', interrupted: 'turn-interrupted', failed: 'turn-failed' };
 
+  // --- what codex says of its sub-agents -------------------------------------------------------------
+
+  /** A sub-agent nothing has named yet: thread/read, once, for its nickname or role. Without an answer it stays unnamed (T1). */
+  const askMemberName = async (m: Member) => {
+    m.nameAsked = true;
+    try {
+      const t = obj(obj(await rpc.request('thread/read', { threadId: m.threadId }, D.interruptMs)).thread);
+      if (terminal()) return;
+      memberName(m, str(t.agentNickname) ?? str(t.agentRole));
+      changed();
+    } catch {
+      // Nothing for the feed: the tower says its name is not known.
+    }
+  };
+
+  const subAgentActivity = (item: Obj, at: number | null) => {
+    const tid = memberThread(item.agentThreadId);
+    const m = tid === null ? null : memberOf(tid);
+    if (m === null) return;
+    m.lastAt = opts.now();
+    memberName(m, str(item.agentPath));
+    memberModel(m, str(item.model));
+    const kind = str(item.kind);
+    if (kind === 'started') {
+      memberStart(m, at);
+      memberRuns(m);
+    } else if (kind === 'completed') {
+      memberReturned(m, at);
+    } else if (kind === 'interrupted') {
+      memberEnded(m, 'interrupted', at);
+    }
+  };
+
+  /** A member's last known status in a collab call (agentsStates; its message is another thread's words, never read). */
+  const collabState = (m: Member, status: string | null, at: number | null) => {
+    if (status === 'pendingInit' || status === 'running') memberRuns(m);
+    else if (status === 'completed') memberReturned(m, at);
+    else if (status === 'interrupted') memberEnded(m, 'interrupted', at);
+    else if (status === 'errored') memberEnded(m, 'failed', at);
+    else if (status === 'shutdown' && m.state !== 'returned' && m.state !== 'ended') memberEnded(m, 'shutdown', at);
+    else if (status === 'notFound' && memberLive(m)) moveMember(m, 'unknown');
+  };
+
+  const collabCall = (item: Obj, done: boolean, at: number | null) => {
+    const spawn = str(item.tool) === 'spawnAgent';
+    const named = Array.isArray(item.receiverThreadIds) ? item.receiverThreadIds : [];
+    const states = obj(item.agentsStates);
+    for (const raw of [...named, ...Object.keys(states)]) {
+      const tid = memberThread(raw);
+      const m = tid === null ? null : memberOf(tid);
+      if (m === null) continue;
+      m.lastAt = opts.now();
+      if (spawn) {
+        memberStart(m, at);
+        memberModel(m, str(item.model));
+      }
+    }
+    for (const [raw, st] of Object.entries(states)) {
+      const m = members.get(raw);
+      if (m !== undefined) collabState(m, str(obj(st).status), at);
+    }
+    // A spawn that named nobody: there is no thread to list, so the feed says it.
+    if (spawn && done && named.length === 0 && str(item.status) === 'failed') note('subagent-spawn-failed');
+  };
+
+  /** The items that tell of sub-agents, on whichever thread they come; every other item is left to the session's own. */
+  const memberItem = (p: Obj, done: boolean) => {
+    const item = obj(p.item);
+    const type = str(item.type);
+    const at = atMs(done ? p.completedAtMs : p.startedAtMs);
+    if (type === 'subAgentActivity') subAgentActivity(item, at);
+    else if (type === 'collabAgentToolCall') collabCall(item, done, at);
+  };
+
+  /**
+   * A sub-agent's command or file change. Announced, its changes are kept for a card, never for this feed.
+   * Ended, one that ran though codex never asked is counted, and said without its words: a run past the
+   * approval queue leaves a trace here too (ranUnasked is the root's; D8, r4 §10.9).
+   */
+  const memberStep = (done: boolean, item: Obj, tid: string, m: Member | null) => {
+    const iid = id(item.id);
+    const type = str(item.type);
+    if (iid === null || (type !== 'commandExecution' && type !== 'fileChange')) return;
+    const key = memberKey(tid, iid);
+    if (!done) {
+      const changes = type === 'fileChange' ? changesOf(item.changes) : null;
+      if (changes === null) return;
+      memberChanges.set(key, changes);
+      if (memberChanges.size > L.memberChanges) memberChanges.delete(memberChanges.keys().next().value!);
+      return;
+    }
+    memberChanges.delete(key);
+    const asked = memberAsked.delete(key);
+    const status = str(item.status);
+    if (asked || (status !== 'completed' && status !== 'failed')) return;
+    memberUnasked++;
+    if (m !== null) m.ranUnasked++;
+    membersRev++;
+    feed.upsert('members-ran-unasked', { kind: 'note', ref: null, text: `${memberUnasked}`, state: 'members-ran-unasked' });
+  };
+
+  /** Its turn ended: nothing of that turn can be asked about any more. */
+  const memberTurnOver = (tid: string) => {
+    for (const k of memberChanges.keys()) if (k.startsWith(`${tid}\n`)) memberChanges.delete(k);
+    for (const k of memberAsked) if (k.startsWith(`${tid}\n`)) memberAsked.delete(k);
+  };
+
+  /** What a sub-agent's own thread says: its state and times, nothing it wrote. Fields that are missing move nothing. */
+  const memberHeard = (method: string, p: Obj, tid: string) => {
+    const m = memberOf(tid);
+    if (method === 'item/started' || method === 'item/completed') {
+      memberItem(p, method === 'item/completed');
+      memberStep(method === 'item/completed', obj(p.item), tid, m);
+    }
+    if (method === 'turn/completed') memberTurnOver(tid);
+    if (m === null) return;
+    m.lastAt = opts.now();
+    switch (method) {
+      case 'thread/status/changed': {
+        const status = str(obj(p.status).type);
+        if (status === 'active') memberRuns(m);
+        else if (status === 'idle' && (m.state === 'running' || m.state === 'unknown')) moveMember(m, 'idle');
+        else if (status === 'systemError') memberEnded(m, 'failed', null);
+        // Unloaded (measured after a closeAgent, on one that had reported): of one still live it says nothing more.
+        else if (status === 'notLoaded' && memberLive(m)) moveMember(m, 'unknown');
+        return;
+      }
+      case 'turn/started': {
+        const turn = obj(p.turn);
+        const t = id(turn.id);
+        if (t !== null && t === m.endedTurn) return;
+        moveMember(m, 'running');
+        m.endedAt = null;
+        memberStart(m, atSecs(turn.startedAt));
+        if (m.name === null && !m.nameAsked) void askMemberName(m);
+        return;
+      }
+      case 'turn/completed': {
+        const turn = obj(p.turn);
+        const status = str(turn.status);
+        const at = atSecs(turn.completedAt);
+        m.endedTurn = id(turn.id);
+        memberStart(m, atSecs(turn.startedAt));
+        if (status === 'completed') memberReturned(m, at);
+        else if (status === 'interrupted') memberEnded(m, 'interrupted', at);
+        else if (status === 'failed') memberEnded(m, 'failed', at);
+        else if (memberLive(m)) moveMember(m, 'unknown');
+        return;
+      }
+      case 'item/completed':
+        if (str(obj(p.item).status) === 'failed') {
+          m.failed++;
+          membersRev++;
+        }
+        return;
+      case 'error':
+        if (p.willRetry !== true) {
+          m.failed++;
+          membersRev++;
+        }
+        return;
+      default:
+    }
+  };
+
   rpc.onNotification((method, params) => {
     if (terminal()) return;
     const p = obj(params);
-    // Another thread's turns and items (a sub-agent's) are not this session's to show yet; its
-    // approvals still come in, and their settling (serverRequest/resolved) is read whatever the thread.
+    // Another thread's turns and items (a sub-agent's) are read for its state only: nothing it says enters
+    // this feed. Its approvals still come in, and their settling (serverRequest/resolved) is read whatever the thread.
     const tid = str(p.threadId);
     const foreign = tid !== null && threadId !== null && tid !== threadId;
-    if (foreign && (method.startsWith('turn/') || method.startsWith('item/') || method.startsWith('thread/'))) return;
+    if (foreign && (method.startsWith('turn/') || method.startsWith('item/') || method.startsWith('thread/') || method === 'error')) {
+      const was = membersRev;
+      const from = memberThread(tid);
+      if (from !== null) memberHeard(method, p, from);
+      if (membersRev !== was) changed();
+      return;
+    }
     switch (method) {
       case 'turn/started': {
         const t = id(obj(p.turn).id);
@@ -660,10 +1001,12 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
         return;
       }
       case 'item/started':
+        memberItem(p, false);
         itemStarted(obj(p.item));
         changed();
         return;
       case 'item/completed':
+        memberItem(p, true);
         itemCompleted(obj(p.item));
         changed();
         return;
@@ -707,6 +1050,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
         if (approvals.forget(approvalId)) feed.push({ kind: 'note', ref: approvalId, text: null, state: 'ask-withdrawn' });
         showTool(askItem.get(approvalId) ?? null);
         askItem.delete(approvalId);
+        askSettled(approvalId);
         changed();
         return;
       }
@@ -726,12 +1070,27 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     canText: boolean;
     /** The protected row a path of the request hits: then it is declined at once, without a card. */
     refuse: string | null;
-    /** The command or file change the request decides (its itemId), if codex named one. */
+    /** The session's own command or file change the request decides (its itemId), if codex named one; a member's has no row here. */
     item: string | null;
+    /** The sub-agent that asks; null when the session itself does, or past the bound. */
+    member: Member | null;
+    /** How the card names that sub-agent; null when the session itself asks. */
+    via: string | null;
     reply(a: Answer): unknown;
   };
 
-  type AskBase = Omit<Ask, 'item'>;
+  type AskBase = Omit<Ask, 'item' | 'member' | 'via'>;
+
+  /** A request as the feed tells it: a sub-agent's under its name, so what it asked is never taken for the session's. */
+  const told = (ask: Ask) => (ask.via === null ? ask.title : `${ask.via}: ${ask.title}`);
+
+  /** A member's approval left the queue, however it did. */
+  const askSettled = (approvalId: string) => {
+    const m = askMember.get(approvalId);
+    if (m === undefined) return;
+    askMember.delete(approvalId);
+    m.asks = m.asks.filter((a) => a !== approvalId);
+  };
 
   const queueAsk = (rid: RpcId, ask: Ask) => {
     const t = shown(redact, ask.title, 400, 'head');
@@ -750,6 +1109,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
           state: cause === 'human' ? (a.decision === 'text' ? 'answered' : a.decision) : cause, redactions: shownText?.redactions ?? 0,
         });
         askItem.delete(approvalId);
+        askSettled(approvalId);
         showTool(ask.item);
         changed();
       },
@@ -757,8 +1117,12 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     approvalId = view.approvalId;
     asked.set(rpcKey(rid), approvalId);
     if (ask.item !== null) askItem.set(approvalId, ask.item);
+    if (ask.member !== null) {
+      ask.member.asks.push(approvalId);
+      askMember.set(approvalId, ask.member);
+    }
     hideTool(ask.item);
-    feed.push({ kind: 'ask', ref: approvalId, text: shownFeed(ask.title, 'head').text, state: ask.kind });
+    feed.push({ kind: 'ask', ref: approvalId, text: shownFeed(told(ask), 'head').text, state: ask.kind });
     changed();
   };
 
@@ -788,13 +1152,15 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
   };
 
   const askFileChange = (p: Obj): AskBase => {
-    const it = items.get(id(p.itemId) ?? '');
-    const changes = it?.changes ?? null;
+    const from = memberThread(p.threadId);
+    const iid = id(p.itemId) ?? '';
+    const changes = (from === null ? items.get(iid)?.changes : memberChanges.get(memberKey(from, iid))) ?? null;
     const grantRoot = str(p.grantRoot);
     const lines: string[] = [];
     if (str(p.reason) !== null) lines.push(`reason: ${str(p.reason)}`);
     if (grantRoot !== null) lines.push(`asks to write under ${askPath(grantRoot)} for the rest of the session: only a refusal is offered`);
-    if (changes === null) lines.push('the changes were not announced before this request: only a refusal is offered');
+    // Of a sub-agent's, Orchestra may have let the announcement go (L.memberChanges): it only knows it holds none.
+    if (changes === null) lines.push(from === null ? 'the changes were not announced before this request: only a refusal is offered' : 'Orchestra holds no announcement of these changes: only a refusal is offered');
     for (const c of changes ?? []) lines.push(`--- ${c.kind} ${askPath(c.path)}`, c.diff);
     const places = [...(changes ?? []).map((c) => place(c.path)), ...(grantRoot === null ? [] : [place(grantRoot)])];
     const away = places.some((x) => x.outside);
@@ -857,8 +1223,21 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       changed();
       return;
     }
-    const ask = { ...make(obj(params)), item: id(obj(params).itemId) };
+    const p = obj(params);
+    const made = make(p);
+    // A sub-agent's request: its card says which, in the preview, so the digest of what the person saw covers it.
+    // Measured for the command request; the other kinds carry the same threadId in their types.
+    const from = terminal() ? null : memberThread(p.threadId);
+    const member = from === null ? null : memberOf(from);
+    if (member !== null) {
+      member.lastAt = opts.now();
+      memberRuns(member);
+    }
+    const via = from === null ? null : memberLabel(member, from);
+    const iid = id(p.itemId);
+    const ask: Ask = { ...made, preview: via === null ? made.preview : `from subagent: ${via}\n${made.preview}`, item: from === null ? iid : null, member, via };
     if (ask.item !== null && askedItems.size < 4096) askedItems.add(ask.item);
+    if (from !== null && iid !== null && memberAsked.size < L.memberAsked) memberAsked.add(memberKey(from, iid));
     // A session that is ending answers what still arrives with the refusal.
     if (terminal()) {
       rpc.respond(rid, ask.reply({ decision: 'decline' }));
@@ -868,7 +1247,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     if (ask.refuse !== null) {
       rpc.respond(rid, ask.reply({ decision: 'decline' }));
       hideTool(ask.item);
-      const s = shownFeed(`${ask.title} (${ask.refuse})`, 'head');
+      const s = shownFeed(`${told(ask)} (${ask.refuse})`, 'head');
       feed.push({ kind: 'auto-denied', ref: null, text: s.text, state: 'protected', redactions: s.redactions });
       showTool(ask.item);
       changed();
@@ -943,6 +1322,15 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     get queued() {
       return queue.length;
     },
+    get members() {
+      return Object.freeze([...members.values()].map(({ endedTurn: _t, nameAsked: _n, asks, ...m }) => Object.freeze({ ...m, asks: Object.freeze([...asks]) })));
+    },
+    get membersOver() {
+      return overIds.size;
+    },
+    get membersRev() {
+      return membersRev;
+    },
     feed,
     ready,
     send(text: string, uuid: string): SendResult {
@@ -965,6 +1353,14 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       const withdrawn = withdrawAll();
       if (turnId !== null) void sendInterrupt(turnId);
       else if (turnStarting) interruptWanted = true;
+      // turn/interrupt goes to the root thread only. What it does to a sub-agent was not measured, and with
+      // the root idle nothing goes at all: said, so a stop is not taken for the end of them. Only one codex
+      // said runs is counted as running: an idle one is not, and of one past the bound nothing is known (T1).
+      const listed = [...members.values()];
+      const running = listed.filter((m) => m.state === 'running').length;
+      const others = listed.filter((m) => m.state === 'idle').length + overIds.size;
+      if (running > 0) note('members-running', `${running}`);
+      if (others > 0) note('members-not-stopped', `${others}`);
       changed();
       return { withdrawn, denied };
     },
@@ -975,6 +1371,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       endReason = why === 'daemon-stop' || why === 'requester-withdrew' ? why : 'you-ended';
       turnId = null;
       withdrawAll();
+      loseMembers();
       feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'ended' });
       rpc.stop();
       residue();
@@ -998,6 +1395,7 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
         endReason = 'braked';
         turnId = null;
         withdrawAll();
+        loseMembers();
         settleReady(false);
       }
       feed.push({ kind: 'lifecycle', ref: null, text: null, state: 'braked' });

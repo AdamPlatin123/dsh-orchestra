@@ -12,9 +12,12 @@
 //   an error count of 0 then means "not looked", and the page does not show one.
 // - T2: no node is ever done: the furthest a subagent gets is `returned` (it sent its report back).
 //   An owned session whose child is gone (ended, or failed and exited) is `ended`, never idle: idle
-//   would claim it can take a message. Only an owned node can be ended (Orchestra saw its child go).
+//   would claim it can take a message. Only an owned node can be ended (Orchestra saw its child go, or,
+//   for a sub-agent of an owned session, codex said its turn failed or was interrupted).
 // - Basis owned only on an owned node; one owned project, of owned nodes only. An owned node that waits
-//   waits on Orchestra's own queue (source orchestra), never on a native or inferred wait.
+//   waits on Orchestra's own queue (source orchestra), never on a native or inferred wait, and only a
+//   session waits: a sub-agent's approval waits on its session's node, the one the card hangs on, so one
+//   approval is one waiting node (T3).
 // - T3: every count equals the length of the list it links to: tally against the nodes, a group's
 //   count against its ids, a node's subtree counts against its descendants, the waiting bar against
 //   the nodes that wait, clipped sessions against total - shown per source.
@@ -135,10 +138,13 @@ export const TOWER_BOUNDS = frozen({
  *   waiting: Waiting | null,
  *   counts: { children: number, errors: number, waiting: number },
  *   groups: Group[],
- *   ageMs: number | null, agentType: string | null,
+ *   ageMs: number | null, durationMs: number | null, model: string | null, agentType: string | null,
  * }} Node
  *   counts: over the node's whole subtree below it (not itself): descendants, those in error, those
  *   that wait on you. groups: the folded rows among its children.
+ *   durationMs: how long a sub-agent of an owned session took, or runs so far; null when that cannot be
+ *   told (T1), and on every other node. model: the model codex said such a sub-agent runs on; null when it
+ *   did not say (T1), and on every other node. session is null on owned nodes (no file the stage reads).
  * @typedef {{ kind: 'approval' | 'question' | 'route', source: 'orchestra' | 'native' | 'inferred', deadline: number | null }} Waiting
  *   deadline: epoch ms when Orchestra's queue denies it by itself; null for a native or inferred wait
  *   (no timer of ours runs on it).
@@ -262,10 +268,11 @@ function checkGroupShape(c, v, at) {
 
 /** @param {Checker} c @param {unknown} v @param {string} at */
 function checkNode(c, v, at) {
-  const n = c.obj(v, at, ['id', 'session', 'harness', 'ownership', 'layer', 'parent', 'depth', 'title', 'activity', 'state', 'basis', 'waiting', 'counts', 'groups', 'ageMs', 'agentType']);
+  const n = c.obj(v, at, ['id', 'session', 'harness', 'ownership', 'layer', 'parent', 'depth', 'title', 'activity', 'state', 'basis', 'waiting', 'counts', 'groups', 'ageMs', 'durationMs', 'model', 'agentType']);
   if (n === null) return null;
   c.re(n.id, `${at}.id`, NODE_ID_RE, 'node id');
   if (n.session !== null) c.re(n.session, `${at}.session`, TOWER_HEX20_RE, 'Hex20');
+  if (n.session !== null && n.ownership === 'owned') c.bad(`${at}.session`, 'an owned node has no file the stage reads');
   c.en(n.harness, `${at}.harness`, TOWER_ENUMS.harness);
   c.en(n.ownership, `${at}.ownership`, TOWER_ENUMS.ownership);
   c.en(n.layer, `${at}.layer`, TOWER_ENUMS.layer);
@@ -289,6 +296,7 @@ function checkNode(c, v, at) {
     if (w !== null) {
       if (w.source === 'orchestra' && n.ownership !== 'owned') c.bad(`${at}.waiting.source`, 'orchestra waits only on an owned session');
       if (n.ownership === 'owned' && w.source !== 'orchestra') c.bad(`${at}.waiting.source`, "an owned session waits only on Orchestra's queue");
+      if (n.ownership === 'owned' && n.layer === 'subagent') c.bad(`${at}.waiting`, 'the wait of an owned sub-agent is on its session');
       if (w.source === 'inferred' && n.basis === 'registry') c.bad(`${at}.waiting.source`, 'inferred, but the state has a registry basis');
       if (w.source === 'native' && n.basis !== 'registry' && n.basis !== 'log') c.bad(`${at}.waiting.source`, `native, but the state is guessed (${String(n.basis)})`);
     }
@@ -298,6 +306,15 @@ function checkNode(c, v, at) {
   if (counts !== null) for (const k of ['children', 'errors', 'waiting']) c.int(counts[k], `${at}.counts.${k}`);
   const groups = c.arr(n.groups, `${at}.groups`).map((g, i) => checkGroupShape(c, g, `${at}.groups[${i}]`));
   if (n.ageMs !== null) c.int(n.ageMs, `${at}.ageMs`);
+  const member = n.ownership === 'owned' && n.layer === 'subagent';
+  if (n.durationMs !== null) {
+    c.int(n.durationMs, `${at}.durationMs`);
+    if (!member) c.bad(`${at}.durationMs`, 'only a sub-agent of an owned session has a duration');
+  }
+  if (n.model !== null) {
+    c.text(n.model, `${at}.model`, TOWER_BOUNDS.textCp);
+    if (!member) c.bad(`${at}.model`, 'only a sub-agent of an owned session has a model');
+  }
   if (n.agentType !== null) c.text(n.agentType, `${at}.agentType`, TOWER_BOUNDS.textCp);
   return { n, groups };
 }

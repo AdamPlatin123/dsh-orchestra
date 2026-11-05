@@ -197,6 +197,8 @@
           },
           "groups": [],
           "ageMs": 0,
+          "durationMs": null,
+          "model": null,
           "agentType": null
         },
         {
@@ -219,6 +221,8 @@
           },
           "groups": [],
           "ageMs": 0,
+          "durationMs": null,
+          "model": null,
           "agentType": "explorer"
         },
         {
@@ -241,6 +245,8 @@
           },
           "groups": [],
           "ageMs": 0,
+          "durationMs": null,
+          "model": null,
           "agentType": "worker"
         },
         {
@@ -267,6 +273,8 @@
           },
           "groups": [],
           "ageMs": 0,
+          "durationMs": null,
+          "model": null,
           "agentType": null
         },
         {
@@ -289,6 +297,8 @@
           },
           "groups": [],
           "ageMs": 0,
+          "durationMs": null,
+          "model": null,
           "agentType": "code-reviewer"
         },
         {
@@ -311,6 +321,8 @@
           },
           "groups": [],
           "ageMs": 0,
+          "durationMs": null,
+          "model": null,
           "agentType": "general-purpose"
         },
         {
@@ -333,6 +345,8 @@
           },
           "groups": [],
           "ageMs": 0,
+          "durationMs": null,
+          "model": null,
           "agentType": "Explore"
         },
         {
@@ -355,6 +369,8 @@
           },
           "groups": [],
           "ageMs": 0,
+          "durationMs": null,
+          "model": null,
           "agentType": "Explore"
         },
         {
@@ -377,6 +393,8 @@
           },
           "groups": [],
           "ageMs": 0,
+          "durationMs": null,
+          "model": null,
           "agentType": null
         },
         {
@@ -399,6 +417,8 @@
           },
           "groups": [],
           "ageMs": 0,
+          "durationMs": null,
+          "model": null,
           "agentType": "worker"
         },
         {
@@ -421,6 +441,8 @@
           },
           "groups": [],
           "ageMs": 0,
+          "durationMs": null,
+          "model": null,
           "agentType": "reviewer"
         }
       ],
