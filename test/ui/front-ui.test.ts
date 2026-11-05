@@ -240,6 +240,12 @@ test('what a screen reader hears leaves the reads out, and the page has the desk
   assert.match(TOWER_TEXT['front.factPlaceV']!, /跑一次模型/);
 });
 
+test('its standing: you ended it says no code; anything else that ended it says why', () => {
+  const standing = (over: Json) => (describeFront(D, listOf({ owned: [desk({ tokens: null, dispatch: null, state: 'ended', ...over })] }), { clipped: false, events: [] } as Json, { unlocked: true, nowWall: 0, settle: '', busy: false } as Json, fmt) as Json).ownSt.text as string;
+  assert.doesNotMatch(standing({ endReason: 'you-ended' }), /you-ended/);
+  assert.ok(standing({ endReason: 'safety-stop' }).includes(TOWER_TEXT['life.safety-stop']!));
+});
+
 test('the desk\'s head never points at a way that is not there and never says a check is coming for a desk that ended', () => {
   const empty = (l: Json | null) => (describeFrontHead(null, l) as Json).slots.empty.text;
   assert.equal(empty(listOf({ owned: [], frontDesk: { on: true, ownedId: null, model: 'zcode/GLM-5.3-Flash', tools: null } })), TOWER_TEXT['front.pick']);

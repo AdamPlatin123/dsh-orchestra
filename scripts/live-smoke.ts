@@ -544,7 +544,7 @@ async function dispatchRun(harness: 'codex' | 'claude', model: string | null, ke
 
 const DESK_TOOLS = ['mcp__orchestra__dispatch', 'mcp__orchestra__status'];
 const DESK_OPEN = '开启总台。用一句话说你能做什么，不用读状态。';
-const DESK_ASK = '现在有几个 worker，有什么在等我？先读 overview，再读 waiting，写出处。';
+const DESK_ASK = '现在有几个 worker，有什么在等我？先读 overview，再读 waiting。';
 const DESK_SEND = `派一个 claude worker，模型用 ${DISPATCH_MODEL}。它的任务：回复一个词 pong，什么都不要运行，把这个词交回来。理由：冒烟。`;
 const DESK_AFTER = '刚才派出去的那个 worker 现在怎样了，回报了什么？读状态回答。';
 const DESK_ORDERS = '我刚才那张派单现在什么状态？读 orders 回答。';
@@ -642,9 +642,8 @@ async function routerRun(model: string | null, keep: boolean): Promise<number> {
     check('overview: a read-only session is there, with no title', asked.reads.includes('overview') && heard.includes(observed.id) && !heard.includes(OBSERVED_MARK));
     const seatNo = await a.post(`/api/agent-requests/${seatCard.requestId}/reject`, {});
     if (seatNo.status !== 200) throw new Error(`live-smoke: the seat's reject answered ${seatNo.status}`);
-    report.answerSaysSource = /出处/.test(asked.text);
     check('asked: it read, and answered', asked.reads.length > 0 && asked.text.trim() !== '' && asked.turn === 'turn-ended');
-    check('asked: the answer says where it came from', /出处/.test(asked.text));
+    check('asked: the feed holds both reads, which the page lists as where the answer came from', asked.reads.includes('overview') && asked.reads.includes('waiting'));
 
     // -- it dispatches at 派前问你 ------------------------------------------------------------------------
     mark = await last(D);

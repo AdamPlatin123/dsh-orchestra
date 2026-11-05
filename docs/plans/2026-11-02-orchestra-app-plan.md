@@ -310,7 +310,7 @@
 
 **冒烟**（`scripts/live-smoke.ts --harness claude --router`，测试 profile，走 magpie）：跑了 2 次，都是 21 项判定全过，退出码 0，`leftovers` 全 0。回归各 1 次，退出码都是 0：`--harness claude --dispatch-tool`（23 项）、`--harness codex --model zcode/GLM-5.3 --dispatch-tool`（23 项）、`--harness claude`（每个会话的派活工具都多了 `why`、`returns`）。工具实际清单：`mcp__orchestra__dispatch`、`mcp__orchestra__status`。读取：问状态读了 `overview`、`waiting`，问回报读了 `overview`、`session`。journal：`front-desk` 1 条，`auto` 1 条（总台），`route` manual 2、auto 1。页面在测试 profile 里走过一遍：开启、派单、点派出、回报、资料面板、1024 宽无横向滚动。
 
-复核修复后（2026-11-05）`--router` 加了判定：总台派出的 worker 受污染（列表、请求、读工作目录里的文件也出卡，来路 `desk-dispatch`），`waiting` 不含受污染请求的文字，观察会话没有标题，被拒绝的派单 `orders` 读得到。文字判定读的是总台自己的 CLI 记录（测试目录里），也就是工具真实回给模型的内容。这次 magpie 没开，用的是脚本写死的替身模型（本机 3425，不进仓库）：真 orchestrad、真 host、真 CLI，模型的选择是脚本，28 项全过，退出码 0，`leftovers` 全 0。**真模型上这版还没跑过**，等 magpie 开着再跑一次 `--harness claude --router`。
+复核修复后（2026-11-05）`--router` 加了判定：总台派出的 worker 受污染（列表、请求、读工作目录里的文件也出卡，来路 `desk-dispatch`），`waiting` 不含受污染请求的文字，观察会话没有标题，被拒绝的派单 `orders` 读得到。文字判定读的是总台自己的 CLI 记录（测试目录里），也就是工具真实回给模型的内容。这次 magpie 没开，用的是脚本写死的替身模型（本机 3425，不进仓库）：真 orchestrad、真 host、真 CLI，模型的选择是脚本，28 项全过，退出码 0，`leftovers` 全 0。走查修完后在真模型上跑了一次（`--harness claude --router`，magpie，`zcode/GLM-5.3-Flash`）：28 项全过，退出码 0，`leftovers` 全 0。「回答写了出处」这项改成「feed 里有两次读」：出处是页面从读取记录算的，模型不再自己写。
 
 
 浏览器走查（2026-11-05，内置浏览器，测试 profile，magpie 开着，真模型 `zcode/GLM-5.3-Flash`）：1024 和 1280，浅色和深色，控制台无报错。走了未开启的样子、开启、问进展（出处跟实际读的一致）、派 Claude 和 Codex worker（派单六栏和地点都在，点派出后 worker 按不可信来源跑，审批卡写总台派的；Codex 的 `Set-Content` 也来问，高风险只能输入确认词）、问谁在等我（受污染的 DSH 请求文字没进总台的 CLI 记录）、拒绝一单再问结果、「直接派出」下派一单、结束总台。走查修的：未开启时磁贴说明挤成一窄列（1024 下把对话往下推了 270 像素），资料面板打开后下面的事实被裁掉、滚不到，派出的 worker 第一条消息写成「你说」（现在写「派单写的」），模型自己再写一遍出处和 Markdown 星号，凭记忆说派单还在等，`done` 被模型说成「已完成」（读到的改成 `returned`）。

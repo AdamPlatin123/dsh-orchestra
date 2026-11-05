@@ -123,7 +123,7 @@ export function describeFront(id, list, feed, g, fmt) {
   const chat = describeFrontChat(feed, list, g, fmt);
   return {
     ownBox: on, evBox: off, ownActs: { kids: [] }, chatBox: on, chatNote: { text: chat.note }, chat: { kids: chat.kids },
-    ownSt: { text: join([t('own.st', { model: o.model, state: tk('state', o.state, 'state.unknown') }), o.endReason !== null && tk('life', o.endReason, 'chat.life'), o.queued > 0 && t('own.queued', { n: o.queued })]) },
+    ownSt: { text: join([t('own.st', { model: o.model, state: tk('state', o.state, 'state.unknown') }), o.endReason !== null && o.endReason !== 'you-ended' && tk('life', o.endReason, 'chat.life'), o.queued > 0 && t('own.queued', { n: o.queued })]) },
     cardsH: off, cards: { kids: [] },
   };
 }
