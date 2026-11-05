@@ -118,7 +118,7 @@ test('a question you put while a turn runs queues behind it: that turn\'s answer
   assert.deepEqual(src(own.kids), [TOWER_TEXT['front.srcNone'], fill('front.src', { t: fill('front.src.waiting', { at: 't9' }) })]);
   const failed = chat(list, ev('you', null, 'q1'), ev('note', 'desk-read', 'overview', null, { at: 5 }), ev('lifecycle', 'turn-failed', null), ev('you', null, 'q2'), ev('text', 'final', 'hello', 'm2'));
   assert.deepEqual(src(failed.kids), [TOWER_TEXT['front.srcNone']]);
-  assert.equal(fill('front.src.orders', { at: 't1' }).includes('t1'), true);
+  assert.deepEqual(src(chat(list, ev('you', null, 'q'), ev('note', 'desk-read', 'orders', null, { at: 3 }), ev('text', 'final', 'a', 'm')).kids), [fill('front.src', { t: fill('front.src.orders', { at: 't3' }) })]);
 });
 
 test('the sentence the page sent for 开启 is no word of yours: it is said as what happened, and it says the model ran; your own words stay yours', () => {

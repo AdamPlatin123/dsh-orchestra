@@ -825,7 +825,7 @@ export const TOWER_TEXT = frozen({
   'grant.keepsH': '开到哪一档都不放开的事',
   'grant.keep.1': '工具和命令的批准还是等你，权限只管「派出去」这一步',
   'grant.keep.2': '只有你能开这个权限，bot 不能给自己或别人开；派出的会话从「派前问你」开始，不继承，派出的层数有上限',
-  'grant.keep.3': '来源不可信的请求不走权限，退回「派前问你」；DSH 的 seat 请求每条都要你点',
+  'grant.keep.3': '来源不可信的会话发的请求不走权限，退回「派前问你」；DSH 的 seat 请求每条都要你点。总台不算这种会话，它的权限照常，但它派出的 worker 一律按不可信来源跑',
   'grant.keep.4': '同时在跑的自有会话上限照旧，超过的不派，告诉 worker，不丢',
   'grant.keep.5': '派给谁、谁开的权限，每一次都留记录，和你亲手派的分开写',
   // The front desk (src/route/front-desk.ts): the tile over the list, and its talk.
@@ -841,7 +841,7 @@ export const TOWER_TEXT = frozen({
   'front.closed': '未开启',
   'front.lastOver': '未开启。上一个：{why}',
   'front.what': '开启后它只回答、派活、转述回报，自己不动手。开启那一下跑一次模型，之后你开口才花钱，不占 {n} 个会话名额。',
-  'front.sends': '总台的模型走 magpie：你自有会话的标题、等你的摘要会发给模型提供方。只读观察的会话只发 id、harness、状态和项目目录名',
+  'front.sends': '总台的模型走 magpie：你自有会话的标题、等你的摘要、它派单的回报一句话会发给模型提供方。只读观察的会话只发 id、harness、状态和项目目录名',
   'front.noteOpen': '总台不算 worker，不占 {n} 个会话名额。派活：{l}',
   'front.noteLocked': '你的话也可以直接派给一个会话。',
   'front.opening': '开启总台。用一句话说你能做什么，不用读状态。',

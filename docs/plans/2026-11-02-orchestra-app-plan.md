@@ -310,6 +310,8 @@
 
 **冒烟**（`scripts/live-smoke.ts --harness claude --router`，测试 profile，走 magpie）：跑了 2 次，都是 21 项判定全过，退出码 0，`leftovers` 全 0。回归各 1 次，退出码都是 0：`--harness claude --dispatch-tool`（23 项）、`--harness codex --model zcode/GLM-5.3 --dispatch-tool`（23 项）、`--harness claude`（每个会话的派活工具都多了 `why`、`returns`）。工具实际清单：`mcp__orchestra__dispatch`、`mcp__orchestra__status`。读取：问状态读了 `overview`、`waiting`，问回报读了 `overview`、`session`。journal：`front-desk` 1 条，`auto` 1 条（总台），`route` manual 2、auto 1。页面在测试 profile 里走过一遍：开启、派单、点派出、回报、资料面板、1024 宽无横向滚动。
 
+复核修复后（2026-11-05）`--router` 加了判定：总台派出的 worker 受污染（列表、请求、读工作目录里的文件也出卡，来路 `desk-dispatch`），`waiting` 不含受污染请求的文字，观察会话没有标题，被拒绝的派单 `orders` 读得到。文字判定读的是总台自己的 CLI 记录（测试目录里），也就是工具真实回给模型的内容。这次 magpie 没开，用的是脚本写死的替身模型（本机 3425，不进仓库）：真 orchestrad、真 host、真 CLI，模型的选择是脚本，28 项全过，退出码 0，`leftovers` 全 0。**真模型上这版还没跑过**，等 magpie 开着再跑一次 `--harness claude --router`。
+
 **残余**
 
 - **回报不主动来**：worker 回合结束不唤醒总台，不自动续跑，没有循环（r4 D20 的精神）。派单上的回报行是页面读请求算的。回报要模型转述的话，你得问它。
@@ -320,7 +322,7 @@
 - **第一条消息是固定的话**：开启花一次便宜调用，页面写了；对话里靠文字相等认出这一句（第一条 `you` 且等于 `front.opening`）。
 - **磁贴锁着时写未知**：塔没有总台的信息，解锁才读得到。
 - **没有路由**：页面刷新后回到第一个 worker，要再点磁贴。
-- **没测的**：Codex 的 `codex/gpt-6.1-sol` 工具清单；模型改用 `opencode-go` 家的整条冒烟（只跑过探针）；窄屏手机宽度下的磁贴（只看了 1280、1024）。
+- **没测的**：这版在真模型上的 `--router`；总台派出 Codex worker 的整条冒烟（走的是 seat 请求同一条 untrusted 路，单元测试到 `tainted` 为止）；Codex 的 `codex/gpt-6.1-sol` 工具清单；模型改用 `opencode-go` 家的整条冒烟（只跑过探针）；窄屏手机宽度下的磁贴（只看了 1280、1024）。
 
 **分歧**（由用户的话取代，r4 没改，等用户改）
 
