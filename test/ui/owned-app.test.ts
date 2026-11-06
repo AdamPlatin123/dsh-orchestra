@@ -555,6 +555,14 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     const reModels = doc.getElementById('re-model')!.querySelectorAll('option').map((o) => o.getAttribute('value'));
     assert.ok(reModels.length > 0 && reModels.every((m) => !String(m).startsWith('codex/')), reModels.join());
     assert.ok(rd.querySelector('[data-slot=reWhere]')!.textContent.includes('每次都先来问你'), 'the where-line for Claude, tainted all the same');
+    // Back on the card's harness: the card's model again, not the list's first.
+    (doc.getElementById('re-harness') as any).value = 'codex';
+    fire(doc, 'change', { target: doc.getElementById('re-harness') });
+    await flush();
+    assert.equal((doc.getElementById('re-model') as any).value, 'codex/gpt-6.1-terra');
+    (doc.getElementById('re-harness') as any).value = 'claude';
+    fire(doc, 'change', { target: doc.getElementById('re-harness') });
+    await flush();
     (doc.getElementById('re-model') as any).value = reModels[0];
     const sentBefore = posts('/api/owned/new').length;
     await click(rd.querySelector('[data-act=re-go]'));

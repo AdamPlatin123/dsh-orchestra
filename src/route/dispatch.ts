@@ -237,10 +237,15 @@ export function makeDispatcher(deps: DispatchDeps): Dispatcher {
     say({ state: 'worker-refused', ref, text: why });
     return { ok: false, text: REFUSED[why] };
   };
-  /** asked: the harness the call named, when the person sent it to another (改派); the reply says what really runs it. */
-  const sent = (child: string, model: string | null, harness: RouteHarness, state: DispatchNote['state'], say: (n: DispatchNote) => void, asked: RouteHarness | null = null): DispatchReply => {
+  /**
+   * asked: the harness and model the call named, for a card the person may have moved (改派): the reply says what really
+   * runs it, and that the person moved it, by the same test owned-handlers.ts reassignOf writes request-reassign by.
+   */
+  const sent = (child: string, model: string | null, harness: RouteHarness, state: DispatchNote['state'], say: (n: DispatchNote) => void, asked: { harness: RouteHarness; model: string | null } | null = null): DispatchReply => {
     say({ state, ref: `n:${child}`, text: deps.session(child)?.title ?? null });
-    const moved = asked === null || asked === harness ? '' : ` The person sent it to ${harness} instead of the ${asked} you asked for.`;
+    const moved = asked === null ? ''
+      : asked.harness !== harness ? ` The person sent it to ${harness} instead of the ${asked.harness} you asked for.`
+      : asked.model !== null && asked.model !== model ? ` The person sent it to ${model} instead of the ${asked.model} you asked for.` : '';
     return { ok: true, text: `Dispatched: a new ${harness} worker, session ${child}${model === null ? '' : `, on ${model}`}.${moved} Its result does not come back to you; the person sees it.` };
   };
 
@@ -310,7 +315,7 @@ export function makeDispatcher(deps: DispatchDeps): Dispatcher {
     const id = made.request.requestId;
     say({ state: 'worker-asked', ref: id, text: why });
     const settle = (r: AgentRequest): DispatchReply => {
-      if (r.ownedId !== null) return sent(r.ownedId, r.model, r.harness, 'worker-sent', say, a.harness);
+      if (r.ownedId !== null) return sent(r.ownedId, r.model, r.harness, 'worker-sent', say, { harness: a.harness, model: a.model });
       return refused(ownedId, r.state === 'rejected' ? 'you-rejected' : r.state === 'expired' ? 'expired' : r.state === 'withdrawn' ? 'stopped' : 'gone', say, id);
     };
     const reply = (async (): Promise<DispatchReply> => {

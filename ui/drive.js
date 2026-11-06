@@ -482,8 +482,10 @@ export function makeDrive(state, dom, host) {
     const model = val('re-model') || modelsOf(harness)[0];
     const routeId = r.suggestion?.routeId ?? null;
     const a = await op('owned/new', { text: r.text, harness, model, requestId: r.requestId, ...(routeId === null ? {} : { routeId }) });
-    if (a?.ok !== true) return a === null ? undefined : dlgSay('re-dlg', errText(a.code));
-    closeDlg('re-dlg');
+    // Closed while it was out: why it was refused goes to the page's note, not to a dialog nobody sees.
+    const open = /** @type {any} */ (dom.byId('re-dlg')).open === true;
+    if (a?.ok !== true) return a === null ? undefined : open ? dlgSay('re-dlg', errText(a.code)) : say(errText(a.code));
+    if (open) closeDlg('re-dlg');
     say(t('re.sent'));
     void host.poll();
     const id = a.body?.ownedId;
@@ -705,6 +707,9 @@ export function makeDrive(state, dom, host) {
       // A new harness redraws its model list first, so the card reads the model the select really shows (as pick() does).
       // A new work dir redraws its note at once (what a session there may do); 改派's where-line follows its harness.
       if (e.target.id === 'nw-harness' || e.target.id === 'nw-cwd' || e.target.id === 're-harness') host.render();
+      // 改派 back on the card's harness: its model again, not the list's first.
+      const back = e.target.id === 're-harness' && state.re !== null ? pendingReq(state.re) : null;
+      if (back !== null && back.harness === val('re-harness')) setVal('re-model', requestModel(back).model);
       schedule();
     });
     // A closed dispatch dialog drops the suggestion still out (its reply would change nothing on screen).
