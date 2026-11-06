@@ -6,7 +6,7 @@
 - Machine: 550W备份1号机
 - Branch: claude/orchestra-app（从 `claude/alpha-0.2-interactive` 的 76807ec 切出）
 - Commit: 随本文件一起提交，上一提交 c2b2a23（running 界面，从 `claude/running-panel` 快进合入），再往前 8eb2215 交接、6ef515a（总台复核修复）。再往前 73237b5 总台、bcb7bd3 Claude 子代理和派活权限、 05ad22c 派发行和拉线、 8b2e8fb 新首页和停止、 580143a Codex 子代理、 2a67fbf 第三轮方案、 88194f3 第二轮方案、 ad4c923 页面评审修正、eb8d621 来源链复核修正，之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
-- Pushed: 到 8eb2215 为止在 origin（2026-11-05 推的）；c2b2a23 和本交接提交还没推
+- Pushed: yes（2026-11-06 推到 origin/claude/orchestra-app，到 8d858ee 为止）
 - Uncommitted on that machine: `.claude/launch.json`（未跟踪，本机某次会话的预览配置，不要提交）。主检出目录里 r4 规格有用户本人的未提交改动，见 Do not touch。
 
 ## Goal
