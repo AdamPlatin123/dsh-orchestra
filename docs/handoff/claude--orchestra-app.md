@@ -5,14 +5,15 @@
 - When: 2026-11-05（总台复核修复合入之后）
 - Machine: 550W备份1号机
 - Branch: claude/orchestra-app（从 `claude/alpha-0.2-interactive` 的 76807ec 切出）
-- Commit: 随本文件一起提交，上一提交 6ef515a（总台复核修复）。再往前 73237b5 总台、bcb7bd3 Claude 子代理和派活权限、 05ad22c 派发行和拉线、 8b2e8fb 新首页和停止、 580143a Codex 子代理、 2a67fbf 第三轮方案、 88194f3 第二轮方案、 ad4c923 页面评审修正、eb8d621 来源链复核修正，之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
-- Pushed: no（远端还没有这条分支。76807ec 之后的提交只在这台机器上）
+- Commit: 随本文件一起提交，上一提交 c2b2a23（running 界面，从 `claude/running-panel` 快进合入），再往前 8eb2215 交接、6ef515a（总台复核修复）。再往前 73237b5 总台、bcb7bd3 Claude 子代理和派活权限、 05ad22c 派发行和拉线、 8b2e8fb 新首页和停止、 580143a Codex 子代理、 2a67fbf 第三轮方案、 88194f3 第二轮方案、 ad4c923 页面评审修正、eb8d621 来源链复核修正，之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
+- Pushed: 到 8eb2215 为止在 origin（2026-11-05 推的）；c2b2a23 和本交接提交还没推
 - Uncommitted on that machine: `.claude/launch.json`（未跟踪，本机某次会话的预览配置，不要提交）。主检出目录里 r4 规格有用户本人的未提交改动，见 Do not touch。
 
 ## Goal
 用户 2026-11-02 的目标：把 Orchestra 做到「应用整体可用」。一个守护进程 orchestrad，首页是塔表（你 → agent → subagent 的跨项目树），能只读观察 Claude、DSH、Codex 三家的会话；能经本机模型网关 magpie（`http://127.0.0.1:3425`，不要密钥）开 Orchestra 自己拥有的 Codex 和 Claude 会话（下称「自有会话」），在页面上对话、审批、停下；有一个派活台，先跑规则、再问路由模型，给出「派给谁」的建议卡片，由人点「派出」；DSH 会话可以经 seat 请求派自有会话，由人在配对页派出或拒绝。总计划见 `docs/plans/2026-11-02-orchestra-app-plan.md`，给主人看的上手指南见 `docs/quickstart.md`，启动脚本 `start-orchestra.cmd`。
 
 ## Done（已完成且已验证）
+- running 界面（2026-11-06，c2b2a23，从 `claude/running-panel` 快进合入；那条分支的交接移到了 `docs/handoff/archive/claude--running-panel.md`，细节和未验证项都在那里）：首页底部「正在做」胶囊，点开右栏（宽屏默认收起，窄屏是抽屉），一个正在做的 worker 一张卡，再点进细节页（只看不动）。全量 1799 条，1796 过，0 失败；测试 profile 实走过一次。改派分支 `claude/serene-merkle-3ac513` 还没合，它和这次都改了 `ui/home.html`、`shared/strings.js`，合时要解冲突并重跑 `scripts/embed-ui.ts`。
 - 真实 profile 第一次由用户启动（2026-11-03 07:41 UTC，start-orchestra.cmd，用户本人在可见控制台）。只读查了真实数据目录的 run/orchestrad.log（码已遮）：procguard on、owned-claude on、owned-codex on、页面 7470、agent-port（orchestra-agent-real）、working profile real；peek-pair ok；owned-unlock 先 wrong 后 ok。派会话、塔表内容、Ctrl+C 停机还没有用户的结果。
 - 真实 profile 上发现的解锁码问题（本次修正）：日志里一次解锁在 60 ms 内发了 7 个解锁码（每个都替换上一个），用户填了不是最后一个的码，第一次判 wrong。页面改为：解锁对话框开着或请求还在路上时，不再要新码。新断言不带修复时失败；测试 profile 页面上连点 7 次只发 1 个码。全量 1542 条，1539 过，0 失败。用户正在跑的实例是修正前启动的，重启后才生效。
 - 审批卡来源链（d5b40e1、eb8d621，r4 §8.5）— seat 派出的会话，审批卡和等你栏都写「来源不可信：DSH 会话 <id>（自称，未核实）→ 请求「<标签>」（标签是对方写的，未核实）→ 这个会话」；没报 id 写「未知」；等你栏里截断并标明；r4 原文的第三段（发送者自己的污染源）Orchestra 拿不到，卡上照实写。只加显示，审批行为不变，不进 journal。复核 5 条都修了（标签能伪造链结构、LRM/RLM/ALM 和行分隔符漏网、截断拆字形、备注文案、origin 不带 tainted 时整张列表 500）。全量 1542 条，1539 过，0 失败。
