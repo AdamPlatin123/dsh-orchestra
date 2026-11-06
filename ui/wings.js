@@ -5,8 +5,9 @@
 // to its row in the talk. Everything comes from the tower snapshot and the talk: no team exists yet, and nothing here draws
 // one. The front desk (总台) has no seat on the tower, so no list or count of workers holds it: its tile stands over them, from
 // GET /api/owned. What waits on you and what failed stay at the top whatever is folded (describeIsland), each count the
-// length of the list it opens (T3).
-import { describeFold, stateWord } from './fold.js';
+// length of the list it opens (T3). Over the right half, once clicked open (第三轮 mock 21): every worker with something
+// reported going on, a card each, and a worker's page pushed over them.
+import { askingOf, describeFold, describeRun, memberRow, stateWord, toneOf } from './fold.js';
 import { deskOf, modelsOf, ownedIdOf, sentText } from './owned.js';
 import { indexOf, pathOf } from './tree.js';
 import { HARNESSES, activityOf, detectsError, fmtAge, fmtLeft, guessed, srcText, t, clippedSessions } from './view.js';
@@ -17,6 +18,7 @@ import { HARNESSES, activityOf, detectsError, fmtAge, fmtLeft, guessed, srcText,
  * @typedef {import('../shared/tower-contract.js').Project} Project
  * @typedef {import('./dom.js').Paint} Paint
  * @typedef {import('./dom.js').Desc} Desc
+ * @typedef {{ key: string, node: Node, project: Project, ro: boolean, members: { node: Node, depth: number }[], waits: boolean }} RunEntry
  */
 
 /**
@@ -142,6 +144,20 @@ export function describeLost(snap) {
 const byName = (a, b) => a.title.localeCompare(b.title, undefined, { numeric: true }) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 /**
+ * A node and all under it, depth first, each one's children by name: an order that holds from poll to poll.
+ * @param {Project} project @returns {(n: Node, depth: number) => { node: Node, depth: number }[]}
+ */
+function treeOf(project) {
+  /** @type {Map<string, Node[]>} */
+  const under = new Map();
+  for (const n of project.nodes) if (n.parent !== null) under.set(n.parent, [...(under.get(n.parent) ?? []), n]);
+  for (const kids of under.values()) kids.sort(byName);
+  /** @param {Node} n @param {number} depth @returns {{ node: Node, depth: number }[]} */
+  const walk = (n, depth) => [{ node: n, depth }, ...(under.get(n.id) ?? []).flatMap((k) => walk(k, depth + 1))];
+  return walk;
+}
+
+/**
  * What a worker sent out, as cards: one a dispatch (a batch, in the order they went out, as their rows stand in the
  * talk), then those no batch names (a read-only session's, all of them) by agent type, a same-type group one card that
  * claims no dispatch. Each member comes with what it sent in turn. Keys and order hold from poll to poll, so a card
@@ -156,15 +172,11 @@ export function subCards(snap, sel) {
   // The front desk has no node of its own; what it sent out has.
   const project = hit?.project ?? snap.projects.find((p) => p.nodes.some((n) => n.sent?.by === sel));
   if (project === undefined) return [];
-  /** @type {Map<string, Node[]>} */
-  const under = new Map();
-  for (const n of project.nodes) if (n.parent !== null) under.set(n.parent, [...(under.get(n.parent) ?? []), n]);
-  for (const kids of under.values()) kids.sort(byName);
-  /** @param {Node} n @param {number} depth @returns {{ node: Node, depth: number }[]} */
-  const walk = (n, depth) => [{ node: n, depth }, ...(under.get(n.id) ?? []).flatMap((k) => walk(k, depth + 1))];
+  const walk = treeOf(project);
   /** @type {Map<string, { key: string, label: string | null, batch: number | null, worker?: string, members: { node: Node, depth: number }[] }>} */
   const cards = new Map();
-  for (const n of hit === undefined ? [] : under.get(hit.node.id) ?? []) {
+  // Its own sub-agents: the walk's first level, by name.
+  for (const n of hit === undefined ? [] : walk(hit.node, 0).filter((m) => m.depth === 1).map((m) => m.node)) {
     const key = n.batch === null ? `${sel}:${n.agentType ?? ''}` : `${sel}#${n.batch}`;
     const card = cards.get(key) ?? { key, label: n.agentType, batch: n.batch, members: [] };
     card.members.push(...walk(n, 0));
@@ -418,6 +430,152 @@ export function describeIsland(pins, errs, ctx) {
       capEn: { text: t('home.capErr', { n: errs.length }) },
       hint: { text: ctx.open ? '' : first?.path?.text ?? first?.what?.text ?? '' },
       errs: { data: { hide: ctx.open && errs.length > 0 ? '0' : '1' }, kids: ctx.open ? errs : [] },
+    },
+  };
+}
+
+/** A guess that it runs or waits: read off a log or a write, or a wait inferred. It makes no card (T1), only a count. @param {Node} n */
+const looksBusy = (n) => (guessed(n) && (n.state === 'running' || n.state === 'waiting')) || n.waiting?.source === 'inferred';
+
+/**
+ * Every worker with something reported going on: one of its members runs or waits on you as reported, never a guess or
+ * unknown (T1, toneOf). Free, those that wait on you first, then Orchestra's own, each by name; held (`order`, the keys
+ * as drawn while the pointer or focus is on the list), as drawn, newcomers last. `failed`: those going on no more with
+ * a sub-agent whose turn failed, which counts nowhere else (shared/tower-contract.js): with the right side shut their
+ * subs card is out of sight, so they stand on the list, apart, and the capsule counts them. `all` has every worker,
+ * going or not, for its page: the cards, the capsule and the page all come of this one call on one snapshot (T3).
+ * @param {TowerSnapshot} snap @param {readonly string[]} order
+ * @returns {{ cards: RunEntry[], failed: RunEntry[], guessed: number, all: Map<string, RunEntry> }}
+ */
+export function runCards(snap, order) {
+  const { owned, readonly } = workersOf(snap);
+  /** @type {Map<Project, ReturnType<typeof treeOf>>} */
+  const walks = new Map();
+  /** @type {Map<string, RunEntry>} */
+  const all = new Map();
+  /** @type {RunEntry[]} */
+  const cards = [];
+  /** @type {RunEntry[]} */
+  const failed = [];
+  let guesses = 0;
+  for (const w of [...owned.map((x) => ({ ...x, ro: false })), ...readonly.map((x) => ({ ...x, ro: true }))]) {
+    let walk = walks.get(w.project);
+    if (walk === undefined) walks.set(w.project, (walk = treeOf(w.project)));
+    const members = walk(w.node, 0);
+    const tones = members.map((m) => toneOf(m.node));
+    const e = { key: w.node.id, node: w.node, project: w.project, ro: w.ro, members, waits: tones.includes('wait') };
+    all.set(e.key, e);
+    if (tones.some((k) => k === 'run' || k === 'wait')) cards.push(e);
+    else {
+      if (members.some((m) => m.node.mark === 'failed')) failed.push(e);
+      if (members.some((m) => looksBusy(m.node))) guesses++;
+    }
+  }
+  const pos = new Map(order.map((id, i) => [id, i]));
+  /** @param {RunEntry[]} list */
+  const held = (list) => [...list.filter((c) => pos.has(c.key)).sort((a, b) => Number(pos.get(a.key)) - Number(pos.get(b.key))), ...list.filter((c) => !pos.has(c.key))];
+  if (pos.size > 0) return { cards: held(cards), failed: held(failed), guessed: guesses, all };
+  cards.sort((a, b) => Number(b.waits) - Number(a.waits) || Number(a.ro) - Number(b.ro) || byName(a.node, b.node));
+  failed.sort((a, b) => Number(a.ro) - Number(b.ro) || byName(a.node, b.node));
+  return { cards, failed, guessed: guesses, all };
+}
+
+/**
+ * What the limits left out of this snapshot, sessions, projects and nodes: with any, a list of none says it read
+ * none, never that there is none (T1).
+ * @param {TowerSnapshot} snap @returns {{ sessions: number, projects: number, nodes: number, total: number }}
+ */
+export function clipsOf(snap) {
+  const sessions = clippedSessions(snap);
+  const { projects, nodes } = snap.meta.clipped;
+  return { sessions, projects, nodes, total: sessions + projects + nodes };
+}
+
+/** A worker's kind on its card: its harness, a read-only one said so. @param {RunEntry} e */
+const kindOf = (e) => (e.ro ? t('run.kindRo', { h: t(`harness.${e.node.harness}`) }) : t(`harness.${e.node.harness}`));
+
+/**
+ * How long a worker has been open: Orchestra's own by GET /api/owned's createdAt. Of a read-only one, or with no list
+ * (locked, not read yet), it is not known and says so (T1). How long its turn has run, no route says.
+ * @param {RunEntry} e @param {any} list GET /api/owned's reply, or null @param {number} nowWall
+ */
+export function runSince(e, list, nowWall) {
+  const id = ownedIdOf(e.node);
+  const o = id === null || !Array.isArray(list?.owned) ? undefined : list.owned.find((/** @type {any} */ x) => x.ownedId === id);
+  const at = Number(o?.createdAt);
+  return Number.isFinite(at) && at > 0 && nowWall >= at ? t('run.since', { t: fmtAge(nowWall - at) }) : t('run.noSince');
+}
+
+/**
+ * The capsule beside 「等你」: the first two names and how many more, so its names and its number are the cards it
+ * opens (T3); the members that failed, the sum of the flags on all the cards it opens, those going on and those apart
+ * (a sub-agent's failed turn counts nowhere else), in words of its own: 「出错」 beside it counts another list. With no
+ * card it says so, a guess said apart; with what the limits left out, that it read none, not that there is none (T1).
+ * @param {ReturnType<typeof runCards> | null} run @param {{ open: boolean, clipped?: number }} ctx clipped: clipsOf's total
+ * @returns {Record<string, Paint>}
+ */
+export function describeRunCap(run, ctx) {
+  const cards = run?.cards ?? [];
+  const names = cards.map((c) => c.node.title);
+  const errs = [...cards, ...(run?.failed ?? [])].reduce((k, c) => k + c.members.filter((m) => toneOf(m.node) === 'err').length, 0);
+  const clipped = ctx.clipped ?? 0;
+  const none = clipped > 0 ? t('run.capNoneClipped', { n: clipped }) : t(run !== null && run.guessed > 0 ? 'run.capNoneGuess' : 'run.capNone');
+  const tail = run === null ? t('run.capUnknown') : cards.length === 0 ? none : cards.length <= 2 ? t('run.capDoing') : t('run.capMore', { n: cards.length - 2 });
+  return {
+    capR: { data: { zero: cards.length === 0 ? '1' : '0' }, attr: { 'aria-expanded': ctx.open ? 'true' : 'false', title: names.length === 0 ? tail : t('run.capTitle', { who: names.join(t('run.sepNames')) }) } },
+    capRw: { text: names.slice(0, 2).join(t('run.sepNames')) },
+    capRn: { text: tail },
+    capRe: { text: t('run.capErr', { n: errs }), data: { hide: errs > 0 ? '0' : '1' } },
+  };
+}
+
+/**
+ * The right side's list: a card a worker going on, its count the cards; then, apart, those going on no more whose
+ * sub-agent failed, their count theirs. Why there is none, the guesses left out and what the limits left out
+ * (sessions, projects and nodes) are said, never drawn as none (T1).
+ * @param {ReturnType<typeof runCards>} run @param {{ list: any, nowWall: number, clipped: ReturnType<typeof clipsOf> }} ctx @returns {Paint}
+ */
+export function describeRunList(run, ctx) {
+  const c = ctx.clipped;
+  const notes = [
+    run.cards.length === 0 && t(c.total > 0 ? 'run.noneClipped' : 'run.none'),
+    run.guessed > 0 && t('run.guessed', { n: run.guessed }),
+    c.total > 0 && t('run.clipped', { s: c.sessions, p: c.projects, n: c.nodes }),
+  ].filter(Boolean);
+  const card = (/** @type {RunEntry} */ e) => describeRun({ key: e.key, title: e.node.title, kind: kindOf(e), took: runSince(e, ctx.list, ctx.nowWall), members: e.members });
+  return {
+    slots: {
+      n: { text: run.cards.length === 0 ? '' : t('fold.n', { n: run.cards.length }) },
+      note: { text: notes.join(t('sep.notes')) },
+      list: { kids: run.cards.map(card) },
+      fh: { data: { hide: run.failed.length > 0 ? '0' : '1' } },
+      fn: { text: t('fold.n', { n: run.failed.length }) },
+      flist: { kids: run.failed.map(card) },
+    },
+  };
+}
+
+/**
+ * A worker's page over the list, pushed by a click on its card: its members as rows, from the same run as the card, a
+ * row a mark (T3). Only its own row leads to its talk; it takes no action (D8: an allow, a no and a stop stay in its
+ * talk and in 「等你」). One that stopped going on, or left the snapshot, says so and stays until you go back.
+ * @param {ReturnType<typeof runCards>} run @param {{ page: string | null, title: string, list: any, nowWall: number }} ctx @returns {Paint}
+ */
+export function describeRunPage(run, ctx) {
+  if (ctx.page === null) return { data: { hide: '1' }, slots: { list: { kids: [] } } };
+  const e = run.all.get(ctx.page);
+  if (e === undefined) return { data: { hide: '0' }, slots: { title: { text: ctx.title }, sub: { text: '' }, note: { text: t('run.pageGone') }, list: { kids: [] } } };
+  const tones = e.members.map((m) => toneOf(m.node));
+  const asking = askingOf(e.members.map((m) => m.node));
+  const errs = tones.filter((k) => k === 'err').length;
+  const sub = [kindOf(e), t('run.members', { n: e.members.length }), runSince(e, ctx.list, ctx.nowWall), asking > 0 && t('fold.flagWait', { n: asking }), errs > 0 && t('fold.flagErr', { n: errs })];
+  return {
+    data: { hide: '0' },
+    slots: {
+      title: { text: e.node.title },
+      sub: { text: sub.filter(Boolean).join(t('sep.parts')) },
+      note: { text: [!run.cards.includes(e) && t('run.pageNotNow'), t('run.pageActs')].filter(Boolean).join(t('sep.notes')) },
+      list: { kids: e.members.map((m, i) => memberRow(m.node, m.depth, i === 0)) },
     },
   };
 }

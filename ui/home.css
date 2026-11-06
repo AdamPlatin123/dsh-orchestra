@@ -205,6 +205,13 @@ code, pre { font-family: var(--code); }
 .cap[data-zero="1"] { background: var(--sunk); color: var(--ink-3); }
 .cap-e { background: var(--err-soft); color: var(--err); }
 .cap[aria-expanded=true] { box-shadow: inset 0 0 0 1px currentColor; }
+/* What is going on, at the row's end: where it stands does not depend on the two before it, and its names give way first.
+   Not --run: there is no soft one, and --run over --sunk is too faint for this size. */
+.cap-run { flex: 0 1 auto; min-width: 0; max-width: 40%; background: var(--act-soft); color: var(--act); }
+.cap-rw { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cap-rw:empty { display: none; }
+.cap-rn { flex: none; }
+.cap-re { flex: none; color: var(--err); }
 .cap-hint { flex: 1 1 0; min-width: 0; overflow: hidden; font-size: 12px; color: var(--ink-3); text-overflow: ellipsis; white-space: nowrap; }
 .pins { max-height: clamp(180px, 34vh, 380px); margin: 4px 0; overflow: auto; scrollbar-width: thin; }
 .pins-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 8px; font-size: 12.5px; }
@@ -264,8 +271,22 @@ button.pin-go:hover { background: var(--sunk); }
 .btn[data-settle=a]::after, .btn[data-settle=b]::after { transform: scaleX(1); background: var(--ink-3); }
 .btn[data-hold="1"]::after { transform: scaleX(1); }
 
-/* == right: the team line, then what the current worker sent out */
+/* == right: shut until clicked open (第三轮 mock 21); then what is going on, the team line, what the current worker sent out */
 .right { --g: 40px; display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.right[data-open="0"] { display: none; }
+.wings:has(> .right[data-open="0"]) { grid-template-columns: minmax(0, 1fr); }
+.run { flex: 0 1 auto; min-height: 0; max-height: 55%; overflow: auto; padding: 10px 16px 8px var(--g); border-bottom: 1px solid var(--line); scrollbar-width: thin; }
+.run-top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.run-top .lb { flex: 1 1 0; }
+/* Those going on no more whose sub-agent failed: under the cards, apart, so the capsule's count is a list's. */
+.run-fh { display: flex; align-items: baseline; gap: 8px; margin: 10px 0 5px; font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+/* A worker's page takes the side's height; what it was pushed over stays drawn under it, so the way back finds its card. */
+.run-page { flex: 1 1 0; min-height: 0; overflow: auto; padding: 10px 16px 12px var(--g); scrollbar-width: thin; }
+.rpg-h { margin-top: 8px; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.rpg-sub { font-size: 12.5px; color: var(--ink-2); overflow-wrap: anywhere; }
+.rpg-sub, .run-page .subs-note { margin-bottom: 6px; }
+.rpg-list { max-width: 520px; }
+.right[data-page="card"] > .run, .right[data-page="card"] > .team, .right[data-page="card"] > .subs { display: none; }
 .team { flex: none; padding: 10px 16px 8px var(--g); border-bottom: 1px solid var(--line); }
 .lb { display: flex; align-items: baseline; gap: 8px; min-width: 0; margin-bottom: 5px; font-size: 13px; font-weight: 600; }
 .lb-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -374,6 +395,15 @@ button.pin-go:hover { background: var(--sunk); }
   .isl { flex-direction: column; }
   .right { display: block; }
   .right { --g: 16px; }
+  /* A drawer over the page, shut by its own buttons or Esc: a tap beside it would land on what is under it. */
+  .right { position: fixed; inset: 0 0 0 auto; z-index: 6; width: min(100vw, 420px); overflow: auto; background: var(--bg); border-left: 1px solid var(--line-2); }
+  body:has(.right[data-open="1"]) { overflow: hidden; }
+  /* What the drawer covers goes out of the Tab order and the reader's tree with it: an allow under it is never pressed
+     unseen (the page also sends a focus that got out back in). */
+  body:has(.right[data-open="1"]) > .top, .wings:has(> .right[data-open="1"]) > .left { visibility: hidden; }
+  .run { max-height: none; }
+  .caps { flex-wrap: wrap; row-gap: 4px; }
+  .cap-run { max-width: 100%; }
   .subs { overflow: visible; }
   .btn, .tb { min-height: 44px; }
 }

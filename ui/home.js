@@ -4,17 +4,19 @@
 // shows; everything done to a session goes through ui/drive.js, the old page's own code, so nothing here can
 // loosen an allow. A card opens only when clicked, and a new one comes out once at the end of its wire, never moving
 // the reader's place or the focus. The wires are the one thing measured here: they follow every frame, scroll and resize.
+// The right side is shut until clicked open (第三轮 mock 21), from the capsule of what is going on; a card there pushes
+// its worker's page, and Esc or the way back returns to the card. A phone has it as a drawer.
 import { TIMEOUT_MS, getTower, oneAtATime } from './api.js';
 import { after, every, fmtClock, fmtIso, nowMono, onFrame } from './clock.js';
 import { makePatcher } from './dom.js';
 import { POLL_MS, driveState, makeDrive } from './drive.js';
 import { describeFront } from './front.js';
-import { atBottom, deskOf, ownedIdOf, queuedN } from './owned.js';
-import { getTheme } from './prefs.js';
+import { SETTLE_MS, atBottom, deskOf, ownedIdOf, queuedN } from './owned.js';
+import { getRightOpen, getTheme, setRightOpen } from './prefs.js';
 import { go, openFull, parse } from './route.js';
 import { indexOf, towerFrame } from './tree.js';
 import { describeDetail, detectsError, t } from './view.js';
-import { avatarOf, describeErrs, describeFrontHead, describeFrontTile, describeGrant, describeIsland, describeLost, describeRail, describeSubs, describeTop, describeWires, grantsLine, railList, rootOf, subCards, wireRows, workersOf } from './wings.js';
+import { avatarOf, clipsOf, describeErrs, describeFrontHead, describeFrontTile, describeGrant, describeIsland, describeLost, describeRail, describeRunCap, describeRunList, describeRunPage, describeSubs, describeTop, describeWires, grantsLine, railList, rootOf, runCards, subCards, wireRows, workersOf } from './wings.js';
 
 /** @typedef {import('../shared/tower-contract.js').TowerSnapshot} TowerSnapshot */
 
@@ -26,11 +28,14 @@ const GROW_MS = 700;
 const WIRE_MS = 2200;
 /** One column: the row and the card stand one under the other, and no wire goes between them. */
 const NARROW = '(max-width: 899px)';
+const narrow = () => window.matchMedia(NARROW).matches;
 /** After the pointer or focus left, the left list holds this long, as the old page's tree. */
 const QUIET_MS = 5000;
 /** The chain of dispatches a worker may stand at the end of (src/route/dispatch.ts DISPATCH_LIMITS.depth): the panel says so there. */
 const MAX_DEPTH = 2;
 const dom = makePatcher(document);
+/** @param {Element} el */
+const focusOn = (el) => /** @type {HTMLElement} */ (el).focus();
 
 const state = {
   ...driveState(),
@@ -49,16 +54,16 @@ const state = {
   /** The rows and cards painted hot: one that lost its other end has no wire to stand out for. @type {Set<Element>} */ hotEnds: new Set(),
   /** A row was clicked open: its card comes into view. @type {string | null} */ reveal: null,
   /** @type {number | null} */ lastWaiting: null,
-  // The left list holds its order under the pointer or focus (research §1.5): a click picks the row it was aimed at.
-  railHover: false,
-  railFocus: false,
-  /** Cancels the pending release. @type {(() => void) | null} */ railQuiet: null,
-  /** The ids as drawn. @type {string[]} */ railOrder: [],
+  /** The left list's ids as drawn: it holds them under the pointer or focus (research §1.5). @type {string[]} */ railOrder: [],
+  /** The right side is open; a phone's drawer never opens by itself. */ runOpen: !narrow() && getRightOpen(),
+  /** The worker whose page is pushed over the right side's list, by key. @type {string | null} */ runPage: null,
+  /** Its title as last seen, for a page whose worker left the snapshot. */ runTitle: '',
+  /** The cards' keys as drawn: the list holds them as the left one does. @type {string[]} */ runOrder: [],
+  /** When the right side last opened, shut or turned a page: a double click's second half goes nowhere then. */ runMoved: -Infinity,
+  /** When a card left the list while it held: those under it moved up, so a click on a card goes nowhere a while. */ runShrunk: -Infinity,
   /** Where the capsules' block stands on the page. */ islAt: '',
   /** The talk stood at its end at the last frame or scroll: what grew it shorter since says nothing of the reader. */ chatEnd: true,
 };
-
-const railHeld = () => state.railHover || state.railFocus || state.railQuiet !== null;
 
 /** The tab's count, as the old page's: a pending agent request waits for you too. @param {TowerSnapshot} snap */
 function paintTitle(snap) {
@@ -137,8 +142,9 @@ function paintWires() {
   }
   for (const el of state.hotEnds) if (!hotEnds.has(el)) dom.paint(el, { data: { hot: '0' } });
   state.hotEnds = hotEnds;
-  const narrow = window.matchMedia(NARROW).matches;
-  dom.paintId('wires', describeWires(narrow ? [] : ends, { chat: chat.getBoundingClientRect(), frame: dom.byId('detail').getBoundingClientRect(), subs: subs.getBoundingClientRect(), x: list.getBoundingClientRect().left }));
+  // One column, a shut right side or a worker's page over the cards: no wire to a card out of sight.
+  const none = narrow() || !state.runOpen || state.runPage !== null;
+  dom.paintId('wires', describeWires(none ? [] : ends, { chat: chat.getBoundingClientRect(), frame: dom.byId('detail').getBoundingClientRect(), subs: subs.getBoundingClientRect(), x: list.getBoundingClientRect().left }));
 }
 
 let wiresQueued = false;
@@ -184,6 +190,7 @@ function render() {
   dom.paintId('top', top);
   dom.paintId('desk', { slots: { new: { text: t(open ? 'bar.new' : 'bar.newLocked'), attr: { title: t('bar.newHint') } }, ...describeFrontTile(state.owned, { unlocked: open, on: state.front, busy: state.busy }) } });
   drive.paintDesk();
+  dom.paintId('right', { data: { open: state.runOpen ? '1' : '0', page: state.runPage === null ? 'list' : 'card' } });
   if (snap === null) return;
   paintTitle(snap);
   dom.paintId('lost', describeLost(snap));
@@ -196,9 +203,23 @@ function render() {
   const n = /** @type {readonly unknown[]} */ (pins.slots?.list?.kids ?? []).length;
   // The last one answered, the lists fold: no open capsule over nothing, and the next one waits folded until clicked.
   if (n === 0 && errs.length === 0) state.island = false;
-  dom.paintId('isl', describeIsland(pins, errs, { open: state.island, nowWall: wall, bar: pinBar, detects: detectsError(snap) }));
+  // The capsule, the cards and the page: one run of one snapshot (T3).
+  const held = runHeld();
+  const run = runCards(snap, held ? state.runOrder : []);
+  const keys = [...run.cards, ...run.failed].map((c) => c.key);
+  // The hold keeps the order, not a card that left: those under it moved up under the pointer (as a moved list of 「等你」).
+  if (held && state.runOrder.some((k) => !keys.includes(k))) state.runShrunk = nowMono();
+  state.runOrder = keys;
+  if (state.runPage !== null) state.runTitle = run.all.get(state.runPage)?.node.title ?? state.runTitle;
+  const clips = clipsOf(snap);
+  const isl = describeIsland(pins, errs, { open: state.island, nowWall: wall, bar: pinBar, detects: detectsError(snap) });
+  Object.assign(/** @type {any} */ (isl.slots), describeRunCap(run, { open: state.runOpen, clipped: clips.total }));
+  dom.paintId('isl', isl);
   dom.paintId('pins', { ...pins, data: { hide: state.island && n > 0 ? '0' : '1' } });
   dom.paintId('rail', describeRail(snap, { sel: state.sel, roOpen: state.roOpen, order: railIds(snap) }));
+  // Drawn under a page too, out of sight: the way back finds the very card it left.
+  dom.paintId('run', describeRunList(run, { list: state.owned, nowWall: wall, clipped: clips }));
+  dom.paintId('run-page', describeRunPage(run, { page: state.runPage, title: state.runTitle, list: state.owned, nowWall: wall }));
 
   state.rows = new Map();
   const detail = describeDetail(snap, state.sel, [], drive.detailFor(snap), { nowWall: wall, fmtIso });
@@ -291,9 +312,12 @@ function openFrontTalk() {
   schedule();
 }
 
-/** A dispatch row of the selected worker's talk, tied to its card. @param {readonly import('./dom.js').Desc[]} kids */
+/** Whether the cards stand in sight: the right side open on its list, not shut nor under a worker's page. */
+const cardsShown = () => state.runOpen && state.runPage === null;
+
+/** A dispatch row of the selected worker's talk, tied to its card: expanded only while its card is open and in sight. @param {readonly import('./dom.js').Desc[]} kids */
 function chatRows(kids) {
-  const rows = wireRows(kids, state.snap === null ? [] : subCards(state.snap, cardsOf()), state.folds, fmtClock);
+  const rows = wireRows(kids, state.snap === null ? [] : subCards(state.snap, cardsOf()), cardsShown() ? state.folds : new Set(), fmtClock);
   for (const r of rows) {
     const fold = r.tpl === 'tpl-disp' ? r.slots?.b?.data?.fold : '';
     if (fold) state.rows.set(fold, r.key);
@@ -302,6 +326,45 @@ function chatRows(kids) {
 }
 
 const drive = makeDrive(state, dom, { schedule, render, poll, openNode, openFront: openFrontTalk, frontTalk: describeFront, homeId: 'cap-wait', rows: chatRows });
+
+/**
+ * Opens or shuts the right side. Either moves what is under the pointer (the left half's width, or a drawer over it), which
+ * no change of a list says: allows are void a while, as after one (r4 §10.9). A wide window keeps the choice; a phone
+ * never opens to a drawer. The focus: into a drawer that opened, back to the capsule from a side that shut under it.
+ * @param {boolean} open @param {Element | null} from what was clicked or had the key; null moves no focus
+ */
+function setRun(open, from) {
+  const was = from !== null && dom.byId('right').contains(from);
+  state.runOpen = open;
+  if (!open) state.runPage = null;
+  if (!narrow()) setRightOpen(open);
+  state.runMoved = nowMono();
+  drive.settle();
+  render();
+  if (from === null) return;
+  if (open && narrow()) focusOn(dom.byId('run-h'));
+  else if (!open && (was || narrow())) focusOn(dom.byId('cap-run'));
+}
+
+/** A card's worker's page over the list; its title takes the focus. @param {string} key */
+function runPush(key) {
+  state.runPage = key;
+  state.runTitle = '';
+  state.runMoved = nowMono();
+  render();
+  focusOn(dom.byId('rpg-h'));
+}
+
+/** Back to the list: the focus to the card it came from, or with that one gone, to the list's head. */
+function runBack() {
+  const key = state.runPage;
+  state.runPage = null;
+  state.runMoved = nowMono();
+  render();
+  const run = dom.byId('run');
+  const li = key === null ? null : dom.keyed(dom.slot(run, 'list'), key) ?? dom.keyed(dom.slot(run, 'flist'), key);
+  focusOn(li === null ? dom.byId('run-h') : dom.slot(li, 'b'));
+}
 
 /** @type {(() => void)[]} */
 let timers = [];
@@ -321,15 +384,42 @@ function act(el) {
   // meant is an answer too (D8): void as an allow is, the stops left alone.
   if ((a === 'deny' || a === 'req-no') && t0.closest('.pin-acts') !== null && drive.settling()) return drive.say(t('home.moved'));
   if (drive.act(t0)) return;
-  if (a === 'worker') return openNode(t0.dataset.node ?? '');
+  if (a === 'run') return setRun(!state.runOpen, t0);
+  if (a === 'run-card') return nowMono() - state.runShrunk < SETTLE_MS ? drive.say(t('home.moved')) : runPush(t0.dataset.run ?? '');
+  if (a === 'run-back') return runBack();
+  if (a === 'worker') {
+    // From a phone's drawer: it shuts, or the talk opened would be under it.
+    if (!(state.runOpen && narrow() && dom.byId('right').contains(t0))) return openNode(t0.dataset.node ?? '');
+    setRun(false, null);
+    openNode(t0.dataset.node ?? '');
+    render();
+    return focusOn(dom.byId('dt-title'));
+  }
   if (a === 'front') return state.csrf === null ? void drive.unlock() : openFrontTalk();
   if (a === 'front-open') return void drive.openFront();
   if (a === 'fold') {
     const k = t0.dataset.fold ?? '';
-    if (state.folds.has(k)) state.folds.delete(k);
+    const dr = t0.classList.contains('dr');
+    // A row folds its card only when that card stands open in sight; one open out of sight, under a shut side or a
+    // page, is opened to view, not folded unseen.
+    if (state.folds.has(k) && (!dr || cardsShown())) state.folds.delete(k);
     else state.folds.add(k);
-    // Clicked in the talk: the card comes into view. Only a click moves the right side.
-    if (t0.classList.contains('dr') && state.folds.has(k)) state.reveal = k;
+    // Clicked in the talk: the card comes into view. Only a click moves the right side, and opens it if shut (the
+    // choice not kept: it was the row's), or turns back a page over the cards.
+    if (dr && state.folds.has(k)) {
+      state.reveal = k;
+      state.runPage = null;
+      if (!state.runOpen) {
+        state.runOpen = true;
+        state.runMoved = nowMono();
+        drive.settle();
+        if (narrow()) {
+          render();
+          const li = dom.keyed(dom.slot(dom.byId('subs'), 'list'), k);
+          return li === null ? focusOn(dom.byId('run-h')) : focusOn(dom.slot(li, 'b'));
+        }
+      }
+    }
     return schedule();
   }
   if (a === 'ro') {
@@ -353,6 +443,9 @@ function act(el) {
 
 document.addEventListener('click', (e) => {
   const el = e.target instanceof Element ? e.target.closest('[data-act],.pin-go') : null;
+  // The right side just opened, shut or turned a page: a double click's second half would undo it, or land on what
+  // came up under it. It goes nowhere (the allows are void meanwhile anyway).
+  if (el !== null && e.detail > 1 && nowMono() - state.runMoved < SETTLE_MS) return;
   if (el !== null) act(el);
 });
 
@@ -360,6 +453,19 @@ document.addEventListener('click', (e) => {
 document.addEventListener('keydown', (e) => {
   const el = e.target instanceof Element ? e.target : null;
   if (e.isComposing || e.altKey || e.ctrlKey || e.metaKey) return;
+  // Esc turns back a worker's page, then shuts the side, from inside it or the capsule (on a phone from anywhere: the
+  // drawer is over everything); not from the composer of a wide window, nor a dialog, which has its own.
+  if (e.key === 'Escape' && el?.closest('dialog') == null) {
+    const inRight = el !== null && dom.byId('right').contains(el);
+    if (state.runPage !== null && (inRight || narrow())) {
+      e.preventDefault();
+      return runBack();
+    }
+    if (state.runOpen && (inRight || narrow() || el?.id === 'cap-run')) {
+      e.preventDefault();
+      return setRun(false, el);
+    }
+  }
   if (e.key === 'n' && !(el !== null && ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) && el?.closest('dialog') == null) {
     e.preventDefault();
     return drive.openNew();
@@ -374,27 +480,67 @@ document.addEventListener('keydown', (e) => {
 
 drive.listen(dom.byId('pins'));
 
-// == the left list's hold, as the old page's tree: the pointer or focus holds it; leaving starts the quiet timer
-const railEl = dom.byId('rail');
-function railHold() {
-  state.railQuiet?.();
-  state.railQuiet = null;
-}
-function railRelease() {
-  if (railHeld()) return;
-  state.railQuiet = after(QUIET_MS, () => {
-    state.railQuiet = null;
-    schedule();
+// == the lists' hold, as the old page's tree: the pointer or focus holds the order, so a click picks the row it was
+// aimed at; leaving starts the quiet timer. The left list and the right side's cards alike.
+/** @param {Element} el @returns {() => boolean} whether it holds now */
+function holdOn(el) {
+  let hover = false;
+  let focus = false;
+  /** Cancels the pending release. @type {(() => void) | null} */
+  let quiet = null;
+  const held = () => hover || focus || quiet !== null;
+  const hold = () => {
+    quiet?.();
+    quiet = null;
+  };
+  const release = () => {
+    if (held()) return;
+    quiet = after(QUIET_MS, () => {
+      quiet = null;
+      schedule();
+    });
+  };
+  el.addEventListener('pointerenter', () => { hover = true; hold(); });
+  el.addEventListener('pointerleave', () => { hover = false; release(); });
+  el.addEventListener('focusin', () => { focus = true; hold(); });
+  el.addEventListener('focusout', (e) => {
+    const to = /** @type {FocusEvent} */ (e).relatedTarget;
+    if (to instanceof Node && el.contains(to)) return;
+    focus = false;
+    release();
   });
+  return held;
 }
-railEl.addEventListener('pointerenter', () => { state.railHover = true; railHold(); });
-railEl.addEventListener('pointerleave', () => { state.railHover = false; railRelease(); });
-railEl.addEventListener('focusin', () => { state.railFocus = true; railHold(); });
-railEl.addEventListener('focusout', (e) => {
-  const to = /** @type {FocusEvent} */ (e).relatedTarget;
-  if (to instanceof Node && railEl.contains(to)) return;
-  state.railFocus = false;
-  railRelease();
+const railHeld = holdOn(dom.byId('rail'));
+const runHeld = holdOn(dom.byId('run'));
+// A window gone narrow shuts the side, the choice kept for the wide one; a drawer never opens by itself. A focus in it
+// goes back to the capsule, or it would fall to the page's top with what held it. Gone wide again, the side is as the
+// wide window last had it: a drawer shut on a phone is no choice for the desk.
+window.matchMedia(NARROW).addEventListener?.('change', (/** @type {MediaQueryListEvent} */ e) => {
+  if (!e.matches) {
+    if (state.runOpen === getRightOpen()) return;
+    state.runOpen = getRightOpen();
+    state.runMoved = nowMono();
+    drive.settle();
+    render();
+    return;
+  }
+  if (!state.runOpen) return;
+  const had = document.activeElement;
+  const was = had != null && dom.byId('right').contains(had);
+  state.runOpen = false;
+  state.runPage = null;
+  state.runMoved = nowMono();
+  drive.settle();
+  render();
+  if (was) focusOn(dom.byId('cap-run'));
+});
+// The drawer covers the page (its CSS takes what it covers out of the Tab order too): a focus that got out under it, a
+// Shift+Tab or a reader's jump, goes back to its head, so nothing under it is pressed unseen. A dialog has its own.
+document.addEventListener('focusin', (e) => {
+  const el = e.target instanceof Element ? e.target : null;
+  if (!state.runOpen || !narrow() || el === null || dom.byId('right').contains(el) || el.closest('dialog') != null) return;
+  focusOn(dom.byId(state.runPage === null ? 'run-h' : 'rpg-h'));
 });
 
 // == the wires: a row or card under the pointer or focus stands out, and they follow whatever moves the two lists

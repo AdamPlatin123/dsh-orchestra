@@ -470,9 +470,12 @@ test('what the browser loads for / stays within its own budget, all of it embedd
   const own = ['ui/home.html', 'ui/home.css', 'ui/home.js', 'ui/wings.js', 'ui/fold.js', 'ui/front.js'].reduce((n, f) => n + Buffer.byteLength(read(f)), 0);
   const total = all.reduce((n, f) => n + Buffer.byteLength(read(f)), 0);
   // The page's own files, and everything it loads with what it shares with the old page.
-  // Widened with each thing the page took on; last the front desk's tile, talk and orders, and what it says per harness (2026-11-05).
-  assert.ok(own <= 112 * 1024, `the home page's own files are ${own} bytes`);
-  assert.ok(total <= 289 * 1024, `the home page loads ${total} bytes`);
+  // Widened with each thing the page took on: the front desk's tile, talk and orders, and what it says per harness
+  // (2026-11-05, 112 and 289); last the running panel, its capsule, cards and a worker's page (2026-11-05, some 18.5 KB),
+  // then its review's fixes: one rule for its flags, a list apart for failed sub-agents, what the limits left out, the
+  // drawer's focus kept in (2026-11-05, 122 to 128 and 310 to 316: some 4 KB, most of it the comments that say why).
+  assert.ok(own <= 128 * 1024, `the home page's own files are ${own} bytes`);
+  assert.ok(total <= 316 * 1024, `the home page loads ${total} bytes`);
 });
 
 const OBSERVED = towerFromStage(busyStage()).meta.observedAt;
@@ -634,6 +637,11 @@ test('the page boots: worker, talk and cards from the fetched data; only a perso
     fire(byId('subs'), 'scroll');
     await flush();
     const wires = () => byId('wires').querySelectorAll('.wire');
+    // The right side is shut until clicked open (第三轮 mock 21): no wire to a card out of sight.
+    assert.equal(byId('right').getAttribute('data-open'), '0');
+    assert.equal(wires().length, 0);
+    await click(byId('cap-run'));
+    assert.equal(byId('right').getAttribute('data-open'), '1');
     assert.equal(wires().length, 1);
     assert.equal(wires()[0]!.getAttribute('data-hot'), '1', 'a new wire stands out');
     assert.equal(wires()[0]!.getAttribute('data-grow'), '1');
@@ -652,10 +660,23 @@ test('the page boots: worker, talk and cards from the fetched data; only a perso
     assert.equal(wires()[0]!.getAttribute('data-hot'), '0');
     // A click on the row opens the card, and an open card keeps its wire lit; a second click folds it.
     assert.equal(cardsNow()[0]!.querySelector('.fold')!.getAttribute('aria-expanded'), 'false');
+    // The side shut, the row opens it: its card is there (the choice not kept, it was the row's).
+    await click(byId('cap-run'));
+    assert.equal(byId('right').getAttribute('data-open'), '0');
+    assert.equal(wires().length, 0);
     await click(dr());
+    assert.equal(byId('right').getAttribute('data-open'), '1');
     assert.equal(cardsNow()[0]!.querySelector('.fold')!.getAttribute('aria-expanded'), 'true');
     assert.equal(dr().getAttribute('aria-expanded'), 'true');
     assert.equal(wires()[0]!.getAttribute('data-hot'), '1');
+    // Shut over its open card, the row says it is out of sight, and a click opens the side on it, never folds it unseen.
+    await click(byId('cap-run'));
+    assert.equal(byId('right').getAttribute('data-open'), '0');
+    assert.equal(dr().getAttribute('aria-expanded'), 'false');
+    await click(dr());
+    assert.equal(byId('right').getAttribute('data-open'), '1');
+    assert.equal(cardsNow()[0]!.querySelector('.fold')!.getAttribute('aria-expanded'), 'true');
+    assert.equal(dr().getAttribute('aria-expanded'), 'true');
     await click(dr());
     assert.equal(cardsNow()[0]!.querySelector('.fold')!.getAttribute('aria-expanded'), 'false');
     // Scrolled out, its wire is taken in; back, it is drawn again.

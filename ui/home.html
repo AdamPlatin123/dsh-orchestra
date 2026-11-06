@@ -76,6 +76,7 @@
         <button type="button" class="cap" id="cap-wait" data-act="island" aria-expanded="false" aria-controls="pins" data-slot="capW" data-zero="1"><b data-slot="capWn" data-t="home.capUnknown"></b><span class="cap-t" data-slot="capWt"></span></button>
         <button type="button" class="cap cap-e" data-act="island" aria-expanded="false" data-slot="capE" data-hide="1"><b data-slot="capEn"></b></button>
         <span class="cap-hint" data-slot="hint"></span>
+        <button type="button" class="cap cap-run" id="cap-run" data-act="run" aria-expanded="false" aria-controls="right" data-slot="capR" data-zero="1"><span class="cap-rw" data-slot="capRw"></span><b class="cap-rn" data-slot="capRn" data-t="run.capUnknown"></b><b class="cap-re" data-slot="capRe" data-hide="1"></b></button>
       </p>
       <section id="pins" class="pins" aria-labelledby="pins-h" data-hide="1">
         <h4 id="pins-h" class="pins-h"><span data-t="pin.title"></span><span class="pins-n" data-slot="n"></span><span class="pins-note" data-slot="note"></span></h4>
@@ -93,8 +94,22 @@
   </div>
 </section>
 
-<section class="right" aria-labelledby="right-h">
+<section id="right" class="right" aria-labelledby="right-h" data-open="0" data-page="list">
   <h2 id="right-h" class="sr" data-t="home.rightH"></h2>
+  <section id="run" class="run" aria-labelledby="run-h">
+    <div class="run-top"><h3 id="run-h" class="lb" tabindex="-1"><span class="lb-t" data-t="run.h"></span><span class="lb-n" data-slot="n"></span></h3><button type="button" class="tb" data-act="run" aria-controls="right" data-t="run.close"></button></div>
+    <p class="subs-note" data-slot="note"></p>
+    <ol class="fold-list" data-slot="list"></ol>
+    <h4 class="run-fh" data-slot="fh" data-hide="1"><span data-t="run.failedH"></span><span class="lb-n" data-slot="fn"></span></h4>
+    <ol class="fold-list" data-slot="flist"></ol>
+  </section>
+  <section id="run-page" class="run-page" aria-labelledby="rpg-h" data-hide="1">
+    <div class="run-top"><button type="button" class="tb" data-act="run-back" data-t="run.back"></button><button type="button" class="tb" data-act="run" aria-controls="right" data-t="run.close"></button></div>
+    <h3 id="rpg-h" class="rpg-h" tabindex="-1" data-slot="title"></h3>
+    <p class="rpg-sub" data-slot="sub"></p>
+    <p class="subs-note" data-slot="note"></p>
+    <ul class="rpg-list" data-slot="list"></ul>
+  </section>
   <div class="team">
     <h3 class="lb" data-t="home.team"></h3>
     <p class="empty"><b data-t="home.noTeamH"></b><span data-t="home.noTeam"></span></p>
@@ -159,6 +174,7 @@
 <template id="tpl-ev"><li class="ev"><span class="ev-at" data-slot="at"></span><span class="ev-ty" data-slot="ty"></span><span class="ev-tx" data-slot="tx"></span></li></template>
 <template id="tpl-wk"><li class="wk"><button type="button" class="rr" data-act="worker" data-slot="b"><span class="av" aria-hidden="true" data-slot="av"><span data-slot="ch"></span><i class="bd" data-slot="bd"></i></span><span class="tx"><b data-slot="name"></b><small data-slot="l2"></small></span></button></li></template>
 <template id="tpl-fold"><li class="cw"><button type="button" class="fold" data-act="fold" aria-expanded="false" data-slot="b"><span class="fold-title" data-slot="title"></span><span class="fold-chev" aria-hidden="true"></span><span class="fold-meta"><span data-slot="kind"></span><span data-slot="n"></span><span data-slot="took"></span><span class="fold-flag fold-flag-wait" data-slot="fw" data-hide="1"></span><span class="fold-flag fold-flag-err" data-slot="fe" data-hide="1"></span></span><span class="fold-dots" role="img" data-slot="dots" data-hide="1"></span><span class="fold-bar" role="img" data-slot="bar" data-hide="1"></span></button><ul class="fold-body" data-slot="body" data-hide="1"></ul></li></template>
+<template id="tpl-run"><li class="cw"><button type="button" class="fold run-b" data-act="run-card" data-slot="b"><span class="fold-title" data-slot="title"></span><span class="fold-chev" aria-hidden="true"></span><span class="fold-meta"><span data-slot="kind"></span><span data-slot="n"></span><span data-slot="took"></span><span class="fold-flag fold-flag-wait" data-slot="fw" data-hide="1"></span><span class="fold-flag fold-flag-err" data-slot="fe" data-hide="1"></span></span><span class="fold-dots" role="img" data-slot="dots" data-hide="1"></span><span class="fold-bar" role="img" data-slot="bar" data-hide="1"></span></button></li></template>
 <template id="tpl-fd"><i class="fd"></i></template>
 <template id="tpl-mem"><li class="mem"><i class="fd" aria-hidden="true" data-slot="dot"></i><span class="mem-n" data-slot="name"></span><span class="mem-st" data-slot="st"></span><span class="mem-t" data-slot="took"></span><span class="mem-m" data-slot="model"></span><span class="mem-a" data-slot="act"></span><button type="button" class="mem-go" data-act="worker" data-slot="go" data-hide="1"></button></li></template>
 </body>

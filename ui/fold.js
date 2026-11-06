@@ -5,7 +5,8 @@
 // running never opens it. Pure, like ui/view.js. A folded card hides nothing that needs you: its flags say 等你 and
 // 出错 on the second line, a sub-agent of an owned session by its mark (its state cannot say); what waits stands at
 // the top of the page too, on its session's node, and so does what failed in a build that reads failures
-// (ui/wings.js describeIsland).
+// (ui/wings.js describeIsland). A worker's card on the right (describeRun, mock round3/21's roster panel) has the same
+// face but opens nothing in place: a click pushes the worker's page over the list (ui/home.js).
 import { activityOf, fmtAge, guessed, t } from './view.js';
 
 /** @typedef {import('../shared/tower-contract.js').Node} Node */
@@ -49,8 +50,8 @@ export function tookOf(members) {
 /** A member's state in words, a guess marked. @param {Node} n */
 export const stateWord = (n) => (guessed(n) ? `${t('mark.inferred')} ${t(`state.${n.state}`)}` : t(`state.${n.state}`));
 
-/** One row of an open card: its state, time and model, each unknown said as unknown. @param {Node} n @param {number} depth below the card's level @returns {import('./dom.js').Desc} */
-function memberRow(n, depth, opens = false) {
+/** One row of an open card or a worker's page: its state, time and model, each unknown said as unknown. @param {Node} n @param {number} depth below the card's level @returns {import('./dom.js').Desc} */
+export function memberRow(n, depth, opens = false) {
   return {
     key: n.id, tpl: 'tpl-mem', data: { depth: String(Math.min(depth, 3)) },
     slots: {
@@ -73,21 +74,66 @@ function memberRow(n, depth, opens = false) {
  */
 export function describeFold(o) {
   const nodes = o.members.map((m) => m.node);
-  const asking = nodes.filter(waits).length;
-  const errs = nodes.filter(failed).length;
-  const { dots, bar } = marks(nodes);
   return {
     key: o.key, tpl: 'tpl-fold', data: { fresh: o.fresh === true ? '1' : '0' },
     slots: {
       b: { data: { fold: o.key }, attr: { 'aria-expanded': o.open ? 'true' : 'false' } },
       title: { text: o.title },
       kind: { text: o.kind ?? t('fold.kind') },
-      n: { text: t('fold.n', { n: nodes.length }) },
-      took: { text: tookOf(nodes) },
-      fw: { text: t('fold.flagWait', { n: asking }), data: { hide: asking > 0 ? '0' : '1' } },
-      fe: { text: t('fold.flagErr', { n: errs }), data: { hide: errs > 0 ? '0' : '1' } },
-      dots, bar,
+      ...foldFace(nodes, tookOf(nodes)),
       body: { data: { hide: o.open ? '0' : '1' }, kids: o.open ? o.members.map((m, i) => memberRow(m.node, m.depth, o.opens === true && i === 0)) : [] },
+    },
+  };
+}
+
+/**
+ * What both kinds of card show under the title: the count, a time, the flags and one mark a member. `solid`: the flags
+ * count the marks, so a wait guessed off a log or inferred is no 等你 (T1), and a worker's page, counting the same
+ * marks, says the same (T3).
+ * @param {readonly Node[]} nodes @param {string} took @param {boolean} [solid]
+ */
+/**
+ * How many of a worker's approvals wait, its own node first in `nodes`: a member of an owned session never waits
+ * itself, its session waits for it and the member asks (src/sources/tower.ts), so a session that waits with members
+ * asking is their approvals, not one more (T3: the count 「等你」 shows above). Only reported waits count (T1).
+ * @param {readonly Node[]} nodes
+ */
+export function askingOf(nodes) {
+  const tones = nodes.map(toneOf);
+  const under = tones.slice(1).filter((k) => k === 'wait').length;
+  return under > 0 ? under : tones[0] === 'wait' ? 1 : 0;
+}
+
+function foldFace(nodes, took, solid = false) {
+  const tones = solid ? nodes.map(toneOf) : [];
+  const asking = solid ? askingOf(nodes) : nodes.filter(waits).length;
+  const errs = solid ? tones.filter((k) => k === 'err').length : nodes.filter(failed).length;
+  return {
+    n: { text: t('fold.n', { n: nodes.length }) },
+    took: { text: took },
+    fw: { text: t('fold.flagWait', { n: asking }), data: { hide: asking > 0 ? '0' : '1' } },
+    fe: { text: t('fold.flagErr', { n: errs }), data: { hide: errs > 0 ? '0' : '1' } },
+    ...marks(nodes),
+  };
+}
+
+/**
+ * A worker's card on the right: the folded card's face, its members the worker and all under it, a click a push to
+ * its page instead of opening in place (no aria-expanded: it opens nothing here). `took` is how long it has been open,
+ * as far as that is known. Its flags count the marks, as its page and the list's order do (T3).
+ * @param {{ key: string, title: string, kind: string, took: string, members: readonly { node: Node, depth: number }[] }} o
+ * @returns {import('./dom.js').Desc}
+ */
+export function describeRun(o) {
+  const nodes = o.members.map((m) => m.node);
+  return {
+    key: o.key, tpl: 'tpl-run',
+    slots: {
+      b: { data: { run: o.key } },
+      title: { text: o.title },
+      kind: { text: o.kind },
+      ...foldFace(nodes, o.took, true),
+      n: { text: t('run.members', { n: nodes.length }) },
     },
   };
 }
