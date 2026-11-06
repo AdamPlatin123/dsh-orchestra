@@ -123,6 +123,7 @@ export type RequestSuggestion = {
 
 export type AgentRequest = {
   readonly requestId: string;
+  /** The harness asked for while it waits; once dispatched, the one that runs it (a person may 改派 it to the other). */
   readonly harness: RouteHarness;
   /** Redacted, invisible characters written out, at most textBytes: the session's first message on a dispatch. */
   readonly text: string;
@@ -141,7 +142,7 @@ export type AgentRequest = {
   readonly tainted: boolean;
   /** The front desk asked (src/route/dispatch.ts): orchestrad knows that, as it knows which session called. */
   readonly fromDesk: boolean;
-  /** The model an owned session named for it, checked; null when it named none (the card's suggestion or default). */
+  /** The model an owned session named for it, checked; null when it named none (the card's suggestion or default). Once dispatched, the model it runs on. */
   readonly model: string | null;
   /** Why it waits for you though its session may dispatch freely; null when that is no question. */
   readonly askWhy: AskWhy | null;
@@ -225,10 +226,13 @@ export type Requests = {
   fetched(requestId: string): void;
   /** Settles on the next move of the request, or after `ms`, whichever comes first. */
   wait(requestId: string, ms: number): Promise<void>;
-  /** Whether `text` and `harness` dispatch the pending request `requestId` (what the card showed): the request, or why not. */
-  claim(requestId: string, text: string, harness: RouteHarness): { ok: true; request: AgentRequest } | { ok: false; why: ClaimRefusal };
-  /** The person dispatched it: `ownedId` now runs it. */
-  bind(requestId: string, ownedId: string): boolean;
+  /**
+   * Whether `text` dispatches the pending request `requestId` (what the card showed): the request, or why not. The harness
+   * and model are the person's to pick (改派: the card's are what it asked for); bind() says which ran it.
+   */
+  claim(requestId: string, text: string): { ok: true; request: AgentRequest } | { ok: false; why: ClaimRefusal };
+  /** The person dispatched it: `ownedId` now runs it, on `ran` when given (the harness and model it really started on, a person's 改派 or not). */
+  bind(requestId: string, ownedId: string, ran?: { harness: RouteHarness; model: string }): boolean;
   /** Text as a card's label shows it: one line, at most labelBytes, a cut ending in '…'; null when nothing is left. */
   label(raw: string): string | null;
   /** The person rejected it (pending only). */
@@ -470,17 +474,22 @@ export function makeRequests(deps: RequestsDeps): Requests {
         cancel = deps.after(ms, done);
       });
     },
-    claim(requestId: string, text: string, harness: RouteHarness) {
+    claim(requestId: string, text: string) {
       const m = all.get(requestId);
       if (m === undefined || m.state !== 'pending' || deps.nowMono() >= m.expiresMono) return { ok: false as const, why: 'request-gone' as const };
-      // The person dispatches what the card showed: that text, that harness.
-      if (m.text !== text || m.harness !== harness) return { ok: false as const, why: 'request-mismatch' as const };
+      // The person dispatches the text the card showed, never another; on which harness and model is theirs (改派).
+      if (m.text !== text) return { ok: false as const, why: 'request-mismatch' as const };
       return { ok: true as const, request: view(m) };
     },
-    bind(requestId: string, ownedId: string): boolean {
+    bind(requestId: string, ownedId: string, ran?: { harness: RouteHarness; model: string }): boolean {
       const m = all.get(requestId);
       if (m === undefined || m.state !== 'pending') return false;
       m.ownedId = ownedId;
+      // From now on harness and model say what runs it (the front desk's orders, a worker's reply), not what was asked.
+      if (ran !== undefined) {
+        m.harness = ran.harness;
+        m.model = ran.model;
+      }
       remember(m.auto ? sent : asked, ownedId);
       move(m, 'dispatched', null);
       return true;

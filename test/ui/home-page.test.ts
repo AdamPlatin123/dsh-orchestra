@@ -470,9 +470,10 @@ test('what the browser loads for / stays within its own budget, all of it embedd
   const own = ['ui/home.html', 'ui/home.css', 'ui/home.js', 'ui/wings.js', 'ui/fold.js', 'ui/front.js'].reduce((n, f) => n + Buffer.byteLength(read(f)), 0);
   const total = all.reduce((n, f) => n + Buffer.byteLength(read(f)), 0);
   // The page's own files, and everything it loads with what it shares with the old page.
-  // Widened with each thing the page took on; last the front desk's tile, talk and orders, and what it says per harness (2026-11-05).
+  // Widened with each thing the page took on; last the front desk's tile, talk and orders, and what it says per harness (2026-11-05),
+  // then 改派 on a request card (its dialog and the code it shares with the old page, 2026-11-05).
   assert.ok(own <= 112 * 1024, `the home page's own files are ${own} bytes`);
-  assert.ok(total <= 289 * 1024, `the home page loads ${total} bytes`);
+  assert.ok(total <= 296 * 1024, `the home page loads ${total} bytes`);
 });
 
 const OBSERVED = towerFromStage(busyStage()).meta.observedAt;

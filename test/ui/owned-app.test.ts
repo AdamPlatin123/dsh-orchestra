@@ -518,7 +518,7 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     // The request cards sort in by deadline with the approvals (2 min and 9 min; the approvals now 5, 10, 25 min).
     const order2 = pins().map((p) => p.getAttribute('data-req') || p.getAttribute('data-node'));
     assert.deepEqual(order2.slice(0, 4), [REQ.b, `n:${ID.a}`, REQ.a, `n:${ID.b}`], order2.join());
-    assert.deepEqual(btns(cardA).map((b) => b.textContent), [TOWER_TEXT['req.no'], TOWER_TEXT['req.go']]);
+    assert.deepEqual(btns(cardA).map((b) => b.textContent), [TOWER_TEXT['req.no'], TOWER_TEXT['req.go'], TOWER_TEXT['req.re']]);
     assert.equal(doc.getElementById('pins')!.querySelector('[data-slot=n]')!.textContent, `${pins().length} 件`, 'T3: the count is the list, requests included');
     // 派出 is void for 750 ms after the bar moved (as an allow); then it is owned-new with the requestId and the card's words.
     assert.equal(act(cardA, 'req-go')!.getAttribute('aria-disabled'), 'true');
@@ -534,6 +534,35 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     await click(act(reqs()[0]!, 'req-no'));
     assert.deepEqual(posts(`/api/agent-requests/${REQ.b}/reject`).map((r) => Object.keys(r.body)), [['actionId']]);
     assert.equal(doc.getElementById('note')!.textContent, TOWER_TEXT['req.rejected']);
+    // 改派: the card's 改派… opens a dialog on the card's harness and model; another harness redraws the models and
+    // the where-line; 派出 is owned-new with the requestId and the card's words, on the harness and model picked.
+    list = { ...list, harnesses: { codex: true, claude: true } };
+    intervals.find((i) => i.ms === 2000)!.fn();
+    await flush();
+    mono += 800;
+    await tick();
+    const rd = doc.getElementById('re-dlg')!;
+    await click(act(reqs()[1]!, 'req-re'));
+    assert.equal(rd.open, true);
+    assert.equal((doc.getElementById('re-harness') as any).value, 'codex');
+    assert.equal((doc.getElementById('re-model') as any).value, 'codex/gpt-6.1-terra', 'the model 派出 would take');
+    assert.equal(rd.querySelector('[data-slot=reWhat]')!.textContent, '修一下登录页的样式\n第二行');
+    assert.equal(rd.querySelector('[data-slot=reAsked]')!.textContent, '它请求的是 Codex');
+    assert.ok(rd.querySelector('[data-slot=reWhere]')!.textContent.includes('Codex 用 untrusted 审批策略'), 'tainted as the card says');
+    (doc.getElementById('re-harness') as any).value = 'claude';
+    fire(doc, 'change', { target: doc.getElementById('re-harness') });
+    await flush();
+    const reModels = doc.getElementById('re-model')!.querySelectorAll('option').map((o) => o.getAttribute('value'));
+    assert.ok(reModels.length > 0 && reModels.every((m) => !String(m).startsWith('codex/')), reModels.join());
+    assert.ok(rd.querySelector('[data-slot=reWhere]')!.textContent.includes('每次都先来问你'), 'the where-line for Claude, tainted all the same');
+    (doc.getElementById('re-model') as any).value = reModels[0];
+    const sentBefore = posts('/api/owned/new').length;
+    await click(rd.querySelector('[data-act=re-go]'));
+    const moved = posts('/api/owned/new').slice(sentBefore);
+    assert.equal(moved.length, 1);
+    assert.deepEqual({ ...moved[0]!.body, actionId: 'x' }, { actionId: 'x', text: '修一下登录页的样式\n第二行', harness: 'claude', model: reModels[0], requestId: REQ.a, routeId: 'f'.repeat(20) });
+    assert.equal(rd.open, false);
+    assert.equal(doc.getElementById('note')!.textContent, TOWER_TEXT['re.sent']);
     list = { ...list, requests: [] };
 
     // Hidden: a new approval is notified with who and what; no notification and no title says allow.

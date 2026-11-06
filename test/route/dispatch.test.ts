@@ -93,6 +93,19 @@ test('派前问你: a card with the session as requester; nothing starts; your �
   assert.deepEqual(fx.records, [], 'a person\'s dispatch is written by owned-new, as `human`, never here');
 });
 
+test('派前问你, then 改派: the worker reads what really runs it, the harness and model you picked, and that you moved it', async () => {
+  const fx = fixture();
+  const c = fx.d.call(W, CALL, fx.say);
+  const [r] = pendingOf(fx);
+  assert.ok(r !== undefined);
+  assert.equal(r.harness, 'codex');
+  fx.sessions.set('c'.repeat(20), { title: 'child', tainted: false, over: false });
+  assert.ok(fx.requests.bind(r.requestId, 'c'.repeat(20), { harness: 'claude', model: 'zcode/GLM-5.3-Flash' }));
+  const reply = await c.reply;
+  assert.equal(reply.ok, true);
+  assert.equal(reply.text, `Dispatched: a new claude worker, session ${'c'.repeat(20)}, on zcode/GLM-5.3-Flash. The person sent it to claude instead of the codex you asked for. Its result does not come back to you; the person sees it.`);
+});
+
 test('派前问你: 拒绝 and time up are refusals the worker reads; a stop takes the card back; what went out stays', async () => {
   const fx = fixture();
   const no = fx.d.call(W, CALL, fx.say);

@@ -30,10 +30,10 @@ import { mustOpen, storeFixture } from '../helpers/store.ts';
 const CODE = '12345678';
 const uuid = () => crypto.randomUUID();
 type Made = { text?: string; uuid?: string; model?: string; title?: string };
-type Fx = { server: PeekServer; host: string; origin: string; store: Store; made: Made[]; requests: Requests; printed: string[] };
+type Fx = { server: PeekServer; host: string; origin: string; store: Store; made: Made[]; madeClaude: Made[]; requests: Requests; printed: string[] };
 const ANSWER = JSON.stringify({ harness: 'codex', model: 'codex/gpt-6.1-terra', title: '登录页样式', reason: '改样式要改代码' });
 
-async function fixture(t: TestContext, withRequests = true): Promise<Fx> {
+async function fixture(t: TestContext, withRequests = true, withClaude = false): Promise<Fx> {
   const sf = await storeFixture(t);
   const store = mustOpen(sf).store;
   const clock = sf.clock.port(null);
@@ -49,6 +49,15 @@ async function fixture(t: TestContext, withRequests = true): Promise<Fx> {
     },
     get: () => null, list: () => [], meta: () => null, maxActive: 4, approvals: null,
   };
+  const madeClaude: Made[] = [];
+  const claude = {
+    create(req: Made) {
+      madeClaude.push(req);
+      const ownedId = (n++).toString(16).padStart(20, 'c');
+      return { ok: true as const, ownedId, session: { model: req.model ?? 'zcode/GLM-5.3' } };
+    },
+    get: () => null, list: () => [], meta: () => null, maxActive: 4, approvals: null, frontDesk: () => null, deskOn: false,
+  };
   const post: LoopbackPost = async () => ({ ok: true, status: 200, text: JSON.stringify({ choices: [{ message: { content: ANSWER } }] }) });
   const desk = makeDesk({ post, routerModel: 'zcode/GLM-5.3', on: () => ({ codex: true, claude: true }), redact: (s) => s, nowMono: () => sf.clock.mono, nowWall: () => sf.clock.wall });
   const requests = makeRequests({
@@ -57,14 +66,14 @@ async function fixture(t: TestContext, withRequests = true): Promise<Fx> {
     observe: () => ({ state: 'starting', endReason: null, feed: { since: () => ({ clipped: false, events: [] }) } }), endOwned: () => false,
     suggest: (text, harness) => desk.suggest(text, harness),
   });
-  const deps = { codex: codex as never, codexOff: 'on', claude: null, desk, log, requests: withRequests ? requests : null };
+  const deps = { codex: codex as never, codexOff: 'on', claude: withClaude ? claude as never : null, desk, log, requests: withRequests ? requests : null };
   const server = await startPeekServer({
     port: 0, gate: new ReadGate({ roots: [], io: realIo, testDirs: [sf.dir] }), roots: [], redact: (s) => s, clock, log, pairingCode: CODE, profile: 'test',
     owned: { journal: humanJournal(store), printUnlockCode: (c) => printed.push(c), enabled: ownedEnabled(deps), handlers: registerOwnedHandlers(deps) },
   });
   t.after(() => server.close());
   const host = `${PEEK_HOST}:${server.port}`;
-  return { server, host, origin: `http://${host}`, store, made, requests, printed };
+  return { server, host, origin: `http://${host}`, store, made, madeClaude, requests, printed };
 }
 
 type Reply = { status: number; headers: http.IncomingHttpHeaders; body: string; json: any };
@@ -150,10 +159,10 @@ test('派出: owned-new with the requestId takes the card\'s words, binds the se
   await settle();
   const id = made.request.requestId;
   const card = fx.requests.get(id)!;
-  // Another text, or another harness, than the card's: nothing starts (request-mismatch).
+  // Another text than the card's: nothing starts (request-mismatch).
   const mismatch = await request(fx, 'POST', '/api/owned/new', h, JSON.stringify({ actionId: uuid(), text: `${ASK.text}，顺便删库`, harness: 'codex', requestId: id }));
   assert.deepEqual([mismatch.status, mismatch.json], [409, { error: 'request-mismatch' }]);
-  // Claude is off in this fixture: a dispatch to it is owned-disabled before the request is looked at (the harness mismatch is requests.test's).
+  // Claude is off in this fixture: 改派 to it is owned-disabled before the request is looked at, and the card keeps waiting.
   assert.deepEqual((await request(fx, 'POST', '/api/owned/new', h, JSON.stringify({ actionId: uuid(), text: ASK.text, harness: 'claude', requestId: id }))).json, { error: 'owned-disabled' });
   assert.equal(fx.requests.get(id)!.state, 'pending', 'a refused dispatch leaves the card waiting');
   assert.deepEqual(fx.made, []);
@@ -189,6 +198,50 @@ test('派出: owned-new with the requestId takes the card\'s words, binds the se
   const list = await request(fx, 'GET', '/api/owned', h);
   assert.equal(validateOwnedList(list.json).ok, true, validateOwnedList(list.json).errors.join(' | '));
   assert.deepEqual([list.json.requests[0].state, list.json.requests[0].ownedId], ['dispatched', r.json.ownedId]);
+});
+
+test('改派: a card asked for codex, dispatched on claude: the claude session starts tainted with the text and source chain of the card; agent-request keeps what was asked, the route and request-reassign say what ran', async (t) => {
+  const fx = await fixture(t, true, true);
+  const h = await unlocked(fx);
+  const made = fx.requests.create(ASK);
+  assert.ok(made.ok);
+  await settle();
+  const id = made.request.requestId;
+  const card = fx.requests.get(id)!;
+  assert.equal(card.harness, 'codex');
+  const actionId = uuid();
+  const r = await request(fx, 'POST', '/api/owned/new', h, JSON.stringify({ actionId, text: ASK.text, harness: 'claude', model: 'zcode/GLM-5.3', requestId: id, routeId: card.suggestion!.routeId }));
+  assert.equal(r.status, 200, r.body);
+  assert.deepEqual(fx.made, [], 'no codex session');
+  // tainted (r4 §8.5) whoever runs it: a DSH session asked.
+  assert.deepEqual(fx.madeClaude, [{ text: ASK.text, uuid: actionId, model: 'zcode/GLM-5.3', tainted: true, origin: { kind: 'agent-request', requestId: id, requester: 'sess-1', label: null } }]);
+  const now = fx.requests.get(id)!;
+  assert.deepEqual([now.state, now.ownedId, now.harness, now.model], ['dispatched', r.json.ownedId, 'claude', 'zcode/GLM-5.3'], 'the request names what runs it');
+  const got = fx.store.db.all("SELECT jseq, kind, body FROM event WHERE kind IN ('human', 'human.result', 'route', 'agent-request', 'request-reassign') ORDER BY jseq")
+    .map((x) => ({ jseq: Number(x.jseq), kind: String(x.kind), body: JSON.parse(String(x.body)) }));
+  assert.deepEqual(got.map((x) => x.kind), ['human', 'human.result', 'route', 'agent-request', 'request-reassign']);
+  assert.deepEqual(got.map((x) => x.jseq), [0, 1, 2, 3, 4].map((k) => got[0]!.jseq + k), 'one batch');
+  const [route, rec, moved] = [got[2]!.body, got[3]!.body, got[4]!.body];
+  assert.deepEqual(route.chosen, { harness: 'claude', model: 'zcode/GLM-5.3' });
+  assert.equal(route.mode, 'manual');
+  assert.equal(rec.harness, 'codex', 'agent-request: what the card asked for');
+  assert.equal(rec.decisionId, route.decisionId);
+  assert.equal(checkBody('request-reassign', moved, null), null);
+  assert.deepEqual(moved, { actionId, requestId: id, ownedId: r.json.ownedId, from: 'codex', fromModel: null, to: 'claude', toModel: 'zcode/GLM-5.3' });
+  const list = await request(fx, 'GET', '/api/owned', h);
+  assert.equal(list.status, 200, list.body);
+  assert.equal(validateOwnedList(list.json).ok, true, validateOwnedList(list.json).errors.join(' | '));
+  assert.deepEqual([list.json.requests[0].harness, list.json.requests[0].model], ['claude', 'zcode/GLM-5.3']);
+});
+
+test('派出 as the card asked writes no request-reassign record', async (t) => {
+  const fx = await fixture(t, true, true);
+  const h = await unlocked(fx);
+  const made = fx.requests.create(ASK);
+  assert.ok(made.ok);
+  const r = await request(fx, 'POST', '/api/owned/new', h, JSON.stringify({ actionId: uuid(), text: ASK.text, harness: 'codex', requestId: made.request.requestId }));
+  assert.equal(r.status, 200, r.body);
+  assert.equal(fx.store.db.all("SELECT jseq FROM event WHERE kind = 'request-reassign'").length, 0);
 });
 
 test('拒绝: request-reject writes its human records and an agent-request record (rejected); a request that no longer waits is request-gone', async (t) => {

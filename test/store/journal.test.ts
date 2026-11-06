@@ -17,7 +17,7 @@ import { Store, StoreError, cutMarkerPath } from '../../src/store/store.ts';
 import { acquireLock, lockPipeName } from '../../src/runtime/lock.ts';
 import { detectFeatures } from '../../src/runtime/features.ts';
 import { EXIT } from '../../src/runtime/exit.ts';
-import { R, commitRec, digestOf, humanCause, oneOfEach, srcCause, uuidOf } from '../helpers/records.ts';
+import { R, commitRec, digestOf, humanCause, oneOfEach, reassignRec, srcCause, uuidOf } from '../helpers/records.ts';
 import { T0, deleteDb, mustOpen, storeFixture } from '../helpers/store.ts';
 import { runOrchestrad } from '../helpers/orchestrad.ts';
 import { FENCE_OK, captureConsole, minimalEnv, startInProcess, testPorts } from '../helpers/start.ts';
@@ -434,6 +434,9 @@ test('a body outside its schema is refused before the append and nothing reaches
     ['a refused subtree that killed something', R.command('cmd1', a, [{ root: { pid: 5, createTime: '13' }, requestId: 'r1', killed: 1, residual: 0, status: 'refused' }], 'refused')],
     ['an accessor', { kind: 'part.cursor', body: Object.defineProperty({ partRef: 'p1', srcSeq: 1 }, 'cursor', { get: () => 1, enumerable: true }) }],
     ['a class instance', { kind: 'snooze', body: Object.assign(Object.create({ x: 1 }) as Record<string, unknown>, { itemId: 'i1', untilWall: 1 }) }],
+    ['a 改派 that moved nothing', reassignRec(a, { to: 'codex' })],
+    ['a 改派 on the same harness from no named model', reassignRec(a, { to: 'codex', fromModel: null, toModel: 'codex/gpt-6.1-sol' })],
+    ['a 改派 on the same harness and model', reassignRec(a, { to: 'codex', fromModel: 'codex/gpt-6.1-sol', toModel: 'codex/gpt-6.1-sol' })],
   ];
   for (const [what, rec] of bad) {
     assert.throws(() => s.commit([rec]), (e: unknown) => e instanceof JournalError && e.reason === 'bad-record', what);
@@ -522,7 +525,8 @@ test('the journal takes nothing by default: writer, clock, redactor, bootId and 
 // seat: oneOfEach gained a last batch (request-reject and its `agent-request` record), on purpose.
 // Project roots review: oneOfEach gained a last batch (owned-new and its `owned-cwd` record), on purpose.
 // Dispatch permission: oneOfEach gained two last batches (dispatch-grant with its record, and an `auto` record), on purpose.
-const REPLAY_GOLDEN = '6119a5bbf42d94f69fbc701737f19866fadf26b548d34c8d8aacd0d593b6f79e';
+// 改派: oneOfEach gained a last batch (owned-new, its `agent-request` and `request-reassign` records), on purpose.
+const REPLAY_GOLDEN = 'a1dc3372ca9c59420d1926a67898d47330c60a94c8790c50fdefb3d4b8cabfcc';
 
 test('replay is deterministic: the same records, bootId and clock give byte-identical journals and identical projections', async (t) => {
   const runs: { journal: string; dump: unknown }[] = [];

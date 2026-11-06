@@ -71,7 +71,7 @@ test('a pending request expires after its time: a refusal by the clock (D8), its
   const r = fx.requests.get(id)!;
   assert.deepEqual([r.state, r.why, r.ownedId], ['expired', 'expired', null]);
   // An expired request is no longer dispatchable, nor rejectable.
-  assert.deepEqual(fx.requests.claim(id, ask.text, 'codex'), { ok: false, why: 'request-gone' });
+  assert.deepEqual(fx.requests.claim(id, ask.text), { ok: false, why: 'request-gone' });
   assert.equal(fx.requests.reject(id), false);
 });
 
@@ -96,15 +96,14 @@ test('dispatched, running, done: the last agent message of the first turn, at mo
   const fx = fixture();
   const first = made(fx.requests.create(ask));
   const id = first.request.requestId;
-  // The card's own words and harness, or nothing (request-mismatch).
-  assert.deepEqual(fx.requests.claim(id, `${ask.text}!`, 'codex'), { ok: false, why: 'request-mismatch' });
-  assert.deepEqual(fx.requests.claim(id, ask.text, 'claude'), { ok: false, why: 'request-mismatch' });
-  assert.equal(fx.requests.claim(id, ask.text, 'codex').ok, true);
+  // The card's own words, or nothing (request-mismatch); the harness is the person's (改派).
+  assert.deepEqual(fx.requests.claim(id, `${ask.text}!`), { ok: false, why: 'request-mismatch' });
+  assert.equal(fx.requests.claim(id, ask.text).ok, true);
   const s = fx.session(OID);
   assert.equal(fx.requests.bind(id, OID), true);
   assert.equal(fx.requests.bind(id, OID), false, 'bound once');
   assert.deepEqual([fx.requests.get(id)!.state, fx.requests.get(id)!.ownedId], ['dispatched', OID]);
-  assert.deepEqual(fx.requests.claim(id, ask.text, 'codex'), { ok: false, why: 'request-gone' }, 'no second dispatch');
+  assert.deepEqual(fx.requests.claim(id, ask.text), { ok: false, why: 'request-gone' }, 'no second dispatch');
   s.state = 'running';
   push(s.feed, { kind: 'you', text: ask.text, uuid: '00000000-0000-4000-8000-000000000000' });
   push(s.feed, { kind: 'lifecycle', ref: 't1', state: 'turn-started' });
@@ -144,6 +143,18 @@ test('dispatched, running, done: the last agent message of the first turn, at mo
   const after = fx.requests.withdraw(id, first.withdrawKey);
   assert.deepEqual(after.ok ? after.request.state : after.why, 'done');
   assert.deepEqual(fx.ended, []);
+});
+
+test('改派: a request asked for codex may be claimed for claude; bound, it names what runs it, its taint and where it runs unchanged', () => {
+  const fx = fixture();
+  const r = made(fx.requests.create(ask)).request;
+  assert.equal(fx.requests.claim(r.requestId, r.text).ok, true, 'the harness is no part of the claim');
+  fx.session(OID);
+  assert.equal(fx.requests.bind(r.requestId, OID, { harness: 'claude', model: 'claude-sonnet-5-5' }), true);
+  const g = fx.requests.get(r.requestId)!;
+  assert.deepEqual([g.harness, g.model, g.state, g.ownedId], ['claude', 'claude-sonnet-5-5', 'dispatched', OID]);
+  assert.deepEqual([g.tainted, g.runIn, g.runInWhy, g.cwd, g.text], [r.tainted, r.runIn, r.runInWhy, r.cwd, r.text], 'only harness and model move');
+  assert.equal(g.tainted, true, 'a DSH session asked: tainted, whoever runs it (r4 §8.5)');
 });
 
 test('a turn that fails, or a session that ends first, is failed with why; never done', () => {
@@ -298,7 +309,7 @@ test('the requester\'s words are redacted and their invisible characters written
   assert.equal(made.request.text, 'use [redacted] then\\u202Edo it');
   assert.equal(made.request.label, 'a', 'one line');
   assert.equal(made.request.cwd, 'D:\\[redacted]');
-  assert.equal(fx.requests.claim(made.request.requestId, made.request.text, 'codex').ok, true, 'the card\'s text is what a dispatch sends');
+  assert.equal(fx.requests.claim(made.request.requestId, made.request.text).ok, true, 'the card\'s text is what a dispatch sends');
 });
 
 test('never cut silently (A16): a text or cwd that only fits before its invisible characters are written out is refused; a cut label ends in …', () => {

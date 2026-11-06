@@ -66,8 +66,10 @@ import { makeOwnedHandlers } from './owned.ts';
 //   POST /api/owned/:id/dispatch-grant  {level}: you set a session's dispatch permission (src/route/dispatch.ts; D8: only
 //                                       here and only by a person). Its `dispatch-grant` record joins the batch; it takes
 //                                       effect once that is committed. 你不在也派 is no level: the shape refuses it (r4 D20).
-//   POST /api/owned/new + requestId     seat: you dispatch an agent request: the text and harness must be the
-//                                       card's (request-mismatch) and it must still wait (request-gone); the
+//   POST /api/owned/new + requestId     seat: you dispatch an agent request: the text must be the card's
+//                                       (request-mismatch) and it must still wait (request-gone); the harness and
+//                                       model are yours (改派: another than the card asked for passes the same checks,
+//                                       and a `request-reassign` record says from what to what); the
 //                                       session is bound to the request, and an `agent-request` record
 //                                       (dispatched, naming the RouteDecision) joins the batch. It runs where the
 //                                       card said: the request's runIn (its cwd, inside a project root), else
@@ -162,6 +164,18 @@ export function agentRequestRec(r: AgentRequest, d: { actionId: string; verdict:
       requesterDigest: canonicalDigest(requesterName(r.requester)), ownedId: d.ownedId, decisionId: d.decisionId,
     },
   };
+}
+
+/**
+ * 改派, for the journal (src/store/records.ts `request-reassign`): when a person dispatched an agent request on another
+ * harness than it asked for, or on another model than the one its session named; none when it ran as the card asked.
+ */
+export function reassignOf(r: AgentRequest, d: { actionId: string; ownedId: string; harness: AgentRequest['harness']; model: string }): Rec[] {
+  if (d.harness === r.harness && (r.model === null || r.model === d.model)) return [];
+  return [{
+    kind: 'request-reassign',
+    body: { actionId: d.actionId, requestId: r.requestId, ownedId: d.ownedId, from: r.harness, fromModel: r.model, to: d.harness, toModel: d.model },
+  }];
 }
 
 /**
@@ -296,11 +310,12 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     if (manager === null) return refuse('owned-disabled');
     const text = String(body.text);
     const requestId = typeof body.requestId === 'string' ? body.requestId : null;
-    // seat: a dispatch of an agent request takes exactly what its card showed, while it still waits.
+    // seat: a dispatch of an agent request takes exactly the text its card showed, while it still waits; the harness and
+    // model are the person's (改派: another than the card asked for goes through every check a dispatch of its own does).
     let asked: AgentRequest | null = null;
     if (requestId !== null) {
       if (requests === null) return refuse('request-gone');
-      const c = requests.claim(requestId, text, harness);
+      const c = requests.claim(requestId, text);
       if (!c.ok) return refuse(c.why);
       asked = c.request;
     }
@@ -347,14 +362,17 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     log.info('owned-started', { harness, ownedId: made.ownedId, model: made.session.model, tainted, ...(cwd === undefined ? {} : { projectRoot: true, cwd }) });
     // The session runs the request from now on (bound in the same turn as the claim: no second dispatch gets it).
     if (asked !== null) {
-      requests!.bind(asked.requestId, made.ownedId);
+      requests!.bind(asked.requestId, made.ownedId, { harness, model: made.session.model });
       dispatch?.adopted(asked, made.ownedId);
       log.info('agent-request-dispatched', { requestId: asked.requestId, ownedId: made.ownedId });
     }
     // In a project root: where it works, bound to this dispatch (the card's runIn for a request).
     const cwdRec: Rec[] = cwd === undefined || root === null ? [] : [ownedCwdRec({ actionId: call.actionId!, ownedId: made.ownedId, requestId: asked?.requestId ?? null, cwd, root })];
+    const reassignRec: Rec[] = asked === null ? [] : reassignOf(asked, { actionId: call.actionId!, ownedId: made.ownedId, harness, model: made.session.model });
+    if (reassignRec.length > 0) log.info('agent-request-reassigned', { requestId: asked!.requestId, from: asked!.harness, to: harness });
     const requestRec = (decisionId: string | null): Rec[] => [
       ...(asked === null ? [] : [agentRequestRec(asked, { actionId: call.actionId!, verdict: 'dispatched', ownedId: made.ownedId, decisionId })]),
+      ...reassignRec,
       ...cwdRec,
     ];
     if (desk === null) return { ok: true, reply: { ownedId: made.ownedId }, targetId: made.ownedId, records: requestRec(null) };

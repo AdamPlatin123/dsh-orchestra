@@ -390,7 +390,28 @@ export function reqActs(r, m, what, g) {
   return !g.unlocked ? [lockBtn()] : [
     btn('no', t('req.no'), { act: 'req-no', req: r.requestId }, { 'aria-disabled': busy(g), 'aria-label': t('req.noLabel', { what }) }),
     btn('go', t('req.go'), { act: 'req-go', req: r.requestId, model: m.model, settle: g.settle }, { 'aria-disabled': g.settle !== '' ? 'true' : busy(g), 'aria-label': t('req.goLabel', { what }) }),
+    btn('re', t('req.re'), { act: 'req-re', req: r.requestId }, { 'aria-disabled': busy(g), 'aria-label': t('req.reLabel', { what }) }),
   ];
+}
+
+/**
+ * 改派: the dialog that dispatches a waiting request on a harness and model of your pick (D8: only here, unlocked). The
+ * text, where it runs and its taint are the request's (r4 §8.5), so the where-line is the card's for the harness picked.
+ * `r`: the pending request, or null once it waits no more (派出 is off and says so); `harness`: the select's value.
+ */
+export function describeReassign(list, r, harness, busy) {
+  const h = list?.harnesses ?? {};
+  const asked = r === null ? '' : typeof r.model === 'string' ? t('re.askedModel', { h: t(`harness.${r.harness}`), m: r.model }) : t('re.asked', { h: t(`harness.${r.harness}`) });
+  return {
+    reWhat: { text: r === null ? '' : r.text },
+    reAsked: { text: asked },
+    reCodex: { attr: { disabled: h.codex ? null : '' } }, reClaude: { attr: { disabled: h.claude ? null : '' } },
+    reWhy: { text: join([list !== null && !h.claude && t('new.claudeOff'), list !== null && !h.codex && list.enabled && t('new.codexOff')], 'sep.notes') },
+    reModel: { kids: modelsOf(harness).map((m) => ({ key: `${harness}:${m}`, tpl: 'tpl-opt', text: m, attr: { value: m } })) },
+    reWhere: { text: r === null ? t('re.gone') : reqWhere({ ...r, harness }) },
+    reNote: { text: join([t('re.note'), r !== null && workerOf(r) !== null && t('re.worker')], 'sep.notes') },
+    reGo: { text: t(busy ? 'op.busy' : 're.go'), attr: { disabled: busy || r === null || !list?.enabled || !h[harness] ? '' : null } },
+  };
 }
 
 /**

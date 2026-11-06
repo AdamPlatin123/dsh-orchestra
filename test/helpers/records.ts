@@ -107,6 +107,14 @@ export function ownedCwdRec(actionId: string, over: Record<string, unknown> = {}
   };
 }
 
+/** 改派 (the `request-reassign` record): an agent request asked for codex, a person sent it to claude. */
+export function reassignRec(actionId: string, over: Record<string, unknown> = {}): Rec {
+  return {
+    kind: 'request-reassign',
+    body: { actionId, requestId: 'abcdef0123456789abcd', ownedId: '6123456789abcdef0123', from: 'codex', fromModel: null, to: 'claude', toModel: 'zcode/GLM-5.3', ...over },
+  };
+}
+
 export function oneOfEach(): Rec[][] {
   const a = uuidOf('each-action');
   const b = uuidOf('each-brake');
@@ -147,6 +155,12 @@ export function oneOfEach(): Rec[][] {
     ],
     // A worker dispatches on that permission: an `auto` record, with no human record.
     [autoRec(uuidOf('each-auto'), uuidOf('each-grant'))],
+    // 改派: a person dispatches an agent request asked for codex on claude: owned-new's human records, its `agent-request` and `request-reassign` records, one batch.
+    [
+      R.human(uuidOf('each-move'), 'owned-new', '6123456789abcdef0123'), R.result(uuidOf('each-move'), 'owned-new', '6123456789abcdef0123'),
+      agentRequestRec(uuidOf('each-move'), { verdict: 'dispatched', ownedId: '6123456789abcdef0123', decisionId: null }),
+      reassignRec(uuidOf('each-move')),
+    ],
   ];
 }
 

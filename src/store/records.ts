@@ -215,6 +215,14 @@ export const BODY_SCHEMAS = frozen({
   // text a body may keep: only the sha256 of the cwd and of the root it lies in. A new kind, not new fields
   // of `agent-request`: every field of a kind is required, and an older journal must still replay.
   'owned-cwd': obj({ actionId: uuid, ownedId: id, requestId: nul(id), cwdDigest: digest, rootDigest: digest }),
+  // 改派 (orchestra app plan 请求卡改派): a person dispatched an agent request on another harness, or on another model
+  // than the one its session named, than the card asked for; in the batch of owned-new's human records, beside its
+  // `agent-request` (whose harness stays what was asked). from / fromModel: what the card asked for (fromModel null: no
+  // model was named); to / toModel: what the session started on. A new kind, no new field of an old one: an older
+  // journal still replays, and an older orchestrad meets an unknown kind and refuses to start (journal.ts parseLine).
+  'request-reassign': obj({
+    actionId: uuid, requestId: id, ownedId: id, from: en(ROUTE_HARNESSES), fromModel: nul({ t: 'model' }), to: en(ROUTE_HARNESSES), toModel: { t: 'model' },
+  }),
   // A person set a session's dispatch permission (src/route/dispatch.ts): in the batch of its dispatch-grant `human`
   // records, which say who and when; this says what to. An open grant is what every `auto` record below names.
   'dispatch-grant': obj({ actionId: uuid, ownedId: id, level: en(GRANT_LEVELS) }),
@@ -426,6 +434,9 @@ function consistency(kind: Kind, b: Record<string, unknown>): BodyError | null {
       if (c.harness !== chosen.harness || c.model !== chosen.model) return bad('$.chosen');
       return b.reason === (c.rule ?? 'router-model') ? null : bad('$.reason');
     }
+    case 'request-reassign':
+      // Nothing moved is no 改派; on the same harness only a named model can have been changed.
+      return b.from !== b.to ? null : b.fromModel === null || b.fromModel === b.toModel ? bad('$.to') : null;
     case 'agent-request':
       // A dispatch names its session (and its RouteDecision when a desk made one); a refusal names neither.
       return (b.verdict === 'dispatched') !== (b.ownedId !== null) ? bad('$.ownedId') : b.verdict === 'rejected' && b.decisionId !== null ? bad('$.decisionId') : null;
