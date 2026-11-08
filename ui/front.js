@@ -1,5 +1,5 @@
 // @ts-check
-// The front desk's talk (src/route/front-desk.ts; 第二轮简报 F1, F2), on the home page alone: the old page has no way to it. Pure
+// The front desk's talk (src/route/front-desk.ts; 第二轮简报 F1, F2), on the home page. Pure
 // descriptors, as ui/owned.js, whose guards and buttons they share: a click on an order is the click on its card in 「等你」.
 import { MSG, btn, busy, describeOwned, entry, join, off, on, reqActs, reqWhat, reqWhere, reqWhy, requestModel, tk, workerName } from './owned.js';
 import { fmtLeft, t } from './view.js';

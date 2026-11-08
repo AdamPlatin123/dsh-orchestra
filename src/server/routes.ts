@@ -320,7 +320,6 @@ const SUGGEST_REPLY = obj({
 /** Step 4's routes (plan step 4), with their shapes. GET /api/items/:id/detail replaces GET /api/items. */
 export const ROUTES: readonly Route[] = Object.freeze([
   plain('GET', '/', 'none', { reply: null, checks: ['execute'] }),
-  plain('GET', '/tower', 'none', { reply: null, checks: ['execute'] }),
   plain('GET', '/assets/*', 'none', { reply: null, checks: ['execute'] }),
   plain('POST', '/api/pair', 'pair', { body: obj({ code: re(PAIR_CODE_RE, 'pairCode') }), reply: obj({ paired: konst(true) }) }),
   plain('GET', '/api/session', 'session', {

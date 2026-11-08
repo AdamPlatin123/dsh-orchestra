@@ -9,18 +9,18 @@ import { busyStage } from '../helpers/tower-fixture.ts';
 import {
   allowHow, apprActs, atBottom, describeCard, chatNews, describeAskPins, describeChat, describeNew, describeOwned, describeOwnedDock, describeRequestPins, errText, mergeFeed, msgError, notifyText, pinExtra, queuedN, requestModel, requestOf, whyText, withQueued, withRequests, type Approval, type Guard,
 } from '../../ui/owned.js';
-import { describeTower, routerNote } from '../../ui/view.js';
 
-// Orchestra's own sessions on the tower page (orchestra app plan §2-§5): ui/app.js booted against the
-// real ui/tower.html in the fake DOM, with the network, the clock, the timers, session storage and
-// notifications stubbed. It proves the unlock flow, the dispatch dialog's request, the chat, and the
+// Orchestra's own sessions on the page (orchestra app plan §2-§5): ui/home.js booted against the
+// real ui/home.html in the fake DOM, with the network, the clock, the timers, session storage and
+// notifications stubbed (ported from the old tower page's boot, 2026-11-08: ui/drive.js holds these rules).
+// It proves the unlock flow, the dispatch dialog's request, the chat, the question card's answer, and the
 // approval guards of r4 §10.9 under D8: an allow carries the digest and the queue revision, is void for
 // 750 ms after the list moved, is held for a high-risk request, never shows for a request the waiting bar
 // cannot show whole or for a native or inferred wait, and no notification or title says allow.
 // Synthetic data only.
 
-const HTML = fs.readFileSync(fileURLToPath(new URL('../../ui/tower.html', import.meta.url)), 'utf8');
-const APP = pathToFileURL(fileURLToPath(new URL('../../ui/app.js', import.meta.url))).href;
+const HTML = fs.readFileSync(fileURLToPath(new URL('../../ui/home.html', import.meta.url)), 'utf8');
+const HOME = pathToFileURL(fileURLToPath(new URL('../../ui/home.js', import.meta.url))).href;
 const ALLOW = TOWER_TEXT['appr.allow']!;
 const CSRF = 'A'.repeat(43);
 const ID = { a: 'a'.repeat(20), b: 'b'.repeat(20), c: 'c'.repeat(20), n: 'd'.repeat(20) };
@@ -89,10 +89,9 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
       { seq: 7, at: 7, kind: 'note', ref: null, uuid: null, text: null, state: 'tokens', redactions: 0, live: true, exitCode: null, tokens: { input: 1, cachedInput: 0, output: 1, total: 2 } },
     ],
   };
-  let dispatched: { ownedId: string; harness: 'codex' | 'claude'; model: string; at: number; title: string } | null = null;
   // seat: the pending agent requests every paired page sees before the unlock (harness and deadline only).
   let asks: { harness: 'codex' | 'claude'; deadline: number }[] = [{ harness: 'codex', deadline: OBSERVED + 7 * MIN }];
-  const tower = () => towerFromStage(busyStage(), { seats, nowWall: OBSERVED, dispatch: dispatched, asks });
+  const tower = () => towerFromStage(busyStage(), { seats, nowWall: OBSERVED, asks });
   const SUGGESTION = {
     routeId: 'e'.repeat(20), title: '写发布说明', titleSource: 'model', taskClass: 'general', rules: ['fallback'],
     router: { model: 'zcode/GLM-5.3', state: 'answered', why: null, pick: 0 },
@@ -170,12 +169,13 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
   const btns = (el: FakeElement) => el.querySelectorAll('button').filter((b) => b.classList.contains('btn'));
   const act = (el: FakeElement, a: string) => btns(el).find((b) => b.getAttribute('data-act') === a) ?? null;
   try {
-    await import(APP);
+    await import(HOME);
     await flush();
 
-    // Locked: the bar offers to unlock; each Orchestra entry of the waiting bar offers only that; a
+    // Locked: the top bar offers to unlock; each Orchestra entry of the waiting bar offers only that; a
     // native or inferred wait has no button at all. No owned route is read without the token.
-    const bar = doc.getElementById('bar')!;
+    const bar = doc.getElementById('top')!;
+    const desk = doc.getElementById('desk')!;
     assert.equal(bar.querySelector('[data-act=unlock]')!.textContent, TOWER_TEXT['bar.unlock']);
     // seat: a pending agent request shows before the unlock too (the tower's router.asks): its harness, the
     // time left before it is refused (D8), the unlock button; its text and who asked only after the unlock.
@@ -188,22 +188,16 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     assert.equal(ask.querySelector('[data-slot=clock]')!.textContent, '剩 7:00 自动拒');
     assert.deepEqual(btns(ask).map((b) => b.textContent), [TOWER_TEXT['op.lock']]);
     assert.equal(doc.getElementById('pins')!.querySelector('[data-slot=n]')!.textContent, '6 件', 'T3: the count is the list');
-    assert.equal(doc.title, `(6) ${TOWER_TEXT['page.title']}`, 'the tab counts the pending request with the waiting nodes');
+    assert.equal(doc.title, TOWER_TEXT['home.titleWait']!.replace('{n}', '6'), 'the tab counts the pending request with the waiting nodes');
     asks = [];
     for (const id of [ID.a, ID.b, ID.c]) assert.deepEqual(btns(pinOf(id)).map((b) => b.textContent), [TOWER_TEXT['op.lock']]);
     const foreign = pins().filter((p) => p.getAttribute('data-src') !== 'orchestra' && !p.classList.contains('req'));
     assert.deepEqual(foreign.map((p) => p.getAttribute('data-src')).sort(), ['inferred', 'native']);
     for (const p of foreign) assert.equal(btns(p).length, 0);
     assert.ok(!requests.some((r) => r.url.startsWith('/api/owned') || r.url.startsWith('/api/approvals')));
-    // The dispatch entry says it dispatches (派活), locked or not; the router row ("你") says what it cannot
-    // know yet (T1: the tower never says whether the desk is on) and points at the same entry.
-    const towerEl = doc.getElementById('tower')!;
-    const routerNote = () => towerEl.querySelector('[data-slot=rNote]')!.textContent;
-    const routerGo = towerEl.querySelector('[data-slot=rGo]')!;
-    assert.equal(bar.querySelector('[data-act=new]')!.textContent, TOWER_TEXT['bar.newLocked']);
-    assert.equal(bar.querySelector('[data-act=new]')!.getAttribute('title'), TOWER_TEXT['bar.newHint']);
-    assert.equal(routerNote(), TOWER_TEXT['router.unknown']);
-    assert.deepEqual([routerGo.textContent, routerGo.getAttribute('data-hide'), routerGo.getAttribute('data-act')], [TOWER_TEXT['bar.newLocked'], '0', 'new']);
+    // The dispatch entry says it dispatches (派活), locked or not.
+    assert.equal(desk.querySelector('[data-act=new]')!.textContent, TOWER_TEXT['bar.newLocked']);
+    assert.equal(desk.querySelector('[data-act=new]')!.getAttribute('title'), TOWER_TEXT['bar.newHint']);
 
     // Unlock: the daemon is asked to print a code (no body), the dialog takes it; a wrong code says so.
     await click(bar.querySelector('[data-act=unlock]'));
@@ -225,10 +219,7 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     const read = requests.find((r) => r.url === '/api/owned')!;
     assert.equal(read.headers['x-orchestra-csrf'], CSRF);
     assert.equal(bar.querySelector('[data-act=unlock]')!.textContent, TOWER_TEXT['bar.unlocked']);
-    assert.equal(bar.querySelector('[data-act=new]')!.textContent, TOWER_TEXT['bar.new']);
-    // Unlocked, the list says the desk is on: nothing dispatched yet, said so, with the way to dispatch.
-    assert.equal(routerNote(), TOWER_TEXT['router.none']);
-    assert.deepEqual([routerGo.textContent, routerGo.getAttribute('data-hide')], [TOWER_TEXT['bar.new'], '0']);
+    assert.equal(desk.querySelector('[data-act=new]')!.textContent, TOWER_TEXT['bar.new']);
 
     // The waiting bar: the allow shows only where the whole request shows; a long one offers 去看.
     assert.deepEqual(btns(pinOf(ID.a)).map((b) => b.getAttribute('data-act')), ['deny', 'allow']);
@@ -306,10 +297,10 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     await click(act(pinOf(ID.c), 'deny'));
     assert.deepEqual(posts('/deny').map((r) => [r.url, Object.keys(r.body)]), [[`/api/approvals/${AP.c}/deny`, ['actionId']]]);
 
-    // The node page of an owned session: the card in full with its buttons, the chat with each command
+    // An owned session opened from the left list: the card in full with its buttons, the chat with each command
     // folded under one line.
-    const row = doc.getElementById('tree')!.querySelectorAll('[data-key]').find((r) => r.getAttribute('data-key') === `n:${ID.a}`)!;
-    fire(doc, 'click', { target: row.querySelector('[data-slot=act]') });
+    const row = doc.getElementById('rail')!.querySelectorAll('.rr').find((r) => r.getAttribute('data-node') === `n:${ID.a}`)!;
+    fire(doc, 'click', { target: row.querySelector('[data-slot=name]') });
     assert.equal(loc.hash, `#/n/n:${ID.a}`);
     fire(win, 'hashchange');
     await flush();
@@ -371,7 +362,7 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     brakeAnswer = null;
 
     // Dispatch: Claude greyed with why; nothing goes until 派出; the request names harness and model.
-    await click(bar.querySelector('[data-act=new]'));
+    await click(desk.querySelector('[data-act=new]'));
     const nd = doc.getElementById('new-dlg')!;
     assert.equal(nd.open, true);
     assert.equal(nd.querySelector('[data-slot=hClaude]')!.getAttribute('disabled'), '', 'Claude greyed');
@@ -393,9 +384,7 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     // The dispatch desk: 给建议 sends the sentence alone (no actionId: it starts nothing), the card lists
     // first and alternatives with harness, model, reason and source; the first is picked into the selects;
     // another pick moves them; 派出 carries the card's routeId. An edited sentence makes the card stale.
-    assert.equal(routerNote(), TOWER_TEXT['router.none']);
-    // The router row's 派活 opens the same dialog as the top bar's.
-    await click(routerGo);
+    await click(desk.querySelector('[data-act=new]'));
     assert.equal(nd.open, true);
     const card = nd.querySelector('[data-slot=card]')!;
     assert.equal(card.getAttribute('data-hide'), '1', 'no card before 给建议');
@@ -433,7 +422,7 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
 
     // No answer from the router model: the card says the rules alone; set by hand; an edited sentence: stale, no routeId.
     suggestion = { ...SUGGESTION, routeId: 'f'.repeat(20), router: { model: 'zcode/GLM-5.3', state: 'no-answer', why: 'timeout', pick: null }, candidates: [SUGGESTION.candidates[1]] };
-    await click(bar.querySelector('[data-act=new]'));
+    await click(desk.querySelector('[data-act=new]'));
     (doc.getElementById('nw-text') as any).value = '再写一份';
     await click(nd.querySelector('[data-act=suggest]'));
     assert.ok(nd.querySelector('[data-slot=rtNote]')!.textContent.startsWith(`没用上路由模型（${TOWER_TEXT['route.no.timeout']}）`), nd.querySelector('[data-slot=rtNote]')!.textContent);
@@ -454,7 +443,7 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     suggestion = { ...SUGGESTION, routeId: 'a'.repeat(20) };
     let letGo!: () => void;
     suggestHold = new Promise<void>((r) => { letGo = r; });
-    await click(bar.querySelector('[data-act=new]'));
+    await click(desk.querySelector('[data-act=new]'));
     (doc.getElementById('nw-text') as any).value = '第三份';
     await click(nd.querySelector('[data-act=suggest]'));
     (doc.getElementById('nw-model') as any).value = 'codex/gpt-6.1-terra';
@@ -471,13 +460,6 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     await flush();
     suggestHold = null;
     assert.equal((doc.getElementById('nw-model') as any).value, 'codex/gpt-6.1-terra', 'a closed dialog is not filled');
-
-    // The router row ("你") shows the last dispatch once the tower says it.
-    dispatched = { ownedId: ID.n, harness: 'codex', model: 'codex/gpt-6.1-sol', at: OBSERVED - 2 * MIN, title: '写发布说明' };
-    intervals.find((i) => i.ms === 2000)!.fn();
-    await flush();
-    assert.ok(routerNote().startsWith('最近派活：写发布说明（Codex · codex/gpt-6.1-sol，'), routerNote());
-    assert.equal(routerGo.getAttribute('data-hide'), '1', 'a dispatch shown: no pointer needed');
 
     // The waiting bar holds its order while the pointer is in it; the move shows once it leaves.
     loc.hash = '#/';
@@ -700,7 +682,7 @@ test('owned descriptors: no allow for a cut request or a native wait, words for 
   assert.deepEqual([settling.attr!['aria-disabled'], settling.data!.settle], ['true', 'b']);
   for (const source of ['native', 'inferred']) assert.deepEqual(pinExtra({ node: `n:${ID.a}`, source }, null, g), { acts: { kids: [] }, pv: { text: '' } });
   // Every text a notification can carry: no allow (r4 §10.9).
-  for (const [k, v] of Object.entries(TOWER_TEXT)) if (k.startsWith('notify.') || k.startsWith('page.')) assert.ok(!v.includes(ALLOW), k);
+  for (const [k, v] of Object.entries(TOWER_TEXT)) if (k.startsWith('notify.') || k.startsWith('home.title')) assert.ok(!v.includes(ALLOW), k);
   for (const kind of ['command', 'file-change', 'permissions', 'question', 'elicitation', 'unknown-kind']) assert.ok(!notifyText({ ...a, kind }, 'x').includes(ALLOW), kind);
   assert.equal(msgError(''), TOWER_TEXT['msg.empty']);
   assert.equal(msgError(' /config'), TOWER_TEXT['msg.slash']);
@@ -731,7 +713,7 @@ test("owned descriptors (r4 §8.5 review fix): a tainted session's card has the 
   assert.deepEqual([allowHow(approval(AP.a, ID.a, { rev: 1 })), allowHow(plainHigh), allowHow(taintedHigh), allowHow(taintedLow)], ['0', '1', '2', '0']);
   const allowOf = (x: Approval) => apprActs(x, g, 'card').find((d) => d.data!.act === 'allow')!;
   assert.deepEqual([allowOf(plainHigh).data!.high, allowOf(plainHigh).text], ['1', TOWER_TEXT['appr.hold']]);
-  // data-high 2: the page's hold handlers take only data-high 1 (app.js holdBtn), so no hold starts on it.
+  // data-high 2: the page's hold handlers take only data-high 1 (drive.js holdBtn), so no hold starts on it.
   assert.deepEqual([allowOf(taintedHigh).data!.high, allowOf(taintedHigh).text], ['2', TOWER_TEXT['appr.typeOnly']]);
   assert.equal(allowOf(taintedHigh).attr!['aria-label'], TOWER_TEXT['appr.typeOnlyLabel']!.replace('{t}', 'req'));
   assert.equal(allowOf(taintedLow).data!.high, '0', 'r4 §8.5 names shell, the network, writes outside cwd: a low-risk card keeps its click');
@@ -752,32 +734,14 @@ test("owned descriptors (r4 §8.5 review fix): a tainted session's card has the 
   assert.deepEqual([plainPin.data, plainPin.hint], [undefined, undefined], 'an untainted pin keeps the plain wait colour');
 });
 
-test('the router row ("你") with no dispatch: unknown before the unlock (T1), "not dispatched yet" with the desk on, why with it off; it points at 派活', () => {
-  // The first real run (2026-11-03): with --owned on and nothing dispatched yet the row said the desk was
+test("the dispatch entry is called 派活 everywhere: its button, its locked form, the dialog's title", () => {
+  // The first real run (2026-11-03): with --owned on and nothing dispatched yet the old page said the desk was
   // off ("不带 --owned 启动时..."), and the top bar's entry was called 新会话: the person saw no way to dispatch.
-  assert.equal(routerNote(null, 0), TOWER_TEXT['router.unknown']);
-  assert.equal(routerNote(null, 0, null), TOWER_TEXT['router.unknown']);
-  assert.ok(TOWER_TEXT['router.unknown']!.includes('未知'), 'T1: what it cannot know is said as unknown');
-  assert.equal(routerNote(null, 0, { on: true }), TOWER_TEXT['router.none']);
-  assert.ok(TOWER_TEXT['router.none']!.includes(`「${TOWER_TEXT['bar.new']}」`), 'it names the button it points at');
-  const off = routerNote(null, 0, { on: false, why: whyText('not-asked') });
-  assert.equal(off, TOWER_TEXT['router.note']!.replace('{why}', TOWER_TEXT['why.not-asked']!));
-  assert.ok(off.includes('--owned'), 'without --owned it still says so');
-  const d = { title: '写发布说明', at: 0, harness: 'codex', model: 'codex/gpt-6.1-sol', node: null };
-  for (const desk of [null, { on: true }, { on: false, why: 'x' }]) assert.ok(routerNote(d, 60_000, desk).startsWith('最近派活：写发布说明'), 'a dispatch shown whatever the desk');
-  // The row is 你: what a worker sent out on your permission says it was not your click, and mine says nothing of it.
-  assert.ok(routerNote({ ...d, auto: true }, 60_000).includes('worker 按你开的权限派的，不是你点的'), routerNote({ ...d, auto: true }, 60_000));
-  assert.ok(!routerNote({ ...d, auto: false }, 60_000).includes('权限'));
-  // The entry is called 派活 everywhere: the bar, its locked form, the dialog's title.
   assert.equal(TOWER_TEXT['bar.new'], '派活');
   assert.ok(TOWER_TEXT['bar.newLocked']!.startsWith('派活'));
   assert.ok(TOWER_TEXT['new.title']!.startsWith('派活'));
-  // The row's own 派活 button: shown with nothing dispatched unless the desk is off; its locked form before the unlock.
-  const go = (ctx: Record<string, unknown>) => (describeTower([], { filter: null, pending: 0, sel: null, peek: new Set(), flash: new Map(), ...ctx }).slots as any).rGo;
-  assert.deepEqual([go({}).text, go({}).data.hide], [TOWER_TEXT['bar.newLocked'], '0']);
-  assert.deepEqual([go({ unlocked: true, desk: { on: true } }).text, go({ unlocked: true, desk: { on: true } }).data.hide], [TOWER_TEXT['bar.new'], '0']);
-  assert.equal(go({ unlocked: true, desk: { on: false, why: 'x' } }).data.hide, '1', 'the desk off: no button that cannot work');
-  assert.equal(go({ unlocked: true, desk: { on: true }, dispatch: d }).data.hide, '1');
+  // Off, the why says so in words, --owned included.
+  assert.ok(whyText('not-asked').includes('--owned'), whyText('not-asked'));
 });
 
 test('owned descriptors (review fixes): words for notes and fates, unknown outcomes, why off, busy keeps the focus, unique ids', () => {
@@ -925,7 +889,7 @@ test('seat: request cards say who asked as its own word, why there is no suggest
   // Locked (the app shows these from the tower's router.asks, before the list can be read): the unlock only.
   const locked = describeAskPins([{ harness: 'codex', deadline: 90_000 }], { ...g, unlocked: false, nowWall: 30_000 }) as any[];
   assert.deepEqual(locked.map((c) => [c.slots.clock.text, c.slots.what.text, c.slots.acts.kids.map((b: any) => b.text)]), [['剩 1:00 自动拒', TOWER_TEXT['req.lockedWhat'], [TOWER_TEXT['op.lock']]]]);
-  // A suggestion that arrives changes the model 派出 would send (app.js puts it in the settle signature).
+  // A suggestion that arrives changes the model 派出 would send (drive.js puts it in the settle signature).
   const sug = { ...r, suggesting: 'ready', suggestion: { routeId: 'f'.repeat(20), router: 'answered', models: [{ model: 'zcode/GLM-5.2', source: 'model', rule: null, reason: null }], pick: 0 } };
   assert.notEqual(requestModel(sug).model, requestModel(r).model);
   // withRequests: deadlines first, soonest first, the bar's entries by the bar's deadlines; T3 count.

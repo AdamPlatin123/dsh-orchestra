@@ -1,9 +1,9 @@
 // @ts-check
-// What both pages do to Orchestra's own sessions (orchestra app plan §2-§5, slice design §2.7): the unlock, the
+// What the page does to Orchestra's own sessions (orchestra app plan §2-§5, slice design §2.7): the unlock, the
 // owned list and feeds, the dispatch desk, messages, the stops, and each allow under r4 §10.9's guards (D8: a
-// person, on a page). One copy, so the home page (/) and the old tower (/tower) hold the same rules: an allow is
-// held or typed where it must be, void while the list settles, and a tainted session's high risk is typed only.
-// makeDrive only defines things; each page's boot (ui/app.js, ui/home.js) calls it with its own state and host.
+// person, on a page). The rules in one place: an allow is held or typed where it must be, void while the list
+// settles, and a tainted session's high risk is typed only.
+// makeDrive only defines things; the page's boot (ui/home.js) calls it with its own state and host.
 import { getFeed, getOwned, getSession, oneAtATime, post } from './api.js';
 import { after, fmtClock, nowMono } from './clock.js';
 import {
@@ -178,7 +178,7 @@ export function makeDrive(state, dom, host) {
     // Not a session of Orchestra's own: its box goes, and no control of the last one stays behind in it.
     /** @type {any} */
     const own = mine === null ? { ownBox: { data: { hide: '1' } }, ownActs: { kids: [] }, cards: { kids: [] }, chat: { kids: [] } } : mine.front === true ? host.frontTalk(mine.id, state.owned, state.feeds.get(mine.id), g, fmtClock) : describeOwned(mine.id, state.owned, state.feeds.get(mine.id), g);
-    // The home page draws a dispatch row its own way; the old page takes it as any other line.
+    // The page draws a dispatch row its own way (host.rows).
     if (mine !== null && own.chat !== undefined && host.rows !== undefined) own.chat = { kids: host.rows(own.chat.kids) };
     Object.assign(/** @type {any} */ (detail.slots), own);
     const feed = mine === null ? undefined : state.feeds.get(mine.id);
@@ -740,7 +740,7 @@ export function makeDrive(state, dom, host) {
     return false;
   }
 
-  /** The listeners both pages share. @param {Element} pinsEl where 「等你」 is drawn */
+  /** The listeners the page takes from here. @param {Element} pinsEl where 「等你」 is drawn */
   function listen(pinsEl) {
     pinsEl.addEventListener('pointerenter', () => { state.pinHover = true; });
     pinsEl.addEventListener('pointerleave', () => { state.pinHover = false; schedule(); });

@@ -4,15 +4,14 @@ import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { TOWER_TEXT } from '../../shared/strings.js';
 import { describeNew, describeOwned, describeRequestPins, type Guard } from '../../ui/owned.js';
-import { describeRows } from '../../ui/view.js';
 import { makeRequests } from '../../src/route/requests.ts';
 
 // Project roots on the page (orchestra app plan 项目根, --project-root): the dispatch dialog offers
 // Orchestra's own work dir (the default) and the roots the list names, never a free path, and says what a
 // session there may do; a request card says where its session runs and, if in the work dir, why; a session
-// page and an owned tower row name where it works. Without roots the dialog is as before. Synthetic data.
+// page names where it works. Without roots the dialog is as before. Synthetic data.
 
-const HTML = fs.readFileSync(fileURLToPath(new URL('../../ui/tower.html', import.meta.url)), 'utf8');
+const HTML = fs.readFileSync(fileURLToPath(new URL('../../ui/home.html', import.meta.url)), 'utf8');
 const ROOT = 'D:\\work\\proj';
 const LIST = { v: 1, kind: 'owned-list', rev: 0, enabled: true, disabledWhy: null, harnesses: { codex: true, claude: true }, owned: [], approvals: [], limits: { maxOwned: 3, active: 0 } };
 const g: Guard = { unlocked: true, settle: '', hold: null, busy: false, nowWall: 0 };
@@ -89,19 +88,6 @@ test('a session page names where it works: a project root, Orchestra\'s own dir,
   assert.ok(st({ path: `${ROOT}\\web`, kind: 'project-root' }).includes(`工作目录 ${ROOT}\\web（在你放行的项目根里）`));
   assert.ok(st({ path: 'C:\\o\\work\\x', kind: 'work' }).includes(fill('own.cwdWork', { d: 'C:\\o\\work\\x' })));
   assert.ok(st(null).includes(TOWER_TEXT['own.cwdUnknown']!));
-});
-
-test('an owned tower row names the folder it works in once the page can read the list; an observed row never', () => {
-  const node = (ownership: string) => ({
-    id: `n:${'a'.repeat(20)}`, session: null, harness: 'codex', ownership, layer: 'agent', parent: null, depth: 0, title: 't', activity: '在跑',
-    state: 'running', basis: ownership === 'owned' ? 'owned' : 'log', waiting: null, counts: { children: 0, errors: 0, waiting: 0 }, groups: [], ageMs: 0, agentType: null,
-  });
-  const row = (n: any) => ({ key: n.id, kind: 'node', level: 2, parentKey: null, expandable: false, expanded: false, match: false, setsize: 1, posinset: 1, project: { id: 'p', name: 'p', basis: 'owned', nodes: [n], groups: [] }, node: n, group: null, gone: false });
-  const ctx = { sel: null, peek: new Set<string>(), flash: new Map<string, string>(), cwdOf: () => `${ROOT}\\` };
-  const act = (n: any, c: any) => (describeRows([row(n)] as any, c)[0] as any).slots.act.text as string;
-  assert.equal(act(node('owned'), ctx), `在跑${TOWER_TEXT['sep.parts']}${fill('row.cwd', { d: 'proj' })}`);
-  assert.equal(act(node('owned'), { ...ctx, cwdOf: () => null }), '在跑', 'locked, or a list without it: the activity alone');
-  assert.equal(act(node('observed'), ctx), '在跑');
 });
 
 test('requests: runIn holds only for the cwd as shown; a cwd the redactor changed runs in the work dir (redacted); none named: no-roots', () => {

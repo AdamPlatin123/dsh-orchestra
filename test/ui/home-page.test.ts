@@ -12,7 +12,8 @@ import { openFull } from '../../ui/route.js';
 import { describeErrs, describeIsland, describeLost, describeRail, describeSubs, describeWires, railList, rootOf, subCards, wireRows, workersOf } from '../../ui/wings.js';
 import { describeChat, sentText } from '../../ui/owned.js';
 import { TOWER_TEXT } from '../../shared/strings.js';
-import { validateTower } from '../../shared/tower-contract.js';
+import { STAGE_ENUMS } from '../../shared/stage-contract.js';
+import { TOWER_ENUMS, validateTower } from '../../shared/tower-contract.js';
 import { towerFromStage, type OwnedMember, type OwnedSeat } from '../../src/sources/tower.ts';
 import { UI_ASSETS } from '../../src/server/ui-assets.ts';
 import { UI_FILES } from '../../scripts/embed-ui.ts';
@@ -20,8 +21,8 @@ import { UI_FILES } from '../../scripts/embed-ui.ts';
 // The home page (第三轮方案 22): ui/home.html with the descriptors of ui/wings.js and ui/fold.js, then ui/home.js
 // booted in the fake DOM with the browser's powers stubbed. What it proves: a card's marks are its members, one
 // each, and past 16 they turn into a bar; unknown is never drawn as running; a read-only session has no control;
-// a capsule counts the list it opens; a source's string stays text; an allow keeps the old page's rules. Synthetic
-// data only.
+// a capsule counts the list it opens; a source's string stays text; an allow keeps ui/drive.js's rules. Since the old
+// tower page went (2026-11-08) this is the one page: its CSP, text and file checks moved here. Synthetic data only.
 
 const REPO = fileURLToPath(new URL('../../', import.meta.url));
 const read = (p: string) => fs.readFileSync(path.join(REPO, p), 'utf8');
@@ -29,6 +30,7 @@ const HTML = read('ui/home.html');
 const CSS = read('ui/home.css');
 const HOME = pathToFileURL(path.join(REPO, 'ui/home.js')).href;
 const HAN = /[㐀-鿿豈-﫿　-〿＀-￯]/;
+const UI_JS = fs.readdirSync(path.join(REPO, 'ui')).filter((f) => f.endsWith('.js')).map((f) => `ui/${f}`);
 type Json = Record<string, any>;
 
 let serial = 0;
@@ -219,7 +221,7 @@ test('T1: what was not read is said over both halves, at every width: a failed s
   s.meta.clipped.nodes = 24;
   const lost = describeLost(s) as any;
   assert.equal(lost.data.hide, '0');
-  assert.equal(lost.text, 'Claude：读取出错（EACCES）；另有 3 个会话因上限没读入，见旧页面的「关于数据」；另有 0 个项目、24 个节点因上限没画出来');
+  assert.equal(lost.text, 'Claude：读取出错（EACCES）；另有 3 个会话因上限没读入；另有 0 个项目、24 个节点因上限没画出来');
   const p = page();
   p.dom.paintId('lost', lost);
   assert.equal(p.doc.getElementById('lost')!.textContent, lost.text);
@@ -288,13 +290,13 @@ test('a sub-agent\'s card flags what its state cannot say: it runs while it asks
   assert.equal(card.slots.fe.data.hide, '0');
 });
 
-test('the full record\'s way back: opened from the old page, it says so; from the home page, nothing to say', () => {
+test('the full record: a session id opens /session, whose link leads back to /; anything else goes nowhere', () => {
   const g = globalThis as any;
   const saved = Object.getOwnPropertyDescriptor(g, 'location');
   try {
-    const at = (pathname: string) => { const loc = { pathname, href: '' }; Object.defineProperty(g, 'location', { configurable: true, writable: true, value: loc }); openFull('a'.repeat(20)); return loc.href; };
+    const at = (pathname: string, id = 'a'.repeat(20)) => { const loc = { pathname, href: '' }; Object.defineProperty(g, 'location', { configurable: true, writable: true, value: loc }); openFull(id); return loc.href; };
     assert.equal(at('/'), `/session?id=${'a'.repeat(20)}`);
-    assert.equal(at('/tower'), `/session?id=${'a'.repeat(20)}&from=tower`);
+    assert.equal(at('/', 'x'), '');
   } finally {
     if (saved === undefined) delete g.location;
     else Object.defineProperty(g, 'location', saved);
@@ -387,10 +389,16 @@ test('a wire: only between a row and a card both in view; hot and new are data, 
   assert.equal(w.hasAttribute('style'), false);
 });
 
-test('home.html: nothing inline, one module script, one stylesheet, one plain link, no word of its own, every template', () => {
+test('home.html: nothing inline, one module script, one stylesheet, no link, no named input, no word of its own, every template', () => {
   assert.equal([...HTML.matchAll(/<script\b/g)].length, 1);
   assert.match(HTML, /<script type="module" src="\/assets\/ui\/home\.js"><\/script>/);
   assert.match(HTML, /<link rel="stylesheet" href="\/assets\/ui\/home\.css">/);
+  // From the old tower page's checks (2026-11-08): no named field, one icon and it a data: URI.
+  assert.doesNotMatch(HTML, /<(?:input|select|textarea|button)\b[^>]*\sname\s*=/i);
+  assert.deepEqual([...HTML.matchAll(/\sname\s*=\s*"([^"]*)"/g)].map((m) => m[1]), ['viewport', 'color-scheme']);
+  const icons = [...HTML.matchAll(/<link rel="icon"[^>]*href="([^"]+)"/g)].map((m) => m[1]!);
+  assert.equal(icons.length, 1);
+  assert.ok(icons[0]!.startsWith('data:image/svg+xml,'));
   assert.doesNotMatch(HTML, /<style\b/);
   assert.doesNotMatch(HTML, /\sstyle\s*=/);
   assert.doesNotMatch(HTML, /\son[a-z]+\s*=/i);
@@ -398,7 +406,7 @@ test('home.html: nothing inline, one module script, one stylesheet, one plain li
   assert.doesNotMatch(HTML, /javascript:/i);
   assert.doesNotMatch(HTML, /docs\//, 'nothing from docs/');
   assert.doesNotMatch(HTML, /type="checkbox"/, 'no switch for a permission nobody can use');
-  assert.deepEqual([...HTML.matchAll(/<a\b[^>]*href="([^"]+)"/g)].map((m) => m[1]), ['/tower']);
+  assert.doesNotMatch(HTML, /<a\b/i, 'no link: the page navigates through ui/route.js only');
   assert.doesNotMatch(HTML, HAN);
   const doc = parseHtml(HTML);
   const texts: string[] = [];
@@ -413,14 +421,29 @@ test('home.html: nothing inline, one module script, one stylesheet, one plain li
   walk(doc, false);
   assert.deepEqual(texts, []);
   for (const m of HTML.matchAll(/data-t="([^"]+)"/g)) assert.ok(Object.hasOwn(TOWER_TEXT, m[1]!), m[1]);
-  const js = ['ui/wings.js', 'ui/fold.js', 'ui/home.js', 'ui/front.js'].map(read).join('\n');
-  for (const f of ['ui/wings.js', 'ui/fold.js', 'ui/home.js', 'ui/front.js', 'ui/drive.js']) assert.doesNotMatch(read(f).replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, ''), HAN, f);
+  // Every word comes from shared/strings.js: no Han text in any ui/ module, and every key one names exists.
+  const js = UI_JS.map(read).join('\n');
+  for (const f of UI_JS) assert.doesNotMatch(read(f).replace(/^\s*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, ''), HAN, f);
   for (const m of js.matchAll(/\bt\('([^'$`]+)'/g)) assert.ok(Object.hasOwn(TOWER_TEXT, m[1]!), m[1]);
-  const named = [...new Set([...(js + read('ui/view.js') + read('ui/owned.js')).matchAll(/tpl: '(tpl-[a-z]+)'/g)].map((m) => m[1]!))];
-  const old = ['tpl-arow', 'tpl-group', 'tpl-node', 'tpl-proj', 'tpl-rule', 'tpl-src'];
-  for (const id of named.filter((x) => !old.includes(x))) assert.ok(doc.getElementById(id)?.content?.firstElementChild, `no <template id=${id}>`);
+  // The keys ui/view.js and ui/fold.js build from an enum: every value has its text.
+  const families: [string, readonly string[]][] = [
+    ['state', TOWER_ENUMS.state], ['icon', [...TOWER_ENUMS.state.filter((x) => x !== 'waiting'), ...TOWER_ENUMS.waitingKind]], ['basis', TOWER_ENUMS.basis],
+    ['own', TOWER_ENUMS.ownership], ['own', TOWER_ENUMS.ownership.map((o) => `${o}Long`)], ['harness', TOWER_ENUMS.harness],
+    ['wait', TOWER_ENUMS.waitingKind], ['source', TOWER_ENUMS.waitingSource], ['theme', ['auto', 'light', 'dark']], ['note', STAGE_ENUMS.note],
+    ['age', ['s', 'm', 'h', 'd']], ['ago', ['s', 'm', 'h', 'd']],
+  ];
+  for (const [p, vs] of families) for (const v of vs) assert.ok(Object.hasOwn(TOWER_TEXT, `${p}.${v}`), `${p}.${v}`);
+  const named = [...new Set([...js.matchAll(/tpl: '(tpl-[a-z]+)'/g)].map((m) => m[1]!))];
+  for (const id of named) assert.ok(doc.getElementById(id)?.content?.firstElementChild, `no <template id=${id}>`);
+  // A polite live region and an alert, as the old page had.
+  assert.equal(doc.getElementById('live')!.getAttribute('aria-live'), 'polite');
+  assert.equal(doc.getElementById('alert')!.getAttribute('role'), 'alert');
   for (const k of ['err', 'wait', 'run', 'guess', 'done', 'known', 'unk']) assert.ok(Object.hasOwn(TOWER_TEXT, `fold.${k}`), k);
   for (const v of Object.values(TOWER_TEXT).filter((_, i, a) => a.length > 0)) assert.equal(v.includes('完成'), false);
+  // One glyph, one meaning among the icons (P1), and no check mark: it reads as done (T2).
+  const glyphs = Object.entries(TOWER_TEXT).filter(([k]) => k.startsWith('icon.')).map(([, v]) => v);
+  assert.equal(new Set(glyphs).size, glyphs.length);
+  assert.ok(!glyphs.includes('✓'));
 });
 
 test('home.css: the kit\'s tokens in both themes, motion only without a reduced-motion preference, nothing wider than 1024 asks for', () => {
@@ -461,15 +484,16 @@ test('what the browser loads for / stays within its own budget, all of it embedd
   };
   walk('ui/home.js');
   assert.deepEqual([...seen].filter((f) => f.startsWith('shared/')).sort(), ['shared/frozen.js', 'shared/strings.js']);
-  assert.equal(seen.has('ui/app.js'), false);
   const all = [...seen, 'ui/home.html', 'ui/home.css'];
+  // Every file in ui/ is the page's: the old tower page and its own modules are gone (2026-11-08).
+  assert.deepEqual(fs.readdirSync(path.join(REPO, 'ui')).map((f) => `ui/${f}`).sort(), [...all].filter((f) => f.startsWith('ui/')).sort());
   for (const f of all) {
     assert.ok(Object.hasOwn(UI_ASSETS, f), `${f} is not embedded`);
     assert.ok(UI_FILES.includes(f), `${f} is not in embed-ui's UI_FILES`);
   }
   const own = ['ui/home.html', 'ui/home.css', 'ui/home.js', 'ui/wings.js', 'ui/fold.js', 'ui/front.js'].reduce((n, f) => n + Buffer.byteLength(read(f)), 0);
   const total = all.reduce((n, f) => n + Buffer.byteLength(read(f)), 0);
-  // The page's own files, and everything it loads with what it shares with the old page.
+  // The page's own files, and everything it loads (once with what it shared with the old tower page, gone 2026-11-08).
   // Widened with each thing the page took on: the front desk's tile, talk and orders, and what it says per harness
   // (2026-11-05, 112 and 289); last the running panel, its capsule, cards and a worker's page (2026-11-05, some 18.5 KB),
   // then its review's fixes: one rule for its flags, a list apart for failed sub-agents, what the limits left out, the
@@ -493,7 +517,7 @@ const approval = (id: string, ownedId: string, over: Json) => ({
   risk: 'shell', high: true, tainted: false, canAccept: true, canText: false, questions: null, deadline: OBSERVED + 20 * MIN, rev: 1, ...over,
 });
 
-test('the page boots: worker, talk and cards from the fetched data; only a person drives, by the old page\'s rules', async () => {
+test('the page boots: worker, talk and cards from the fetched data; only a person drives, by ui/drive.js\'s rules', async () => {
   const doc: FakeDocument = parseHtml(HTML);
   const frames: (() => void)[] = [];
   const intervals: { fn: () => void; ms: number }[] = [];
@@ -592,7 +616,6 @@ test('the page boots: worker, talk and cards from the fetched data; only a perso
     assert.equal(byId('desk').querySelector('.desk-t')!.textContent, TOWER_TEXT['home.noRouter']);
     assert.equal(doc.querySelector('.rbar')!.textContent, TOWER_TEXT['home.grantsNone']);
     assert.ok(doc.querySelector('.team')!.textContent.includes(TOWER_TEXT['home.noTeamH']!));
-    assert.equal(doc.querySelector('.legacy')!.textContent, TOWER_TEXT['home.legacy']);
     assert.equal(doc.documentElement!.getAttribute('data-ready'), '1');
 
     // Orchestra's own sessions first; the first is open with its real talk.
@@ -762,7 +785,7 @@ test('the page boots: worker, talk and cards from the fetched data; only a perso
     const pinOf = (id: string) => pins().find((p) => p.getAttribute('data-node') === `n:${id}`)!;
     assert.ok(pinOf(ID.b).querySelector('[data-slot=path]')!.textContent.startsWith(`${TOWER_TEXT['pin.you']} › `));
 
-    // High risk: a click is no allow, and a tainted session's takes the typed word, as on the old page.
+    // High risk: a click is no allow, and a tainted session's takes the typed word (ui/drive.js).
     mono += 2000; // past the 750 ms after the list moved
     await flush();
     const allowIn = (el: FakeElement) => el.querySelectorAll('button').find((b) => b.getAttribute('data-act') === 'allow');
@@ -916,7 +939,7 @@ test('the page boots: worker, talk and cards from the fetched data; only a perso
     assert.equal(byId('nw-text').focused, true);
     byId('new-dlg').close();
 
-    // Nothing on this page reaches past the routes the old page uses.
+    // Nothing on this page reaches past the routes it needs here.
     const allowed = /^\/api\/(?:tower|owned(?:\/[0-9a-f]{20}\/feed\?after=\d+)?|peek\/session\?id=[0-9a-f]{20}|approvals\/[0-9a-f]{32}\/(?:allow|deny))$/;
     for (const r of requests) assert.match(r.url, allowed);
   } finally {

@@ -1,4 +1,4 @@
-// Writes the tower page's synthetic fixture (test/helpers/stage-fixture.ts: one project "shop" with a
+// Writes the page's synthetic fixture (test/helpers/stage-fixture.ts: one project "shop" with a
 // Claude lead waiting on a permission prompt and its subagents, a DSH lead with a teammate and a
 // reviewer, a Codex lead with two subagents) into %TEMP%\orchestra-test-tower and prints the command
 // that serves it (orchestra app plan §5). A stale copy of the dir is removed first. The mtimes count
@@ -29,4 +29,4 @@ writeStageFixture(dir, baseMs);
 console.log(`tower-demo: synthetic roots in ${dir}`);
 console.log('tower-demo: start orchestrad from an unelevated console in the repo:');
 console.log(`  orchestra.cmd --test-profile --test-dir ${dir} --peek-port 7470`);
-console.log('tower-demo: then open http://orchestra.localhost:7470/ and enter the printed pairing code: the tower is the home page.');
+console.log('tower-demo: then open http://orchestra.localhost:7470/ and enter the printed pairing code.');

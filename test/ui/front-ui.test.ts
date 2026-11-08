@@ -30,11 +30,10 @@ const ev = (kind: string, state: string | null, text: string | null, ref: string
 const feedOf = (...events: Json[]) => ({ to: seq, clipped: false, events });
 const chat = (list: Json, ...events: Json[]) => describeFrontChat(feedOf(...events), list, g, fmt) as { kids: Json[]; note: string };
 
-test('the page has the tile over the workers, and the templates of the talk; the old page has neither', () => {
+test('the page has the tile over the workers, and the templates of the talk', () => {
   for (const s of ['data-act="front"', 'data-act="front-open"', 'id="front-model"', 'id="tpl-order"', 'id="tpl-fa"']) assert.ok(HTML.includes(s), s);
   assert.ok(HTML.indexOf('id="desk"') < HTML.indexOf('id="rail"'), 'the tile comes first');
   for (const k of ['who', 'where', 'what', 'why', 'back', 'now']) assert.ok(HTML.includes(`data-t="front.order.${k}"`), k);
-  assert.equal(fs.readFileSync(path.join(REPO, 'ui/tower.html'), 'utf8').includes('tpl-order'), false);
 });
 
 test('tile: locked it does not know (T1); off says so; not open it says what it is and offers the model; open it says how it stands and not one count of workers', () => {

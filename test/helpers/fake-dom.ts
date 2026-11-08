@@ -1,9 +1,9 @@
 // A small DOM for the page's tests (UI design UID:164, 0.1 alpha design §5): elements, text, templates
 // with .content, dataset, classList, attributes, createElementNS, and a parser for the markup subset
-// ui/tower.html uses, so a test can patch the real templates. Every write to the tree is counted in
+// ui/home.html uses, so a test can patch the real templates. Every write to the tree is counted in
 // doc.ops (the render budget: an identical render writes nothing). innerHTML, outerHTML and
 // insertAdjacentHTML throw: the page never parses markup (Trusted Types: trusted-types 'none').
-// jsdom and happy-dom are out (UID:311); this is only what the tower page needs.
+// jsdom and happy-dom are out (UID:311); this is only what the page needs.
 
 const HTML_NS = 'http://www.w3.org/1999/xhtml';
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -226,7 +226,7 @@ const decode = (s: string) => s.replace(/&(#x[0-9a-f]+|#\d+|\w+);/gi, (m, e: str
 });
 
 /**
- * Parses the markup subset of ui/tower.html into a fresh document: elements, attributes (quoted, bare
+ * Parses the markup subset of ui/home.html into a fresh document: elements, attributes (quoted, bare
  * or boolean), text, comments, the doctype, void elements, `/>` (SVG), and <template> children into
  * .content. Elements inside <svg> get the SVG namespace. Not a general HTML parser.
  */

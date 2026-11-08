@@ -9,7 +9,7 @@
   --wait: #a85a00; --wait-soft: rgba(168, 90, 0, .11);
   --err: #b3261e; --err-soft: rgba(179, 38, 30, .10);
   --run: #1b7a5a; --unk: #6c7683;
-  /* r4 §8.5: a tainted session's approval card (red bar). Its own token, as on the tower: --err stays errors only. */
+  /* r4 §8.5: a tainted session's approval card (red bar). Its own token: --err stays errors only. */
   --taint: #a3245e;
   --font: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", system-ui, sans-serif;
   --code: "Cascadia Mono", Consolas, ui-monospace, monospace;
@@ -57,7 +57,6 @@ code, pre { font-family: var(--code); }
 .fresh[data-fresh=stale] { color: var(--ink); font-weight: 600; }
 .tb { flex: none; padding: 2px 9px; border: 1px solid var(--line); border-radius: 6px; background: none; color: var(--ink-2); font-size: 13px; }
 .tb:hover { background: var(--sunk); }
-.legacy { flex: none; color: var(--ink-3); font-size: 12.5px; }
 .alert { flex: none; padding: 5px 14px; background: var(--err-soft); color: var(--err); font-size: 13px; }
 /* Out of the flow: it comes and goes on a timer, and what is under the pointer must not move with it (an allow, a brake). */
 .note { position: absolute; top: 45px; z-index: 5; max-width: min(46%, 560px); padding: 4px 14px; border: solid var(--line); border-width: 0 1px 1px 0; border-radius: 0 0 8px 0; background: var(--sunk); font-size: 13px; }
@@ -128,7 +127,6 @@ code, pre { font-family: var(--code); }
 .detail[data-mode=empty] .facts-box, .detail[data-mode=empty] .ch { display: none; }
 /* With the talk showing, its last line and the left row already say this; the height goes to the talk. */
 .detail:has(.chat-box:not([data-hide="1"])) [data-slot=actBox] { display: none; }
-.dt-gone { padding: 6px 0; font-size: 12.5px; color: var(--ink-2); }
 .facts-box { flex: none; padding: 4px 0; font-size: 12.5px; color: var(--ink-3); }
 /* Open it scrolls as one: .detail clips what overflows it, and on a laptop the facts under the permission panel were out of reach. */
 .facts-box[open] { flex: 0 1 auto; min-height: 0; max-height: 65%; overflow: auto; scrollbar-width: thin; }

@@ -1,6 +1,6 @@
 // @ts-check
 // The tower's JSON contract (orchestra app plan §1, tower panel research §1): what GET /api/tower
-// answers and what the tower page reads. Three layers: you (the router, layer 0) -> agents (one root
+// answers and what the page reads. Three layers: you (the router, layer 0) -> agents (one root
 // session each) -> subagents, grouped by project. The daemon's golden file (test/fixtures/tower-snapshot.json)
 // passes validateTower, and so does every snapshot src/sources/tower.ts builds.
 //

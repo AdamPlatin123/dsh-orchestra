@@ -1,6 +1,6 @@
 // @ts-check
-// Owned sessions on the tower (orchestra app plan §2-§5, slice design §2.6-§2.8): pure descriptors of the
-// chat, approvals, composer, dispatch, and r4 §10.9's allow guards (D8: a person, this page). app.js sends.
+// Owned sessions on the page (orchestra app plan §2-§5, slice design §2.6-§2.8): pure descriptors of the
+// chat, approvals, composer, dispatch, and r4 §10.9's allow guards (D8: a person, this page). drive.js sends.
 import { ERROR_TEXT, TOWER_TEXT } from '../shared/strings.js';
 import { fmtLeft, t } from './view.js';
 
@@ -268,7 +268,7 @@ export function describeCard(a, g) {
   return {
     key: a.approvalId, tpl: 'tpl-card', data: { high: a.high ? '1' : '0', tainted: a.tainted === true ? '1' : '0' },
     slots: {
-      // r4 §8.5: an agent-triggered session's card says first where its turns came from, the source chain whole (a red bar, tower.css).
+      // r4 §8.5: an agent-triggered session's card says first where its turns came from, the source chain whole (a red bar, home.css).
       kind: { text: join([originLine(a), tk('kind', a.kind, 'kind.command'), tk('risk', a.risk, 'risk.other'), a.high && t('appr.high')]) },
       left: { text: left > 0 ? t('wait.left', { t: fmtLeft(left) }) : t('wait.overdue') },
       title: { text: a.title },

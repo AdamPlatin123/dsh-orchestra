@@ -1,7 +1,7 @@
 // @ts-check
-// The home page's boot (第三轮方案 22), the second module with effects, beside ui/app.js for the old tower: the 2 s
+// The home page's boot (第三轮方案 22), the one module with effects (the old tower page went 2026-11-08): the 2 s
 // poll (10 s while hidden), the route, clicks and keys, one render per frame. ui/wings.js and ui/fold.js say what
-// shows; everything done to a session goes through ui/drive.js, the old page's own code, so nothing here can
+// shows; everything done to a session goes through ui/drive.js, which holds the allow guards, so nothing here can
 // loosen an allow. A card opens only when clicked, and a new one comes out once at the end of its wire, never moving
 // the reader's place or the focus. The wires are the one thing measured here: they follow every frame, scroll and resize.
 // The right side is shut until clicked open (第三轮 mock 21), from the capsule of what is going on; a card there pushes
@@ -29,7 +29,7 @@ const WIRE_MS = 2200;
 /** One column: the row and the card stand one under the other, and no wire goes between them. */
 const NARROW = '(max-width: 899px)';
 const narrow = () => window.matchMedia(NARROW).matches;
-/** After the pointer or focus left, the left list holds this long, as the old page's tree. */
+/** After the pointer or focus left, the left list holds this long (research §1.5). */
 const QUIET_MS = 5000;
 /** The chain of dispatches a worker may stand at the end of (src/route/dispatch.ts DISPATCH_LIMITS.depth): the panel says so there. */
 const MAX_DEPTH = 2;
@@ -65,7 +65,7 @@ const state = {
   /** The talk stood at its end at the last frame or scroll: what grew it shorter since says nothing of the reader. */ chatEnd: true,
 };
 
-/** The tab's count, as the old page's: a pending agent request waits for you too. @param {TowerSnapshot} snap */
+/** The tab's count: a pending agent request waits for you too. @param {TowerSnapshot} snap */
 function paintTitle(snap) {
   const waiting = snap.tally.waiting + queuedN(state.owned) + (snap.router.asks?.length ?? 0);
   dom.title(waiting > 0 ? t('home.titleWait', { n: waiting }) : t('home.title'));
@@ -222,7 +222,7 @@ function render() {
   dom.paintId('run-page', describeRunPage(run, { page: state.runPage, title: state.runTitle, list: state.owned, nowWall: wall }));
 
   state.rows = new Map();
-  const detail = describeDetail(snap, state.sel, [], drive.detailFor(snap), { nowWall: wall, fmtIso });
+  const detail = describeDetail(snap, state.sel, drive.detailFor(snap), { nowWall: wall, fmtIso });
   const node = state.sel === null ? undefined : indexOf(snap).byId.get(state.sel)?.node;
   const face = node === undefined ? { data: { hide: '1' } } : avatarOf(node);
   Object.assign(/** @type {any} */ (detail.slots), { hav: { ...face, data: { hide: node === undefined ? '1' : '0', ...face.data } } }, node === undefined ? { empty: { text: t('home.pick') } } : {});
@@ -300,7 +300,7 @@ function show(id) {
 function openNode(key) {
   const id = state.snap === null ? key : rootOf(state.snap, key) ?? key;
   show(id);
-  go({ view: 'tower', node: id }, true);
+  go({ node: id }, true);
   schedule();
 }
 
@@ -308,7 +308,7 @@ function openNode(key) {
 function openFrontTalk() {
   state.front = true;
   state.sel = null;
-  go({ view: 'tower', node: null }, true);
+  go({ node: null }, true);
   schedule();
 }
 
@@ -380,7 +380,7 @@ function wake() {
 function act(el) {
   const t0 = /** @type {HTMLElement} */ (el);
   const a = t0.dataset.act;
-  // The old page's list never moves under a pointer, so a no there always counts. Here it can, and a no that was not
+  // The list here can move under a pointer (a capsule opened, a composer of another height), and a no that was not
   // meant is an answer too (D8): void as an allow is, the stops left alone.
   if ((a === 'deny' || a === 'req-no') && t0.closest('.pin-acts') !== null && drive.settling()) return drive.say(t('home.moved'));
   if (drive.act(t0)) return;
@@ -480,7 +480,7 @@ document.addEventListener('keydown', (e) => {
 
 drive.listen(dom.byId('pins'));
 
-// == the lists' hold, as the old page's tree: the pointer or focus holds the order, so a click picks the row it was
+// == the lists' hold (research §1.5): the pointer or focus holds the order, so a click picks the row it was
 // aimed at; leaving starts the quiet timer. The left list and the right side's cards alike.
 /** @param {Element} el @returns {() => boolean} whether it holds now */
 function holdOn(el) {

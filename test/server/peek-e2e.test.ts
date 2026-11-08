@@ -12,7 +12,7 @@ import { validateStage } from '../../shared/stage-contract.js';
 import { validateTower } from '../../shared/tower-contract.js';
 
 // The thin slice end to end: a test-profile orchestrad with --peek-port over synthetic roots, paired
-// with the code it prints, serves the tower page, the tower and a session's full record. This is the path the real profile
+// with the code it prints, serves the page, the tower and a session's full record. This is the path the real profile
 // takes on your machine, minus the real roots.
 
 const U1 = '0e0f3a52-7b1c-4d2e-9f00-1234567890ab';
@@ -62,8 +62,7 @@ test('a test-profile orchestrad with --peek-port serves both harnesses after pai
   assert.equal(home.status, 200);
   assert.match(home.body, /assets\/ui\/home\.js/);
   const old = await request(port, 'GET', '/tower', { cookie });
-  assert.equal(old.status, 200);
-  assert.match(old.body, /role="tree"/);
+  assert.deepEqual([old.status, old.headers.location], [301, '/'], 'the old tower page is gone: its bookmark lands on the page');
   const tower = JSON.parse((await request(port, 'GET', '/api/tower', { cookie })).body) as { meta: { profile: string }; projects: { name: string; nodes: { harness: string; session: string | null }[] }[] };
   assert.deepEqual(validateTower(tower).errors, []);
   assert.equal(tower.meta.profile, 'test');
@@ -96,9 +95,9 @@ test('the tower end to end over the stage fixture (the demo data): pair, then th
   assert.deepEqual(snap.lanes.map((l) => [l.name, l.players.length]), [['shop', 11]], '5 Claude, 3 DSH, 3 Codex');
   assert.equal(snap.podium.fermatas.length, 1);
   assert.equal(r.body.includes(STAGE_CANARY), false);
-  const page = await request(port, 'GET', '/tower', { cookie });
+  const page = await request(port, 'GET', '/', { cookie });
   assert.equal(page.status, 200);
-  assert.match(page.body, /role="tree"/);
+  assert.match(page.body, /assets\/ui\/home\.js/);
   const tw = await request(port, 'GET', '/api/tower', { cookie });
   const tower = JSON.parse(tw.body) as { tally: { waiting: number }; waitingBar: unknown[]; projects: { nodes: unknown[] }[] };
   assert.deepEqual(validateTower(tower).errors, []);

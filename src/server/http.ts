@@ -33,15 +33,16 @@ import { frozen } from '../../shared/frozen.js';
 // CSRF token because nothing but pairing changes state. Step 4 replaces this module's routes with the
 // route table of server/routes.ts and step 5 replaces the pages.
 //
-// The two pages (orchestra app plan §5, 第三轮方案 22) are the one place with a script: once paired, GET / serves
-// the embedded ui/home.html and GET /tower the old ui/tower.html, under the same checks; /assets/ui/* and
-// /assets/shared/* serve the embedded modules and styles they load (src/server/ui-assets.ts, by map lookup only, no cookie: they hold no
-// session data), and /api/tower and /api/peek/session answer its polls with JSON. Those routes carry
+// The page (orchestra app plan §5, 第三轮方案 22) is the one place with a script: once paired, GET / serves
+// the embedded ui/home.html; /assets/ui/* and /assets/shared/* serve the embedded modules and styles it
+// loads (src/server/ui-assets.ts, by map lookup only, no cookie: they hold no session data), and /api/tower
+// and /api/peek/session answer its polls with JSON. Those routes carry
 // UI_CSP: script and connections to self only, trusted types on with no policy, so the page writes the
 // DOM through textContent and attributes alone. Every other route keeps the scriptless CSP: the pairing
-// form, and /session, the full record of one session the tower's detail links to. The old stage page is
-// gone: /stage answers a redirect to /. GET /api/peek/stage still answers the stage snapshot the tower
-// is built from (shared/stage-contract.js), for tools and tests; no page polls it.
+// form, and /session, the full record of one session the page's detail links to. The old stage and tower
+// pages are gone (2026-11-08 for the tower): /stage and /tower answer a redirect to /. GET /api/peek/stage
+// still answers the stage snapshot the tower is built from (shared/stage-contract.js), for tools and tests;
+// no page polls it.
 //
 // alpha 0.2 (slice design §2.7): when given `owned`, the owned-session routes of routes.ts (the unlock
 // pair, /api/owned/*, /api/approvals/*, /api/import/*) go to src/server/owned.ts, which runs their
@@ -59,7 +60,7 @@ export const PAIR_TTL_MS = 10 * 60 * 1000;
 const LIMITS = frozen({ wrongInRow: 5, wrongTotal: 20, sessions: 16, pairBodyBytes: 1024 });
 const COOKIE = 'orchestra_sid';
 const CSP = "default-src 'none'; style-src 'self'; img-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; require-trusted-types-for 'script'";
-/** The tower page's CSP: stricter than r4:595 (nothing inline, trusted types with no policy). */
+/** The page's CSP: stricter than r4:595 (nothing inline, trusted types with no policy). */
 export const UI_CSP = "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; require-trusted-types-for 'script'; trusted-types 'none'";
 const UI_HEADERS: readonly [string, string][] = frozen([['Content-Security-Policy', UI_CSP]]);
 const ASSET_PATH = /^(?:ui|shared)\/[a-z0-9][a-z0-9-]*\.(?:js|css)$/;
@@ -175,7 +176,7 @@ function pairPage(profile: 'real' | 'test', message: string | null, open: boolea
 const kib = (n: number) => (n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} KiB` : `${(n / 1024 / 1024).toFixed(1)} MiB`);
 const two = (n: number) => String(n).padStart(2, '0');
 /**
- * A time as this machine's local wall time, YYYY-MM-DD hh:mm:ss: the tower page beside it shows the same
+ * A time as this machine's local wall time, YYYY-MM-DD hh:mm:ss: the page beside it shows the same
  * events in local time (ui/clock.js fmtIso), and the page and orchestrad run on one machine, so one
  * event reads the same in both places. A conversion of a time the source wrote, never a clock read.
  */
@@ -189,11 +190,11 @@ function eventRow(e: PeekEvent): string {
   return `<tr><td class="n">${Number.isFinite(ms) ? escapeHtml(local(ms)) : ''}</td><td class="n">${escapeHtml(e.type)}</td><td class="t">${escapeHtml(e.text)}</td></tr>`;
 }
 
-function sessionPage(profile: 'real' | 'test', v: PeekView, fromTower: boolean): string {
+function sessionPage(profile: 'real' | 'test', v: PeekView): string {
   const s = v.session;
   const note = v.note === null ? '' : `<p class="note">${escapeHtml(NOTES[v.note])}</p>`;
   const unparsed = v.unparsed > 0 ? `<p class="sub">${v.unparsed} 行不是 JSON 对象，没显示。</p>` : '';
-  return page(`Orchestra · ${s.project}`, profile, `<p>${fromTower ? '<a href="/tower">← 回到塔</a>' : '<a href="/">← 回到首页</a>'}</p><h1>${escapeHtml(s.project)}</h1>
+  return page(`Orchestra · ${s.project}`, profile, `<p><a href="/">← 回到首页</a></p><h1>${escapeHtml(s.project)}</h1>
 <p class="sub">${s.harness} · ${kib(s.size)} · 修改于 ${local(s.mtimeMs)}（本机时间） · 最后 ${v.events.length} 条事件（上限 ${PEEK_LIMITS.events}）</p>${note}${unparsed}
 <table><thead><tr><th>时间（本机）</th><th>类型</th><th>内容</th></tr></thead><tbody>${v.events.map(eventRow).join('\n')}</tbody></table>`);
 }
@@ -327,12 +328,12 @@ export async function startPeekServer(opts: PeekServerOptions): Promise<PeekServ
       if (a !== null) return answer(res, a);
     }
     if (req.method !== 'GET') return plain(res, 405, 'method not allowed');
-    // The old stage page is gone; a bookmark of it lands on the tower (or on pairing).
-    if (url.pathname === '/stage') {
+    // The old stage and tower pages are gone; a bookmark of either lands on the home page (or on pairing).
+    if (url.pathname === '/stage' || url.pathname === '/tower') {
       res.setHeader('Location', '/');
       return plain(res, 301, 'moved to /');
     }
-    const pageName = url.pathname === '/' ? 'ui/home.html' : url.pathname === '/tower' ? 'ui/tower.html' : null;
+    const pageName = url.pathname === '/' ? 'ui/home.html' : null;
     if (!paired) {
       if (pageName !== null) return html(res, 200, pairPage(profile, null, pairing.open));
       return plain(res, 403, 'not paired');
@@ -346,7 +347,7 @@ export async function startPeekServer(opts: PeekServerOptions): Promise<PeekServ
       if (url.pathname === '/session') {
         const s = findSession(gate, roots, redact, url.searchParams.get('id') ?? '');
         if (s === null) return plain(res, 404, 'no such session');
-        return html(res, 200, sessionPage(profile, readSession(gate, s, redact), url.searchParams.get('from') === 'tower'));
+        return html(res, 200, sessionPage(profile, readSession(gate, s, redact)));
       }
       if (url.pathname === '/api/peek/stage') return json(res, 200, stage.snapshot());
       if (url.pathname === '/api/tower') {
