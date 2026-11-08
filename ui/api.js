@@ -10,13 +10,13 @@ export const TIMEOUT_MS = 4000;
 const POST_MS = 15000;
 /** The dispatch desk waits on the router model (20 s on the daemon's side) before it answers with the rules alone. */
 const SUGGEST_MS = 30000;
-const POST_RE = /^(?:owned\/(?:new|unlock|unlock-code|[0-9a-f]{20}\/(?:message|interrupt|end|brake|dispatch-grant))|approvals\/[0-9a-f]{32}\/(?:allow|deny|answer)|route\/suggest|agent-requests\/[0-9a-f]{20}\/reject)$/;
+const POST_RE = /^(?:owned\/(?:new|[0-9a-f]{20}\/(?:message|interrupt|end|brake|dispatch-grant))|approvals\/[0-9a-f]{32}\/(?:allow|deny|answer)|route\/suggest|agent-requests\/[0-9a-f]{20}\/reject)$/;
 /** @param {string | null} [csrf] */
 const heads = (csrf) => (csrf ? { accept: 'application/json', 'x-orchestra-csrf': csrf } : { accept: 'application/json' });
 /** @param {string | null} [csrf] @returns {RequestInit} */
 const opts = (csrf) => ({ credentials: 'same-origin', cache: 'no-store', headers: heads(csrf), signal: deadline(TIMEOUT_MS) });
 
-/** @typedef {{ ok: true, body: unknown } | { ok: false, code: string }} Answer */
+/** why: which pairing refusal it was (wrong, voided, expired, no-code, shut). @typedef {{ ok: true, body: unknown } | { ok: false, code: string, why?: string }} Answer */
 
 /** null while a run is out. @template T @param {() => Promise<T>} run @returns {() => Promise<T | null>} */
 export function oneAtATime(run) {
@@ -51,7 +51,8 @@ async function read(go) {
   }
   if (res.ok && body !== null) return { ok: true, body };
   const err = body !== null && typeof body === 'object' ? /** @type {{ error?: unknown }} */ (body).error : undefined;
-  if (typeof err === 'string') return { ok: false, code: err };
+  const why = body !== null && typeof body === 'object' ? /** @type {{ why?: unknown }} */ (body).why : undefined;
+  if (typeof err === 'string') return typeof why === 'string' ? { ok: false, code: err, why } : { ok: false, code: err };
   return { ok: false, code: res.status === 403 ? 'unpaired' : `http-${res.status}` };
 }
 
@@ -73,7 +74,20 @@ export async function getFeed(csrf, id, after) {
   return read(() => fetch('/api/owned/' + id + '/feed?after=' + after, opts(csrf)));
 }
 
-/** An owned POST: JSON, or no body at all (unlock-code). @param {string | null} csrf @param {string} path after /api/ @param {object | null} body @returns {Promise<Answer>} */
+// Pairing (2026-11-08: pair once): a code printed on orchestrad's console (204, never in a reply), the code traded
+// for the cookie and the token (its only way to the page), and this browser forgotten.
+/** @param {string | null} csrf @param {object | null} body @returns {RequestInit} */
+const postInit = (csrf, body) => ({
+  method: 'POST', credentials: 'same-origin', cache: 'no-store', signal: deadline(POST_MS),
+  headers: { ...heads(csrf), ...(body === null ? {} : { 'content-type': 'application/json' }) }, ...(body === null ? {} : { body: JSON.stringify(body) }),
+});
+export const pairCode = () => read(() => fetch('/api/pair-code', postInit(null, null)));
+/** @param {string} code */
+export const pair = (code) => read(() => fetch('/api/pair', postInit(null, { code })));
+/** @param {string} csrf */
+export const forgetBrowser = (csrf) => read(() => fetch('/api/pair/forget', postInit(csrf, null)));
+
+/** An owned POST: JSON, or no body at all. @param {string | null} csrf @param {string} path after /api/ @param {object | null} body @returns {Promise<Answer>} */
 export async function post(csrf, path, body) {
   if (!POST_RE.test(path)) return { ok: false, code: 'bad-id' };
   const json = body === null ? {} : { 'content-type': 'application/json' };

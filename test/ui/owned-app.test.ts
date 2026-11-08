@@ -11,9 +11,9 @@ import {
 } from '../../ui/owned.js';
 
 // Orchestra's own sessions on the page (orchestra app plan §2-§5): ui/home.js booted against the
-// real ui/home.html in the fake DOM, with the network, the clock, the timers, session storage and
+// real ui/home.html in the fake DOM, with the network, the clock, the timers, local storage and
 // notifications stubbed (ported from the old tower page's boot, 2026-11-08: ui/drive.js holds these rules).
-// It proves the unlock flow, the dispatch dialog's request, the chat, the question card's answer, and the
+// It proves the pairing flow, the dispatch dialog's request, the chat, the question card's answer, and the
 // approval guards of r4 §10.9 under D8: an allow carries the digest and the queue revision, is void for
 // 750 ms after the list moved, is held for a high-risk request, never shows for a request the waiting bar
 // cannot show whole or for a native or inferred wait, and no notification or title says allow.
@@ -51,7 +51,7 @@ const approval = (id: string, ownedId: string, over: Partial<Approval> & { rev: 
 });
 const LONG = Array.from({ length: 12 }, (_, i) => `+ line ${i} of a long diff that will not fit on the waiting bar`).join('\n');
 
-test('owned sessions: unlock, the guarded approvals, the chat, the composer, dispatch, notifications', async () => {
+test('owned sessions: pairing, the guarded approvals, the chat, the composer, dispatch, notifications', async () => {
   const doc: FakeDocument = parseHtml(HTML);
   const frames: (() => void)[] = [];
   const intervals: { fn: () => void; ms: number }[] = [];
@@ -89,7 +89,7 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
       { seq: 7, at: 7, kind: 'note', ref: null, uuid: null, text: null, state: 'tokens', redactions: 0, live: true, exitCode: null, tokens: { input: 1, cachedInput: 0, output: 1, total: 2 } },
     ],
   };
-  // seat: the pending agent requests every paired page sees before the unlock (harness and deadline only).
+  // seat: the pending agent requests every page sees before the pairing (harness and deadline only).
   let asks: { harness: 'codex' | 'claude'; deadline: number }[] = [{ harness: 'codex', deadline: OBSERVED + 7 * MIN }];
   const tower = () => towerFromStage(busyStage(), { seats, nowWall: OBSERVED, asks });
   const SUGGESTION = {
@@ -107,12 +107,15 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
   let brakeAnswer: { status: number; body: unknown } | null = null;
   /** While set, a suggestion's reply waits for it (the router model takes its time). */
   let suggestHold: Promise<void> | null = null;
+  /** While set, the daemon takes no token (a browser forgotten elsewhere), and prints no code (its console is off). */
+  let tokenDead = false;
+  let codeOff = false;
   const loc = { hash: '', href: '', pathname: '/', search: '', replace(u: string) { this.hash = u.slice(u.indexOf('#')); } };
   const win = {};
   Object.assign(doc, { hidden: false, addEventListener: (t: string, fn: Listener) => on(doc, t, fn) });
   (FakeElement.prototype as any).addEventListener = function (this: object, t: string, fn: Listener) { on(this, t, fn); };
   const g = globalThis as any;
-  const keys = ['document', 'location', 'window', 'fetch', 'performance', 'requestAnimationFrame', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Element', 'Node', 'localStorage', 'sessionStorage', 'Notification'];
+  const keys = ['document', 'location', 'window', 'fetch', 'performance', 'requestAnimationFrame', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Element', 'Node', 'localStorage', 'Notification'];
   const saved = Object.fromEntries(keys.map((k) => [k, Object.getOwnPropertyDescriptor(g, k)]));
   const define = (k: string, v: unknown) => Object.defineProperty(g, k, { configurable: true, writable: true, value: v });
   define('document', doc);
@@ -129,8 +132,7 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
   define('clearTimeout', (id: number) => { const t = timeouts[id - 1]; if (t !== undefined) t.off = true; });
   define('Element', FakeElement);
   define('Node', FakeElement);
-  define('localStorage', { getItem: () => null, setItem: () => {} });
-  define('sessionStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) });
+  define('localStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) });
   define('Notification', class { static permission = 'granted'; constructor(title: string, o: { body: string }) { notes.push({ title, body: o.body }); } });
   const reply = (status: number, body?: unknown) => ({ status, ok: status >= 200 && status < 300, json: async () => { if (body === undefined) throw new SyntaxError('no body'); return structuredClone(body); } });
   define('fetch', async (url: string, init: { method?: string; headers?: Record<string, string>; body?: string } = {}) => {
@@ -140,9 +142,9 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     requests.push({ method, url, headers, body });
     const token = headers['x-orchestra-csrf'] === CSRF;
     if (url === '/api/tower') return reply(200, tower());
-    if (url === '/api/owned/unlock-code') return reply(204);
-    if (url === '/api/owned/unlock') return body.code === '12345678' ? reply(200, { csrf: CSRF }) : reply(403, { error: 'not-unlocked' });
-    if (!token) return reply(403, { error: 'not-unlocked' });
+    if (url === '/api/pair-code') return codeOff ? reply(503) : reply(204);
+    if (url === '/api/pair') return body.code === '12345678' ? reply(200, { csrf: CSRF }) : reply(403, { error: 'not-unlocked', why: 'wrong' });
+    if (!token || tokenDead) return reply(403, { error: 'not-unlocked' });
     if (url === '/api/owned') return reply(200, list);
     if (url.startsWith(`/api/owned/${ID.a}/feed`)) return reply(200, url.endsWith('after=0') ? feed : { ...feed, from: 7, events: [] });
     if (url === '/api/owned/new') return reply(200, { ownedId: ID.n, actionId: body.actionId, accepted: true, jseq: 9 });
@@ -172,13 +174,13 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     await import(HOME);
     await flush();
 
-    // Locked: the top bar offers to unlock; each Orchestra entry of the waiting bar offers only that; a
+    // Not paired: the top bar offers to pair; each Orchestra entry of the waiting bar offers only that; a
     // native or inferred wait has no button at all. No owned route is read without the token.
     const bar = doc.getElementById('top')!;
     const desk = doc.getElementById('desk')!;
-    assert.equal(bar.querySelector('[data-act=unlock]')!.textContent, TOWER_TEXT['bar.unlock']);
-    // seat: a pending agent request shows before the unlock too (the tower's router.asks): its harness, the
-    // time left before it is refused (D8), the unlock button; its text and who asked only after the unlock.
+    assert.equal(bar.querySelector('[data-act=pair]')!.textContent, TOWER_TEXT['bar.pair']);
+    // seat: a pending agent request shows before the pairing too (the tower's router.asks): its harness, the
+    // time left before it is refused (D8), the pairing button; its text and who asked only once paired.
     // It is sorted in by its deadline (7 min, before the approvals' 10, 20 and 25).
     assert.equal(pins().length, 6);
     const ask = pins()[0]!;
@@ -199,26 +201,33 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     assert.equal(desk.querySelector('[data-act=new]')!.textContent, TOWER_TEXT['bar.newLocked']);
     assert.equal(desk.querySelector('[data-act=new]')!.getAttribute('title'), TOWER_TEXT['bar.newHint']);
 
-    // Unlock: the daemon is asked to print a code (no body), the dialog takes it; a wrong code says so.
-    await click(bar.querySelector('[data-act=unlock]'));
-    assert.deepEqual(posts('/api/owned/unlock-code').map((r) => r.body), [undefined]);
-    const dlg = doc.getElementById('unlock-dlg')!;
+    // Pairing: with no token the dialog opened by itself and asked for no code (the one printed at the start may
+    // be good); the button asks the daemon to print one (no body); a wrong code says so.
+    const dlg = doc.getElementById('pair-dlg')!;
     assert.equal(dlg.open, true);
-    // Each code replaces the last: more clicks (a held Enter) while the dialog is open ask for no new one.
-    for (let i = 0; i < 3; i++) await click(bar.querySelector('[data-act=unlock]'));
-    assert.equal(posts('/api/owned/unlock-code').length, 1, 'one code per dialog: the printed code stays the one to type');
-    (doc.getElementById('ul-code') as any).value = '00000000';
-    await click(dlg.querySelector('[data-act=unlockGo]'));
-    assert.equal(dlg.querySelector('[data-slot=msg]')!.textContent, TOWER_TEXT['unlock.wrong']);
+    assert.equal(posts('/api/pair-code').length, 0, 'opening asks for no code');
+    await click(bar.querySelector('[data-act=pair]'));
+    assert.equal(posts('/api/pair-code').length, 0);
+    await click(dlg.querySelector('[data-act=pairCode]'));
+    assert.deepEqual(posts('/api/pair-code').map((r) => r.body), [undefined]);
+    assert.equal(dlg.querySelector('[data-slot=msg]')!.textContent, TOWER_TEXT['pair.asked']);
+    // Each code replaces the last: more clicks (a held Enter) while the printed one is good ask for no new one.
+    for (let i = 0; i < 3; i++) await click(dlg.querySelector('[data-act=pairCode]'));
+    assert.equal(posts('/api/pair-code').length, 1, 'one click, at most one code: the printed code stays the one to type');
+    (doc.getElementById('pr-code') as any).value = '00000000';
+    await click(dlg.querySelector('[data-act=pairGo]'));
+    assert.equal(dlg.querySelector('[data-slot=msg]')!.textContent, TOWER_TEXT['pair.wrong']);
+    assert.equal(posts('/api/pair-code').length, 1, 'a wrong try leaves the code good: still no new one');
     assert.equal(store.size, 0);
-    (doc.getElementById('ul-code') as any).value = '12345678';
-    fire(doc, 'keydown', { target: doc.getElementById('ul-code'), key: 'Enter' });
+    (doc.getElementById('pr-code') as any).value = '12345678';
+    fire(doc, 'keydown', { target: doc.getElementById('pr-code'), key: 'Enter' });
     await flush();
     assert.equal(dlg.open, false);
-    assert.deepEqual([...store.values()], [CSRF], 'the token is kept in this tab\'s session storage');
+    assert.deepEqual([...store.values()], [CSRF], 'the token is kept in this browser\'s local storage');
     const read = requests.find((r) => r.url === '/api/owned')!;
     assert.equal(read.headers['x-orchestra-csrf'], CSRF);
-    assert.equal(bar.querySelector('[data-act=unlock]')!.textContent, TOWER_TEXT['bar.unlocked']);
+    assert.equal(bar.querySelector('[data-act=pair]')!.textContent, TOWER_TEXT['bar.paired']);
+    assert.ok(posts('/api/pair').every((r) => !('x-orchestra-csrf' in r.headers)), 'pairing carries no token');
     assert.equal(desk.querySelector('[data-act=new]')!.textContent, TOWER_TEXT['bar.new']);
 
     // The waiting bar: the allow shows only where the whole request shows; a long one offers 去看.
@@ -637,6 +646,52 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     intervals.at(-1)!.fn();
     await flush();
     assert.equal(count(), before, doc.title);
+
+    // Forget this browser: the top button says it is paired and asks first; cancelled, nothing goes; confirmed, the daemon
+    // forgets it, the token goes, nothing owned is read again, and the pairing dialog does not open by itself.
+    Object.assign(doc, { hidden: false });
+    fire(doc, 'visibilitychange');
+    await flush();
+    const fg = doc.getElementById('forget-dlg')!;
+    const pd = doc.getElementById('pair-dlg')!;
+    await click(bar.querySelector('[data-act=pair]'));
+    assert.equal(fg.open, true);
+    assert.equal(pd.open, false);
+    await click(fg.querySelector('[data-act=close]'));
+    assert.equal(fg.open, false);
+    assert.equal(posts('/api/pair/forget').length, 0, 'asked first');
+    await click(bar.querySelector('[data-act=pair]'));
+    await click(fg.querySelector('[data-act=forgetGo]'));
+    const forgot = posts('/api/pair/forget');
+    assert.deepEqual(forgot.map((r) => [r.headers['x-orchestra-csrf'], r.body]), [[CSRF, undefined]]);
+    assert.equal(fg.open, false);
+    assert.equal(store.has('orchestra.csrf'), false, 'the token is gone from storage');
+    assert.equal(pd.open, false, 'a browser you forgot is asked nothing');
+    assert.equal(bar.querySelector('[data-act=pair]')!.textContent, TOWER_TEXT['bar.pair']);
+    const ownedReads = () => requests.filter((r) => r.url === '/api/owned').length;
+    const was = ownedReads();
+    for (const i of intervals) i.fn();
+    await flush();
+    assert.equal(ownedReads(), was, 'no owned read without the token');
+
+    // Paired again, then the daemon stops taking the token: it is cleared at once and the dialog opens by itself.
+    await click(bar.querySelector('[data-act=pair]'));
+    assert.equal(pd.open, true);
+    (doc.getElementById('pr-code') as any).value = '12345678';
+    await click(pd.querySelector('[data-act=pairGo]'));
+    assert.equal(pd.open, false);
+    assert.equal(store.get('orchestra.csrf'), CSRF);
+    tokenDead = true;
+    for (const i of intervals) i.fn();
+    await flush();
+    assert.equal(store.has('orchestra.csrf'), false);
+    assert.equal(pd.open, true, 'not paired any more: the dialog offers pairing');
+    // With its console off the daemon prints no code: the dialog says so, in words.
+    codeOff = true;
+    const codesAsked = posts('/api/pair-code').length;
+    await click(pd.querySelector('[data-act=pairCode]'));
+    assert.equal(posts('/api/pair-code').length, codesAsked + 1);
+    assert.equal(pd.querySelector('[data-slot=msg]')!.textContent, TOWER_TEXT['pair.off']);
   } finally {
     await flush();
     for (const [k, d] of Object.entries(saved)) {
@@ -886,7 +941,7 @@ test('seat: request cards say who asked as its own word, why there is no suggest
   // A requester that named none is 未知 on the card, never an English placeholder.
   const [anon] = describeRequestPins({ requests: [{ ...r, requester: 'dsh' }] }, g) as any[];
   assert.ok(anon.slots.meta.text.startsWith('自称来自 DSH 会话 未知（未核实）'), anon.slots.meta.text);
-  // Locked (the app shows these from the tower's router.asks, before the list can be read): the unlock only.
+  // Locked (the app shows these from the tower's router.asks, before the list can be read): the pairing only.
   const locked = describeAskPins([{ harness: 'codex', deadline: 90_000 }], { ...g, unlocked: false, nowWall: 30_000 }) as any[];
   assert.deepEqual(locked.map((c) => [c.slots.clock.text, c.slots.what.text, c.slots.acts.kids.map((b: any) => b.text)]), [['剩 1:00 自动拒', TOWER_TEXT['req.lockedWhat'], [TOWER_TEXT['op.lock']]]]);
   // A suggestion that arrives changes the model 派出 would send (drive.js puts it in the settle signature).

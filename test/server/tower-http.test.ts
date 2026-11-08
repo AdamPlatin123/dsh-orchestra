@@ -17,12 +17,13 @@ import type { OwnedSeats } from '../../src/sources/tower.ts';
 import { UI_ASSETS } from '../../src/server/ui-assets.ts';
 import { validateSession, validateStage } from '../../shared/stage-contract.js';
 import { validateTower } from '../../shared/tower-contract.js';
+import { pairBrowser } from '../helpers/pair.ts';
 import { realIo } from '../helpers/read-io.ts';
 import { STAGE_CANARY, writeStageFixture } from '../helpers/stage-fixture.ts';
 import { withTmp } from '../helpers/tmp.ts';
 
 // The page's routes of the peek server over the stage fixture, in process, on a free loopback
-// port (orchestra app plan §5): once paired, / serves the page, /api/tower and /api/peek/session its
+// port (orchestra app plan §5): / serves the page (unpaired too: it shows its pairing dialog), /api/tower and /api/peek/session its
 // JSON, /assets/* its files; /stage and /tower (the old pages) redirect to /. /api/peek/stage stays for tools.
 
 const CODE = '12345678';
@@ -69,23 +70,20 @@ function request(fx: Fx, method: string, pathname: string, headers: Record<strin
   });
 }
 
-async function paired(fx: Fx): Promise<string> {
-  const r = await request(fx, 'POST', '/pair', { origin: fx.origin, 'content-type': 'application/x-www-form-urlencoded' }, `code=${CODE}`);
-  assert.equal(r.status, 303);
-  assert.equal(r.headers.location, '/');
-  return String(r.headers['set-cookie']).split(';')[0]!;
-}
+const paired = async (fx: Fx): Promise<string> => (await pairBrowser(fx.server, CODE)).cookie;
 
 const SCRIPTLESS = /^default-src 'none'; style-src 'self'; img-src 'none';/;
 
-test('unpaired: / is the pairing form, the JSON and the full record are 403; the embedded modules need no cookie', async (t) => {
+test('unpaired: / is the page under the UI CSP (it pairs), the JSON is 403, the full record a way to /; the embedded modules need no cookie', async (t) => {
   const fx = await fixture(t);
   const r = await request(fx, 'GET', '/');
   assert.equal(r.status, 200);
-  assert.match(r.body, /<form method="post" action="\/pair">/);
-  assert.equal(r.body.includes('<script'), false);
-  assert.match(String(r.headers['content-security-policy']), SCRIPTLESS);
-  for (const p of ['/api/tower', '/api/peek/stage', `/api/peek/session?id=${'0'.repeat(20)}`, `/session?id=${'0'.repeat(20)}`]) assert.equal((await request(fx, 'GET', p)).status, 403, p);
+  assert.equal(r.body, Buffer.from(PAGE['ui/home.html']!.hex, 'hex').toString('utf8'));
+  assert.equal(r.headers['content-security-policy'], UI_CSP);
+  for (const p of ['/api/tower', '/api/peek/stage', `/api/peek/session?id=${'0'.repeat(20)}`]) assert.equal((await request(fx, 'GET', p)).status, 403, p);
+  const s = await request(fx, 'GET', `/session?id=${'0'.repeat(20)}`);
+  assert.deepEqual([s.status, s.headers.location], [303, '/']);
+  assert.match(String(s.headers['content-security-policy']), SCRIPTLESS);
   const js = await request(fx, 'GET', '/assets/ui/home.js');
   assert.equal(js.status, 200);
   assert.equal(js.body, 'export const home = 1;\n');
@@ -147,7 +145,7 @@ test('the page and its assets: UI CSP, ETag with no-cache, 304 on a match, 404 o
   const again = await request(fx, 'GET', '/assets/ui/home.js', { 'if-none-match': PAGE['ui/home.js']!.etag });
   assert.deepEqual([again.status, again.body], [304, '']);
   assert.equal((await request(fx, 'GET', '/assets/shared/frozen.js')).status, 200);
-  // Only .js and .css by exact name: the page itself is /, behind the cookie; the old page's files are gone.
+  // Only .js and .css by exact name: the page itself is /; the old page's files are gone.
   for (const p of ['/assets/ui/tower.html', '/assets/ui/home.html', '/assets/ui/app.js', '/assets/ui/missing.js', '/assets/ui/HOME.js', '/assets/ui/..%2Fui/home.js', '/assets/ui%2Fhome.js', '/assets/src/server/http.ts', '/assets/', '/assets/ui/home.js/x']) {
     const r = await request(fx, 'GET', p, { cookie });
     assert.equal(r.status, 404, p);

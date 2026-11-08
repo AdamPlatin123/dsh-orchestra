@@ -255,7 +255,7 @@ export function describeWires(ends, box) {
  * what the limits left out is said here: the snapshot counts it, it does not say whose it was (T1). A card with a wire
  * needs no word; one without says why it has none: the talk is locked, not read yet, or holds no row for it.
  * @param {Node | undefined} n @param {readonly { key: string }[]} cards @param {number} over nodes the limits left out
- * @param {{ rows?: { has(k: string): boolean }, read?: boolean, locked?: boolean }} ctx the rows drawn, whether the talk was read, and whether that is for want of the unlock
+ * @param {{ rows?: { has(k: string): boolean }, read?: boolean, locked?: boolean }} ctx the rows drawn, whether the talk was read, and whether that is for want of the token
  */
 function subsNote(n, cards, over, ctx) {
   if (n === undefined) return t('home.subsPick');

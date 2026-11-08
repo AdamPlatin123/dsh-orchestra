@@ -1,6 +1,6 @@
 // @ts-check
-// Per-viewer storage (orchestra app plan §5): the theme and the home page's right side (localStorage), the token
-// (sessionStorage). All in try/catch: blocked or empty storage changes nothing else.
+// Per-viewer storage (orchestra app plan §5), all of it localStorage: the theme, the home page's right side, and the
+// controller token. All in try/catch: blocked or empty storage changes nothing else.
 
 const THEMES = ['auto', 'light', 'dark'];
 const KEY = 'orchestra.tower.theme';
@@ -45,21 +45,23 @@ export function setRightOpen(open) {
   }
 }
 
-// The token (slice design §2.7): this tab's session storage, per origin and port.
+// The controller token (slice design §2.7) of this browser's pairing (2026-11-08: pair once): local storage, which is
+// per origin, the port included, so a page another program serves on another port of orchestra.localhost never
+// reads it, though it gets the cookie. It lasts as the pairing does: across restarts, until the browser is forgotten.
 /** @returns {string | null} */
 export function getCsrf() {
   try {
-    const v = sessionStorage.getItem('orchestra.csrf');
+    const v = localStorage.getItem('orchestra.csrf');
     return v !== null && /^[\w-]{43}$/.test(v) ? v : null;
   } catch {
     return null;
   }
 }
 
-/** Keeps the token; null drops it. Blocked storage: it lasts as long as the page. @param {string | null} v */
+/** Keeps the token; null drops it. Blocked storage: it lasts as long as the page (the next load pairs again). @param {string | null} v */
 export function setCsrf(v) {
   try {
-    if (v === null) sessionStorage.removeItem('orchestra.csrf');
-    else sessionStorage.setItem('orchestra.csrf', v);
+    if (v === null) localStorage.removeItem('orchestra.csrf');
+    else localStorage.setItem('orchestra.csrf', v);
   } catch {}
 }

@@ -379,7 +379,7 @@ async function boot(o: { tag: string; narrow?: boolean; stored?: string | null; 
   Object.assign(doc, { hidden: false, addEventListener: (t: string, fn: (e: any) => void) => on(doc, t, fn) });
   (FakeElement.prototype as any).addEventListener = function (this: object, t: string, fn: (e: any) => void) { on(this, t, fn); };
   const g = globalThis as any;
-  const keys = ['document', 'location', 'window', 'fetch', 'performance', 'requestAnimationFrame', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Element', 'Node', 'localStorage', 'sessionStorage', 'ResizeObserver'];
+  const keys = ['document', 'location', 'window', 'fetch', 'performance', 'requestAnimationFrame', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Element', 'Node', 'localStorage', 'ResizeObserver'];
   const saved = Object.fromEntries(keys.map((k) => [k, Object.getOwnPropertyDescriptor(g, k)]));
   const define = (k: string, v: unknown) => Object.defineProperty(g, k, { configurable: true, writable: true, value: v });
   const realImmediate = setImmediate;
@@ -408,8 +408,10 @@ async function boot(o: { tag: string; narrow?: boolean; stored?: string | null; 
   define('Node', FakeElement);
   define('localStorage', o.blocked === true
     ? { getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); } }
-    : { getItem: (k: string) => (k === 'orchestra.home.right' ? writes.findLast((w) => w[0] === k)?.[1] ?? o.stored ?? null : null), setItem: (k: string, v: string) => { writes.push([k, v]); } });
-  define('sessionStorage', { getItem: (k: string) => (k === 'orchestra.csrf' ? CSRF : null), setItem: () => {}, removeItem: () => {} });
+    : {
+      getItem: (k: string) => (k === 'orchestra.home.right' ? writes.findLast((w) => w[0] === k)?.[1] ?? o.stored ?? null : k === 'orchestra.csrf' ? CSRF : null),
+      setItem: (k: string, v: string) => { writes.push([k, v]); }, removeItem: () => {},
+    });
   const reply = (b: unknown) => ({ status: 200, ok: true, json: async () => structuredClone(b) });
   define('fetch', async (url: string, init: { method?: string } = {}) => {
     requests.push({ method: init.method ?? 'GET', url });

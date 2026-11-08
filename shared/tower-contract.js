@@ -124,8 +124,8 @@ export const TOWER_BOUNDS = frozen({
  *   snapshot. empty only when total is 0 (T1: a source the limits pushed out is clipped, not empty).
  * @typedef {{ kind: 'human', dispatch: Dispatch | null, asks: Ask[] }} Router
  *   Layer 0: you. dispatch is the dispatch desk's last dispatch (orchestra app plan §3), null before any.
- *   asks: the pending agent requests (seat), soonest deadline first, at most 16: what a paired page shows
- *   before it is unlocked (the request itself, its text and who asked, only after the unlock).
+ *   asks: the pending agent requests (seat), soonest deadline first, at most 16: what a page with the cookie
+ *   but no controller token shows (the request itself, its text and who asked, only with the token).
  * @typedef {{ harness: 'codex' | 'claude', deadline: number }} Ask
  *   deadline: epoch ms the request is refused at if nobody dispatched it (D8: timeout = deny).
  * @typedef {{ title: string, at: number, harness: 'codex' | 'claude', model: string, node: NodeId | null, auto: boolean }} Dispatch

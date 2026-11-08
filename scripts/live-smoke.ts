@@ -68,7 +68,7 @@
 // first, its own stop never runs). The run then checks by pid + creation time, with its own procguard,
 // how many of the Job's processes are still alive (polled for 20 s, well inside the ping's own minute)
 // and whether the Job can still be opened by its name (it can while anything holds a handle to it: the
-// wrapper, above all). Then it starts orchestrad again on the same test dir, pairs and unlocks again, and
+// wrapper, above all). Then it starts orchestrad again on the same test dir, which remembers the pairing (no new code), and
 // reports what GET /api/owned and the record on disk say of the session (state, endReason).
 //
 // --project-root (orchestra app plan 项目根): the run makes <test dir>\proj, starts orchestrad with
@@ -95,9 +95,8 @@
 //
 // What it does: makes %TEMP%\orchestra-test-smoke-XXXX (the test profile's dir, its data dir inside),
 // starts orchestrad from this repository (src/boot.ts) with --test-profile --test-dir <it> --peek-port
-// <free port> --owned, reads the pairing code and the unlock code from orchestrad's stdout, pairs
-// (POST /pair, form field code=, Host orchestra.localhost:<port>, Origin), unlocks (POST
-// /api/owned/unlock-code, then /api/owned/unlock), dispatches one session (POST /api/owned/new) whose
+// <free port> --owned, reads the pairing code from orchestrad's stdout, pairs (POST /api/pair, JSON {code},
+// Host orchestra.localhost:<port>, Origin; the reply holds the controller token, the cookie comes with it), dispatches one session (POST /api/owned/new) whose
 // task is to write a file in its work dir and read it back, allows each approval it raises (POST
 // /api/approvals/:id/allow with the card's digest and the list's rev: this script stands in for the
 // person, on this one synthetic task, in a throwaway test dir), waits for the reply, checks the file on
@@ -284,29 +283,33 @@ async function startDaemon(testDir: string, extra: string[]): Promise<Daemon> {
   return { child, lines, exited, exitedProc, port, waitLine };
 }
 
-type Api = { get(p: string): Promise<Reply>; post(p: string, body: Record<string, unknown>): Promise<Reply>; owned: string[] };
+type Paired = { cookie: string; csrf: string };
+type Api = { get(p: string): Promise<Reply>; post(p: string, body: Record<string, unknown>): Promise<Reply>; owned: string[]; paired: Paired };
 
-/** Pairs (the form, as the page posts it) and unlocks (the code goes to orchestrad's console only): the owned API's GET and POST. */
-async function connect(d: Daemon): Promise<Api> {
+/**
+ * Pairs as the page does (POST /api/pair with the code orchestrad printed: the cookie and the token in one reply), or, on a
+ * restart over the same test dir, keeps the pairing it remembers (it prints no code then): the owned API's GET and POST.
+ */
+async function connect(d: Daemon, remembered?: Paired): Promise<Api> {
   const { port, lines, waitLine } = d;
   const host = `orchestra.localhost:${port}`;
   const origin = `http://${host}`;
-  const pair = (await waitLine(/pairing code (\d{8})/))[1]!;
   await waitLine(/peek page at /);
   const owned = lines.filter((l) => /owned (Codex|Claude) sessions (on|are off)/.test(l)).map((l) => l.replace(/ \(model .*$/, '').replace(/^orchestrad: /, ''));
-  const paired = await request(port, host, 'POST', '/pair', { origin, 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' }, `code=${pair}`);
-  if (paired.status !== 303) throw new Error(`live-smoke: pairing answered ${paired.status}`);
-  const cookie = String(paired.headers['set-cookie']).split(';')[0]!;
-  const before = lines.length;
-  const asked = await request(port, host, 'POST', '/api/owned/unlock-code', { cookie, origin, 'sec-fetch-site': 'same-origin' });
-  if (asked.status !== 204) throw new Error(`live-smoke: unlock-code answered ${asked.status}`);
-  const unlockCode = (await waitLine(/unlock code (\d{8})/, before))[1]!;
+  let paired: Paired;
+  if (remembered !== undefined) paired = remembered;
+  else {
+    const pair = (await waitLine(/pairing code (\d{8})/))[1]!;
+    const r = await request(port, host, 'POST', '/api/pair', { origin, 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' }, JSON.stringify({ code: pair }));
+    if (r.status !== 200) throw new Error(`live-smoke: pairing answered ${r.status}`);
+    paired = { cookie: String(r.headers['set-cookie']).split(';')[0]!, csrf: String(r.json.csrf) };
+  }
+  const { cookie } = paired;
   const json = { cookie, origin, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' };
-  const unlocked = await request(port, host, 'POST', '/api/owned/unlock', json, JSON.stringify({ code: unlockCode }));
-  if (unlocked.status !== 200) throw new Error(`live-smoke: unlock answered ${unlocked.status}`);
-  const h = { ...json, 'x-orchestra-csrf': String(unlocked.json.csrf) };
+  const h = { ...json, 'x-orchestra-csrf': paired.csrf };
   return {
     owned,
+    paired,
     get: (p: string) => request(port, host, 'GET', p, { cookie, origin, 'sec-fetch-site': 'same-origin', 'x-orchestra-csrf': h['x-orchestra-csrf'] }),
     post: (p: string, body: Record<string, unknown>) => request(port, host, 'POST', p, h, JSON.stringify({ actionId: crypto.randomUUID(), ...body })),
   };
@@ -797,7 +800,8 @@ async function main(): Promise<number> {
   /** What the session's Job held before its end, by identity: checked once it ended. */
   let held: { pid: number; createTime: string }[] = [];
   try {
-    const { get, post, owned } = await connect(first);
+    const api1 = await connect(first);
+    const { get, post, owned } = api1;
     report.startup = owned;
 
     const probeFile = path.join(testDir, OUTSIDE_FILE);
@@ -1071,7 +1075,8 @@ async function main(): Promise<number> {
         await sleep(500);
       }
       second = await startDaemon(testDir, extra);
-      const api2 = await connect(second);
+      // It remembers the pairing: no code is printed, the cookie and the token of the first start still work.
+      const api2 = await connect(second, api1.paired);
       const listed = (await api2.get('/api/owned')).json?.owned?.find((o: { ownedId: string }) => o.ownedId === id) ?? null;
       report.afterRestart = listed === null ? null : { state: listed.state, endReason: listed.endReason, brake: listed.brake, waiting: listed.waiting };
       report.recordAfterRestart = endReasonOnDisk(testDir, id);

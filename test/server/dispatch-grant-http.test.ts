@@ -19,6 +19,7 @@ import { humanJournal } from '../../src/server/owned.ts';
 import { ownedEnabled, registerOwnedHandlers } from '../../src/server/owned-handlers.ts';
 import type { Store } from '../../src/store/store.ts';
 import { validateOwnedList } from '../../shared/owned-contract.js';
+import { pairBrowser } from '../helpers/pair.ts';
 import { realIo } from '../helpers/read-io.ts';
 import { mustOpen, storeFixture } from '../helpers/store.ts';
 
@@ -82,7 +83,8 @@ async function fixture(t: TestContext, withClaude = false): Promise<Fx> {
   const deps = { codex: codex as never, codexOff: 'on', claude: withClaude ? claude as never : null, desk, log, requests, dispatch };
   const server = await startPeekServer({
     port: 0, gate: new ReadGate({ roots: [], io: realIo, testDirs: [sf.dir] }), roots: [], redact: (s) => s, clock, log, pairingCode: CODE, profile: 'test',
-    owned: { journal: humanJournal(store), printUnlockCode: (c) => printed.push(c), enabled: ownedEnabled(deps), handlers: registerOwnedHandlers(deps), presence },
+    printPairCode: (c) => printed.push(c),
+    owned: { journal: humanJournal(store), enabled: ownedEnabled(deps), handlers: registerOwnedHandlers(deps), presence },
   });
   t.after(() => server.close());
   const host = `${PEEK_HOST}:${server.port}`;
@@ -106,16 +108,8 @@ function request(fx: Fx, method: string, pathname: string, headers: Record<strin
 }
 
 async function unlocked(fx: Fx): Promise<Record<string, string>> {
-  const p = await new Promise<http.IncomingMessage>((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port: fx.server.port, method: 'POST', path: '/pair', headers: { host: fx.host, origin: fx.origin, 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' } }, (res) => { res.resume(); resolve(res); });
-    req.on('error', reject);
-    req.end(`code=${CODE}`);
-  });
-  const cookie = String(p.headers['set-cookie']).split(';')[0]!;
-  const base = { cookie, origin: fx.origin, 'sec-fetch-site': 'same-origin' };
-  assert.equal((await request(fx, 'POST', '/api/owned/unlock-code', base)).status, 204);
-  const u = await request(fx, 'POST', '/api/owned/unlock', { ...base, 'content-type': 'application/json' }, JSON.stringify({ code: fx.printed.at(-1)! }));
-  return { ...base, 'content-type': 'application/json', 'x-orchestra-csrf': String(u.json.csrf) };
+  const { cookie, csrf } = await pairBrowser(fx.server, CODE);
+  return { cookie, origin: fx.origin, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json', 'x-orchestra-csrf': csrf };
 }
 
 const rows = (fx: Fx) => fx.store.db.all("SELECT kind, body FROM event WHERE kind IN ('human', 'human.result', 'dispatch-grant', 'route', 'agent-request', 'auto', 'front-desk') ORDER BY jseq").map((r) => ({ kind: String(r.kind), body: JSON.parse(String(r.body)) }));

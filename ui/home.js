@@ -186,7 +186,8 @@ function render() {
   const ageMs = state.okMono === null ? null : nowMono() - state.okMono;
   const open = state.csrf !== null;
   const top = describeTop(snap, { ageMs, stale: ageMs !== null && ageMs > STALE_MS, theme: state.theme });
-  Object.assign(/** @type {any} */ (top.slots), { unlock: { text: t(open ? 'bar.unlocked' : 'bar.unlock') } });
+  // Paired: it leads to forgetting this browser.
+  Object.assign(/** @type {any} */ (top.slots), { pair: { text: t(open ? 'bar.paired' : 'bar.pair'), attr: { title: open ? t('pair.forgetTitle') : null } } });
   dom.paintId('top', top);
   dom.paintId('desk', { slots: { new: { text: t(open ? 'bar.new' : 'bar.newLocked'), attr: { title: t('bar.newHint') } }, ...describeFrontTile(state.owned, { unlocked: open, on: state.front, busy: state.busy }) } });
   drive.paintDesk();
@@ -253,6 +254,8 @@ async function poll() {
   const a = await towerOnce();
   if (a === null) return;
   if (!a.ok) {
+    // The cookie is gone: so is the token.
+    if (a.code === 'unpaired' && state.csrf !== null) drive.lock();
     state.error = a.code === 'unpaired' ? t('err.unpaired') : a.code === 'network' ? t('err.network') : a.code === 'timeout' ? t('err.timeout', { s: TIMEOUT_MS / 1000 }) : t('err.http', { code: a.code });
     return schedule();
   }
@@ -395,7 +398,7 @@ function act(el) {
     render();
     return focusOn(dom.byId('dt-title'));
   }
-  if (a === 'front') return state.csrf === null ? void drive.unlock() : openFrontTalk();
+  if (a === 'front') return state.csrf === null ? drive.pairOpen() : openFrontTalk();
   if (a === 'front-open') return void drive.openFront();
   if (a === 'fold') {
     const k = t0.dataset.fold ?? '';
@@ -579,4 +582,6 @@ document.addEventListener('visibilitychange', wake);
 
 dom.fillStatic();
 render();
+// No token: the pairing dialog opens by itself.
+if (state.csrf === null) drive.pairOpen();
 wake();

@@ -4,8 +4,8 @@
 //   node scripts/live-route.ts [--dispatch] [--keep]
 //
 // What it does: makes %TEMP%\orchestra-test-route-XXXX (the test profile's dir), starts orchestrad from
-// this repository with --test-profile --test-dir <it> --peek-port <free port> --owned, pairs and unlocks
-// with the codes orchestrad prints, and asks POST /api/route/suggest for three synthetic sentences. With
+// this repository with --test-profile --test-dir <it> --peek-port <free port> --owned, pairs with the code
+// orchestrad prints (POST /api/pair: the cookie and the controller token in one reply), and asks POST /api/route/suggest for three synthetic sentences. With
 // --dispatch it then dispatches the last sentence to its first candidate (POST /api/owned/new with the
 // card's routeId), ends that session at once, and reads the tower's router row (GET /api/tower).
 //
@@ -82,17 +82,11 @@ async function main(): Promise<number> {
     const pair = (await waitLine(/pairing code (\d{8})/))[1]!;
     await waitLine(/peek page at /);
     report.startup = lines.filter((l) => /owned (Codex|Claude) sessions (on|are off)/.test(l)).map((l) => l.replace(/ \(model .*$/, '').replace(/^orchestrad: /, ''));
-    const paired = await request(port, host, 'POST', '/pair', { origin, 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' }, `code=${pair}`);
-    if (paired.status !== 303) throw new Error(`live-route: pairing answered ${paired.status}`);
+    const paired = await request(port, host, 'POST', '/api/pair', { origin, 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' }, JSON.stringify({ code: pair }));
+    if (paired.status !== 200) throw new Error(`live-route: pairing answered ${paired.status}`);
     const cookie = String(paired.headers['set-cookie']).split(';')[0]!;
-    const before = lines.length;
-    const asked = await request(port, host, 'POST', '/api/owned/unlock-code', { cookie, origin, 'sec-fetch-site': 'same-origin' });
-    if (asked.status !== 204) throw new Error(`live-route: unlock-code answered ${asked.status}`);
-    const unlockCode = (await waitLine(/unlock code (\d{8})/, before))[1]!;
     const json = { cookie, origin, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' };
-    const unlocked = await request(port, host, 'POST', '/api/owned/unlock', json, JSON.stringify({ code: unlockCode }));
-    if (unlocked.status !== 200) throw new Error(`live-route: unlock answered ${unlocked.status}`);
-    const h = { ...json, 'x-orchestra-csrf': String(unlocked.json.csrf) };
+    const h = { ...json, 'x-orchestra-csrf': String(paired.json.csrf) };
 
     const cards: { text: string; card: any }[] = [];
     const out: Record<string, unknown>[] = [];

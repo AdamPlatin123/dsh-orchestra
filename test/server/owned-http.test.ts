@@ -1,27 +1,30 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as crypto from 'node:crypto';
+import * as fs from 'node:fs';
 import * as http from 'node:http';
 import * as net from 'node:net';
+import * as path from 'node:path';
 import type { TestContext } from 'node:test';
 import { ReadGate } from '../../src/fs/read-gate.ts';
 import { Log } from '../../src/runtime/log.ts';
-import { PEEK_HOST, startPeekServer } from '../../src/server/http.ts';
+import { PAIR_TTL_MS, PEEK_HOST, startPeekServer } from '../../src/server/http.ts';
 import type { PeekServer } from '../../src/server/http.ts';
 import type { OwnedHandler, OwnedHandlers } from '../../src/server/owned.ts';
-import { UNLOCK_TTL_MS, humanJournal, makeOwnedHandlers, makeUnlock } from '../../src/server/owned.ts';
+import { humanJournal, makeOwnedHandlers } from '../../src/server/owned.ts';
 import { CSRF_RE, OWNED_BODY_MAX_BYTES, OWNED_TEXT_MAX_BYTES, ROUTES } from '../../src/server/routes.ts';
 import type { Route } from '../../src/server/routes.ts';
 import type { Store } from '../../src/store/store.ts';
 import { ERROR_STATUS } from '../../shared/protocol.js';
+import { askPairCode, pairBrowser } from '../helpers/pair.ts';
 import { realIo } from '../helpers/read-io.ts';
 import { startOrchestrad, waitForLine } from '../helpers/orchestrad.ts';
 import { mustOpen, storeFixture } from '../helpers/store.ts';
 import type { StoreFixture } from '../helpers/store.ts';
 import { withTmp } from '../helpers/tmp.ts';
 
-// The owned-session base (slice design §2.7, §6 「端点安全」; §7 step 5): the unlock code and the
-// controller token, the check chain every owned route runs, the `human` records and the handler table.
+// The owned-session base (slice design §2.7, §6 「端点安全」; §7 step 5): pairing (one console code, the
+// cookie and the controller token in one reply; 2026-11-08) and the controller token, the check chain every owned route runs, the `human` records and the handler table.
 // Here the tests register their own handlers where a route must get that far; the real handlers and
 // their end to end runs against the fake app-server are in owned-flow.test.ts.
 
@@ -33,7 +36,7 @@ type Fx = {
   server: PeekServer; host: string; origin: string; log: Log; store: Store; sf: StoreFixture; printed: string[]; handlers: OwnedHandlers;
 };
 
-async function fixture(t: TestContext, opts: { enabled?: boolean; print?: boolean; sf?: StoreFixture; handlers?: OwnedHandlers } = {}): Promise<Fx> {
+async function fixture(t: TestContext, opts: { enabled?: boolean; print?: boolean; code?: string | null; sf?: StoreFixture; handlers?: OwnedHandlers } = {}): Promise<Fx> {
   const sf = opts.sf ?? await storeFixture(t);
   const store = mustOpen(sf).store;
   const clock = sf.clock.port(null);
@@ -41,8 +44,9 @@ async function fixture(t: TestContext, opts: { enabled?: boolean; print?: boolea
   const printed: string[] = [];
   const handlers = opts.handlers ?? makeOwnedHandlers();
   const server = await startPeekServer({
-    port: 0, gate: new ReadGate({ roots: [], io: realIo, testDirs: [sf.dir] }), roots: [], redact: (s) => s, clock, log, pairingCode: CODE, profile: 'test',
-    owned: { journal: humanJournal(store), printUnlockCode: opts.print === false ? null : (c) => printed.push(c), enabled: opts.enabled ?? false, handlers },
+    port: 0, gate: new ReadGate({ roots: [], io: realIo, testDirs: [sf.dir] }), roots: [], redact: (s) => s, clock, log, pairingCode: opts.code === undefined ? CODE : opts.code, profile: 'test',
+    printPairCode: opts.print === false ? null : (c) => printed.push(c),
+    owned: { journal: humanJournal(store), enabled: opts.enabled ?? false, handlers },
   });
   t.after(() => server.close());
   const host = `${PEEK_HOST}:${server.port}`;
@@ -63,26 +67,13 @@ function request(fx: Fx, method: string, pathname: string, headers: Record<strin
   });
 }
 
-async function paired(fx: Fx): Promise<string> {
-  const r = await request(fx, 'POST', '/pair', { origin: fx.origin, 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' }, `code=${CODE}`);
-  assert.equal(r.status, 303);
-  return String(r.headers['set-cookie']).split(';')[0]!;
-}
-
 /** What the page sends: the cookie, its own origin, same-origin, JSON, and the token when it has one. */
 const page = (fx: Fx, cookie: string, csrf?: string): Record<string, string> => ({
   cookie, origin: fx.origin, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json', ...(csrf === undefined ? {} : { 'x-orchestra-csrf': csrf }),
 });
 
-async function unlocked(fx: Fx): Promise<{ cookie: string; csrf: string }> {
-  const cookie = await paired(fx);
-  const asked = await request(fx, 'POST', '/api/owned/unlock-code', { cookie, origin: fx.origin, 'sec-fetch-site': 'same-origin' });
-  assert.equal(asked.status, 204);
-  const r = await request(fx, 'POST', '/api/owned/unlock', page(fx, cookie), JSON.stringify({ code: fx.printed.at(-1) }));
-  assert.equal(r.status, 200, r.body);
-  const csrf = (JSON.parse(r.body) as { csrf: string }).csrf;
-  return { cookie, csrf };
-}
+/** Paired with the start's code: the cookie and the token. */
+const unlocked = (fx: Fx) => pairBrowser(fx.server, CODE);
 
 const err = (r: Reply) => (r.headers['content-type']?.startsWith('application/json') ? (JSON.parse(r.body) as { error?: string }).error ?? null : null);
 const humans = (fx: Fx) => fx.store.db.all("SELECT kind, body FROM event WHERE kind IN ('human', 'human.result') ORDER BY jseq").map((r) => ({ kind: String(r.kind), body: JSON.parse(String(r.body)) as Record<string, unknown> }));
@@ -101,126 +92,173 @@ function sample(r: Route): { path: string; body: Record<string, unknown> | null 
   if (r.human === null) return { path, body: { text: 'hello' } };
   return { path, body: { actionId: uuid(), ...(extra[r.human ?? ''] ?? {}) } };
 }
-const UNLOCKED = ROUTES.filter((r) => r.auth === 'unlocked');
+/** The owned routes that reach a handler (forget, answered by the base itself, has its own tests). */
+const UNLOCKED = ROUTES.filter((r) => r.auth === 'unlocked' && r.path !== '/api/pair/forget');
 
-// --- unlock ---------------------------------------------------------------------------------------
+// --- pairing (2026-11-08: pair once) ------------------------------------------------------------------
 
-test('unlock-code prints a fresh code only to the console and answers 204 with no body; unlock trades it once for a token of CSRF_RE\'s form', async (t) => {
-  const fx = await fixture(t);
-  const cookie = await paired(fx);
-  const asked = await request(fx, 'POST', '/api/owned/unlock-code', { cookie, origin: fx.origin, 'sec-fetch-site': 'same-origin' });
+const pairPost = (fx: Fx, path: string, h: Record<string, string>, body?: string) => request(fx, 'POST', path, h, body);
+const site = (fx: Fx) => ({ origin: fx.origin, 'sec-fetch-site': 'same-origin' });
+
+test('pair-code prints a fresh code only to the console and answers 204 with no body; pair trades it once for the cookie and a token of CSRF_RE\'s form', async (t) => {
+  const fx = await fixture(t, { code: null });
+  const asked = await pairPost(fx, '/api/pair-code', site(fx));
   assert.equal(asked.status, 204);
   assert.equal(asked.body, '');
   assert.equal(fx.printed.length, 1);
   const code = fx.printed[0]!;
   assert.match(code, /^[0-9]{8}$/);
   assert.equal(JSON.stringify(asked.headers).includes(code), false, 'never in a reply');
-  const wrong = await request(fx, 'POST', '/api/owned/unlock', page(fx, cookie), JSON.stringify({ code: code === '00000000' ? '00000001' : '00000000' }));
-  assert.deepEqual([wrong.status, err(wrong)], [403, 'not-unlocked']);
-  const ok = await request(fx, 'POST', '/api/owned/unlock', page(fx, cookie), JSON.stringify({ code }));
+  const json = { ...site(fx), 'content-type': 'application/json' };
+  const wrong = await pairPost(fx, '/api/pair', json, JSON.stringify({ code: code === '00000000' ? '00000001' : '00000000' }));
+  assert.deepEqual([wrong.status, JSON.parse(wrong.body)], [403, { error: 'not-unlocked', why: 'wrong' }]);
+  assert.equal(wrong.headers['set-cookie'], undefined);
+  const ok = await pairPost(fx, '/api/pair', json, JSON.stringify({ code }));
   assert.equal(ok.status, 200);
   const reply = JSON.parse(ok.body) as Record<string, unknown>;
   assert.deepEqual(Object.keys(reply), ['csrf']);
   assert.match(String(reply.csrf), CSRF_RE);
   assert.equal(ok.body.includes(code), false);
-  const again = await request(fx, 'POST', '/api/owned/unlock', page(fx, cookie), JSON.stringify({ code }));
-  assert.deepEqual([again.status, err(again)], [403, 'not-unlocked'], 'one time');
-  // A second ask prints another code; the code and the token never reach the log.
-  await request(fx, 'POST', '/api/owned/unlock-code', { cookie, origin: fx.origin, 'sec-fetch-site': 'same-origin' });
+  assert.match(String(ok.headers['set-cookie']), /^orchestra_sid=[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=7776000$/);
+  const again = await pairPost(fx, '/api/pair', json, JSON.stringify({ code }));
+  assert.deepEqual([again.status, JSON.parse(again.body)], [403, { error: 'not-unlocked', why: 'no-code' }], 'one time');
+  // The token works with its own cookie at once.
+  const cookie = String(ok.headers['set-cookie']).split(';')[0]!;
+  assert.equal((await request(fx, 'GET', '/api/owned', page(fx, cookie, String(reply.csrf)))).status, 501);
+  // A second ask prints another code; no code, no token and no sid ever reach the log.
+  await pairPost(fx, '/api/pair-code', site(fx));
   assert.equal(fx.printed.length, 2);
   const logged = JSON.stringify(fx.log.entries());
-  for (const s of [...fx.printed, String(reply.csrf)]) assert.equal(logged.includes(s), false);
+  for (const s of [...fx.printed, String(reply.csrf), cookie.slice('orchestra_sid='.length)]) assert.equal(logged.includes(s), false);
 });
 
-test('the unlock pair needs the cookie, the exact Origin and Sec-Fetch-Site same-origin; unlock takes JSON only, unlock-code no body', async (t) => {
-  const fx = await fixture(t);
-  const cookie = await paired(fx);
-  const base = { cookie, origin: fx.origin, 'sec-fetch-site': 'same-origin' };
-  const code = (h: Record<string, string>, body?: string) => request(fx, 'POST', '/api/owned/unlock-code', h, body);
-  assert.equal((await code({ ...base, cookie: 'orchestra_sid=forged' })).status, 403);
-  assert.equal((await code({ origin: fx.origin, 'sec-fetch-site': 'same-origin' })).status, 403);
-  assert.equal((await code({ ...base, origin: 'http://orchestra.localhost:1' })).status, 403, 'another port is another origin');
+test('the pairing routes need no cookie, but the exact Origin and Sec-Fetch-Site same-origin; pair takes JSON only, pair-code no body', async (t) => {
+  const fx = await fixture(t, { code: null });
+  const base = site(fx);
+  const ask = (h: Record<string, string>, body?: string) => pairPost(fx, '/api/pair-code', h, body);
+  assert.equal((await ask({ ...base, origin: 'http://orchestra.localhost:1' })).status, 403, 'another port is another origin');
+  assert.equal((await ask({ ...base, origin: 'null' })).status, 403);
+  const { origin: _o, ...noOrigin } = base;
+  assert.equal((await ask(noOrigin)).status, 403);
   const { 'sec-fetch-site': _s, ...noSite } = base;
-  assert.equal((await code(noSite)).status, 403);
-  assert.equal((await code({ ...base, 'sec-fetch-site': 'none' })).status, 403);
-  assert.equal((await code({ ...base, 'content-type': 'application/json' }, '{}')).status, 400, 'no body');
+  assert.equal((await ask(noSite)).status, 403);
+  assert.equal((await ask({ ...base, 'sec-fetch-site': 'none' })).status, 403);
+  assert.equal((await ask({ ...base, 'content-type': 'application/json' }, '{}')).status, 400, 'no body');
   assert.equal(fx.printed.length, 0, 'no code for a refused ask');
-  assert.equal((await request(fx, 'GET', '/api/owned/unlock-code', base)).status, 405);
-  assert.equal((await code(base)).status, 204);
+  assert.equal((await request(fx, 'GET', '/api/pair-code', base)).status, 405);
+  assert.equal((await request(fx, 'GET', '/api/pair', base)).status, 405);
+  assert.equal((await ask(base)).status, 204);
   const c = fx.printed[0]!;
-  const unlock = (h: Record<string, string>, body: string) => request(fx, 'POST', '/api/owned/unlock', h, body);
-  assert.equal((await unlock({ ...base, 'content-type': 'text/plain' }, JSON.stringify({ code: c }))).status, 400);
-  assert.equal((await unlock({ ...base, 'content-type': 'application/x-www-form-urlencoded' }, `code=${c}`)).status, 400);
-  assert.equal((await unlock({ ...base, 'content-type': 'application/json' }, JSON.stringify({ code: c, sid: 'x' }))).status, 400);
-  const big = await unlock({ ...base, 'content-type': 'application/json' }, JSON.stringify({ code: c, pad: 'x'.repeat(2000) }));
+  const pair = (h: Record<string, string>, body: string) => pairPost(fx, '/api/pair', h, body);
+  const json = { ...base, 'content-type': 'application/json' };
+  assert.equal((await pair({ ...json, origin: 'http://evil.example' }, JSON.stringify({ code: c }))).status, 403);
+  assert.equal((await pair({ ...base, 'content-type': 'text/plain' }, JSON.stringify({ code: c }))).status, 400);
+  assert.equal((await pair({ ...base, 'content-type': 'application/x-www-form-urlencoded' }, `code=${c}`)).status, 400, 'the old form is gone');
+  assert.equal((await pair(json, JSON.stringify({ code: c, sid: 'x' }))).status, 400);
+  assert.equal((await pair(json, '{')).status, 400);
+  const big = await pair(json, JSON.stringify({ code: c, pad: 'x'.repeat(2000) }));
   assert.deepEqual([big.status, err(big)], [413, 'body-too-big']);
-  assert.equal((await unlock({ ...base, 'content-type': 'application/json; charset=utf-8' }, JSON.stringify({ code: c }))).status, 200, 'refusals before the code is compared do not spend it');
+  assert.equal((await request(fx, 'POST', '/pair', base, `code=${c}`)).status, 405, 'no scriptless form route any more');
+  const ok = await pair({ ...json, 'content-type': 'application/json; charset=utf-8' }, JSON.stringify({ code: c }));
+  assert.equal(ok.status, 200, 'refusals before the code is compared do not spend it');
 });
 
-test('unlock codes: per sid, the pairing code\'s throttle (10 minutes, 5 wrong in a row void the code, 20 wrong in all close unlocking), tokens bound to their sid', () => {
-  const u = makeUnlock();
-  const a = u.issue('sid-a', 0)!;
-  const b = u.issue('sid-b', 0)!;
-  assert.match(a, /^[0-9]{8}$/);
+test('over HTTP: a code expires after 10 minutes on the Clock, 5 wrong in a row void it, 20 wrong in all shut pairing until a restart (pair-code too); with no console pair-code is 503', async (t) => {
+  const fx = await fixture(t, { code: null });
+  const json = { ...site(fx), 'content-type': 'application/json' };
+  const why = async (code: string) => (JSON.parse((await pairPost(fx, '/api/pair', json, JSON.stringify({ code }))).body) as { why: string }).why;
+  await pairPost(fx, '/api/pair-code', site(fx));
+  fx.sf.clock.advanceBy(PAIR_TTL_MS + 1);
+  assert.equal(await why(fx.printed[0]!), 'expired');
+  assert.ok(fx.log.entries().some((e) => e.event === 'peek-pair' && (e.fields as { outcome?: string }).outcome === 'expired'));
   const other = (c: string) => (c === '99999999' ? '99999998' : '99999999');
-  // a's code is no good for b, and counts as a wrong try there
-  assert.equal(u.attempt('sid-b', a === b ? other(b) : a, 1).outcome, 'wrong');
-  assert.equal(u.attempt('sid-c', a, 1).outcome, 'no-code', 'a sid that asked for no code has none');
-  const ta = u.attempt('sid-a', a, 2);
-  assert.equal(ta.outcome, 'ok');
-  assert.match(ta.csrf!, CSRF_RE);
-  const tb = u.attempt('sid-b', b, 3);
-  assert.equal(tb.outcome, 'ok');
-  assert.equal(u.holds('sid-a', ta.csrf), true);
-  assert.equal(u.holds('sid-b', ta.csrf), false, 'a token from one sid fails on another');
-  assert.equal(u.holds('sid-a', tb.csrf), false);
-  for (const bad of [undefined, '', 'x', ta.csrf!.slice(1), `${ta.csrf}=`, ['x']]) assert.equal(u.holds('sid-a', bad), false);
-  // a new unlock replaces the token
-  const ta2 = u.attempt('sid-a', u.issue('sid-a', 4)!, 5);
-  assert.equal(u.holds('sid-a', ta.csrf), false);
-  assert.equal(u.holds('sid-a', ta2.csrf), true);
-  u.forget('sid-a');
-  assert.equal(u.holds('sid-a', ta2.csrf), false);
-  // expiry: 10 minutes after the ask
-  const late = u.issue('sid-a', 1000)!;
-  assert.equal(u.attempt('sid-a', late, 1000 + UNLOCK_TTL_MS + 1).outcome, 'expired');
-  assert.equal(u.attempt('sid-a', late, 1000 + UNLOCK_TTL_MS + 2).outcome, 'no-code');
-  const inTime = u.issue('sid-a', 2000)!;
-  assert.equal(u.attempt('sid-a', inTime, 2000 + UNLOCK_TTL_MS).outcome, 'ok');
-  // 5 wrong in a row void the code, the right one included
-  const c = u.issue('sid-a', 0)!;
-  const outcomes = [1, 2, 3, 4, 5].map(() => u.attempt('sid-a', other(c), 0).outcome);
-  assert.deepEqual(outcomes, ['wrong', 'wrong', 'wrong', 'wrong', 'voided']);
-  assert.equal(u.attempt('sid-a', c, 0).outcome, 'no-code');
-  // 20 wrong in all (1 on sid-b and 5 on sid-a so far) close unlocking: no new code, no token
-  let n = 6;
+  // 5 wrong in a row void the code; a new code counts afresh in a row, not in all.
+  await pairPost(fx, '/api/pair-code', site(fx));
+  const c1 = fx.printed.at(-1)!;
+  const five: string[] = [];
+  for (let i = 0; i < 5; i++) five.push(await why(other(c1)));
+  assert.deepEqual(five, ['wrong', 'wrong', 'wrong', 'wrong', 'voided']);
+  assert.equal(await why(c1), 'no-code');
+  let n = 5;
   while (n < 20) {
-    const k = u.issue('sid-b', 0)!;
-    for (let i = 0; i < 4 && n < 20; i++, n++) {
-      const o = u.attempt('sid-b', other(k), 0).outcome;
-      if (n < 19) assert.equal(o, 'wrong');
-      else assert.equal(o, 'shut');
-    }
+    await pairPost(fx, '/api/pair-code', site(fx));
+    const k = fx.printed.at(-1)!;
+    for (let i = 0; i < 4 && n < 20; i++, n++) assert.equal(await why(other(k)), n < 19 ? 'wrong' : 'shut');
   }
-  assert.equal(u.open, false);
-  assert.equal(u.issue('sid-a', 0), null);
-  assert.equal(u.attempt('sid-a', '12345678', 0).outcome, 'shut');
-  assert.equal(u.holds('sid-b', tb.csrf), true, 'a token already handed out stays good');
-});
-
-test('over HTTP the code expires after 10 minutes on the Clock; with no console for it, unlock-code is off', async (t) => {
-  const fx = await fixture(t);
-  const cookie = await paired(fx);
-  await request(fx, 'POST', '/api/owned/unlock-code', { cookie, origin: fx.origin, 'sec-fetch-site': 'same-origin' });
-  fx.sf.clock.advanceBy(UNLOCK_TTL_MS + 1);
-  const r = await request(fx, 'POST', '/api/owned/unlock', page(fx, cookie), JSON.stringify({ code: fx.printed[0] }));
-  assert.deepEqual([r.status, err(r)], [403, 'not-unlocked']);
-  assert.ok(fx.log.entries().some((e) => e.event === 'owned-unlock' && (e.fields as { outcome?: string }).outcome === 'expired'));
+  const asked = await pairPost(fx, '/api/pair-code', site(fx));
+  assert.deepEqual([asked.status, JSON.parse(asked.body)], [403, { error: 'not-unlocked', why: 'shut' }]);
+  assert.equal(await why('12345678'), 'shut');
 
   const off = await fixture(t, { print: false });
-  const c2 = await paired(off);
-  const asked = await request(off, 'POST', '/api/owned/unlock-code', { cookie: c2, origin: off.origin, 'sec-fetch-site': 'same-origin' });
-  assert.equal(asked.status, 503);
+  assert.equal((await pairPost(off, '/api/pair-code', site(off))).status, 503);
+  // The code the start printed still pairs.
+  assert.match((await pairBrowser(off.server, CODE)).csrf, CSRF_RE);
+});
+
+test('a browser that pairs again drops its old pairing; the cookie of one browser with the token of another is refused', async (t) => {
+  const fx = await fixture(t, { code: null });
+  const fresh = async () => {
+    await pairPost(fx, '/api/pair-code', site(fx));
+    return fx.printed.at(-1)!;
+  };
+  const a = await pairBrowser(fx.server, await fresh());
+  const b = await pairBrowser(fx.server, await fresh());
+  assert.equal((await request(fx, 'GET', '/api/owned', page(fx, a.cookie, a.csrf))).status, 501);
+  assert.equal((await request(fx, 'GET', '/api/owned', page(fx, b.cookie, b.csrf))).status, 501);
+  for (const [c, k] of [[a.cookie, b.csrf], [b.cookie, a.csrf]] as const) {
+    const r = await request(fx, 'GET', '/api/owned', page(fx, c, k));
+    assert.deepEqual([r.status, err(r)], [403, 'not-unlocked'], 'a token is bound to its own pairing');
+  }
+  // a pairs again, with its old cookie: the old pairing goes, the new one works.
+  const again = await request(fx, 'POST', '/api/pair', { ...site(fx), cookie: a.cookie, 'content-type': 'application/json' }, JSON.stringify({ code: await fresh() }));
+  assert.equal(again.status, 200);
+  const a2 = { cookie: String(again.headers['set-cookie']).split(';')[0]!, csrf: (JSON.parse(again.body) as { csrf: string }).csrf };
+  assert.equal((await request(fx, 'GET', '/api/tower', { cookie: a.cookie })).status, 403, 'the old cookie is no pairing any more');
+  assert.equal((await request(fx, 'GET', '/api/owned', page(fx, a2.cookie, a2.csrf))).status, 501);
+});
+
+test('forget: the whole chain first; then the pairing is gone, the cookie cleared, and its token dead on every owned route', async (t) => {
+  const fx = await fixture(t);
+  const { cookie, csrf } = await pairBrowser(fx.server, CODE);
+  const forget = (h: Record<string, string>, body?: string) => request(fx, 'POST', '/api/pair/forget', h, body);
+  const h = page(fx, cookie, csrf);
+  const { 'content-type': _t, ...noType } = h;
+  assert.equal((await forget({ ...noType, cookie: '' })).status, 403);
+  const { 'x-orchestra-csrf': _c, ...cookieOnly } = noType;
+  assert.deepEqual([(await forget(cookieOnly)).status, err(await forget(cookieOnly))], [403, 'not-unlocked'], 'the cookie alone forgets nothing');
+  assert.equal((await forget({ ...noType, origin: 'http://orchestra.localhost:1' })).status, 403);
+  assert.equal((await forget(h, '{}')).status, 400, 'no body');
+  assert.equal((await request(fx, 'GET', '/api/pair/forget', h)).status, 405);
+  assert.equal((await request(fx, 'GET', '/api/owned', h)).status, 501, 'still paired after the refusals');
+  const done = await forget(noType);
+  assert.equal(done.status, 204);
+  assert.equal(String(done.headers['set-cookie']), 'orchestra_sid=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
+  for (const r of UNLOCKED) {
+    const s = sample(r);
+    const res = await request(fx, r.method, s.path, h, s.body === null ? undefined : JSON.stringify(s.body));
+    assert.equal(res.status, 403, `${r.method} ${r.path}`);
+  }
+  assert.equal((await request(fx, 'GET', '/api/tower', { cookie })).status, 403);
+  assert.equal((await forget(noType)).status, 403, 'forgotten once');
+  assert.deepEqual(humans(fx), [], 'no journal record');
+});
+
+test('the other port: a page elsewhere on orchestra.localhost gets the cookie, and with it the shell and the peek reads, never an owned route', async (t) => {
+  const fx = await fixture(t);
+  const { cookie } = await pairBrowser(fx.server, CODE);
+  assert.equal((await request(fx, 'GET', '/api/tower', { cookie })).status, 200);
+  assert.equal((await request(fx, 'GET', '/', { cookie })).status, 200);
+  // A replay by another program (curl): it can forge Origin and Sec-Fetch-Site, but it has no token.
+  const forgetRoute = ROUTES.find((x) => x.path === '/api/pair/forget')!;
+  for (const r of [...UNLOCKED, forgetRoute]) {
+    const s = sample(r);
+    const res = await request(fx, r.method, s.path, page(fx, cookie), r === forgetRoute || s.body === null ? undefined : JSON.stringify(s.body));
+    assert.deepEqual([res.status, err(res)], [403, 'not-unlocked'], `${r.method} ${r.path}`);
+    assert.equal(/[A-Za-z0-9_-]{43}/.test(res.body), false, 'no token in any reply to the cookie alone');
+  }
+  // Nor does the cookie buy a token: pairing again needs a code.
+  const r = await request(fx, 'POST', '/api/pair', { ...site(fx), cookie, 'content-type': 'application/json' }, JSON.stringify({ code: '00000000' }));
+  assert.deepEqual([r.status, err(r)], [403, 'not-unlocked']);
 });
 
 // --- the check chain ------------------------------------------------------------------------------
@@ -481,7 +519,8 @@ test('the handler table takes each unlocked route once, and nothing else', () =>
   const f: OwnedHandler = () => ({ ok: false, error: 'item-unknown' });
   h.register('POST', '/api/approvals/:id/allow', f);
   assert.throws(() => h.register('POST', '/api/approvals/:id/allow', f), /already/);
-  assert.throws(() => h.register('POST', '/api/owned/unlock', f), /not an owned route/);
+  assert.throws(() => h.register('POST', '/api/pair/forget', f), /not an owned route/);
+  assert.throws(() => h.register('POST', '/api/pair', f), /not an owned route/);
   assert.throws(() => h.register('POST', '/api/items/:id/seen', f), /not an owned route/);
   assert.throws(() => h.register('GET', '/api/owned/:id/message', f), /not an owned route/);
   assert.equal(h.get(ROUTES.find((r) => r.path === '/api/approvals/:id/allow')!), f);
@@ -501,26 +540,18 @@ function freePort(): Promise<number> {
   });
 }
 
-test('end to end: a test-profile orchestrad prints the unlock code to stdout; the token opens the owned routes; without --owned the list says why they are off and new is refused', async (t) => {
+test('end to end: a test-profile orchestrad prints the pairing code to stdout; the token opens the owned routes; restarted, it remembers the browser and prints no code; without --owned the list says why they are off', async (t) => {
   const dir = withTmp(t);
   const port = await freePort();
-  const child = startOrchestrad(t, ['--test-profile', '--test-dir', dir, '--peek-port', String(port)]);
+  const args = ['--test-profile', '--test-dir', dir, '--peek-port', String(port)];
+  const child = startOrchestrad(t, args);
   await waitForLine(child, /^orchestrad: peek page at /);
-  const pairCode = /^orchestrad: pairing code (\d{8})$/.exec(child.lines().find((l) => l.startsWith('orchestrad: pairing code')) ?? '')?.[1];
-  assert.ok(pairCode !== undefined);
+  const code = /^orchestrad: pairing code (\d{8})$/.exec(child.lines().find((l) => l.startsWith('orchestrad: pairing code')) ?? '')?.[1];
+  assert.ok(code !== undefined);
   const origin = `http://orchestra.localhost:${port}`;
   const fx = { server: { port }, host: `orchestra.localhost:${port}` } as unknown as Fx;
-  const pr = await request(fx, 'POST', '/pair', { origin, 'content-type': 'application/x-www-form-urlencoded' }, `code=${pairCode}`);
-  const cookie = String(pr.headers['set-cookie']).split(';')[0]!;
-  const asked = await request(fx, 'POST', '/api/owned/unlock-code', { cookie, origin, 'sec-fetch-site': 'same-origin' });
-  assert.equal(asked.status, 204);
-  const line = await waitForLine(child, /^orchestrad: unlock code \d{8}$/);
-  const code = line.slice(-8);
-  assert.equal(asked.body.includes(code), false);
+  const { cookie, csrf } = await pairBrowser(fx.server, code);
   const h = { cookie, origin, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' };
-  const u = await request(fx, 'POST', '/api/owned/unlock', h, JSON.stringify({ code }));
-  assert.equal(u.status, 200);
-  const csrf = (JSON.parse(u.body) as { csrf: string }).csrf;
   const hc = { ...h, 'x-orchestra-csrf': csrf };
   assert.equal((await request(fx, 'GET', '/api/owned', h)).status, 403);
   const list = await request(fx, 'GET', '/api/owned', hc);
@@ -530,6 +561,30 @@ test('end to end: a test-profile orchestrad prints the unlock code to stdout; th
   const n = await request(fx, 'POST', '/api/owned/new', hc, JSON.stringify({ actionId: uuid(), text: 'hi', harness: 'codex' }));
   assert.deepEqual([n.status, JSON.parse(n.body)], [409, { error: 'owned-disabled' }]);
   await child.stop();
-  const log = child.lines().join('\n');
-  assert.equal(log.split(code).length - 1, 1, 'the code is printed once, and nowhere else on stdout');
+  assert.equal(child.lines().join('\n').split(code).length - 1, 1, 'the code is printed once, and nowhere else on stdout');
+
+  // Restarted on the same data dir: the browser is remembered, no code is printed, the cookie and the token still work.
+  const again = startOrchestrad(t, args);
+  await waitForLine(again, /^orchestrad: peek page at /);
+  assert.ok(again.lines().includes('orchestrad: 1 browser remembered as paired; a new browser asks for a pairing code on the page'), again.lines().join('\n'));
+  assert.equal(again.lines().some((x) => /pairing code \d{8}/.test(x)), false, 'no code at a start that remembers a browser');
+  assert.equal((await request(fx, 'GET', '/api/tower', { cookie })).status, 200);
+  assert.equal((await request(fx, 'GET', '/api/owned', hc)).status, 200);
+  // A new browser asks for a code on the page: it is printed where the start's code goes.
+  assert.equal(await askPairCode(fx.server), 204);
+  const asked = (await waitForLine(again, /^orchestrad: pairing code \d{8}$/)).slice(-8);
+  const other = await pairBrowser(fx.server, asked);
+  assert.equal((await request(fx, 'GET', '/api/owned', { ...h, cookie: other.cookie, 'x-orchestra-csrf': other.csrf })).status, 200);
+  await again.stop();
+
+  // On disk: digests only. Neither the codes, the tokens nor the sids are in the pairings file or the log.
+  const home = path.join(fs.realpathSync.native(dir), 'orchestra');
+  const saved = JSON.parse(fs.readFileSync(path.join(home, 'pairings.json'), 'utf8')) as { v: number; browsers: Record<string, unknown>[] };
+  assert.equal(saved.v, 1);
+  assert.deepEqual(saved.browsers.map((b) => Object.keys(b).sort()), [['csrfSha256', 'pairedAt', 'sidSha256'], ['csrfSha256', 'pairedAt', 'sidSha256']]);
+  const log = fs.readFileSync(path.join(home, 'run', 'orchestrad.log'), 'utf8');
+  for (const s of [code, asked, csrf, other.csrf, cookie.split('=')[1]!, other.cookie.split('=')[1]!]) {
+    assert.equal(log.includes(s), false, 'a secret in the log');
+    assert.equal(JSON.stringify(saved).includes(s), false, 'a secret in the pairings file');
+  }
 });

@@ -564,7 +564,7 @@ test('the page boots: worker, talk and cards from the fetched data; only a perso
   Object.assign(doc, { hidden: false, addEventListener: (t: string, fn: (e: any) => void) => on(doc, t, fn) });
   (FakeElement.prototype as any).addEventListener = function (this: object, t: string, fn: (e: any) => void) { on(this, t, fn); };
   const g = globalThis as any;
-  const keys = ['document', 'location', 'window', 'fetch', 'performance', 'requestAnimationFrame', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Element', 'Node', 'localStorage', 'sessionStorage', 'ResizeObserver'];
+  const keys = ['document', 'location', 'window', 'fetch', 'performance', 'requestAnimationFrame', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout', 'Element', 'Node', 'localStorage', 'ResizeObserver'];
   const saved = Object.fromEntries(keys.map((k) => [k, Object.getOwnPropertyDescriptor(g, k)]));
   const define = (k: string, v: unknown) => Object.defineProperty(g, k, { configurable: true, writable: true, value: v });
   /** What the page watches for a new size, by element. */
@@ -582,8 +582,7 @@ test('the page boots: worker, talk and cards from the fetched data; only a perso
   define('clearTimeout', (id: number) => { const t = timeouts[id - 1]; if (t !== undefined) t.off = true; });
   define('Element', FakeElement);
   define('Node', FakeElement);
-  define('localStorage', { getItem: () => null, setItem: () => {} });
-  define('sessionStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) });
+  define('localStorage', { getItem: (k: string) => store.get(k) ?? null, setItem: (k: string, v: string) => store.set(k, v), removeItem: (k: string) => store.delete(k) });
   const reply = (body: unknown) => ({ status: 200, ok: true, json: async () => structuredClone(body) });
   define('fetch', async (url: string, init: { method?: string } = {}) => {
     requests.push({ method: init.method ?? 'GET', url });

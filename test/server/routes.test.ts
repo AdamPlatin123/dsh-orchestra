@@ -124,9 +124,10 @@ test('the error table is shared/protocol.js\'s, in full: every code answered by 
   assert.deepEqual(ERROR_CODES.filter((c) => !answered.has(c)), []);
   for (const r of ROUTES) for (const c of r.own) assert.ok(CHECKS.find((x) => x.step === 'own')!.codes.includes(c), `${r.path}: ${c} is an own check`);
   assert.deepEqual(ROUTES.filter((r) => r.auth === 'session').flatMap((r) => r.failures), ['procguard-timeout', 'procguard-timeout'], 'of M0\'s routes only protect fails in execution, and writes nothing');
-  // alpha 0.2: what an owned-session route can only find out while acting (a wrong unlock code, a spawn refused by the hash pin, a copy that meets a link, a change or a locked file).
+  // alpha 0.2: what an owned-session route can only find out while acting (a wrong pairing code, a spawn refused by the hash pin, a copy that meets a link, a change or a locked file).
   assert.deepEqual(Object.fromEntries(ROUTES.filter((r) => r.failures.length > 0 && r.auth !== 'session').map((r) => [`${r.method} ${r.path}`, [...r.failures]])), {
-    'POST /api/owned/unlock': ['not-unlocked'],
+    'POST /api/pair-code': ['not-unlocked'],
+    'POST /api/pair': ['not-unlocked'],
     'POST /api/owned/new': ['host-tampered', 'spawn-failed'],
     'POST /api/owned/:id/retry': ['host-tampered'],
     'POST /api/import/claude': ['reparse-point', 'source-changed', 'rename-busy', 'host-tampered'],
@@ -285,10 +286,10 @@ const owned = (method: 'GET' | 'POST', path: string) => {
   return r;
 };
 
-test('owned sessions: every route needs the pairing cookie; all but the unlock pair need the controller token too, a GET as well', () => {
+test('owned sessions: every route needs the pairing cookie and the controller token, a GET as well; so does forgetting a pairing', () => {
   const ownedPaths = ROUTES.filter((r) => /^\/api\/(?:owned|approvals|import|route|agent-requests)\//.test(r.path) || r.path === '/api/owned');
   assert.deepEqual(ownedPaths.map((r) => `${r.method} ${r.path}`), [
-    'POST /api/owned/unlock-code', 'POST /api/owned/unlock', 'GET /api/owned', 'GET /api/owned/:id/feed', 'GET /api/import/:id/check',
+    'GET /api/owned', 'GET /api/owned/:id/feed', 'GET /api/import/:id/check',
     'POST /api/route/suggest', 'POST /api/owned/new', 'POST /api/owned/:id/message', 'POST /api/owned/:id/interrupt', 'POST /api/owned/:id/end', 'POST /api/owned/:id/brake', 'POST /api/owned/:id/retry',
     'POST /api/approvals/:id/allow', 'POST /api/approvals/:id/deny', 'POST /api/import/claude', 'POST /api/import/dsh',
     // seat: you reject an agent request on this page (its dispatch is owned-new with the requestId).
@@ -296,27 +297,33 @@ test('owned sessions: every route needs the pairing cookie; all but the unlock p
     // A person sets a session's dispatch permission (src/route/dispatch.ts).
     'POST /api/owned/:id/dispatch-grant', 'POST /api/approvals/:id/answer',
   ]);
-  for (const r of ownedPaths) assert.equal(r.auth, r.path.startsWith('/api/owned/unlock') ? 'cookie' : 'unlocked', r.path);
-  assert.ok(ROUTES.every((r) => (r.auth === 'cookie' || r.auth === 'unlocked') === ownedPaths.includes(r)), 'no M0 route takes the new auth');
+  for (const r of ownedPaths) assert.equal(r.auth, 'unlocked', r.path);
+  const forget = owned('POST', '/api/pair/forget');
+  assert.ok(ROUTES.every((r) => (r.auth === 'unlocked') === (ownedPaths.includes(r) || r === forget)), 'no M0 route takes the new auth');
   assert.equal(CONTROL_HEADER, 'x-orchestra-csrf');
   assert.equal(routeOf('GET', '/api/session')!.auth, 'session', 'the frozen GET /api/session is not reused');
-  // the owned verbs are human verbs, each with its route; the unlock pair writes no human record and carries no actionId
-  for (const r of ownedPaths.filter((x) => x.method === 'POST' && !x.path.startsWith('/api/owned/unlock') && x.path !== '/api/route/suggest')) assert.notEqual(r.human, null, r.path);
+  // the owned verbs are human verbs, each with its route; pairing and forgetting write no human record and carry no actionId
+  for (const r of ownedPaths.filter((x) => x.method === 'POST' && x.path !== '/api/route/suggest')) assert.notEqual(r.human, null, r.path);
   // the dispatch desk's suggestion starts nothing: no human verb, no actionId, no record
   assert.equal(routeOf('POST', '/api/route/suggest')!.human, null);
-  for (const p of ['/api/owned/unlock-code', '/api/owned/unlock']) assert.equal(owned('POST', p).human, null);
+  for (const p of ['/api/pair-code', '/api/pair', '/api/pair/forget']) assert.equal(owned('POST', p).human, null);
+  assert.equal(routeOf('POST', '/api/owned/unlock'), undefined, 'the unlock routes are gone (2026-11-08)');
+  assert.equal(routeOf('POST', '/api/owned/unlock-code'), undefined);
 });
 
-test('unlock: unlock-code takes no body and answers 204 (the code goes to the console only); unlock trades the code for a token of CSRF_RE\'s form', () => {
-  const code = owned('POST', '/api/owned/unlock-code');
-  assert.deepEqual([code.body, code.reply, code.status], [null, null, 204]);
-  const unlock = owned('POST', '/api/owned/unlock');
+test('pairing: pair-code takes no body and answers 204 (the code goes to the console only); pair trades the code for a token of CSRF_RE\'s form; forget takes no body, 204', () => {
+  const code = owned('POST', '/api/pair-code');
+  assert.deepEqual([code.auth, code.body, code.reply, code.status, [...code.failures]], ['pair', null, null, 204, ['not-unlocked']]);
+  const forget = owned('POST', '/api/pair/forget');
+  assert.deepEqual([forget.auth, forget.body, forget.reply, forget.status], ['unlocked', null, null, 204]);
+  const unlock = owned('POST', '/api/pair');
+  assert.equal(unlock.auth, 'pair');
   assert.equal(why(unlock.body!, { code: '12345678' }), 'ok');
   for (const bad of ['1234567', '123456789', 'abcdefgh', '1234 678']) assert.equal(why(unlock.body!, { code: bad }), 'grammar $.code', bad);
   assert.equal(why(unlock.body!, { code: '12345678', sid: 'x' }), 'extra-key $');
   assert.equal(why(unlock.reply!, { csrf: 'A'.repeat(43) }), 'ok');
   assert.equal(why(unlock.reply!, { csrf: 'A'.repeat(42) }), 'grammar $.csrf');
-  assert.deepEqual([...unlock.failures], ['not-unlocked'], 'a wrong, expired or used-up code');
+  assert.deepEqual([...unlock.failures], ['not-unlocked'], 'a wrong, voided, expired or used-up code, or pairing shut');
 });
 
 test('owned list and feed: replies checked by the owned contract (a later step); feed takes an optional decimal after=', () => {

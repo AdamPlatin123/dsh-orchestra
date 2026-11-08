@@ -21,7 +21,7 @@ export const HOLD_MS = 1000;
 /** A code's text; an unknown code takes the fallback (T1). */
 export const tk = (p, v, fb, a = {}) => t(Object.hasOwn(TOWER_TEXT, `${p}.${v}`) ? `${p}.${v}` : fb, { s: v ?? '', ...a });
 export const btn = (key, text, data, attr = {}) => ({ key, tpl: 'tpl-btn', text, data, attr });
-const lockBtn = () => btn('lock', t('op.lock'), { act: 'unlock' });
+const lockBtn = () => btn('lock', t('op.lock'), { act: 'pair' });
 export const join = (parts, sep = 'sep.parts') => parts.filter(Boolean).join(t(sep));
 export const off = { data: { hide: '1' } };
 export const on = { data: { hide: '0' } };
@@ -463,9 +463,9 @@ export function describeAnswer(a, picks, busy) {
 }
 
 /**
- * Before the unlock (or while the list loads): the pending requests as the tower's router.asks gives them
+ * Before the pairing (or while the list loads): the pending requests as the tower's router.asks gives them
  * to every paired page, harness and deadline only, so a locked page still sees that something waits and
- * when it is refused (D8). The text and who asked come with the unlock; the button is the unlock.
+ * when it is refused (D8). The text and who asked come with the pairing; the button pairs.
  */
 export function describeAskPins(asks, g) {
   if (!Array.isArray(asks)) return [];

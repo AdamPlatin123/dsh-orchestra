@@ -10,8 +10,9 @@ import { ReadGate } from '../../src/fs/read-gate.ts';
 import { VirtualClock } from '../../src/runtime/clock.ts';
 import { Log } from '../../src/runtime/log.ts';
 import { makeRedactor } from '../../src/store/redact.ts';
-import { PAIR_TTL_MS, PEEK_HOST, escapeHtml, makePairing, startPeekServer } from '../../src/server/http.ts';
+import { PAIR_TTL_MS, PEEK_HOST, UI_CSP, escapeHtml, makePairing, startPeekServer } from '../../src/server/http.ts';
 import type { PeekServer } from '../../src/server/http.ts';
+import { pairBrowser } from '../helpers/pair.ts';
 import { realIo } from '../helpers/read-io.ts';
 import { put, withTmp } from '../helpers/tmp.ts';
 
@@ -56,18 +57,15 @@ function request(fx: Fx, method: string, pathname: string, headers: Record<strin
   });
 }
 
-const pair = (fx: Fx, code: string, origin = fx.origin) => request(fx, 'POST', '/pair', { origin, 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' }, `code=${code}`);
+const pair = (fx: Fx, code: string, origin = fx.origin) => request(fx, 'POST', '/api/pair', { origin, 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' }, JSON.stringify({ code }));
 
-async function paired(fx: Fx): Promise<string> {
-  const r = await pair(fx, CODE);
-  assert.equal(r.status, 303);
-  const cookie = String(r.headers['set-cookie']);
-  return cookie.split(';')[0]!;
-}
+const paired = async (fx: Fx): Promise<string> => (await pairBrowser(fx.server, CODE)).cookie;
 
 test('every reply carries the strict CSP and no CORS header; a wrong Host or a cross-site request is refused', async (t) => {
   const fx = await fixture(t);
-  const r = await request(fx, 'GET', '/');
+  const cookie = await paired(fx);
+  const tower = JSON.parse((await request(fx, 'GET', '/api/tower', { cookie })).body) as { projects: { nodes: { session: string | null }[] }[] };
+  const r = await request(fx, 'GET', `/session?id=${tower.projects[0]!.nodes[0]!.session}`, { cookie });
   assert.equal(r.status, 200);
   assert.match(String(r.headers['content-security-policy']), /^default-src 'none';/);
   assert.equal(r.headers['x-content-type-options'], 'nosniff');
@@ -81,21 +79,26 @@ test('every reply carries the strict CSP and no CORS header; a wrong Host or a c
   assert.equal((await request(fx, 'GET', '/', { 'sec-fetch-site': 'cross-site' })).status, 403);
 });
 
-test('unpaired: the list is a pairing form and a session page is 403; pairing needs the exact Origin and the code once', async (t) => {
+test('unpaired: / is the page (its own pairing dialog, under the UI CSP), /session a way to it, the reads 403; pairing needs the exact Origin and the code once', async (t) => {
   const fx = await fixture(t);
   const home = await request(fx, 'GET', '/');
-  assert.match(home.body, /<form method="post" action="\/pair">/);
+  assert.equal(home.status, 200);
+  assert.equal(home.headers['content-security-policy'], UI_CSP);
+  assert.match(home.body, /assets\/ui\/home\.js/);
+  assert.match(home.body, /id="pair-dlg"/);
   assert.equal(home.body.includes('G--proj'), false);
-  assert.equal((await request(fx, 'GET', '/session?id=0')).status, 403);
+  const s = await request(fx, 'GET', '/session?id=0');
+  assert.deepEqual([s.status, s.headers.location], [303, '/']);
+  for (const p of ['/api/tower', `/api/peek/session?id=${'0'.repeat(20)}`, '/api/peek/stage']) assert.equal((await request(fx, 'GET', p)).status, 403, p);
   assert.equal((await pair(fx, CODE, 'http://evil.example')).status, 403);
   assert.equal((await pair(fx, CODE, `http://127.0.0.1:${fx.server.port}`)).status, 403);
   assert.equal((await pair(fx, '87654321')).status, 403);
   const ok = await pair(fx, CODE);
-  assert.equal(ok.status, 303);
-  assert.match(String(ok.headers['set-cookie']), /^orchestra_sid=[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Strict; Path=\/$/);
+  assert.equal(ok.status, 200);
+  assert.match(String(ok.headers['set-cookie']), /^orchestra_sid=[A-Za-z0-9_-]{43}; HttpOnly; SameSite=Strict; Path=\/; Max-Age=7776000$/);
+  assert.equal(ok.headers['content-security-policy'], UI_CSP);
   const again = await pair(fx, CODE);
-  assert.equal(again.status, 403);
-  assert.match(again.body, /配对已关闭|没有可用的配对码/);
+  assert.deepEqual([again.status, JSON.parse(again.body)], [403, { error: 'not-unlocked', why: 'no-code' }]);
   // The code never reaches the log.
   assert.equal(JSON.stringify(fx.log.entries()).includes(CODE), false);
 });
@@ -128,14 +131,17 @@ test('paired: / is the page, /tower a way to it, the tower names the session and
   assert.equal(s.body.includes('UTC'), false);
   assert.match(s.body, /修改于 \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}（本机时间）/);
   assert.equal((await request(fx, 'GET', `/session?id=${'0'.repeat(20)}`, { cookie })).status, 404);
-  assert.equal((await request(fx, 'GET', '/', { cookie: 'orchestra_sid=forged' })).body.includes('G--proj'), false);
+  assert.equal((await request(fx, 'GET', '/api/tower', { cookie: 'orchestra_sid=forged' })).status, 403);
   assert.equal((await request(fx, 'POST', '/', { cookie })).status, 405);
 });
 
 test('with pairing off there is no code to pair with', async (t) => {
   const fx = await fixture(t, null);
-  assert.match((await request(fx, 'GET', '/')).body, /配对已关闭/);
-  assert.equal((await pair(fx, CODE)).status, 403);
+  const r = await pair(fx, CODE);
+  assert.deepEqual([r.status, JSON.parse(r.body)], [403, { error: 'not-unlocked', why: 'no-code' }]);
+  // and no console to ask for one on (no printPairCode): 503
+  const asked = await request(fx, 'POST', '/api/pair-code', { origin: fx.origin, 'sec-fetch-site': 'same-origin' });
+  assert.equal(asked.status, 503);
 });
 
 test('pairing rules: void after 5 wrong in a row, expired after 10 minutes, none without a code', () => {

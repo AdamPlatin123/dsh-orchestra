@@ -15,7 +15,7 @@
   <span class="test" data-slot="test" data-hide="1" data-t="bar.test"></span>
   <span class="sp"></span>
   <p class="fresh" data-slot="fresh" data-fresh="none"></p>
-  <button type="button" class="tb" data-act="unlock" data-slot="unlock"></button>
+  <button type="button" class="tb" data-act="pair" data-slot="pair"></button>
   <button type="button" class="tb" data-act="theme" data-slot="theme"></button>
 </header>
 <p id="alert" class="alert" role="alert" data-hide="1"></p>
@@ -123,12 +123,20 @@
 
 <svg id="wires" class="wires" aria-hidden="true"></svg>
 
-<dialog id="unlock-dlg" class="dlg" aria-labelledby="ul-h">
-  <h2 id="ul-h" data-t="unlock.title"></h2>
-  <p class="dlg-p" data-t="unlock.how"></p>
-  <input id="ul-code" class="dlg-in" inputmode="numeric" autocomplete="one-time-code" maxlength="8" aria-labelledby="ul-h">
+<dialog id="pair-dlg" class="dlg" aria-labelledby="pr-h">
+  <h2 id="pr-h" data-t="pair.title"></h2>
+  <p class="dlg-p" data-t="pair.how"></p>
+  <p class="acts"><button type="button" class="btn" data-act="pairCode" data-t="pair.ask"></button></p>
+  <label class="dlg-l" for="pr-code" data-t="pair.code"></label>
+  <input id="pr-code" class="dlg-in" inputmode="numeric" autocomplete="one-time-code" maxlength="8">
   <p class="dlg-msg" data-slot="msg" role="status"></p>
-  <p class="acts"><button type="button" class="btn" data-act="unlockGo" data-t="unlock.go"></button><button type="button" class="btn" data-act="close" data-t="dlg.cancel"></button></p>
+  <p class="acts"><button type="button" class="btn" data-act="pairGo" data-t="pair.go"></button><button type="button" class="btn" data-act="close" data-t="dlg.cancel"></button></p>
+</dialog>
+<dialog id="forget-dlg" class="dlg" aria-labelledby="fg-h">
+  <h2 id="fg-h" data-t="pair.forgetTitle"></h2>
+  <p class="dlg-p" data-t="pair.forgetHow"></p>
+  <p class="dlg-msg" data-slot="msg" role="status"></p>
+  <p class="acts"><button type="button" class="btn" data-act="forgetGo" data-t="pair.forget"></button><button type="button" id="fg-no" class="btn" data-act="close" data-t="dlg.cancel"></button></p>
 </dialog>
 <dialog id="new-dlg" class="dlg" aria-labelledby="nw-h">
   <h2 id="nw-h" data-t="new.title"></h2>

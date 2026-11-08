@@ -25,6 +25,7 @@ import { ownedEnabled, ownedList, registerOwnedHandlers } from '../../src/server
 import { makeRedactor } from '../../src/store/redact.ts';
 import { validateOwnedFeed, validateOwnedList } from '../../shared/owned-contract.js';
 import { validateTower } from '../../shared/tower-contract.js';
+import { pairBrowser } from '../helpers/pair.ts';
 import { realIo } from '../helpers/read-io.ts';
 import { mustOpen, storeFixture } from '../helpers/store.ts';
 import type { StoreFixture } from '../helpers/store.ts';
@@ -96,7 +97,8 @@ async function rig(t: TestContext, opts: { codex?: boolean; job?: () => OwnedJob
   const printed: string[] = [];
   const server = await startPeekServer({
     port: 0, gate: new ReadGate({ roots: [], io: realIo, testDirs: [sf.dir] }), roots: [], redact: (s) => s, clock: clock.port(null), log, pairingCode: PAIR, profile: 'test',
-    owned: { journal: humanJournal(store), printUnlockCode: (c) => printed.push(c), enabled: ownedEnabled(deps), handlers: registerOwnedHandlers(deps) },
+    printPairCode: (c) => printed.push(c),
+    owned: { journal: humanJournal(store), enabled: ownedEnabled(deps), handlers: registerOwnedHandlers(deps) },
     ...(codex === null ? {} : { ownedSeats: { seats: () => codex.towerSeats(), nowWall: () => clock.wall } }),
   });
   stop = async () => {
@@ -139,25 +141,10 @@ function request(r: Rig, method: string, pathname: string, headers: Record<strin
 
 type Page = { cookie: string; csrf: string | null };
 
-/** Pairs a page and, unless told not to, unlocks it with the code printed to the console. */
+/** Pairs a page with the console code; told not to unlock, it keeps the cookie and drops the token (the other-port page). */
 async function page(r: Rig, unlock = true): Promise<Page> {
-  const cookie = await new Promise<string>((resolve, reject) => {
-    const req = http.request({
-      host: '127.0.0.1', port: r.server.port, method: 'POST', path: '/pair',
-      headers: { host: r.host, origin: r.origin, 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' },
-    }, (res) => {
-      res.resume();
-      res.on('end', () => resolve(String(res.headers['set-cookie']).split(';')[0]!));
-    });
-    req.on('error', reject);
-    req.end(`code=${PAIR}`);
-  });
-  if (!unlock) return { cookie, csrf: null };
-  const asked = await request(r, 'POST', '/api/owned/unlock-code', { cookie, origin: r.origin, 'sec-fetch-site': 'same-origin' });
-  assert.equal(asked.status, 204);
-  const u = await request(r, 'POST', '/api/owned/unlock', heads(r, { cookie, csrf: null }), JSON.stringify({ code: r.printed.at(-1) }));
-  assert.equal(u.status, 200, u.body);
-  return { cookie, csrf: u.json.csrf as string };
+  const { cookie, csrf } = await pairBrowser(r.server, PAIR);
+  return { cookie, csrf: unlock ? csrf : null };
 }
 
 const heads = (r: Rig, p: Page): Record<string, string> => ({

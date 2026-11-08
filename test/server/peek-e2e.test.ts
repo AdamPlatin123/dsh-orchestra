@@ -5,6 +5,7 @@ import * as net from 'node:net';
 import * as path from 'node:path';
 import * as zlib from 'node:zlib';
 import { EXIT } from '../../src/runtime/startup.ts';
+import { pairBrowser } from '../helpers/pair.ts';
 import { runOrchestrad, startOrchestrad, waitForLine } from '../helpers/orchestrad.ts';
 import { STAGE_CANARY, writeStageFixture } from '../helpers/stage-fixture.ts';
 import { put, withTmp } from '../helpers/tmp.ts';
@@ -55,9 +56,7 @@ test('a test-profile orchestrad with --peek-port serves both harnesses after pai
   const code = /^orchestrad: pairing code (\d{8})$/.exec(child.lines().find((l) => l.startsWith('orchestrad: pairing code')) ?? '')?.[1];
   assert.ok(code !== undefined);
 
-  const paired = await request(port, 'POST', '/pair', { origin: `http://orchestra.localhost:${port}`, 'content-type': 'application/x-www-form-urlencoded' }, `code=${code}`);
-  assert.equal(paired.status, 303);
-  const cookie = String(paired.headers['set-cookie']).split(';')[0]!;
+  const { cookie } = await pairBrowser({ port }, code);
   const home = await request(port, 'GET', '/', { cookie });
   assert.equal(home.status, 200);
   assert.match(home.body, /assets\/ui\/home\.js/);
@@ -86,7 +85,7 @@ test('the tower end to end over the stage fixture (the demo data): pair, then th
   await waitForLine(child, /^orchestrad: peek page at /);
   const code = /^orchestrad: pairing code (\d{8})$/.exec(child.lines().find((l) => l.startsWith('orchestrad: pairing code')) ?? '')?.[1];
   assert.ok(code !== undefined);
-  const cookie = String((await request(port, 'POST', '/pair', { origin: `http://orchestra.localhost:${port}`, 'content-type': 'application/x-www-form-urlencoded' }, `code=${code}`)).headers['set-cookie']).split(';')[0]!;
+  const { cookie } = await pairBrowser({ port }, code);
   const r = await request(port, 'GET', '/api/peek/stage', { cookie });
   assert.equal(r.status, 200);
   const snap = JSON.parse(r.body) as { profile: string; lanes: { name: string; players: unknown[] }[]; podium: { fermatas: unknown[] } };

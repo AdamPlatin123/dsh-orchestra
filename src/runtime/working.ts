@@ -387,11 +387,35 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
 
   // The test profile never looks at the console: its harness reads stdout, which is a pipe.
   const pairing = decidePairingOutput(ctx.profile, ctx.profile.kind === 'test' ? { stdin: false, stdout: false } : ctx.tty());
+  // The remembered browsers (pair once, 2026-11-08): ORCHESTRA_HOME\pairings.json, digests only, read
+  // through the gate and written through the fence. Unreadable or broken: a warning, none remembered.
+  const { PAIRINGS_FILE, makePairings } = await import('../server/pairings.ts');
+  const pairingsFile = win.join(home, PAIRINGS_FILE);
+  const pairings = makePairings({
+    nowWall: () => ctx.clock.port(null).nowWall(),
+    log,
+    io: {
+      load: () => {
+        try {
+          return gate.readFile(pairingsFile).toString('utf8');
+        } catch (e) {
+          if ((e as { decision?: { reason?: unknown } }).decision?.reason === 'not-found') return null;
+          throw e;
+        }
+      },
+      save: (text) => fence.writeAtomic(pairingsFile, text),
+    },
+  });
   let code: string | null = null;
   if (pairing.print === 'none') {
     log.warn('pairing-disabled', { why: pairing.reason });
     ctx.console.out('orchestrad: pairing is off: stdin and stdout are not both an interactive console');
-  } else {
+  }
+  if (pairings.count > 0) {
+    // A remembered browser needs no code; a new one asks for one on the page (POST /api/pair-code).
+    const n = pairings.count;
+    ctx.console.out(`orchestrad: ${n} browser${n === 1 ? '' : 's'} remembered as paired; ${pairing.print === 'none' ? 'a new browser cannot pair while the console is off' : 'a new browser asks for a pairing code on the page'}`);
+  } else if (pairing.print !== 'none') {
     code = pairingCode();
     // Straight to the console, never through the log.
     ctx.console.out(`orchestrad: pairing code ${code}`);
@@ -626,15 +650,16 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
       };
       const server = await startPeekServer({
         port: ctx.peekPort, gate, roots: ctx.roots, redact: redactText(redactor), clock: ctx.clock.port(null), log, pairingCode: code, profile: ctx.profile.kind,
-        // alpha 0.2's owned-session base (slice design §2.7): unlock codes go where the pairing code
-        // goes. Owned sessions start only when --owned set them up (owned Codex sessions; the Claude
-        // host is not wired yet); otherwise new answers 409 owned-disabled and GET /api/owned says why.
+        pairings,
+        // A code a page asks for (POST /api/pair-code) goes where the pairing code goes, in the same words.
+        printPairCode: pairing.print === 'none' ? null : (c) => {
+          ctx.console.out(`orchestrad: pairing code ${c}`);
+          log.info('pairing-code-printed', { to: pairing.print });
+        },
+        // alpha 0.2's owned-session base (slice design §2.7). Owned sessions start only when --owned set
+        // them up; otherwise new answers 409 owned-disabled and GET /api/owned says why.
         owned: {
           journal: humanJournal(store),
-          printUnlockCode: pairing.print === 'none' ? null : (c) => {
-            ctx.console.out(`orchestrad: unlock code ${c}`);
-            log.info('unlock-code-printed', { to: pairing.print });
-          },
           enabled: ownedEnabled(deps),
           handlers: registerOwnedHandlers(deps),
           presence,
@@ -664,7 +689,7 @@ export async function runWorking(ctx: WorkingContext): Promise<WorkingOutcome> {
           nowWall: () => wall.nowWall(),
         }));
       }
-      ctx.console.out(`orchestrad: peek page at ${server.url} (read-only; pair with the code above)`);
+      ctx.console.out(`orchestrad: peek page at ${server.url} (read-only; ${code !== null ? 'pair with the code above' : pairings.count > 0 ? 'a remembered browser needs no code' : 'pairing is off'})`);
       if (requests !== null && ctx.agentPort === true) {
         const { AGENT_TOKEN_FILE, agentPipeName, startAgentPort } = await import('../server/agent-port.ts');
         const testName = ctx.profile.kind === 'test' ? win.basename(ctx.profile.testDir).slice(TEST_DIR_PREFIX.length) : null;

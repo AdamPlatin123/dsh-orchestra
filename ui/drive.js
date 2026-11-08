@@ -1,10 +1,10 @@
 // @ts-check
-// What the page does to Orchestra's own sessions (orchestra app plan §2-§5, slice design §2.7): the unlock, the
+// What the page does to Orchestra's own sessions (orchestra app plan §2-§5, slice design §2.7): the pairing, the
 // owned list and feeds, the dispatch desk, messages, the stops, and each allow under r4 §10.9's guards (D8: a
 // person, on a page). The rules in one place: an allow is held or typed where it must be, void while the list
 // settles, and a tainted session's high risk is typed only.
 // makeDrive only defines things; the page's boot (ui/home.js) calls it with its own state and host.
-import { getFeed, getOwned, getSession, oneAtATime, post } from './api.js';
+import { forgetBrowser, getFeed, getOwned, getSession, oneAtATime, pair, pairCode, post } from './api.js';
 import { after, fmtClock, nowMono } from './clock.js';
 import {
   HOLD_MS, SETTLE_MS, brakeWhyText, closedTo, deskOf, modelsOf, atBottom, chatNews, describeAnswer, describeAskPins, describeDesk, describeNew, describeReassign, describeOwned, describeOwnedDock, describeRequestPins, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError,
@@ -25,6 +25,8 @@ const NOTE_MS = 8000;
 const ARM_MS = 3000;
 /** Session reads that got no answer go out again this many times, 2, 4 and 8 s after each failed answer. */
 const DETAIL_RETRIES = 3;
+/** How long a code the console printed holds (src/server/http.ts PAIR_TTL_MS): no new one is asked for meanwhile. */
+const PAIR_CODE_MS = 10 * 60 * 1000;
 
 /** The part of a page's state this module keeps. */
 export const driveState = () => ({
@@ -37,7 +39,7 @@ export const driveState = () => ({
   /** The latest session read's number: only its answer lands (an older one's is dropped). */ detailSeq: 0,
   /** When the latest session read's answer came back (monotonic ms). */ detailMono: 0,
   /** Session reads in a row that got no answer (timeout, network), for the selected session. */ detailFails: 0,
-  // csrf: this tab's token (null: locked); pinSig: bar and queue as drawn (a change starts the 750 ms);
+  // csrf: this browser's token (null: not paired); pinSig: bar and queue as drawn (a change starts the 750 ms);
   // to: the recipient, held once you type (§1.5).
   /** @type {string | null} */ csrf: getCsrf(),
   /** @type {any} */ owned: null,
@@ -57,8 +59,11 @@ export const driveState = () => ({
   /** @type {string | null} */ justHeld: null,
   /** @type {any} */ apprFocus: null,
   busy: false,
-  // An unlock code is being asked for (one at a time: each replaces the last).
-  unlockAsking: false,
+  // Pairing: a code is being asked for (one at a time: each replaces the last); when the last printed one was
+  // asked for (monotonic ms; -Infinity: none still good); a code is being tried.
+  pairAsking: false,
+  pairAskedMono: -Infinity,
+  pairing: false,
   /** @type {string | null} */ note: null,
   /** @type {(() => void) | null} */ noteOff: null,
   /** @type {{ id: string, title: string } | null} */ to: null,
@@ -318,13 +323,19 @@ export function makeDrive(state, dom, host) {
     schedule();
   }
 
-  /** The token is no good (a restart): locked again. */
-  function lock() {
+  /** This browser's token, and what it read, gone; nothing is asked of the daemon. */
+  function unpair() {
     setCsrf((state.csrf = null));
     state.owned = null;
     state.feeds.clear();
     cancelHold();
-    say(t('unlock.lost'));
+  }
+
+  /** The token is no good (the browser was forgotten, the cookie is gone, 90 days passed): the pairing dialog again. */
+  function lock() {
+    unpair();
+    say(t('pair.lost'));
+    pairOpen();
   }
 
   /** @param {string} id @param {string} focus */
@@ -339,34 +350,72 @@ export function makeDrive(state, dom, host) {
   /** A dialog's own line (the note sits behind a modal). @param {string} id @param {string} text */
   const dlgSay = (id, text) => dom.paintId(id, { slots: { msg: { text } } });
 
-  /** The daemon prints a code on its console (204: never in a reply). */
-  async function unlockStart() {
-    if (state.csrf !== null) return say(t('unlock.ok'));
-    // Each code replaces the last (src/server/owned.ts issue): a held Enter or quick clicks once asked 7 times
-    // in 60 ms on the real profile (2026-11-03), and only the last printed code worked. One ask at a time; an
-    // open dialog keeps its code.
-    if (state.unlockAsking || /** @type {any} */ (dom.byId('unlock-dlg')).open) return openDlg('unlock-dlg', 'ul-code');
-    state.unlockAsking = true;
-    const a = await post(null, 'owned/unlock-code', null).finally(() => { state.unlockAsking = false; });
-    if (!a.ok) return say(a.code === 'http-503' ? t('unlock.off') : a.code === 'unpaired' ? t('unlock.closed') : errText(a.code));
-    dlgSay('unlock-dlg', '');
-    openDlg('unlock-dlg', 'ul-code');
+  // == pairing (2026-11-08: pair once): one code pairs this browser for good, across restarts of both sides.
+  /** The top bar's button and a 先配对: unpaired, the pairing dialog; paired, the way to forget this browser. */
+  function pairOpen() {
+    if (state.csrf !== null) {
+      dlgSay('forget-dlg', '');
+      return openDlg('forget-dlg', 'fg-no');
+    }
+    // Opening asks for no code: the one printed at the start may be good, and a code asked for stays good 10 minutes.
+    const d = /** @type {any} */ (dom.byId('pair-dlg'));
+    if (!d.open) dlgSay('pair-dlg', '');
+    openDlg('pair-dlg', 'pr-code');
   }
 
-  async function unlockGo() {
-    const code = val('ul-code').trim();
-    const a = /^[0-9]{8}$/.test(code) ? await post(null, 'owned/unlock', { code }) : null;
-    const csrf = a?.ok ? /** @type {any} */ (a.body)?.csrf : null;
-    if (!/^[\w-]{43}$/.test(csrf)) {
-      return dlgSay('unlock-dlg', a === null ? t('unlock.format') : a.ok || a.code === 'not-unlocked' ? t('unlock.wrong') : errText(a.code));
-    }
+  /**
+   * The daemon prints a code on its console (204: never in a reply). Each code replaces the last: a held Enter or
+   * quick clicks once asked 7 times in 60 ms on the real profile (2026-11-03), and only the last printed code
+   * worked. So one ask at a time, and none while the last one printed is still good (10 minutes, unless the daemon
+   * said it was spent): one click, at most one code.
+   */
+  async function pairCodeAsk() {
+    if (state.pairAsking) return;
+    if (nowMono() - state.pairAskedMono < PAIR_CODE_MS) return dlgSay('pair-dlg', t('pair.asked'));
+    state.pairAsking = true;
+    const a = await pairCode().finally(() => { state.pairAsking = false; });
+    if (a.ok) state.pairAskedMono = nowMono();
+    dlgSay('pair-dlg', a.ok ? t('pair.asked') : a.code === 'http-503' ? t('pair.off') : a.code === 'not-unlocked' ? pairWhy(a.why) : errText(a.code));
+    /** @type {any} */ (dom.byId('pr-code')).focus();
+  }
+
+  /** What a refused code means. @param {string | undefined} why */
+  function pairWhy(why) {
+    // A spent code (voided, expired, none, shut) is no longer worth keeping: the next click asks for a new one.
+    if (why !== 'wrong') state.pairAskedMono = -Infinity;
+    return why === 'voided' ? t('pair.voided') : why === 'expired' ? t('pair.expired') : why === 'no-code' ? t('pair.noCode') : why === 'shut' ? t('pair.shut') : t('pair.wrong');
+  }
+
+  async function pairGo() {
+    if (state.pairing) return;
+    const code = val('pr-code').trim();
+    if (!/^[0-9]{8}$/.test(code)) return dlgSay('pair-dlg', t('pair.format'));
+    state.pairing = true;
+    const a = await pair(code).finally(() => { state.pairing = false; });
+    const csrf = a.ok ? /** @type {any} */ (a.body)?.csrf : null;
+    if (!/^[\w-]{43}$/.test(csrf)) return dlgSay('pair-dlg', a.ok ? t('pair.wrong') : a.code === 'not-unlocked' ? pairWhy(a.why) : errText(a.code));
+    // The cookie came with the reply: the page works at once, no reload.
     setCsrf((state.csrf = csrf));
-    setVal('ul-code', '');
-    closeDlg('unlock-dlg');
-    say(t('unlock.ok'));
+    state.pairAskedMono = -Infinity;
+    state.error = null;
+    setVal('pr-code', '');
+    closeDlg('pair-dlg');
+    say(t('pair.ok'));
     if (globalThis.Notification?.permission === 'default') void Notification.requestPermission();
+    void host.poll();
     pollOwned();
     pollFeed();
+  }
+
+  /** Forgets this browser (confirmed in its dialog): the daemon drops its pairing and clears the cookie. */
+  async function forgetGo() {
+    if (state.csrf === null) return closeDlg('forget-dlg');
+    const a = await forgetBrowser(state.csrf);
+    // A token already dead is forgotten here too; anything else leaves the pairing as it was.
+    if (!a.ok && a.code !== 'not-unlocked' && a.code !== 'unpaired') return dlgSay('forget-dlg', errText(a.code));
+    unpair();
+    closeDlg('forget-dlg');
+    say(t('pair.forgotten'));
   }
 
   /** One owned POST at a time, on one thing. @param {string} path @param {object} body @returns {Promise<any>} */
@@ -681,9 +730,9 @@ export function makeDrive(state, dom, host) {
     return out;
   }
 
-  /** The dispatch dialog, or the unlock when this tab is locked. */
+  /** The dispatch dialog, or the pairing while this browser is not paired. */
   function openNew() {
-    if (state.csrf === null) return void unlockStart();
+    if (state.csrf === null) return pairOpen();
     dlgSay('new-dlg', '');
     pollOwned();
     openDlg('new-dlg', 'nw-text');
@@ -695,8 +744,10 @@ export function makeDrive(state, dom, host) {
     const appr = t0.dataset.appr ?? '';
     // aria-disabled keeps the focus: the click does nothing (a void allow still says why).
     if (t0.getAttribute('aria-disabled') === 'true' && a !== 'allow') return true;
-    if (a === 'unlock') return void unlockStart(), true;
-    if (a === 'unlockGo') return void unlockGo(), true;
+    if (a === 'pair') return pairOpen(), true;
+    if (a === 'pairCode') return void pairCodeAsk(), true;
+    if (a === 'pairGo') return void pairGo(), true;
+    if (a === 'forgetGo') return void forgetGo(), true;
     if (a === 'close') return /** @type {any} */ (t0.closest('dialog')).close(), true;
     if (a === 'new') return openNew(), true;
     if (a === 'dispatch') return void dispatch(), true;
@@ -759,9 +810,9 @@ export function makeDrive(state, dom, host) {
     document.addEventListener('keydown', (e) => {
       const el = holdBtn(e.target);
       const id = e.target instanceof Element ? e.target.id : '';
-      if (e.key !== 'Enter' || e.isComposing || (el === null && id !== 'ul-code')) return;
+      if (e.key !== 'Enter' || e.isComposing || (el === null && id !== 'pr-code')) return;
       e.preventDefault();
-      if (el === null) void unlockGo();
+      if (el === null) void pairGo();
       else if (!e.repeat) holdStart(el);
     });
     // Typing holds the recipient (research §1.5).
@@ -792,5 +843,5 @@ export function makeDrive(state, dom, host) {
     });
   }
 
-  return { act, cancelHold, detailFor, guard, holdPins, listen, moveFocusOn, nowWall, openFront, openNew, paintDesk, paintSession, pinsPaint, pollFeed, pollOwned, say, selTo, settle, settleOn, settling, unlock: unlockStart };
+  return { act, cancelHold, detailFor, guard, holdPins, listen, moveFocusOn, nowWall, openFront, openNew, paintDesk, paintSession, pinsPaint, lock, pairOpen, pollFeed, pollOwned, say, selTo, settle, settleOn, settling };
 }

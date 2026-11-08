@@ -23,15 +23,17 @@ import { ROUTER_WHY } from '../route/router-model.ts';
 // are not frames (detail's peek, the brake plan's command lines, a native window's title) carry
 // redacted text of at most one snippet, each as a text leaf naming why.
 //
-// Every POST that writes a human record carries an actionId (UI design 一 5); pair, notify-ack,
-// client-state (idempotent by their natural keys), brake/plan (only plans, causes no transition) and
-// the two unlock routes (they hand out the controller token, and act on no session) do not. 4xx and
+// Every POST that writes a human record carries an actionId (UI design 一 5); pair, pair-code and
+// pair/forget (they pair or unpair a browser, and act on no session), notify-ack, client-state
+// (idempotent by their natural keys) and brake/plan (only plans, causes no transition) do not. 4xx and
 // 503 replies write nothing to the journal.
 //
 // alpha 0.2 (slice design §2.7) adds the owned-session routes: the protocol only, frozen before any
-// handler exists. Every one of them but the unlock pair needs the controller token as well as the
-// pairing cookie, a GET too (auth 'unlocked'); the token comes only from an unlock code the daemon
-// prints to its own console, so a page on another port that holds the cookie still cannot act.
+// handler exists. Every one of them needs the controller token as well as the pairing cookie, a GET too
+// (auth 'unlocked'); the token reaches a page only in POST /api/pair's reply to a code the daemon
+// printed on its own console, so a page on another port that holds the cookie still cannot act.
+// Since 2026-11-08 one code pairs a browser for good (src/server/pairings.ts): the unlock routes are
+// gone, POST /api/pair answers the token with the cookie, POST /api/pair-code asks for a fresh code.
 
 export type { Shape, TextWhy };
 /** The frame and payload shapes live in shared/protocol.js (plan §3); re-exported for the server's own modules. */
@@ -39,9 +41,9 @@ export { FRAMES, SHAPES };
 
 const { en, re, int, bool, konst, text, nul, obj, arr } = S;
 
-/** The CSRF token GET /api/session hands out: 32 random bytes, base64url. */
+/** The controller token POST /api/pair hands out (GET /api/session's CSRF token has its form): 32 random bytes, base64url. */
 export const CSRF_RE = frozen(/^[A-Za-z0-9_-]{43}$/);
-/** The pairing code: 8 digits (step 4). The unlock code (slice design §2.7) has the same form and the same throttle. */
+/** The pairing code: 8 digits (step 4). */
 export const PAIR_CODE_RE = frozen(/^[0-9]{8}$/);
 /** A stage session id as the import routes name it: 20 lowercase hex digits (slice design §2.7). */
 export const STAGE_ID_RE = frozen(/^[0-9a-f]{20}$/);
@@ -147,12 +149,12 @@ export type Route = {
   readonly method: 'GET' | 'POST';
   readonly path: string;
   /**
-   * none: assets and the page; pair: POST /api/pair's own rules; session: the cookie (and for a POST,
-   * Origin and the CSRF header); cookie: the cookie, and for a POST Origin, Sec-Fetch-Site same-origin
-   * and a JSON body, with no token (the unlock pair); unlocked: all of cookie's checks plus the
-   * controller token in CONTROL_HEADER, for a GET as well (slice design §2.7).
+   * none: assets and the page; pair: the pairing routes' own rules (Origin exact, Sec-Fetch-Site
+   * same-origin, no cookie needed; src/server/http.ts); session: the cookie (and for a POST, Origin and
+   * the CSRF header); unlocked: the cookie, Origin, Sec-Fetch-Site same-origin, a JSON body for a POST
+   * that has one, and the controller token in CONTROL_HEADER, for a GET as well (slice design §2.7).
    */
-  readonly auth: 'none' | 'pair' | 'session' | 'cookie' | 'unlocked';
+  readonly auth: 'none' | 'pair' | 'session' | 'unlocked';
   /** The human verb whose `human` and `human.result` records this route writes; such a body carries an actionId. */
   readonly human: HumanVerb | null;
   /** Where the item comes from, when the route acts on one. */
@@ -170,7 +172,7 @@ export type Route = {
   readonly reply: Shape | null;
   /** The reply shared/owned-contract.js checks (validateOwnedList, validateOwnedFeed: slice design §2.8, a later step), in place of a shape here. */
   readonly contract?: 'OwnedList' | 'OwnedFeed';
-  /** A route that answers this status once its checks pass (POST /api/owned/unlock-code: 204, no body). */
+  /** A route that answers this status once its checks pass (POST /api/pair-code and /api/pair/forget: 204, no body). */
   readonly status?: number;
 };
 
@@ -321,7 +323,11 @@ const SUGGEST_REPLY = obj({
 export const ROUTES: readonly Route[] = Object.freeze([
   plain('GET', '/', 'none', { reply: null, checks: ['execute'] }),
   plain('GET', '/assets/*', 'none', { reply: null, checks: ['execute'] }),
-  plain('POST', '/api/pair', 'pair', { body: obj({ code: re(PAIR_CODE_RE, 'pairCode') }), reply: obj({ paired: konst(true) }) }),
+  // Pairing (2026-11-08: pair once): a fresh code on the console (204, never in a reply; 503 with the console
+  // off), and the code traded for the cookie and the controller token. A wrong, voided, expired or missing code,
+  // or pairing shut after 20 wrong, is 403 not-unlocked with a why naming which.
+  plain('POST', '/api/pair-code', 'pair', { reply: null, status: 204, checks: ['auth', 'execute'], failures: ['not-unlocked'] }),
+  plain('POST', '/api/pair', 'pair', { body: obj({ code: re(PAIR_CODE_RE, 'pairCode') }), reply: obj({ csrf: re(CSRF_RE, 'csrf') }), failures: ['not-unlocked'] }),
   plain('GET', '/api/session', 'session', {
     query: obj({ tab: uuid }),
     reply: obj({ csrf: re(CSRF_RE, 'csrf'), bootId: uuid, mode: en(MODES), profile: en(PROFILES), liveStreams: int(0, 2), superseded: bool }),
@@ -350,8 +356,8 @@ export const ROUTES: readonly Route[] = Object.freeze([
   human('self-rating', null, { score: int(1, 5) }),
   plain('GET', '/api/tuning', 'session', { reply: TUNING_REPLY }),
   // alpha 0.2: owned sessions and imports (slice design §2.7). The approvals were reserved here (501) until now.
-  plain('POST', '/api/owned/unlock-code', 'cookie', { reply: null, status: 204, checks: ['auth', 'execute'] }),
-  plain('POST', '/api/owned/unlock', 'cookie', { body: obj({ code: re(PAIR_CODE_RE, 'unlockCode') }), reply: obj({ csrf: re(CSRF_RE, 'csrf') }), failures: ['not-unlocked'] }),
+  // This browser forgets its pairing (the whole chain first): 204 and a Set-Cookie that clears the cookie. No record.
+  plain('POST', '/api/pair/forget', 'unlocked', { reply: null, status: 204, checks: ['auth', 'execute'] }),
   plain('GET', '/api/owned', 'unlocked', { reply: null, contract: 'OwnedList' }),
   plain('GET', '/api/owned/:id/feed', 'unlocked', { query: obj({ after: re(SEQ_RE, 'seq') }, ['after']), reply: null, contract: 'OwnedFeed', target: 'owned', checks: ['auth', 'shape', 'item', 'execute'] }),
   plain('GET', '/api/import/:id/check', 'unlocked', { reply: IMPORT_CHECK_REPLY, target: 'stage', checks: ['auth', 'shape', 'item', 'execute'] }),

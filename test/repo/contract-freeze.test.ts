@@ -54,6 +54,11 @@ import { mustOpen, storeFixture } from '../helpers/store.ts';
 // Question cards change it on purpose once more: the human verb approval-answer at POST /api/approvals/:id/answer (digest,
 // rev and one pick a question: an option by its place or a text; the own codes of an allow), and with it the `human` and
 // `human.result` verb enum (it only grows). What was answered stays out of the journal: the requestDigest covers the body.
+// Pairing once (2026-11-08) changes it on purpose once more: the two unlock routes (POST /api/owned/unlock-code and
+// /api/owned/unlock, auth cookie) are gone, and with them the cookie auth level. POST /api/pair now answers the controller
+// token ({csrf}) with the cookie, POST /api/pair-code (204, no body) prints a fresh code on the console, and POST
+// /api/pair/forget (unlocked, 204) forgets the browser; OWNED_ROUTES pins the pairing routes too now (auth pair). A refused
+// code is 403 not-unlocked (an existing code) with a why; no error code is added, and the journal is unchanged.
 
 const PROTOCOL = {
   "ACK_PHASES": ["dispatched","shown","error"],
@@ -127,8 +132,9 @@ const OWNED_ROUTES = {
     "IMPORT_MODES": ["resume","fork"],
   },
   "routes": {
-    "POST /api/owned/unlock-code": {"auth":"cookie","human":null,"target":null,"checks":["auth","execute"],"own":[],"failures":[],"status":204,"contract":null,"query":null,"body":null,"reply":null},
-    "POST /api/owned/unlock": {"auth":"cookie","human":null,"target":null,"checks":["auth","shape","execute"],"own":[],"failures":["not-unlocked"],"status":null,"contract":null,"query":null,"body":{"fields":{"code":"re:unlockCode:/^[0-9]{8}$/"},"optional":[]},"reply":{"fields":{"csrf":"re:csrf:/^[A-Za-z0-9_-]{43}$/"},"optional":[]}},
+    "POST /api/pair-code": {"auth":"pair","human":null,"target":null,"checks":["auth","execute"],"own":[],"failures":["not-unlocked"],"status":204,"contract":null,"query":null,"body":null,"reply":null},
+    "POST /api/pair": {"auth":"pair","human":null,"target":null,"checks":["auth","shape","execute"],"own":[],"failures":["not-unlocked"],"status":null,"contract":null,"query":null,"body":{"fields":{"code":"re:pairCode:/^[0-9]{8}$/"},"optional":[]},"reply":{"fields":{"csrf":"re:csrf:/^[A-Za-z0-9_-]{43}$/"},"optional":[]}},
+    "POST /api/pair/forget": {"auth":"unlocked","human":null,"target":null,"checks":["auth","execute"],"own":[],"failures":[],"status":204,"contract":null,"query":null,"body":null,"reply":null},
     "GET /api/owned": {"auth":"unlocked","human":null,"target":null,"checks":["auth","shape","execute"],"own":[],"failures":[],"status":null,"contract":"OwnedList","query":null,"body":null,"reply":null},
     "GET /api/owned/:id/feed": {"auth":"unlocked","human":null,"target":"owned","checks":["auth","shape","item","execute"],"own":[],"failures":[],"status":null,"contract":"OwnedFeed","query":{"fields":{"after":"re:seq:/^(?:0|[1-9][0-9]{0,15})$/"},"optional":["after"]},"body":null,"reply":null},
     "GET /api/import/:id/check": {"auth":"unlocked","human":null,"target":"stage","checks":["auth","shape","item","execute"],"own":[],"failures":[],"status":null,"contract":null,"query":null,"body":null,"reply":{"fields":{"can":"enum:resume|fork|dsh-snapshot|none","why":{"nullable":"enum:owned-disabled|gateway-real-data|owned-limit|source-live|unfinished-frame|source-changed|cwd-gone|cwd-forbidden|import-too-big|newer-format"},"cwd":"text[260]:cwd","files":"int[0,max]"},"optional":["cwd","files"]}},

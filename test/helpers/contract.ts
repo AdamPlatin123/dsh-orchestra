@@ -161,7 +161,8 @@ function describeShape(s: Shape): unknown {
  * body and reply, plus the constants their handlers code against.
  */
 export function describeOwnedRoutes(): Record<string, unknown> {
-  const isOwned = (r: Route) => r.auth === 'cookie' || r.auth === 'unlocked';
+  // The pairing routes too (2026-11-08): they hand out the cookie and the token the owned routes need.
+  const isOwned = (r: Route) => r.auth === 'pair' || r.auth === 'unlocked';
   return {
     constants: {
       CONTROL_HEADER: routes.CONTROL_HEADER, OWNED_BODY_MAX_BYTES: routes.OWNED_BODY_MAX_BYTES, OWNED_TEXT_MAX_BYTES: routes.OWNED_TEXT_MAX_BYTES,

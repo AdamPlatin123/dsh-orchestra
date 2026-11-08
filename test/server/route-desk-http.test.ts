@@ -16,6 +16,7 @@ import { towerFromStage } from '../../src/sources/tower.ts';
 import type { Store } from '../../src/store/store.ts';
 import { checkBody } from '../../src/store/records.ts';
 import { validateTower } from '../../shared/tower-contract.js';
+import { pairBrowser } from '../helpers/pair.ts';
 import { realIo } from '../helpers/read-io.ts';
 import { mustOpen, storeFixture } from '../helpers/store.ts';
 import { busyStage } from '../helpers/tower-fixture.ts';
@@ -58,7 +59,8 @@ async function fixture(t: TestContext, answer: string | null): Promise<Fx> {
   const deps = { codex: codex as never, codexOff: 'on', claude: null, desk, log };
   const server = await startPeekServer({
     port: 0, gate: new ReadGate({ roots: [], io: realIo, testDirs: [sf.dir] }), roots: [], redact: (s) => s, clock, log, pairingCode: CODE, profile: 'test',
-    owned: { journal: humanJournal(store), printUnlockCode: (c) => printed.push(c), enabled: ownedEnabled(deps), handlers: registerOwnedHandlers(deps) },
+    printPairCode: (c) => printed.push(c),
+    owned: { journal: humanJournal(store), enabled: ownedEnabled(deps), handlers: registerOwnedHandlers(deps) },
   });
   t.after(() => server.close());
   const host = `${PEEK_HOST}:${server.port}`;
@@ -84,13 +86,8 @@ function request(fx: Fx, method: string, pathname: string, headers: Record<strin
 }
 
 async function unlocked(fx: Fx): Promise<Record<string, string>> {
-  const p = await request(fx, 'POST', '/pair', { origin: fx.origin, 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' }, `code=${CODE}`);
-  const cookie = String(p.headers['set-cookie']).split(';')[0]!;
-  const base = { cookie, origin: fx.origin, 'sec-fetch-site': 'same-origin' };
-  assert.equal((await request(fx, 'POST', '/api/owned/unlock-code', base)).status, 204);
-  const code = (fx as { printed?: string[] }).printed!.at(-1)!;
-  const u = await request(fx, 'POST', '/api/owned/unlock', { ...base, 'content-type': 'application/json' }, JSON.stringify({ code }));
-  return { ...base, 'content-type': 'application/json', 'x-orchestra-csrf': String(u.json.csrf) };
+  const { cookie, csrf } = await pairBrowser(fx.server, CODE);
+  return { cookie, origin: fx.origin, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json', 'x-orchestra-csrf': csrf };
 }
 
 const rows = (fx: Fx) => fx.store.db.all("SELECT jseq, kind, body FROM event WHERE kind IN ('human', 'human.result', 'route') ORDER BY jseq").map((r) => ({ jseq: Number(r.jseq), kind: String(r.kind), body: JSON.parse(String(r.body)) }));

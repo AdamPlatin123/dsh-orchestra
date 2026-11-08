@@ -29,4 +29,4 @@ writeStageFixture(dir, baseMs);
 console.log(`tower-demo: synthetic roots in ${dir}`);
 console.log('tower-demo: start orchestrad from an unelevated console in the repo:');
 console.log(`  orchestra.cmd --test-profile --test-dir ${dir} --peek-port 7470`);
-console.log('tower-demo: then open http://orchestra.localhost:7470/ and enter the printed pairing code.');
+console.log('tower-demo: then open http://orchestra.localhost:7470/ and enter the printed pairing code (once: the browser stays paired).');

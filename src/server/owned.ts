@@ -1,34 +1,34 @@
 import type { IncomingMessage } from 'node:http';
-import { randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import type { ErrorCode, HumanVerb } from '../../shared/protocol.js';
 import { ERROR_STATUS, ID_RE, UUID_RE } from '../../shared/protocol.js';
 import { frozen } from '../../shared/frozen.js';
 import { validateOwnedFeed, validateOwnedList } from '../../shared/owned-contract.js';
-import type { Clock } from '../runtime/clock.ts';
 import type { Log } from '../runtime/log.ts';
 import type { PresenceWatch } from '../route/presence.ts';
 import type { Line, Rec } from '../store/journal.ts';
 import type { Store } from '../store/store.ts';
 import { StoreError } from '../store/store.ts';
 import { canonicalDigest } from '../store/canonical-json.ts';
+import type { Pairings } from './pairings.ts';
+import { CLEAR_PAIR_COOKIE } from './pairings.ts';
 import type { Route, Shape } from './routes.ts';
-import { CONTROL_HEADER, CSRF_RE, OWNED_BODY_MAX_BYTES, OWNED_TEXT_MAX_BYTES, PAIR_CODE_RE, ROUTES, STAGE_ID_RE, shapeError } from './routes.ts';
+import { CONTROL_HEADER, OWNED_BODY_MAX_BYTES, OWNED_TEXT_MAX_BYTES, ROUTES, STAGE_ID_RE, shapeError } from './routes.ts';
 
-// The owned-session API's base (alpha 0.2, slice design §2.7; §7 step 5): the controller token, the
-// check chain every owned route runs, the `human` records, and the table step 6c's handlers plug into.
-// http.ts hands it every request after the Host check and the pairing cookie lookup; it answers the
-// routes of routes.ts whose auth is `cookie` or `unlocked` and nothing else.
+// The owned-session API's base (alpha 0.2, slice design §2.7; §7 step 5): the controller token check,
+// the check chain every owned route runs, the `human` records, and the table step 6c's handlers plug
+// into. http.ts hands it every request after the Host check, the pairing cookie lookup and the pairing
+// routes; it answers the routes of routes.ts whose auth is `unlocked` and nothing else.
 //
 // The controller token. The pairing cookie is not bound to a port, so a page another local process
-// serves on orchestra.localhost:<other port> holds it too. The cookie therefore buys only the shell and
-// the read-only peek GETs; every owned route, a GET too, also needs X-Orchestra-CSRF, and its value
-// comes only from an unlock code the daemon prints to its own console (POST /api/owned/unlock-code:
-// 204, the code never in a reply), traded for a token bound to that sid (POST /api/owned/unlock). The
-// page keeps the token in its tab's session storage, which is per origin, the port included. Codes follow the
-// pairing code's rules: 8 digits from node:crypto, 10 minutes, compared in constant time, void after 5
-// wrong tries in a row; after 20 wrong tries in all, unlocking is closed until the daemon restarts. A
-// code is only good for the sid that asked for it; a new ask replaces it. Tokens and codes live in
-// memory only.
+// serves on orchestra.localhost:<other port> holds it too, and can replay it. The cookie therefore buys
+// only the shell and the read-only peek GETs; every owned route, a GET too, also needs X-Orchestra-CSRF.
+// Its value reaches a page only in the reply to a right console code (POST /api/pair, http.ts), together
+// with the cookie, and is good only with that cookie's sid (src/server/pairings.ts). The page keeps it
+// in its local storage, which is per origin, the port included, so the page on another port never
+// sees it. Since 2026-11-08 the token is remembered with the pairing (as digests, across restarts, 90
+// days): one code pairs a browser for good, where it took a pairing code and an unlock code at every
+// start before. POST /api/pair/forget (this base answers it, after the whole chain) drops the pairing and
+// clears the cookie.
 //
 // The check chain (slice design §2.7, in this order; owned.test pins it):
 //   1. Host exact (http.ts, for every route);
@@ -36,7 +36,7 @@ import { CONTROL_HEADER, CSRF_RE, OWNED_BODY_MAX_BYTES, OWNED_TEXT_MAX_BYTES, PA
 //   3. Origin exact; a GET may leave it out, since a browser sends none on a same-origin GET;
 //   4. Sec-Fetch-Site present and same-origin;
 //   5. a POST with a body sends Content-Type application/json, one without sends no body (else 400);
-//   6. for `unlocked`: the token, compared in constant time; missing or wrong is 403 not-unlocked;
+//   6. the token of the cookie's pairing, compared in constant time; missing or wrong is 403 not-unlocked;
 //   7. the body at most OWNED_BODY_MAX_BYTES (413 body-too-big); a message at most OWNED_TEXT_MAX_BYTES
 //      of UTF-8 (422 text-too-long), and not starting with `/` (422 slash-command: the CLI would run it
 //      as a slash command, and `/model` or `/config` change the session);
@@ -56,85 +56,10 @@ import { CONTROL_HEADER, CSRF_RE, OWNED_BODY_MAX_BYTES, OWNED_TEXT_MAX_BYTES, PA
 // journal alone. An in-flight table covers the time the handler awaits; it is cleared in the same
 // synchronous turn the batch commits. A refusal (4xx), a 501 or a handler that throws writes nothing.
 
-/** How long an unlock code holds (the pairing code's 10 minutes). */
-export const UNLOCK_TTL_MS = 10 * 60 * 1000;
-/** The largest body POST /api/owned/unlock takes: `{"code":"12345678"}` and some room. */
-export const UNLOCK_BODY_MAX_BYTES = 1024;
-
-const LIMITS = frozen({ wrongInRow: 5, wrongTotal: 20, replies: 256 });
+const LIMITS = frozen({ replies: 256 });
 const JSON_TYPE = /^application\/json(?:\s*;\s*charset=utf-8)?$/i;
-
-export type UnlockOutcome = 'ok' | 'wrong' | 'voided' | 'shut' | 'expired' | 'no-code';
-
-export type Unlock = {
-  /** False once 20 wrong codes in all were tried: no code is issued or taken until a restart. */
-  readonly open: boolean;
-  /** A fresh code for `sid`, replacing any it had; null when unlocking is closed. */
-  issue(sid: string, nowMono: number): string | null;
-  /** Tries `given` against the code of `sid`; on 'ok' the token, which replaces any token the sid had. */
-  attempt(sid: string, given: string, nowMono: number): { outcome: UnlockOutcome; csrf: string | null };
-  /** Is `header` the token of `sid`? Constant time over the token's bytes. */
-  holds(sid: string, header: unknown): boolean;
-  /** The sid's code and token go (its pairing session was dropped). */
-  forget(sid: string): void;
-};
-
-/** The unlock codes and the controller tokens, by sid (slice design §2.7); memory only. */
-export function makeUnlock(): Unlock {
-  const codes = new Map<string, { code: string; issuedMono: number; wrongInRow: number }>();
-  const tokens = new Map<string, string>();
-  let wrongTotal = 0;
-  const shut = () => wrongTotal >= LIMITS.wrongTotal;
-  return Object.freeze({
-    get open(): boolean {
-      return !shut();
-    },
-    issue(sid: string, nowMono: number): string | null {
-      if (shut()) return null;
-      const code = randomInt(0, 100_000_000).toString().padStart(8, '0');
-      codes.set(sid, { code, issuedMono: nowMono, wrongInRow: 0 });
-      return code;
-    },
-    attempt(sid: string, given: string, nowMono: number) {
-      const none = (outcome: UnlockOutcome) => ({ outcome, csrf: null });
-      if (shut()) return none('shut');
-      const c = codes.get(sid);
-      if (c === undefined) return none('no-code');
-      if (nowMono - c.issuedMono > UNLOCK_TTL_MS) {
-        codes.delete(sid);
-        return none('expired');
-      }
-      const a = Buffer.from(c.code);
-      const b = Buffer.from(given);
-      if (PAIR_CODE_RE.test(given) && a.length === b.length && timingSafeEqual(a, b)) {
-        codes.delete(sid);
-        const csrf = randomBytes(32).toString('base64url');
-        tokens.set(sid, csrf);
-        return { outcome: 'ok' as const, csrf };
-      }
-      c.wrongInRow++;
-      wrongTotal++;
-      if (shut()) {
-        codes.clear();
-        return none('shut');
-      }
-      if (c.wrongInRow >= LIMITS.wrongInRow) {
-        codes.delete(sid);
-        return none('voided');
-      }
-      return none('wrong');
-    },
-    holds(sid: string, header: unknown): boolean {
-      const t = tokens.get(sid);
-      if (t === undefined || typeof header !== 'string' || !CSRF_RE.test(header)) return false;
-      return timingSafeEqual(Buffer.from(t), Buffer.from(header));
-    },
-    forget(sid: string): void {
-      codes.delete(sid);
-      tokens.delete(sid);
-    },
-  });
-}
+/** The one owned route the base answers itself: this browser forgets its pairing. */
+const FORGET_PATH = '/api/pair/forget';
 
 // --- the journal side: the `human` records -----------------------------------------------------------
 
@@ -215,7 +140,7 @@ export function makeOwnedHandlers(): OwnedHandlers {
   return Object.freeze({
     register(method: Route['method'], path: string, handler: OwnedHandler): void {
       const route = ROUTES.find((r) => r.method === method && r.path === path);
-      if (route === undefined || route.auth !== 'unlocked') throw new TypeError(`[owned] ${method} ${path} is not an owned route that takes a handler`);
+      if (route === undefined || route.auth !== 'unlocked' || route.path === FORGET_PATH) throw new TypeError(`[owned] ${method} ${path} is not an owned route that takes a handler`);
       if (table.has(route)) throw new TypeError(`[owned] ${method} ${path} has its handler already`);
       if (typeof handler !== 'function') throw new TypeError(`[owned] the handler of ${method} ${path} is not a function`);
       table.set(route, handler);
@@ -226,13 +151,11 @@ export function makeOwnedHandlers(): OwnedHandlers {
 
 // --- the API ---------------------------------------------------------------------------------------
 
-/** What http.ts sends: JSON, a plain text line, or nothing (204). */
-export type OwnedAnswer = { readonly status: number; readonly json?: unknown; readonly text?: string };
+/** What http.ts sends: JSON, a plain text line, or nothing (204); with headers of its own (forget's Set-Cookie). */
+export type OwnedAnswer = { readonly status: number; readonly json?: unknown; readonly text?: string; readonly headers?: readonly (readonly [string, string])[] };
 
 export type OwnedApiOptions = {
   journal: HumanJournal;
-  /** Prints an unlock code where the pairing code goes (the test profile: stdout); null when that console is off. */
-  printUnlockCode: ((code: string) => void) | null;
   /**
    * Owned sessions may start (new, import, retry): in either profile, once orchestrad was started with
    * --owned and found codex.exe (working.ts setUpOwnedCodex). Slice design §2.7 and its endpoint test
@@ -248,10 +171,9 @@ export type OwnedApiOptions = {
 export type OwnedApi = {
   /** The answer to a request on an owned route, or null when the path is none (http.ts carries on). `sid` is the paired session, or null. */
   handle(req: IncomingMessage, url: URL, sid: string | null): Promise<OwnedAnswer | null>;
-  forget(sid: string): void;
 };
 
-const OWNED_ROUTES: readonly Route[] = Object.freeze(ROUTES.filter((r) => r.auth === 'cookie' || r.auth === 'unlocked'));
+const OWNED_ROUTES: readonly Route[] = Object.freeze(ROUTES.filter((r) => r.auth === 'unlocked'));
 const SEGMENTS = new Map<Route, readonly string[]>(OWNED_ROUTES.map((r) => [r, r.path.split('/')]));
 const NO_QUERY: Shape = Object.freeze({ t: 'obj', fields: Object.freeze({}), optional: Object.freeze([]) });
 
@@ -298,16 +220,16 @@ const parse = (s: string): { ok: true; value: unknown } | { ok: false } => {
 };
 
 export function makeOwnedApi(opts: OwnedApiOptions & {
-  clock: Pick<Clock, 'nowMono'>;
+  /** The remembered browsers (src/server/pairings.ts): whose token a request carries, and forget. */
+  pairings: Pick<Pairings, 'holds' | 'forget'>;
   log: Log;
   /** The server's origin, known once it listens. */
   origin: () => string;
   readBody(req: IncomingMessage, max: number): Promise<string | null>;
 }): OwnedApi {
-  const { journal, clock, log, readBody } = opts;
+  const { journal, log, pairings, readBody } = opts;
   const enabled = opts.enabled === true;
   const handlers = opts.handlers ?? makeOwnedHandlers();
-  const unlock = makeUnlock();
   /** actionId -> requestDigest, from the dedup step until the batch commits or the request is refused. */
   const inFlight = new Map<string, string>();
   /** A verb's own reply fields by actionId, so a replay in this boot answers them again; bounded. */
@@ -317,25 +239,6 @@ export function makeOwnedApi(opts: OwnedApiOptions & {
     const declared = Number(req.headers['content-length']);
     if (Number.isFinite(declared) && declared > max) return null;
     return readBody(req, max);
-  };
-
-  const unlockRoutes = async (route: Route, req: IncomingMessage, sid: string): Promise<OwnedAnswer> => {
-    if (route.path === '/api/owned/unlock-code') {
-      if (opts.printUnlockCode === null) return text(503, 'unlock is off: the console is not interactive');
-      const code = unlock.issue(sid, clock.nowMono());
-      log.info('owned-unlock-code', { issued: code !== null });
-      if (code === null) return text(403, 'unlocking is closed: restart orchestrad');
-      // Straight to the console, never through the log or a reply.
-      opts.printUnlockCode(code);
-      return { status: 204 };
-    }
-    const raw = await body(req, UNLOCK_BODY_MAX_BYTES);
-    if (raw === null) return refuse('body-too-big');
-    const parsed = parse(raw);
-    if (!parsed.ok || shapeError(route.body!, parsed.value) !== null) return text(400, 'bad request');
-    const r = unlock.attempt(sid, (parsed.value as { code: string }).code, clock.nowMono());
-    log.info('owned-unlock', { outcome: r.outcome });
-    return r.csrf === null ? refuse('not-unlocked') : { status: 200, json: { csrf: r.csrf } };
   };
 
   const run = async (route: Route, call: OwnedCall, handler: OwnedHandler): Promise<OwnedOutcome | 'threw'> => {
@@ -372,8 +275,12 @@ export function makeOwnedApi(opts: OwnedApiOptions & {
         return text(400, 'bad request');
       }
     }
-    if (route.auth === 'cookie') return unlockRoutes(route, req, sid);
-    if (!unlock.holds(sid, req.headers[CONTROL_HEADER])) return refuse('not-unlocked');
+    if (!pairings.holds(sid, req.headers[CONTROL_HEADER])) return refuse('not-unlocked');
+    if (route.path === FORGET_PATH) {
+      pairings.forget(sid);
+      log.info('pairing-forgotten', {});
+      return { status: 204, headers: [['Set-Cookie', CLEAR_PAIR_COOKIE]] };
+    }
     if (route.method === 'GET' && route.path === '/api/owned') opts.presence?.beat();
 
     // 7-8: the body (a POST) or the query (a GET), its message, its shape, the path id.
@@ -480,5 +387,5 @@ export function makeOwnedApi(opts: OwnedApiOptions & {
     }
   };
 
-  return Object.freeze({ handle, forget: (sid: string) => unlock.forget(sid) });
+  return Object.freeze({ handle });
 }

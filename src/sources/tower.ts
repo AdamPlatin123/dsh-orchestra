@@ -137,7 +137,7 @@ export type RouterDispatch = { title: string; at: number; harness: 'codex' | 'cl
 export type LastDispatch = { ownedId: string; harness: 'codex' | 'claude'; model: string; at: number; title: string; auto: boolean };
 /**
  * A pending agent request (seat) as every paired page sees it, unlocked or not: its harness and the wall
- * time it is refused at (D8: timeout = deny). Never its text, cwd or requester: those wait for the unlock.
+ * time it is refused at (D8: timeout = deny). Never its text, cwd or requester: those wait for the controller token (a paired browser).
  */
 export type RouterAsk = { harness: 'codex' | 'claude'; deadline: number };
 /** The most asks the router row lists (src/route/requests.ts REQUEST_LIMITS.kept). */

@@ -385,8 +385,10 @@ export type PairingOutput =
   | { print: 'none'; reason: 'not-interactive' };
 
 /**
- * Where the pairing code goes. The test harness reads it from stdout; the real profile prints it
- * only to an interactive console (stdin and stdout both TTYs) and otherwise turns pairing off.
+ * Where the pairing code goes: the one printed at the start (only while no browser is remembered) and
+ * each one a page asks for (POST /api/pair-code). The test harness reads it from stdout; the real profile
+ * prints it only to an interactive console (stdin and stdout both TTYs) and otherwise turns pairing off
+ * (a browser paired before still works: it needs no code).
  */
 export function decidePairingOutput(profile: Profile, tty: { stdin: boolean; stdout: boolean }): PairingOutput {
   if (profile.kind === 'test') return { print: 'stdout', reason: 'test-profile' };

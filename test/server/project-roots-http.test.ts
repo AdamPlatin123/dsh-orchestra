@@ -15,6 +15,7 @@ import { humanJournal } from '../../src/server/owned.ts';
 import { canonicalDigest } from '../../src/store/canonical-json.ts';
 import { cwdEntry, ownedEnabled, registerOwnedHandlers } from '../../src/server/owned-handlers.ts';
 import { validateOwnedList } from '../../shared/owned-contract.js';
+import { pairBrowser } from '../helpers/pair.ts';
 import { realIo } from '../helpers/read-io.ts';
 import { mustOpen, storeFixture } from '../helpers/store.ts';
 
@@ -59,7 +60,8 @@ async function fixture(t: TestContext, projectRoots: string[] | undefined): Prom
   const deps = { codex: codex as never, codexOff: 'on', claude: claude as never, log, requests, ...(projectRoots === undefined ? {} : { projectRoots }) };
   const server = await startPeekServer({
     port: 0, gate: new ReadGate({ roots: [], io: realIo, testDirs: [sf.dir] }), roots: [], redact: (s) => s, clock, log, pairingCode: CODE, profile: 'test',
-    owned: { journal: humanJournal(store), printUnlockCode: (c) => printed.push(c), enabled: ownedEnabled(deps), handlers: registerOwnedHandlers(deps) },
+    printPairCode: (c) => printed.push(c),
+    owned: { journal: humanJournal(store), enabled: ownedEnabled(deps), handlers: registerOwnedHandlers(deps) },
   });
   t.after(() => server.close());
   const host = `${PEEK_HOST}:${server.port}`;
@@ -83,12 +85,8 @@ function request(fx: Fx, method: string, pathname: string, headers: Record<strin
 }
 
 async function unlocked(fx: Fx): Promise<Record<string, string>> {
-  const p = await request(fx, 'POST', '/pair', { origin: fx.origin, 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' }, `code=${CODE}`);
-  const cookie = String(p.headers['set-cookie']).split(';')[0]!;
-  const base = { cookie, origin: fx.origin, 'sec-fetch-site': 'same-origin' };
-  assert.equal((await request(fx, 'POST', '/api/owned/unlock-code', base)).status, 204);
-  const u = await request(fx, 'POST', '/api/owned/unlock', { ...base, 'content-type': 'application/json' }, JSON.stringify({ code: fx.printed.at(-1)! }));
-  return { ...base, 'content-type': 'application/json', 'x-orchestra-csrf': String(u.json.csrf) };
+  const { cookie, csrf } = await pairBrowser(fx.server, CODE);
+  return { cookie, origin: fx.origin, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json', 'x-orchestra-csrf': csrf };
 }
 
 const ASK = { harness: 'codex' as const, text: '把登录页改好看点', cwd: `${ROOT}\\web`, label: null, requester: { kind: 'dsh' as const, sessionId: 'sess-9' } };
