@@ -18,6 +18,7 @@ import { validateOwnedFeed, validateOwnedList } from '../../shared/owned-contrac
 import { validateTower } from '../../shared/tower-contract.js';
 import { describeChat, mergeFeed, ownedIdOf } from '../../ui/owned.js';
 import { busyStage } from '../helpers/tower-fixture.ts';
+import { seatOf as seatBase } from '../helpers/owned-fixture.ts';
 import {
   CHILD, CHILD_TURN, CHILD_WORDS, ROOT, ROOT_STOP_CLEANED, ROOT_STOP_INTERRUPTED, ROOT_TURN, SECS0, STOP_CLEANED, STOP_INTERRUPTED, T0, V1_FROM_APPROVAL, V1_TO_APPROVAL, V2_FROM_APPROVAL, V2_TO_APPROVAL,
   activity, childApproval, childCommand, childTurn, collab, resolved, rootCommand, rootItem, spawnV2, statusOf,
@@ -93,9 +94,8 @@ const only = (s: CodexSession): CodexMember => {
 };
 const feedText = (s: CodexSession) => JSON.stringify(s.feed.since(0).events);
 const noteStates = (s: CodexSession) => s.feed.since(0).events.filter((e) => e.kind === 'note' && e.state !== 'dispatch').map((e) => `${e.state}${e.text === null ? '' : `=${e.text}`}`);
-const seatOf = (s: CodexSession, over: Partial<OwnedSeat> = {}): OwnedSeat => ({
-  ownedId: OWNED, harness: 'codex', title: 'a session', state: s.state, endReason: s.endReason, waiting: null, lastAt: s.feed.lastAt, ...memberSeats(s), ...over,
-});
+const seatOf = (s: CodexSession, over: Partial<OwnedSeat> = {}): OwnedSeat =>
+  seatBase({ ownedId: OWNED, title: 'a session', state: s.state, endReason: s.endReason, lastAt: s.feed.lastAt, ...memberSeats(s), ...over });
 const member = (n: number, over: Partial<OwnedMember> = {}): OwnedMember => ({
   threadId: `thread-${n}`, name: `/root/m${n}`, model: null, agentType: null, state: 'returned', why: null, startedAt: 1_000, endedAt: 4_000, lastAt: 4_000, failed: 0, ranUnasked: 0, batch: null, asking: null, ...over,
 });
@@ -857,14 +857,14 @@ test('the registry keeps the members: states and times only; after a restart wha
 });
 
 test('the tower: members fold and count like read-only subagents, ids are stable, the time fields stay out of rev, and a member never waits', () => {
-  const seat: OwnedSeat = {
-    ownedId: OWNED, harness: 'codex', title: 'a session', state: 'running', endReason: null, waiting: null, lastAt: 9_000,
+  const seat = seatBase({
+    ownedId: OWNED, title: 'a session', lastAt: 9_000,
     members: [
       member(1), member(2), member(3, { state: 'running', endedAt: null, lastAt: 8_000 }), member(4, { state: 'ended', why: 'shutdown' }),
       member(5, { state: 'idle', endedAt: null }), member(6, { state: 'unknown', startedAt: null, endedAt: null, name: null, lastAt: null }), member(7, { startedAt: 5_000, endedAt: 4_000 }),
     ],
     membersOver: 0,
-  };
+  });
   const t = towerOf([seat]);
   assert.deepEqual(validateTower(t).errors, []);
   const p = t.projects[0]!;

@@ -20,7 +20,7 @@ test('every ui module but the boot imports without touching the page, the networ
   }
   const mods = fs.readdirSync(UI).filter((f) => f.endsWith('.js')).sort();
   try {
-    assert.deepEqual(mods, ['api.js', 'clock.js', 'dom.js', 'drive.js', 'fold.js', 'front.js', 'home.js', 'owned.js', 'prefs.js', 'route.js', 'tree.js', 'view.js', 'wings.js']);
+    assert.deepEqual(mods, ['api.js', 'approve.js', 'clock.js', 'dlg-new.js', 'dlg-pair.js', 'dlg-qa.js', 'dlg-re.js', 'dock.js', 'dom.js', 'drive.js', 'fold.js', 'front.js', 'home.js', 'owned.js', 'prefs.js', 'reads.js', 'route.js', 'tree.js', 'view.js', 'wings.js']);
     for (const f of mods.filter((m) => m !== 'home.js')) {
       await import(pathToFileURL(`${UI}${f}`).href);
       assert.deepEqual(touched, [], `${f} touched ${touched.join(', ')} on import`);

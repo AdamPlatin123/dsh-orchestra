@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { findImports } from '../helpers/scan-rules.ts';
 import { FakeElement, parseHtml, type FakeDocument, type FakeText } from '../helpers/fake-dom.ts';
 import { busyStage } from '../helpers/tower-fixture.ts';
+import { approvalOf, seatOf } from '../helpers/owned-fixture.ts';
 import { makePatcher } from '../../ui/dom.js';
 import { MAX_DOTS, describeFold, toneOf } from '../../ui/fold.js';
 import { openFull } from '../../ui/route.js';
@@ -275,7 +276,7 @@ test('a card holds its title and its rows however its members\' ranks move; the 
 });
 
 test('a sub-agent\'s card flags what its state cannot say: it runs while it asks, it ended when it failed', () => {
-  const seats: OwnedSeat[] = [{ ownedId: 'a'.repeat(20), harness: 'codex', title: 'w', state: 'running', endReason: null, lastAt: 0, waiting: { kind: 'approval', deadline: 1000, title: 'req' }, members: [member(1, { asking: 'run npm test' }), member(2, { state: 'ended', why: 'failed' }), member(3, { state: 'ended', why: 'shutdown' }), member(4)] }];
+  const seats: OwnedSeat[] = [seatOf({ title: 'w', lastAt: 0, waiting: { kind: 'approval', deadline: 1000, title: 'req' }, members: [member(1, { asking: 'run npm test' }), member(2, { state: 'ended', why: 'failed' }), member(3, { state: 'ended', why: 'shutdown' }), member(4)] })];
   const s = towerFromStage(busyStage(), { seats, nowWall: 0 }) as any;
   assert.deepEqual(validateTower(s), { ok: true, errors: [] });
   const nodes = s.projects[0].nodes;
@@ -511,11 +512,8 @@ const ID = { a: 'a'.repeat(20), b: 'b'.repeat(20), c: 'c'.repeat(20) };
 const AP = { a: '1'.repeat(32), b: '2'.repeat(32) };
 const EVIL = '<img src=x onerror=alert(1)>';
 const member = (i: number, over: Partial<OwnedMember> = {}): OwnedMember => ({ threadId: `t${i}`, name: `sub ${i}`, model: null, agentType: null, state: 'running', why: null, startedAt: null, endedAt: null, lastAt: null, failed: 0, ranUnasked: 0, batch: null, asking: null, ...over });
-const seat = (ownedId: string, title: string, over: Partial<OwnedSeat> = {}): OwnedSeat => ({ ownedId, harness: 'codex', title, state: 'running', endReason: null, lastAt: OBSERVED, waiting: null, ...over });
-const approval = (id: string, ownedId: string, over: Json) => ({
-  approvalId: id, ownedId, kind: 'command', title: 'req', preview: 'command: npm test', tooLong: false, redactions: 0, digest: id.slice(0, 1).repeat(64),
-  risk: 'shell', high: true, tainted: false, canAccept: true, canText: false, questions: null, deadline: OBSERVED + 20 * MIN, rev: 1, ...over,
-});
+const seat = (ownedId: string, title: string, over: Partial<OwnedSeat> = {}): OwnedSeat => seatOf({ ownedId, title, lastAt: OBSERVED, ...over });
+const approval = (id: string, ownedId: string, over: Json) => approvalOf({ approvalId: id, ownedId, digest: id.slice(0, 1).repeat(64), deadline: OBSERVED + 20 * MIN, ...over });
 
 test('the page boots: worker, talk and cards from the fetched data; only a person drives, by ui/drive.js\'s rules', async () => {
   const doc: FakeDocument = parseHtml(HTML);

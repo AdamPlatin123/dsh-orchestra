@@ -14,6 +14,7 @@ import { validateOwnedList } from '../../shared/owned-contract.js';
 import { TOWER_TEXT } from '../../shared/strings.js';
 import { initMessage } from '../fixtures/fake-sdk.ts';
 import { claudeRig, until } from '../helpers/claude-host.ts';
+import { APPROVAL_ID, approvalOf, ownedListOf, ownedOf } from '../helpers/owned-fixture.ts';
 import { PIN_ORIGIN_CHARS, describeCard, originLine, pinExtra } from '../../ui/owned.js';
 
 // r4 §8.5 (来源追踪): "任何由 agent 消息触发的回合，审批卡片顶部都显示触发它的来源链". A session a seat
@@ -102,15 +103,7 @@ test('CodexOwned.create hands the origin down: the approval its session raises l
 
 /** A list with one tainted session and its approval, as GET /api/owned answers it; `origin` replaces the approval's. */
 function listWith(origin: unknown, tainted = true) {
-  return {
-    v: 1, kind: 'owned-list', rev: 1, enabled: true, disabledWhy: null, brakeWhy: null, harnesses: { codex: true, claude: false }, roots: [],
-    owned: [{ dispatch: null, frontDesk: false, ownedId: 'a'.repeat(20), harness: 'codex', model: 'codex/gpt-6.1-sol', title: 't', state: 'running', endReason: null, waiting: 'b'.repeat(32), queued: 0, tokens: null, lastSeq: 1, createdAt: 1, brake: false, stoppable: false, cwd: null }],
-    approvals: [{
-      approvalId: 'b'.repeat(32), ownedId: 'a'.repeat(20), kind: 'command', title: 'npm test', preview: 'command: npm test', tooLong: false, redactions: 0,
-      digest: 'c'.repeat(64), risk: 'shell', high: true, tainted, origin, rev: 1, canAccept: true, canText: false, questions: null, deadline: 5,
-    }],
-    limits: { maxOwned: 4, active: 1 }, requests: [], requestedGone: [], sentGone: [], presence: 'unknown', frontDesk: { on: false, ownedId: null, model: 'zcode/GLM-5.3-Flash', tools: null },
-  };
+  return ownedListOf({ owned: [ownedOf({ waiting: APPROVAL_ID })], approvals: [approvalOf({ title: 'npm test', tainted, origin, deadline: 5 })], limits: { maxOwned: 4, active: 1 } });
 }
 
 test('the contract: an origin is null or a request id, the requester\'s bare id or null, and one shown line of label; only on a tainted entry', () => {

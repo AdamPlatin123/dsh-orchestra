@@ -12,8 +12,8 @@ import { PAIR_TTL_MS, PEEK_HOST, startPeekServer } from '../../src/server/http.t
 import type { PeekServer } from '../../src/server/http.ts';
 import type { OwnedHandler, OwnedHandlers } from '../../src/server/owned.ts';
 import { humanJournal, makeOwnedHandlers } from '../../src/server/owned.ts';
-import { CSRF_RE, OWNED_BODY_MAX_BYTES, OWNED_TEXT_MAX_BYTES, ROUTES } from '../../src/server/routes.ts';
-import type { Route } from '../../src/server/routes.ts';
+import { CSRF_RE, OWNED_BODY_MAX_BYTES, OWNED_TEXT_MAX_BYTES, ROUTES, shapeError } from '../../src/server/routes.ts';
+import type { Route, Shape } from '../../src/server/routes.ts';
 import type { Store } from '../../src/store/store.ts';
 import { ERROR_STATUS } from '../../shared/protocol.js';
 import { askPairCode, pairBrowser } from '../helpers/pair.ts';
@@ -79,18 +79,34 @@ const err = (r: Reply) => (r.headers['content-type']?.startsWith('application/js
 const humans = (fx: Fx) => fx.store.db.all("SELECT kind, body FROM event WHERE kind IN ('human', 'human.result') ORDER BY jseq").map((r) => ({ kind: String(r.kind), body: JSON.parse(String(r.body)) as Record<string, unknown> }));
 const uuid = () => crypto.randomUUID();
 
-/** A concrete path and a valid body for each owned route. */
+/** A value of each grammar the owned routes' bodies need: a regex gives no sample of its own. */
+const GRAMMAR: Record<string, () => string> = { uuid: () => uuid(), digest: () => 'a'.repeat(64), stageId: () => STAGE };
+/** The smallest value of a body's shape (src/server/routes.ts): its required fields only, an enum's first, an int's least, an array's fewest, a text 'hello'. */
+function minimal(s: Shape): unknown {
+  switch (s.t) {
+    case 'enum': return s.of[0];
+    case 're': {
+      const g = GRAMMAR[s.name];
+      if (g === undefined) throw new Error(`no sample of the grammar ${s.name}: add one to GRAMMAR`);
+      return g();
+    }
+    case 'int': return s.min;
+    case 'bool': return false;
+    case 'const': return s.value;
+    case 'text': return 'hello';
+    case 'null': return null;
+    case 'obj': return Object.fromEntries(Object.entries(s.fields).filter(([k]) => !s.optional.includes(k)).map(([k, f]) => [k, minimal(f)]));
+    case 'arr': return Array.from({ length: s.min }, () => minimal(s.of));
+    default: throw new Error(`no sample of a ${s.t} shape`);
+  }
+}
+/** A concrete path and a valid body for each owned route, made from the route's own body shape (a POST /api/route/suggest has no actionId: it writes no human record). */
 function sample(r: Route): { path: string; body: Record<string, unknown> | null } {
   const path = r.path.replace(':id', r.target === 'stage' ? STAGE : OID);
-  if (r.method === 'GET') return { path, body: null };
-  const extra: Record<string, Record<string, unknown>> = {
-    'owned-new': { text: 'hello', harness: 'codex' }, 'owned-message': { text: 'hello' }, 'approval-allow': { digest: 'a'.repeat(64), rev: 1 },
-    'import-claude': { stageId: STAGE, mode: 'fork', cwdShown: 'G:\\work\\x' }, 'import-dsh': { stageId: STAGE }, 'dispatch-grant': { level: 'ask' },
-    'approval-answer': { digest: 'a'.repeat(64), rev: 1, answers: [{ option: 0 }] },
-  };
-  // A POST that writes no human record carries no actionId (POST /api/route/suggest).
-  if (r.human === null) return { path, body: { text: 'hello' } };
-  return { path, body: { actionId: uuid(), ...(extra[r.human ?? ''] ?? {}) } };
+  if (r.body === null) return { path, body: null };
+  const body = minimal(r.body) as Record<string, unknown>;
+  assert.equal(shapeError(r.body, body), null, `${r.path}: the sample fits its shape`);
+  return { path, body };
 }
 /** The owned routes that reach a handler (forget, answered by the base itself, has its own tests). */
 const UNLOCKED = ROUTES.filter((r) => r.auth === 'unlocked' && r.path !== '/api/pair/forget');

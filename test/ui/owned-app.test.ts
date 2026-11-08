@@ -6,9 +6,11 @@ import { FakeElement, parseHtml, type FakeDocument } from '../helpers/fake-dom.t
 import { TOWER_TEXT } from '../../shared/strings.js';
 import { towerFromStage, type OwnedSeat } from '../../src/sources/tower.ts';
 import { busyStage } from '../helpers/tower-fixture.ts';
+import { approvalOf, seatOf } from '../helpers/owned-fixture.ts';
 import {
-  allowHow, apprActs, atBottom, describeCard, chatNews, describeAskPins, describeChat, describeNew, describeOwned, describeOwnedDock, describeRequestPins, errText, mergeFeed, msgError, notifyText, pinExtra, queuedN, requestModel, requestOf, whyText, withQueued, withRequests, type Approval, type Guard,
+  allowHow, apprActs, atBottom, describeCard, chatNews, describeAskPins, describeChat, describeOwned, describeOwnedDock, describeRequestPins, errText, mergeFeed, msgError, notifyText, pinExtra, queuedN, requestModel, requestOf, whyText, withQueued, withRequests, type Approval, type Guard,
 } from '../../ui/owned.js';
+import { describeNew } from '../../ui/dlg-new.js';
 
 // Orchestra's own sessions on the page (orchestra app plan §2-§5): ui/home.js booted against the
 // real ui/home.html in the fake DOM, with the network, the clock, the timers, local storage and
@@ -42,13 +44,10 @@ const fire = (target: object, type: string, e: Record<string, unknown> = {}) => 
 
 const OBSERVED = towerFromStage(busyStage()).meta.observedAt;
 const MIN = 60_000;
-const seat = (ownedId: string, title: string, state: OwnedSeat['state'], deadline: number | null): OwnedSeat => ({
-  ownedId, harness: 'codex', title, state, endReason: null, lastAt: OBSERVED, waiting: deadline === null ? null : { kind: 'approval', deadline, title: 'req' },
-});
-const approval = (id: string, ownedId: string, over: Partial<Approval> & { rev: number }) => ({
-  approvalId: id, ownedId, kind: 'command', title: 'req', preview: 'command: npm test\ncwd: work', tooLong: false, redactions: 0,
-  digest: id.slice(0, 1).repeat(64), risk: 'write', high: false, tainted: false, canAccept: true, canText: false, questions: null, deadline: OBSERVED + 20 * MIN, ...over,
-});
+const seat = (ownedId: string, title: string, state: OwnedSeat['state'], deadline: number | null): OwnedSeat =>
+  seatOf({ ownedId, title, state, lastAt: OBSERVED, waiting: deadline === null ? null : { kind: 'approval', deadline, title: 'req' } });
+const approval = (id: string, ownedId: string, over: Partial<Approval> & { rev: number }) =>
+  approvalOf({ approvalId: id, ownedId, preview: 'command: npm test\ncwd: work', digest: id.slice(0, 1).repeat(64), risk: 'write', high: false, deadline: OBSERVED + 20 * MIN, ...over });
 const LONG = Array.from({ length: 12 }, (_, i) => `+ line ${i} of a long diff that will not fit on the waiting bar`).join('\n');
 
 test('owned sessions: pairing, the guarded approvals, the chat, the composer, dispatch, notifications', async () => {

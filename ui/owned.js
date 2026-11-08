@@ -1,6 +1,7 @@
 // @ts-check
 // Owned sessions on the page (orchestra app plan §2-§5, slice design §2.6-§2.8): pure descriptors of the
-// chat, approvals, composer, dispatch, and r4 §10.9's allow guards (D8: a person, this page). drive.js sends.
+// chat, approvals, composer, and r4 §10.9's allow guards (D8: a person, this page). drive.js sends; each
+// dialog's own describe* lives with it (ui/dlg-*.js).
 import { ERROR_TEXT, TOWER_TEXT } from '../shared/strings.js';
 import { fmtLeft, t } from './view.js';
 
@@ -201,7 +202,7 @@ const MARKS = /[\u300c\u300d\u300e\u300f\u2192]/g;
 const quoted = (s) => plain(s).replace(MARKS, esc);
 // What a reader sees as one character (a letter and its combining marks, a flag, an emoji and its skin tone): a cut never splits one.
 const SEG = typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'grapheme' }) : null;
-const graphemes = (s) => (SEG === null ? [...s] : Array.from(SEG.segment(s), (g) => g.segment));
+export const graphemes = (s) => (SEG === null ? [...s] : Array.from(SEG.segment(s), (g) => g.segment));
 /** At most n characters (graphemes; code points where Intl.Segmenter is missing), a cut ending in '…'. */
 const cutTo = (s, n) => {
   const cps = graphemes(s);
@@ -333,7 +334,7 @@ export function requestModel(r) {
 }
 
 /** The owned session a request came from, or null for a DSH session's. */
-const workerOf = (r) => (typeof r.requester === 'string' && r.requester.startsWith('owned:') ? r.requester.slice(6) : null);
+export const workerOf = (r) => (typeof r.requester === 'string' && r.requester.startsWith('owned:') ? r.requester.slice(6) : null);
 /** That session's title as the list has it, cut as the tower cuts one (it is the whole first message), or its id. */
 export const workerName = (list, id) => { const s = entry(list, id)?.title; return s !== undefined && s !== '' ? cutTo(s, WORKER_CHARS).text : id; };
 
@@ -396,70 +397,6 @@ export function reqActs(r, m, what, g) {
     btn('go', t('req.go'), { act: 'req-go', req: r.requestId, model: m.model, settle: g.settle }, { 'aria-disabled': g.settle !== '' ? 'true' : busy(g), 'aria-label': t('req.goLabel', { what }) }),
     btn('re', t('req.re'), { act: 'req-re', req: r.requestId }, { 'aria-disabled': busy(g), 'aria-label': t('req.reLabel', { what }) }),
   ];
-}
-
-/**
- * 改派: the dialog that dispatches a waiting request on a harness and model of your pick (D8: only here, unlocked). The
- * text, where it runs and its taint are the request's (r4 §8.5), so the where-line is the card's for the harness picked.
- * `r`: the pending request, or null once it waits no more (派出 is off and says so); `harness`: the select's value.
- */
-export function describeReassign(list, r, harness, busy) {
-  const h = list?.harnesses ?? {};
-  const asked = r === null ? '' : typeof r.model === 'string' ? t('re.askedModel', { h: t(`harness.${r.harness}`), m: r.model }) : t('re.asked', { h: t(`harness.${r.harness}`) });
-  return {
-    reWhat: { text: r === null ? '' : r.text },
-    reAsked: { text: asked },
-    reCodex: { attr: { disabled: h.codex ? null : '' } }, reClaude: { attr: { disabled: h.claude ? null : '' } },
-    reWhy: { text: join([list !== null && !h.claude && t('new.claudeOff'), list !== null && !h.codex && list.enabled && t('new.codexOff')], 'sep.notes') },
-    reModel: { kids: modelsOf(harness).map((m) => ({ key: `${harness}:${m}`, tpl: 'tpl-opt', text: m, attr: { value: m } })) },
-    reWhere: { text: r === null ? t('re.gone') : reqWhere({ ...r, harness }) },
-    reNote: { text: join([t('re.note'), r !== null && workerOf(r) !== null && t('re.worker')], 'sep.notes') },
-    reGo: { text: t(busy ? 'op.busy' : 're.go'), attr: { disabled: busy || r === null || !list?.enabled || !h[harness] ? '' : null } },
-  };
-}
-
-/** Options drawn side by side (a segmented row): two to four, short, none with a note. @param {readonly any[]} os */
-const segmented = (os) => os.length >= 2 && os.length <= 4 && os.every((o) => o.description === '' && graphemes(o.label).length <= 10);
-
-/**
- * 回答: the dialog of a question card (D8: only here, unlocked). Each question its head, the question, its options
- * as buttons (pressed: your pick; never one picked for you) and, where it takes one, a line of your own; 提交 is on
- * once every question has its pick. `a`: the approval, or null once it waits no more; `picks`: one a question, null
- * for none yet. The options and their notes are the agent's words, and the note says so.
- * @param {any} a @param {readonly ({ option: number } | { text: string } | null)[]} picks @param {boolean} busy
- */
-export function describeAnswer(a, picks, busy) {
-  const qs = a?.questions ?? [];
-  const left = picks.filter((p) => p === null).length;
-  return {
-    qaFrom: { text: a === null ? '' : join([originLine(a), a.redactions > 0 && t('appr.redacted', { n: a.redactions })], 'sep.notes') },
-    qaWhat: { text: a === null ? t('qa.gone') : a.title },
-    qaList: {
-      kids: qs.map((q, i) => {
-        const p = picks[i] ?? null;
-        const typed = q.options.length === 0 || q.other === true;
-        return {
-          key: `${a.approvalId}:${i}`, tpl: 'tpl-qa', data: { q: String(i) },
-          slots: {
-            h: { text: q.header }, q: { text: q.question },
-            opts: {
-              cls: segmented(q.options) ? 'qa-opts qa-seg' : 'qa-opts', attr: { 'aria-label': q.header || q.question },
-              kids: q.options.map((o, j) => ({
-                key: String(j), tpl: 'tpl-qopt', data: { q: String(i), o: String(j) }, attr: { 'aria-pressed': p !== null && 'option' in p && p.option === j ? 'true' : 'false' },
-                slots: { l: { text: o.label }, d: { text: o.description } },
-              })),
-            },
-            text: {
-              data: { q: String(i), hide: typed ? '0' : '1' },
-              attr: { placeholder: t(q.options.length === 0 ? 'qa.text' : 'qa.other'), 'aria-label': t('qa.otherLabel', { h: q.header || q.question }) },
-            },
-          },
-        };
-      }),
-    },
-    qaNote: { text: t('qa.note') },
-    qaGo: { text: t(busy ? 'op.busy' : 'qa.go'), attr: { disabled: busy || a === null || left > 0 ? '' : null, title: a !== null && left > 0 ? t('qa.need', { n: left }) : null } },
-  };
 }
 
 /**
@@ -576,72 +513,5 @@ export function describeOwnedDock(to, list, g, held, armed, brakeArmed = false) 
       ],
     },
     note: { text: join([held && t('dock.lockedTo'), o.brake ? list?.brakeWhy != null && t('dock.brakeUnsure', { why: brakeWhyText(list.brakeWhy) }) : t('dock.noBrake', { why: brakeWhyText(list?.brakeWhy) })], 'sep.notes') },
-  };
-}
-
-/**
- * The dispatch dialog: a harness that cannot start is greyed, with why. The work dir is Orchestra's own by
- * default; the other choices are the project roots the list names (--project-root), never a free path, and
- * the note says what a session there may do (`root`: the select's value, '' for the default).
- */
-export function describeNew(list, harness, busy, root = '') {
-  const h = list?.harnesses ?? {};
-  const roots = Array.isArray(list?.roots) ? list.roots : [];
-  const picked = roots.includes(root) ? root : '';
-  return {
-    cwdBox: { data: { hide: roots.length === 0 ? '1' : '0' } },
-    cwdSel: { kids: [{ key: 'cwd:', tpl: 'tpl-opt', text: t('new.cwdWork'), attr: { value: '' } }, ...roots.map((r) => ({ key: `cwd:${r}`, tpl: 'tpl-opt', text: r, attr: { value: r } }))] },
-    cwdNote: { text: picked === '' ? t(roots.length === 0 ? 'new.cwd' : 'new.cwdWorkNote') : t(harness === 'claude' ? 'new.cwdRootClaude' : 'new.cwdRootCodex', { d: picked }) },
-    hCodex: { attr: { disabled: h.codex ? null : '' } }, hClaude: { attr: { disabled: h.claude ? null : '' } },
-    why: { text: join([list === null ? t('new.noList') : !list.enabled && t('new.off', { why: whyText(list.disabledWhy ?? '') }), list !== null && !h.claude && t('new.claudeOff'), list !== null && !h.codex && list.enabled && t('new.codexOff')], 'sep.notes') },
-    // The list follows the harness: keyed by harness too, so a switch replaces the options (and the default is the first).
-    model: { kids: modelsOf(harness).map((m) => ({ key: `${harness}:${m}`, tpl: 'tpl-opt', text: m, attr: { value: m } })) },
-    note: { text: t(harness === 'claude' ? 'new.claudeNote' : 'new.sandbox') },
-    go: { text: t(busy ? 'op.busy' : 'new.go'), attr: { disabled: busy || !list?.enabled || !h[harness] ? '' : null } },
-  };
-}
-
-// --- the dispatch desk (orchestra app plan §3): the "Route to?" card ------------------------------------
-
-/** POST /api/route/suggest's reply (src/server/routes.ts SUGGEST_REPLY), enough to draw it. */
-export const isSuggestion = (b) => typeof b?.routeId === 'string' && /^[0-9a-f]{20}$/.test(b.routeId) && Array.isArray(b?.candidates) && typeof b?.router?.state === 'string' && Array.isArray(b?.off);
-
-/** The candidate the dialog's two selects name, or -1 (set by hand). */
-export const pickedIndex = (reply, harness, model) => (reply === null ? -1 : reply.candidates.findIndex((c) => c.harness === harness && c.model === model));
-
-/**
- * The card: first and alternatives, each with its harness, model, reason and where it came from; what
- * the router model did; the pick the selects hold. A sentence edited after the suggestion makes it stale
- * (its dispatch carries no routeId). `desk`: { text, reply } or null; `now`: { text, harness, model, asking,
- * enabled (false: orchestrad has no owned sessions, so no desk either: the button stays off), maxOwned }.
- */
-export function describeDesk(desk, now) {
-  const reply = desk?.reply ?? null;
-  const stale = desk !== null && desk.text !== now.text;
-  const ask = { text: t(now.asking ? 'new.asking' : 'new.ask'), attr: { 'aria-disabled': now.asking || now.enabled === false ? 'true' : null } };
-  if (reply === null) return { ask, card: { data: { hide: '1', stale: '0' } }, rtTitle: { text: '' }, rtNote: { text: '' }, cands: { kids: [] }, rtPick: { text: '' } };
-  const i = pickedIndex(reply, now.harness, now.model);
-  const r = reply.router;
-  const noWhy = r.why === null ? '' : tk('route.no', r.why, 'route.no.other');
-  const state = tk('route.state', r.state, 'route.state.off', { m: r.model, why: noWhy });
-  const cands = reply.candidates.map((c, k) => {
-    const rank = t(k === 0 ? 'route.first' : 'route.alt');
-    const hm = `${t(`harness.${c.harness}`)} · ${c.model}`;
-    const src = t(c.source === 'model' ? 'route.src.model' : r.pick === k ? 'route.src.both' : 'route.src.rule');
-    const why = c.source === 'model' ? c.reason ?? t('route.why.model') : tk('route.why', c.rule, 'route.why.fallback');
-    return {
-      key: `${reply.routeId}:${k}`, tpl: 'tpl-cand', data: { pick: String(k), harness: c.harness },
-      // A reader hears the parts apart (the spans alone run into one another).
-      slots: { b: { attr: { 'aria-pressed': k === i ? 'true' : 'false', 'aria-label': t('route.candLabel', { rank, hm, src, why }) } }, rank: { text: rank }, hm: { text: hm }, src: { text: src }, why: { text: why } },
-    };
-  });
-  const offH = reply.off.length === 0 ? '' : t('route.offH', { h: reply.off.map((h) => t(`harness.${h}`)).join(t('sep.parts')) });
-  return {
-    ask,
-    card: { data: { hide: '0', stale: stale ? '1' : '0' } },
-    rtTitle: { text: t(reply.titleSource === 'model' ? 'route.taskTitleModel' : 'route.taskTitle', { t: reply.title }) },
-    rtNote: { text: join([state, reply.full === true && t('route.full', { n: now.maxOwned ?? '?' }), offH, reply.candidates.length === 0 && t('route.none')], 'sep.notes') },
-    cands: { kids: cands },
-    rtPick: { text: stale ? t('route.stale') : i < 0 ? t('route.manual') : t('route.picked', { h: t(`harness.${now.harness}`), m: now.model }) },
   };
 }

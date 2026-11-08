@@ -16,6 +16,7 @@ import { realIo } from '../helpers/read-io.ts';
 import { STAGE_CANARY, normalizeSnapshot, writeStageFixture } from '../helpers/stage-fixture.ts';
 import { busyStage, lane, nid, player, stageOf } from '../helpers/tower-fixture.ts';
 import { withTmp } from '../helpers/tmp.ts';
+import { seatOf } from '../helpers/owned-fixture.ts';
 import { Feed } from '../../src/owned/feed.ts';
 import { recentOf } from '../../src/owned/codex-owned.ts';
 
@@ -176,9 +177,7 @@ test('the builder hands back the same tower while the stage hands back the same 
 
 // --- owned sessions (orchestra app plan section 2) -------------------------------------------------------
 
-const seat = (n: number, over: Partial<OwnedSeat> = {}): OwnedSeat => ({
-  ownedId: String(n).repeat(20).slice(0, 20), harness: 'codex', title: `synthetic ${n}`, state: 'idle', endReason: null, waiting: null, lastAt: 1_000, ...over,
-});
+const seat = (n: number, over: Partial<OwnedSeat> = {}): OwnedSeat => seatOf({ ownedId: String(n).repeat(20).slice(0, 20), title: `synthetic ${n}`, state: 'idle', lastAt: 1_000, ...over });
 
 test('owned sessions: one project of their own, first; the driver state with basis owned; a wait on the Orchestra queue carries its deadline and leads the waiting bar', () => {
   const now = 61_000;

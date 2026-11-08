@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { TOWER_TEXT } from '../../shared/strings.js';
-import { describeNew, describeOwned, describeRequestPins, type Guard } from '../../ui/owned.js';
+import { describeNew } from '../../ui/dlg-new.js';
+import { describeOwned, describeRequestPins, type Guard } from '../../ui/owned.js';
 import { makeRequests } from '../../src/route/requests.ts';
 
 // Project roots on the page (orchestra app plan 项目根, --project-root): the dispatch dialog offers

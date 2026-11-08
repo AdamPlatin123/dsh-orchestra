@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FakeElement, parseHtml, type FakeDocument } from '../helpers/fake-dom.ts';
 import { busyStage } from '../helpers/tower-fixture.ts';
+import { approvalOf, seatOf } from '../helpers/owned-fixture.ts';
 import { makePatcher } from '../../ui/dom.js';
 import { MAX_DOTS } from '../../ui/fold.js';
 import { getRightOpen, setRightOpen } from '../../ui/prefs.js';
@@ -343,7 +344,7 @@ const CSRF = 'A'.repeat(43);
 const ID = { a: 'a'.repeat(20), b: 'b'.repeat(20), c: 'c'.repeat(20) };
 const AP = '2'.repeat(32);
 const member = (i: number, over: Partial<OwnedMember> = {}): OwnedMember => ({ threadId: `t${i}`, name: `sub ${i}`, model: null, agentType: null, state: 'running', why: null, startedAt: null, endedAt: null, lastAt: null, failed: 0, ranUnasked: 0, batch: null, asking: null, ...over });
-const seat = (ownedId: string, title: string, over: Partial<OwnedSeat> = {}): OwnedSeat => ({ ownedId, harness: 'codex', title, state: 'running', endReason: null, lastAt: OBSERVED, waiting: null, ...over });
+const seat = (ownedId: string, title: string, over: Partial<OwnedSeat> = {}): OwnedSeat => seatOf({ ownedId, title, lastAt: OBSERVED, ...over });
 
 async function boot(o: { tag: string; narrow?: boolean; stored?: string | null; blocked?: boolean }, body: (h: any) => Promise<void>) {
   const doc: FakeDocument = parseHtml(HTML);
@@ -361,7 +362,7 @@ async function boot(o: { tag: string; narrow?: boolean; stored?: string | null; 
   const list: Json = {
     v: 1, kind: 'owned-list', rev: 3, enabled: true, disabledWhy: null, brakeWhy: null, harnesses: { codex: true, claude: false }, limits: { maxOwned: 4, active: 3 }, requests: [],
     owned: [owned(ID.a, 'alpha'), owned(ID.b, 'bravo', { state: 'idle', waiting: AP }), owned(ID.c, 'charlie', { state: 'idle' })],
-    approvals: [{ approvalId: AP, ownedId: ID.b, kind: 'command', title: 'req', preview: 'command: npm test', tooLong: false, redactions: 0, digest: '2'.repeat(64), risk: 'shell', high: false, tainted: false, canAccept: true, canText: false, questions: null, deadline: OBSERVED + 20 * MIN, rev: 1 }],
+    approvals: [approvalOf({ approvalId: AP, ownedId: ID.b, digest: '2'.repeat(64), high: false, deadline: OBSERVED + 20 * MIN })],
   };
   const loc = { hash: '', href: '', pathname: '/', search: '', replace(u: string) { this.hash = u.slice(u.indexOf('#')); } };
   const win = {};
