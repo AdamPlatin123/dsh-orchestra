@@ -2,7 +2,7 @@ import * as path from 'node:path';
 import type { ChildPipe } from '../os/child-pipe.ts';
 import type { JobOutcome } from '../os/procguard.ts';
 import type { ClockHub } from '../runtime/clock.ts';
-import type { Answer, AnswerCause, ApprovalKind, ApprovalOrigin, ApprovalRisk, Approvals } from './approvals.ts';
+import type { Answer, AnswerCause, ApprovalKind, ApprovalOrigin, ApprovalQuestion, ApprovalRisk, Approvals } from './approvals.ts';
 import { taintedOrigin } from './approvals.ts';
 import type { DispatchPort } from '../route/dispatch.ts';
 import { DISPATCH_TOOL } from '../route/dispatch.ts';
@@ -20,6 +20,7 @@ import { REGISTRY_LIMITS, memberLive } from './registry.ts';
 import { oneShot } from '../runtime/clock.ts';
 import { OWNED_TEXT_LIMITS, liveTail, shown, splitUtf8 } from './text.ts';
 import { frozen } from '../../shared/frozen.js';
+import { OWNED_BOUNDS } from '../../shared/owned-contract.js';
 
 const win = path.win32;
 
@@ -77,8 +78,10 @@ const win = path.win32;
 //                          execpolicy or network-policy amendment (nothing outlives the one request, D8);
 //   permissions:           the requested profile with scope 'turn', or an empty grant (its schema has no
 //                          decision field);
-//   question:              one text for its one question, or no answers at all; a secret question, or
-//                          more than one, takes only the refusal;
+//   question:              one answer a question, each an option's own label (the page picks it by its place
+//                          in the list, so a redacted label still sends the label codex gave) or your text where
+//                          the question takes one; or no answers at all. A secret question, one without an id,
+//                          or more than QUESTION_LIMITS holds, takes only the refusal;
 //   elicitation:           {action:'decline'} only (its accept needs content in an MCP server's schema).
 // Any other server request is answered with a JSON-RPC error.
 //
@@ -1250,6 +1253,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     risk: ApprovalRisk;
     canAccept: boolean;
     canText: boolean;
+    /** A question's questions as codex sent them (not yet redacted: queueAsk redacts what the card shows); absent: none. */
+    questions?: readonly ApprovalQuestion[];
     /** The protected row a path of the request hits: then it is declined at once, without a card. */
     refuse: string | null;
     /** The session's own command or file change the request decides (its itemId), if codex named one; a member's has no row here. */
@@ -1278,17 +1283,34 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
     const t = shown(redact, ask.title, 400, 'head');
     // Bounded before the redactor, far past what a card can show (16 KiB): a cut there halves nothing shown.
     const p = shown(redact, ask.preview.slice(0, 1024 * 1024), Number.MAX_SAFE_INTEGER, 'head');
+    // What the card draws of each question goes through the redactor as the preview does; a pick names an option by its place.
+    let qRedactions = 0;
+    const cut = (raw: string, max: number) => {
+      const x = shown(redact, raw, max, 'head');
+      qRedactions += x.redactions;
+      return x.text;
+    };
+    const questions = ask.questions?.map((q) => ({
+      header: cut(q.header, OWNED_BOUNDS.questionHeadBytes), question: cut(q.question, OWNED_BOUNDS.questionBytes), other: q.other,
+      options: q.options.map((o) => ({ label: cut(o.label, OWNED_BOUNDS.optionLabelBytes), description: cut(o.description, OWNED_BOUNDS.optionNoteBytes) })),
+    })) ?? null;
     let approvalId = '';
     const view = approvals.add({
-      ownedId, kind: ask.kind, title: t.text, preview: p.text, redactions: t.redactions + p.redactions, risk: ask.risk, canAccept: ask.canAccept, canText: ask.canText,
+      ownedId, kind: ask.kind, title: t.text, preview: p.text, redactions: t.redactions + p.redactions + qRedactions, risk: ask.risk, canAccept: ask.canAccept, canText: ask.canText,
+      questions,
       tainted: opts.tainted === true, origin: opts.origin ?? null,
       answer: (a: Answer, cause: AnswerCause) => {
         asked.delete(rpcKey(rid));
         rpc.respond(rid, ask.reply(a));
-        const shownText = a.decision === 'text' ? shownFeed(a.text, 'head') : null;
+        // The feed says what was answered, one line a question: its head, then the option's label or your text.
+        const said = a.decision !== 'answer' || ask.questions === undefined ? null : a.picks.map((x, i) => {
+          const q = ask.questions![i]!;
+          return `${q.header || q.question}: ${'option' in x ? q.options[x.option]!.label : x.text}`;
+        }).join('\n');
+        const shownText = said === null ? null : shownFeed(said, 'head');
         feed.push({
           kind: cause === 'human' ? 'answer' : 'auto-denied', ref: approvalId, text: shownText?.text ?? null,
-          state: cause === 'human' ? (a.decision === 'text' ? 'answered' : a.decision) : cause, redactions: shownText?.redactions ?? 0,
+          state: cause === 'human' ? (a.decision === 'answer' ? 'answered' : a.decision) : cause, redactions: shownText?.redactions ?? 0,
         });
         askItem.delete(approvalId);
         askSettled(approvalId);
@@ -1375,11 +1397,20 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       return [`${str(q.header) ?? ''}`, `${str(q.question) ?? ''}`, ...options, ...(q.isSecret === true ? ['(asks for a secret: only a refusal is offered)'] : [])];
     });
     const one = questions.length === 1 ? questions[0]! : null;
-    const qid = one === null ? null : str(one.id);
+    // Each question with an id answers by its options (by their place) or a text; a secret one, one without an id,
+    // or two of one id leave the whole card the refusal alone. No options (null or empty): a text answers it.
+    const ids = questions.map((q) => str(q.id));
+    const answerable = questions.length > 0 && questions.every((q, i) => ids[i] !== null && q.isSecret !== true) && new Set(ids).size === ids.length;
+    const asked: ApprovalQuestion[] = questions.map((q) => ({
+      header: str(q.header) ?? '', question: str(q.question) ?? '', other: q.isOther === true,
+      options: Array.isArray(q.options) ? q.options.map(obj).map((o) => ({ label: str(o.label) ?? '', description: str(o.description) ?? '' })) : [],
+    }));
     return {
       kind: 'question', title: str(one?.question) ?? `${questions.length} questions`, preview: lines.join('\n'), risk: 'other', canAccept: false,
-      canText: qid !== null && one!.isSecret !== true, refuse: null,
-      reply: (a) => (a.decision === 'text' && qid !== null ? { answers: { [qid]: { answers: [a.text] } } } : { answers: {} }),
+      canText: answerable, ...(answerable ? { questions: asked } : {}), refuse: null,
+      reply: (a) => (a.decision === 'answer' && answerable
+        ? { answers: Object.fromEntries(a.picks.map((x, i) => [ids[i]!, { answers: ['option' in x ? asked[i]!.options[x.option]!.label : x.text] }])) }
+        : { answers: {} }),
     };
   };
 

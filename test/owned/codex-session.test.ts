@@ -324,7 +324,7 @@ test('approvals: a file the command reads outside the work dir is named on the c
   });
 });
 
-test('approvals: file changes, permissions, a question and an MCP elicitation; only accept/decline, a turn-scoped grant, one text or a refusal ever go back', async (t) => {
+test('approvals: file changes, permissions, a question and an MCP elicitation; only accept/decline, a turn-scoped grant, one answer a question or a refusal ever go back', async (t) => {
   await withRig(t, async (r) => {
     const s = await newSession(r);
     await s.ready;
@@ -358,7 +358,8 @@ test('approvals: file changes, permissions, a question and an MCP elicitation; o
     s.send('ask', U(5));
     const q = await next();
     assert.deepEqual([q.kind, q.canAccept, q.canText], ['question', false, true]);
-    assert.equal(r.approvals.answerText(q.approvalId, 'blue', { digest: q.digest, rev: r.approvals.rev }), 'ok');
+    assert.deepEqual(q.questions, [{ header: 'Colour', question: 'Which colour?', options: [], other: false }]);
+    assert.equal(r.approvals.answer(q.approvalId, [{ text: 'blue' }], { digest: q.digest, rev: r.approvals.rev }), 'ok');
     await until('the answer said back', () => events(s).some((e) => e.kind === 'text' && e.text === 'you said blue'));
 
     s.send('elicit', U(6));
@@ -375,6 +376,40 @@ test('approvals: file changes, permissions, a question and an MCP elicitation; o
       ['srv-5', { answers: { q1: { answers: ['blue'] } } }],
       ['srv-6', { action: 'decline', content: null }],
     ]);
+    assertOnlyPlainAnswers(r);
+  });
+});
+
+test('approvals: a question card of several questions goes back one answer an id, an option as codex wrote its label (a redacted one too), a text where it takes one; a secret question offers only the refusal', async (t) => {
+  await withRig(t, async (r) => {
+    const s = await newSession(r);
+    await s.ready;
+    const next = async () => {
+      await until('an approval', () => r.approvals.list().length === 1);
+      return r.approvals.list()[0]!;
+    };
+    s.send('choose', U(1));
+    const q = await next();
+    assert.deepEqual([q.kind, q.canAccept, q.canText, q.questions?.length], ['question', false, true, 2]);
+    const [issues, bots] = q.questions!;
+    assert.deepEqual(issues!.options.map((o) => o.label).slice(0, 2), ['All', 'None']);
+    assert.ok(!issues!.options[2]!.label.includes('ghp_0123456789'), 'the card shows a secret in a label redacted');
+    assert.ok(q.redactions > 0 && q.high, 'a hidden secret makes the card high risk');
+    assert.deepEqual([bots!.other, bots!.options.length], [true, 1]);
+    assert.equal(r.approvals.answer(q.approvalId, [{ option: 2 }, { text: 'ask me first' }], { digest: q.digest, rev: r.approvals.rev }), 'ok');
+    await until('the answers said back', () => events(s).some((e) => e.kind === 'text' && e.text?.startsWith('you chose ')));
+    const [, reply] = r.answers().at(-1)!;
+    assert.deepEqual(reply, { answers: { issues: { answers: ['Key ghp_0123456789abcdefghijABCDEFGHIJ'] }, bots: { answers: ['ask me first'] } } });
+    const said = events(s).find((e) => e.kind === 'answer')!;
+    assert.equal(said.state, 'answered');
+    assert.ok(said.text?.includes('Bots: ask me first') && !said.text.includes('ghp_0123456789'), said.text ?? '');
+
+    s.send('ask-secret', U(2));
+    const secret = await next();
+    assert.deepEqual([secret.canText, secret.questions], [false, null]);
+    assert.equal(r.approvals.answer(secret.approvalId, [{ text: 'hunter2' }], { digest: secret.digest, rev: r.approvals.rev }), 'digest-mismatch');
+    await until('the secret turn', () => events(s).filter((e) => e.state === 'turn-ended').length === 2);
+    assert.deepEqual(r.answers().at(-1)![1], { answers: {} });
     assertOnlyPlainAnswers(r);
   });
 });

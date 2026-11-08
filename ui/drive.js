@@ -7,7 +7,7 @@
 import { getFeed, getOwned, getSession, oneAtATime, post } from './api.js';
 import { after, fmtClock, nowMono } from './clock.js';
 import {
-  HOLD_MS, SETTLE_MS, brakeWhyText, closedTo, deskOf, modelsOf, atBottom, chatNews, describeAskPins, describeDesk, describeNew, describeReassign, describeOwned, describeOwnedDock, describeRequestPins, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError,
+  HOLD_MS, SETTLE_MS, brakeWhyText, closedTo, deskOf, modelsOf, atBottom, chatNews, describeAnswer, describeAskPins, describeDesk, describeNew, describeReassign, describeOwned, describeOwnedDock, describeRequestPins, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError,
   allowHow, notifyRequestText, notifyText, ownedIdOf, pinExtra, pinWhole, requestModel, whyText, withQueued, withRequests,
 } from './owned.js';
 import { getCsrf, setCsrf, setTheme } from './prefs.js';
@@ -73,6 +73,12 @@ export const driveState = () => ({
   // Bumped when a dispatch or a closed dialog makes a suggestion still out void: its reply is dropped.
   deskTok: 0,
   /** 改派: the request whose dialog is open (null: none). @type {string | null} */ re: null,
+  /**
+   * 回答: the question card whose dialog is open and your pick for each of its questions so far (null: none yet).
+   * @type {{ id: string, picks: ({ option: number } | { text: string } | null)[] } | null}
+   */
+  qa: null,
+  /** The 回答 button the dialog was opened from: where the focus goes on once it is answered. @type {HTMLElement | null} */ qaFrom: null,
 });
 
 /**
@@ -118,7 +124,11 @@ export function makeDrive(state, dom, host) {
     };
     dom.paintId('new-dlg', { slots: { ...describeNew(state.owned, nowDesk.harness, state.busy, val('nw-cwd')), ...describeDesk(state.desk, nowDesk) } });
     if (state.re !== null) dom.paintId('re-dlg', { slots: describeReassign(state.owned, pendingReq(state.re), val('re-harness') || 'codex', state.busy) });
+    if (state.qa !== null) dom.paintId('qa-dlg', { slots: describeAnswer(openQuestion(), state.qa.picks, state.busy) });
   }
+
+  /** The question card whose dialog is open while it still waits for you, or null. */
+  const openQuestion = () => (state.qa === null ? null : state.owned?.approvals.find((/** @type {any} */ x) => x.approvalId === state.qa?.id && x.canText === true) ?? null);
 
   /** The agent request `id` while it still waits for you, or null. @param {string} id */
   const pendingReq = (id) => state.owned?.requests?.find((/** @type {any} */ x) => x.requestId === id && x.state === 'pending') ?? null;
@@ -492,6 +502,57 @@ export function makeDrive(state, dom, host) {
     if (/^[0-9a-f]{20}$/.test(id)) host.openNode(`n:${id}`);
   }
 
+  /**
+   * 回答: the dialog of a question card, nothing picked (D8: the person picks each answer; none is picked for them).
+   * @param {HTMLElement} el
+   */
+  function answerOpen(el) {
+    const a = state.owned?.approvals.find((/** @type {any} */ x) => x.approvalId === el.dataset.appr && x.canText === true);
+    if (a === undefined) return;
+    state.qa = { id: a.approvalId, picks: a.questions.map(() => null) };
+    state.qaFrom = el;
+    dlgSay('qa-dlg', '');
+    host.render();
+    openDlg('qa-dlg', 'qa-h');
+  }
+
+  /** An option pressed: that question's pick, and a line typed for it before is cleared. @param {HTMLElement} el */
+  function answerPick(el) {
+    const i = Number(el.dataset.q);
+    const j = Number(el.dataset.o);
+    if (state.qa === null || !(i in state.qa.picks)) return;
+    state.qa.picks[i] = { option: j };
+    const typed = /** @type {any} */ (el.closest('.qa')?.querySelector('.qa-in'));
+    if (typed) typed.value = '';
+    schedule();
+  }
+
+  /** A line typed for a question is its pick; emptied, the question has none (an option pressed before stays unpressed). @param {any} el */
+  function answerTyped(el) {
+    const i = Number(el.dataset.q);
+    if (state.qa === null || !(i in state.qa.picks)) return;
+    const text = String(el.value ?? '');
+    state.qa.picks[i] = text.trim() === '' ? null : { text };
+    schedule();
+  }
+
+  /** 提交回答: one pick a question, under the shown digest and the list's revision (the checks of an allow). */
+  async function answerGo() {
+    const a = openQuestion();
+    const list = state.owned;
+    if (a === null || state.qa === null || !list) return dlgSay('qa-dlg', t('qa.gone'));
+    const left = state.qa.picks.filter((p) => p === null).length;
+    if (left > 0) return dlgSay('qa-dlg', t('qa.need', { n: left }));
+    if (settling()) return dlgSay('qa-dlg', t('appr.settling'));
+    const r = await op(`approvals/${a.approvalId}/answer`, { digest: a.digest, rev: list.rev, answers: state.qa.picks });
+    // Closed while it was out: why it was refused goes to the page's note, not to a dialog nobody sees.
+    const open = /** @type {any} */ (dom.byId('qa-dlg')).open === true;
+    if (r?.ok !== true) return r === null ? undefined : open ? dlgSay('qa-dlg', errText(r.code)) : say(errText(r.code));
+    if (state.qaFrom?.isConnected) answeredAt(state.qaFrom, a.approvalId);
+    if (open) closeDlg('qa-dlg');
+    say(t('appr.answered'));
+  }
+
   /** seat: 拒绝 an agent request (always taken while it waits). @param {HTMLElement} el */
   async function requestNo(el) {
     const id = el.dataset.req ?? '';
@@ -666,6 +727,9 @@ export function makeDrive(state, dom, host) {
     if (a === 'req-no') return void requestNo(t0), true;
     if (a === 'req-re') return reassignOpen(t0), true;
     if (a === 're-go') return void reassignGo(), true;
+    if (a === 'qa') return answerOpen(t0), true;
+    if (a === 'qa-pick') return answerPick(t0), true;
+    if (a === 'qa-go') return void answerGo(), true;
     if (a === 'grant') return void setGrant(t0), true;
     if (a === 'stop-worker') return void stopWorker(t0), true;
     if (a === 'theme') {
@@ -717,9 +781,11 @@ export function makeDrive(state, dom, host) {
       if (state.asking) state.deskTok++;
     });
     dom.byId('re-dlg')?.addEventListener('close', () => { state.re = null; });
+    dom.byId('qa-dlg')?.addEventListener('close', () => { state.qa = null; state.qaFrom = null; });
     document.addEventListener('input', (e) => {
       // An edited sentence makes the card stale at once.
       if (e.target instanceof Element && e.target.id === 'nw-text') return schedule();
+      if (e.target instanceof Element && e.target.classList.contains('qa-in')) return answerTyped(e.target);
       if (!(e.target instanceof Element) || e.target.id !== 'dock-in') return;
       state.to = val('dock-in') === '' ? null : (state.to ?? selTo());
       schedule();

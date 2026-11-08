@@ -243,6 +243,9 @@ export function apprActs(a, g, where) {
       'aria-disabled': g.settle !== '' ? 'true' : busy(g), title: how === '2' ? t('appr.typeOnlyHint') : how === '1' ? t('appr.holdHint') : null,
       'aria-label': t(how === '2' ? 'appr.typeOnlyLabel' : how === '1' ? 'appr.holdLabel' : 'appr.allowLabel', what),
     }));
+  } else if (a.canText === true && !a.tooLong) {
+    // A question is answered in its dialog, one pick a question: on the card and in the bar alike.
+    out.push(btn('qa', t('appr.answer'), { act: 'qa', appr }, { 'aria-disabled': busy(g), 'aria-label': t('appr.answerLabel', what) }));
   } else if (where === 'pin') out.push(btn('see', t('appr.see'), { act: 'see', appr }));
   return out;
 }
@@ -269,7 +272,7 @@ export function describeCard(a, g) {
       left: { text: left > 0 ? t('wait.left', { t: fmtLeft(left) }) : t('wait.overdue') },
       title: { text: a.title },
       pv: { text: a.preview },
-      note: { text: join([a.tooLong ? t('appr.cut') : !a.canAccept && t('appr.noAccept'), a.redactions > 0 && t('appr.redacted', { n: a.redactions }), a.tainted === true && t(taintNote(a))], 'sep.notes') },
+      note: { text: join([a.tooLong ? t('appr.cut') : a.canText === true ? t('appr.answerNote') : !a.canAccept && t('appr.noAccept'), a.redactions > 0 && t('appr.redacted', { n: a.redactions }), a.tainted === true && t(taintNote(a))], 'sep.notes') },
       acts: { kids: apprActs(a, g, 'card') },
     },
   };
@@ -411,6 +414,50 @@ export function describeReassign(list, r, harness, busy) {
     reWhere: { text: r === null ? t('re.gone') : reqWhere({ ...r, harness }) },
     reNote: { text: join([t('re.note'), r !== null && workerOf(r) !== null && t('re.worker')], 'sep.notes') },
     reGo: { text: t(busy ? 'op.busy' : 're.go'), attr: { disabled: busy || r === null || !list?.enabled || !h[harness] ? '' : null } },
+  };
+}
+
+/** Options drawn side by side (a segmented row): two to four, short, none with a note. @param {readonly any[]} os */
+const segmented = (os) => os.length >= 2 && os.length <= 4 && os.every((o) => o.description === '' && graphemes(o.label).length <= 10);
+
+/**
+ * 回答: the dialog of a question card (D8: only here, unlocked). Each question its head, the question, its options
+ * as buttons (pressed: your pick; never one picked for you) and, where it takes one, a line of your own; 提交 is on
+ * once every question has its pick. `a`: the approval, or null once it waits no more; `picks`: one a question, null
+ * for none yet. The options and their notes are the agent's words, and the note says so.
+ * @param {any} a @param {readonly ({ option: number } | { text: string } | null)[]} picks @param {boolean} busy
+ */
+export function describeAnswer(a, picks, busy) {
+  const qs = a?.questions ?? [];
+  const left = picks.filter((p) => p === null).length;
+  return {
+    qaFrom: { text: a === null ? '' : join([originLine(a), a.redactions > 0 && t('appr.redacted', { n: a.redactions })], 'sep.notes') },
+    qaWhat: { text: a === null ? t('qa.gone') : a.title },
+    qaList: {
+      kids: qs.map((q, i) => {
+        const p = picks[i] ?? null;
+        const typed = q.options.length === 0 || q.other === true;
+        return {
+          key: `${a.approvalId}:${i}`, tpl: 'tpl-qa', data: { q: String(i) },
+          slots: {
+            h: { text: q.header }, q: { text: q.question },
+            opts: {
+              cls: segmented(q.options) ? 'qa-opts qa-seg' : 'qa-opts', attr: { 'aria-label': q.header || q.question },
+              kids: q.options.map((o, j) => ({
+                key: String(j), tpl: 'tpl-qopt', data: { q: String(i), o: String(j) }, attr: { 'aria-pressed': p !== null && 'option' in p && p.option === j ? 'true' : 'false' },
+                slots: { l: { text: o.label }, d: { text: o.description } },
+              })),
+            },
+            text: {
+              data: { q: String(i), hide: typed ? '0' : '1' },
+              attr: { placeholder: t(q.options.length === 0 ? 'qa.text' : 'qa.other'), 'aria-label': t('qa.otherLabel', { h: q.header || q.question }) },
+            },
+          },
+        };
+      }),
+    },
+    qaNote: { text: t('qa.note') },
+    qaGo: { text: t(busy ? 'op.busy' : 'qa.go'), attr: { disabled: busy || a === null || left > 0 ? '' : null, title: a !== null && left > 0 ? t('qa.need', { n: left }) : null } },
   };
 }
 

@@ -60,6 +60,8 @@ import { makeOwnedHandlers } from './owned.ts';
 //                                       digest is declined (digest-mismatch), another rev or a list
 //                                       that moved in the last 750 ms changes nothing (stale-view).
 //   POST /api/approvals/:id/deny        always taken.
+//   POST /api/approvals/:id/answer      {digest, rev, answers}: a question card, one pick a question (D8, only here and only
+//                                       by a person); the checks of an allow, and picks that do not fit are digest-mismatch.
 //   POST /api/agent-requests/:id/reject seat: you refuse an agent request (r4 A17; D8, only here); one that no
 //                                       longer waits is request-gone. Its `agent-request` record (rejected)
 //                                       joins the batch of the human records.
@@ -133,7 +135,9 @@ export const ownedEnabled = (deps: Pick<OwnedRoutesDeps, 'codex' | 'claude'>): b
 function approvalEntry(a: ApprovalView) {
   return {
     approvalId: a.approvalId, ownedId: a.ownedId, kind: a.kind, title: a.title, preview: a.preview, tooLong: a.tooLong, redactions: a.redactions,
-    digest: a.digest, risk: a.risk, high: a.high, tainted: a.tainted, origin: a.origin === null ? null : { ...a.origin }, rev: a.rev, canAccept: a.canAccept, canText: a.canText, deadline: a.deadlineWall,
+    digest: a.digest, risk: a.risk, high: a.high, tainted: a.tainted, origin: a.origin === null ? null : { ...a.origin }, rev: a.rev, canAccept: a.canAccept, canText: a.canText,
+    questions: a.questions === null ? null : a.questions.map((q) => ({ header: q.header, question: q.question, options: q.options.map((o) => ({ ...o })), other: q.other })),
+    deadline: a.deadlineWall,
   };
 }
 
@@ -454,6 +458,17 @@ export function registerOwnedHandlers(deps: OwnedRoutesDeps, handlers: OwnedHand
     if (r === null || !requests.reject(r.requestId)) return refuse('request-gone');
     log.info('agent-request-rejected', { requestId: r.requestId });
     return { ok: true, reply: {}, records: [agentRequestRec(r, { actionId: call.actionId!, verdict: 'rejected', ownedId: null, decisionId: null })] };
+  });
+
+  handlers.register('POST', '/api/approvals/:id/answer', (call) => {
+    if (queue === null) return refuse('approval-gone');
+    const body = call.body!;
+    const v = queue.answer(call.id!, body.answers, { digest: String(body.digest), rev: Number(body.rev) });
+    if (v !== 'ok') {
+      if (v === 'digest-mismatch') log.info('approval-declined-mismatch', { approvalId: call.id });
+      return refuse(v);
+    }
+    return { ok: true, reply: {} };
   });
 
   handlers.register('POST', '/api/approvals/:id/deny', (call) => {

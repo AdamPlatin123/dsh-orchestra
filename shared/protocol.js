@@ -18,12 +18,13 @@ export const PROTOCOL_V = 1;
 /**
  * The human verbs: each one writes a `human` and a `human.result` journal record, and is what
  * ActionOutcome.verb names (UI design 一 5). The routes that take them are HUMAN_VERB_ROUTES. From
- * `owned-new` on: the owned-session verbs of alpha 0.2 (slice design §2.7); `request-reject`: seat's refusal of an agent request.
+ * `owned-new` on: the owned-session verbs of alpha 0.2 (slice design §2.7); `request-reject`: seat's refusal of an agent request;
+ * `approval-answer`: a person answers a question card, one pick a question.
  */
 export const HUMAN_VERBS = Object.freeze(/** @type {const} */ ([
   'seen', 'snooze', 'acted', 'remind', 'brake', 'roots-add', 'roots-confirm', 'protect-add', 'protect-remove', 'dsh-connect', 'self-rating',
   'owned-new', 'owned-message', 'owned-interrupt', 'owned-end', 'owned-brake', 'owned-retry', 'approval-allow', 'approval-deny', 'import-claude', 'import-dsh',
-  'request-reject', 'dispatch-grant',
+  'request-reject', 'dispatch-grant', 'approval-answer',
 ]));
 /** @typedef {typeof HUMAN_VERBS[number]} HumanVerb */
 
@@ -55,6 +56,8 @@ export const HUMAN_VERB_ROUTES = Object.freeze(/** @type {const} */ ({
   'request-reject': '/api/agent-requests/:id/reject',
   // A person sets a session's dispatch permission (src/route/dispatch.ts; D8: only on this page, never on the agent port).
   'dispatch-grant': '/api/owned/:id/dispatch-grant',
+  // A person answers a question an owned session asks (D8: only on this page): an option of each question, or a text where it takes one.
+  'approval-answer': '/api/approvals/:id/answer',
 }));
 
 /**

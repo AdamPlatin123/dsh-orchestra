@@ -2,6 +2,7 @@ import * as crypto from 'node:crypto';
 import type { Clock, ClockHub, Fired } from '../runtime/clock.ts';
 import { canonicalDigest } from '../store/canonical-json.ts';
 import { frozen, frozenClass } from '../../shared/frozen.js';
+import { OWNED_BOUNDS } from '../../shared/owned-contract.js';
 import { OWNED_TEXT_LIMITS, headUtf8, utf8Length } from './text.ts';
 
 // The approval queue of the owned sessions (alpha 0.2 slice design §2.6; r4 D8 and §10.9). One queue
@@ -17,8 +18,10 @@ import { OWNED_TEXT_LIMITS, headUtf8, utf8Length } from './text.ts';
 //  - declining is taken at once, whatever the revision;
 //  - an entry the page cannot show whole (tooLong), or whose kind has no allow (a question, an MCP
 //    elicitation, a write grant for the rest of the session), offers only decline;
+//  - a question the page can draw (its questions listed, none secret) is answered one pick a question, under the
+//    same digest and revision checks as an allow: an option by its place in the list, or a text where it takes one;
 //  - each entry is answered once: its state turns answered before the answer is written to the child.
-// Answers are only {accept} or {decline} (or, for a question, a text): never "for this session", never
+// Answers are only {accept} or {decline} (or, for a question, its picks): never "for this session", never
 // a rule that outlives the one request (the session maps them; codex-session.ts).
 
 export const APPROVAL_LIMITS = frozen({
@@ -26,6 +29,14 @@ export const APPROVAL_LIMITS = frozen({
   timeoutMs: 30 * 60 * 1000,
   /** r4 10.9: for this long after the list changed, an allow is not taken (stale-view). */
   settleMs: 750,
+});
+
+/** What a question card may hold: past these it offers only the refusal (the preview still says what was asked). */
+export const QUESTION_LIMITS = frozen({
+  questions: OWNED_BOUNDS.questions,
+  options: OWNED_BOUNDS.options,
+  /** A typed answer, in code points (the route's shape holds it to the same). */
+  textCp: 2048,
 });
 
 /** tool: an owned Claude session's other core tools (Read, Glob, Grep) when they reach outside its work dir. */
@@ -58,7 +69,36 @@ export type ApprovalOrigin = {
 /** Whether this origin alone makes a session tainted: an unbound sender's, or the front desk's, which read what others wrote. A worker's only as that worker is. */
 export const taintedOrigin = (o: ApprovalOrigin | null | undefined): boolean => o?.kind === 'agent-request' || o?.kind === 'desk-dispatch';
 
-export type Answer = { readonly decision: 'accept' } | { readonly decision: 'decline' } | { readonly decision: 'text'; readonly text: string };
+/**
+ * One question of a question card as the page draws it, redacted and escaped already: its short head, the question,
+ * the options to pick from (none: only a text answers it) and whether a text of your own may stand in for them.
+ */
+export type ApprovalQuestion = {
+  readonly header: string;
+  readonly question: string;
+  readonly options: readonly { readonly label: string; readonly description: string }[];
+  readonly other: boolean;
+};
+
+/** One question's answer: the option at that place of its list, or a text (where options is empty or other is true). */
+export type QuestionPick = { readonly option: number } | { readonly text: string };
+
+export type Answer = { readonly decision: 'accept' } | { readonly decision: 'decline' } | { readonly decision: 'answer'; readonly picks: readonly QuestionPick[] };
+
+/** Whether picks answer the questions, one each and in their order: an option they list, or a text where one is taken. */
+export function picksFit(questions: readonly ApprovalQuestion[], picks: unknown): picks is readonly QuestionPick[] {
+  if (!Array.isArray(picks) || picks.length !== questions.length) return false;
+  return picks.every((p: unknown, i) => {
+    const q = questions[i]!;
+    if (typeof p !== 'object' || p === null) return false;
+    const keys = Object.keys(p);
+    if (keys.length !== 1) return false;
+    const v = (p as Record<string, unknown>)[keys[0]!];
+    if (keys[0] === 'option') return Number.isSafeInteger(v) && (v as number) >= 0 && (v as number) < q.options.length;
+    if (keys[0] !== 'text' || typeof v !== 'string' || v.trim() === '' || [...v].length > QUESTION_LIMITS.textCp) return false;
+    return q.options.length === 0 || q.other;
+  });
+}
 
 /**
  * Who answered: the person, the deadline, a stop of the turn, the end of the session, the brake (the
@@ -77,8 +117,10 @@ export type ApprovalInput = {
   redactions: number;
   risk: ApprovalRisk;
   canAccept: boolean;
-  /** A question one line of text can answer. */
+  /** A question the page may answer: it comes with `questions`, or it offers only the refusal. */
   canText: boolean;
+  /** A question card's questions, as the page draws them (redacted); absent or null: none to draw. */
+  questions?: readonly ApprovalQuestion[] | null;
   /** r4 §8.5: the session's turns come from an unbound sender (a seat request); absent: false. */
   tainted?: boolean;
   /** r4 §8.5: where the session's turns came from (a seat request); absent: null (a person's own sentence). Display only. */
@@ -110,7 +152,10 @@ export type ApprovalView = {
   /** The list revision this entry came in with (the list's own rev moves on with every later change). */
   readonly rev: number;
   readonly canAccept: boolean;
+  /** The person may answer its questions (`questions` is there, the card whole). */
   readonly canText: boolean;
+  /** A question card's questions; null on every other card, and on a question that offers only the refusal. */
+  readonly questions: readonly ApprovalQuestion[] | null;
   readonly deadlineMono: number;
   readonly deadlineWall: number;
 };
@@ -170,13 +215,18 @@ export class Approvals {
     const risk = input.risk;
     const high = risk === 'shell' || risk === 'net' || risk === 'protected' || input.kind === 'permissions' || input.redactions > 0;
     const deadlineMono = this.#clock.nowMono() + this.#timeoutMs;
+    const qs = input.questions ?? null;
+    const questions = whole && input.canText && qs !== null && qs.length > 0 && qs.length <= QUESTION_LIMITS.questions && qs.every((x) => x.options.length <= QUESTION_LIMITS.options)
+      ? frozen(qs.map((x) => ({ header: x.header, question: x.question, options: x.options.map((o) => ({ label: o.label, description: o.description })), other: x.other })))
+      : null;
     const view: ApprovalView = Object.freeze({
       approvalId, ownedId: input.ownedId, kind: input.kind, title, preview, tooLong: !whole, redactions: input.redactions,
-      digest: canonicalDigest({ approvalId, kind: input.kind, title, preview }),
+      // The questions are what an answer picks from: the digest holds them too, so a pick is of the list the page drew.
+      digest: canonicalDigest({ approvalId, kind: input.kind, title, preview, ...(questions === null ? {} : { questions }) }),
       // A seat request's source chain is an unbound sender's, the front desk's holds what it read: an entry with one is tainted whoever
       // forgot to say so (r4 §8.5; the contract refuses those origins on an untainted entry, and would turn the whole list into a 500).
       // A worker's dispatch is tainted only as its session is: the same project's clean musicians are clean.
-      risk, high, tainted: input.tainted === true || taintedOrigin(input.origin), origin: input.origin == null ? null : Object.freeze({ ...input.origin }), rev: this.#rev + 1, canAccept: whole && input.canAccept, canText: whole && input.canText,
+      risk, high, tainted: input.tainted === true || taintedOrigin(input.origin), origin: input.origin == null ? null : Object.freeze({ ...input.origin }), rev: this.#rev + 1, canAccept: whole && input.canAccept, canText: questions !== null, questions,
       deadlineMono, deadlineWall: this.#clock.nowWall() + this.#timeoutMs,
     });
     const timerId = `deadline:${approvalId}:0`;
@@ -215,16 +265,20 @@ export class Approvals {
     return 'ok';
   }
 
-  /** The person answers a question with one text, under the same digest and revision checks as allow. */
-  answerText(approvalId: string, text: string, seen: { digest: string; rev: number }): ApprovalVerdict {
+  /**
+   * The person answers a question card, one pick a question in their order, under the same digest and revision checks
+   * as allow. Picks that do not fit the questions the card drew are declined as a stale digest is: not what the page showed.
+   */
+  answer(approvalId: string, picks: unknown, seen: { digest: string; rev: number }): ApprovalVerdict {
     const e = this.#open.get(approvalId);
     if (e === undefined) return 'approval-gone';
     if (seen.rev !== this.#rev || this.settling) return 'stale-view';
-    if (seen.digest !== e.view.digest || !e.view.canText || typeof text !== 'string') {
+    const qs = e.view.questions;
+    if (seen.digest !== e.view.digest || !e.view.canText || qs === null || !picksFit(qs, picks)) {
       this.#answer(e, { decision: 'decline' }, 'mismatch');
       return 'digest-mismatch';
     }
-    this.#answer(e, { decision: 'text', text }, 'human');
+    this.#answer(e, { decision: 'answer', picks: frozen(picks.map((x) => ({ ...x }))) }, 'human');
     return 'ok';
   }
 

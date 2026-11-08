@@ -250,6 +250,34 @@ test('deny: the fake hears decline at once, whatever the revision; a second answ
   assert.deepEqual(humans(r).filter((h) => h.kind === 'human').map((h) => h.body.verb), ['owned-new', 'approval-deny']);
 });
 
+test('a question card: the list carries its questions (and passes the contract); answer sends one pick a question, the fake hears the label and the text; a bad shape is 400, picks that do not fit are declined', async (t) => {
+  const r = await rig(t);
+  const p = await page(r);
+  const { ownedId, approval, list } = await startAndAsk(r, p, 'choose');
+  assert.deepEqual([approval.kind, approval.canText, approval.questions.length], ['question', true, 2]);
+  assert.deepEqual(approval.questions[1], { header: 'Bots', question: 'Migrate them?', options: [{ label: 'No', description: '' }], other: true });
+  r.sf.clock.advanceBy(APPROVAL_LIMITS.settleMs);
+  const url = `/api/approvals/${approval.approvalId}/answer`;
+  const shape = await post(r, p, url, { actionId: uuid(), digest: approval.digest, rev: list.rev, answers: [{ option: 0, colour: 'x' }, { text: 'yes' }] });
+  assert.equal(shape.status, 400, shape.body);
+  const ok = await post(r, p, url, { actionId: uuid(), digest: approval.digest, rev: list.rev, answers: [{ option: 1 }, { text: 'ask me first' }] });
+  assert.equal(ok.status, 200, ok.body);
+  await until('the answers', () => r.answers().length > 0);
+  assert.deepEqual(r.answers(), [['srv-1', { answers: { issues: { answers: ['None'] }, bots: { answers: ['ask me first'] } } }]]);
+  await until('the answer in the feed', async () => (await get(r, p, `/api/owned/${ownedId}/feed`)).json.events.some((e: any) => e.kind === 'answer' && e.state === 'answered'));
+  assert.deepEqual(humans(r).filter((h) => h.kind === 'human').map((h) => h.body.verb), ['owned-new', 'approval-answer']);
+  // A text where the question takes only its options: not what the page drew, declined.
+  const next = await post(r, p, '/api/owned/' + ownedId + '/message', { actionId: uuid(), text: 'choose' });
+  assert.equal(next.status, 200, next.body);
+  await until('the second card', async () => (await get(r, p, '/api/owned')).json.approvals.length === 1);
+  const l2 = (await get(r, p, '/api/owned')).json;
+  r.sf.clock.advanceBy(APPROVAL_LIMITS.settleMs);
+  const misfit = await post(r, p, `/api/approvals/${l2.approvals[0].approvalId}/answer`, { actionId: uuid(), digest: l2.approvals[0].digest, rev: l2.rev, answers: [{ text: 'some' }, { option: 0 }] });
+  assert.deepEqual([misfit.status, misfit.json], [409, { error: 'digest-mismatch' }]);
+  await until('the decline', () => r.answers().length > 1);
+  assert.deepEqual(r.answers()[1], ['srv-2', { answers: {} }]);
+});
+
 test('allow with another digest is refused (digest-mismatch) and declined; another rev changes nothing (stale-view); neither writes a human record', async (t) => {
   const r = await rig(t);
   const p = await page(r);

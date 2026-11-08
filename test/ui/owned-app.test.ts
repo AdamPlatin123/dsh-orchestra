@@ -47,7 +47,7 @@ const seat = (ownedId: string, title: string, state: OwnedSeat['state'], deadlin
 });
 const approval = (id: string, ownedId: string, over: Partial<Approval> & { rev: number }) => ({
   approvalId: id, ownedId, kind: 'command', title: 'req', preview: 'command: npm test\ncwd: work', tooLong: false, redactions: 0,
-  digest: id.slice(0, 1).repeat(64), risk: 'write', high: false, tainted: false, canAccept: true, canText: false, deadline: OBSERVED + 20 * MIN, ...over,
+  digest: id.slice(0, 1).repeat(64), risk: 'write', high: false, tainted: false, canAccept: true, canText: false, questions: null, deadline: OBSERVED + 20 * MIN, ...over,
 });
 const LONG = Array.from({ length: 12 }, (_, i) => `+ line ${i} of a long diff that will not fit on the waiting bar`).join('\n');
 
@@ -573,9 +573,55 @@ test('owned sessions: unlock, the guarded approvals, the chat, the composer, dis
     assert.equal(doc.getElementById('note')!.textContent, TOWER_TEXT['re.sent']);
     list = { ...list, requests: [] };
 
+    // 回答: a question card behind session c's first request has its own pin with 回答…, never 允许. The dialog draws
+    // each question, nothing picked; 提交 waits for a pick a question; an option pressed and a line typed go as
+    // {option} and {text}, under the card's digest and the list's rev; then the dialog closes and the note says so.
+    const QA = '5'.repeat(32);
+    const QUESTIONS = [
+      { header: 'Issues', question: 'File the bugs?', options: [{ label: 'All', description: '' }, { label: 'None', description: '' }], other: false },
+      { header: 'Bots', question: 'Migrate them?', options: [{ label: 'No', description: 'they follow the new rule' }], other: true },
+    ];
+    const beforeQa = list;
+    list = { ...list, rev: 4, approvals: [...list.approvals, approval(QA, ID.c, { kind: 'question', risk: 'other', title: 'File the bugs?', preview: 'Issues\nFile the bugs?', canAccept: false, canText: true, questions: QUESTIONS, rev: 4 })] };
+    intervals.find((i) => i.ms === 2000)!.fn();
+    await flush();
+    mono += 800;
+    await tick();
+    const qaPin = pins().find((p) => act(p, 'qa') !== null)!;
+    assert.ok(qaPin !== undefined, 'the question has its pin');
+    assert.equal(act(qaPin, 'allow'), null, 'a question is never allowed, only answered or refused');
+    const qd = doc.getElementById('qa-dlg')!;
+    await click(act(qaPin, 'qa'));
+    assert.equal(qd.open, true);
+    const qs = () => qd.querySelectorAll('.qa');
+    assert.deepEqual(qs().map((q) => q.querySelector('[data-slot=q]')!.textContent), ['File the bugs?', 'Migrate them?']);
+    const opts = (i: number) => qs()[i]!.querySelectorAll('.qa-opt');
+    assert.deepEqual(opts(0).map((o) => o.getAttribute('aria-pressed')), ['false', 'false'], 'nothing is picked for you');
+    assert.equal(qs()[0]!.querySelector('.qa-opts')!.classList.contains('qa-seg'), true, 'two short options side by side');
+    assert.equal(qs()[0]!.querySelector('.qa-in')!.getAttribute('data-hide'), '1', 'no line of your own where the question takes none');
+    assert.equal(qs()[1]!.querySelector('.qa-in')!.getAttribute('data-hide'), '0');
+    const goBtn = () => qd.querySelector('[data-act=qa-go]')!;
+    assert.equal(goBtn().getAttribute('disabled'), '');
+    fire(doc, 'click', { target: opts(0)[1]! });
+    await flush();
+    assert.deepEqual(opts(0).map((o) => o.getAttribute('aria-pressed')), ['false', 'true']);
+    assert.equal(goBtn().getAttribute('disabled'), '', 'one question still has no pick');
+    const line = qs()[1]!.querySelector('.qa-in')! as any;
+    line.value = 'ask me first';
+    fire(doc, 'input', { target: line });
+    await flush();
+    assert.equal(goBtn().getAttribute('disabled'), null);
+    await click(goBtn());
+    const answered = posts(`/api/approvals/${QA}/answer`);
+    assert.equal(answered.length, 1);
+    assert.deepEqual({ ...answered[0]!.body, actionId: 'x' }, { actionId: 'x', digest: '5'.repeat(64), rev: 4, answers: [{ option: 1 }, { text: 'ask me first' }] });
+    assert.equal(qd.open, false);
+    assert.equal(doc.getElementById('note')!.textContent, TOWER_TEXT['appr.answered']);
+    list = { ...beforeQa, rev: 5 };
+
     // Hidden: a new approval is notified with who and what; no notification and no title says allow.
     // While hidden the tower and the queue are read every 10 s.
-    list = { ...list, rev: 4, approvals: [...list.approvals, approval(AP.d, ID.b, { rev: 4 })] };
+    list = { ...list, rev: 6, approvals: [...list.approvals, approval(AP.d, ID.b, { rev: 6 })] };
     doc.hidden = true;
     fire(doc, 'visibilitychange');
     await flush();

@@ -107,7 +107,7 @@ function listWith(origin: unknown, tainted = true) {
     owned: [{ dispatch: null, frontDesk: false, ownedId: 'a'.repeat(20), harness: 'codex', model: 'codex/gpt-6.1-sol', title: 't', state: 'running', endReason: null, waiting: 'b'.repeat(32), queued: 0, tokens: null, lastSeq: 1, createdAt: 1, brake: false, stoppable: false, cwd: null }],
     approvals: [{
       approvalId: 'b'.repeat(32), ownedId: 'a'.repeat(20), kind: 'command', title: 'npm test', preview: 'command: npm test', tooLong: false, redactions: 0,
-      digest: 'c'.repeat(64), risk: 'shell', high: true, tainted, origin, rev: 1, canAccept: true, canText: false, deadline: 5,
+      digest: 'c'.repeat(64), risk: 'shell', high: true, tainted, origin, rev: 1, canAccept: true, canText: false, questions: null, deadline: 5,
     }],
     limits: { maxOwned: 4, active: 1 }, requests: [], requestedGone: [], sentGone: [], presence: 'unknown', frontDesk: { on: false, ownedId: null, model: 'zcode/GLM-5.3-Flash', tools: null },
   };
@@ -419,4 +419,22 @@ test('ClaudeOwned.create hands the origin down too: the card its host asks for c
   const list = ownedList({ codex: null, claude: r.owned, codexOff: 'off' });
   assert.deepEqual(validateOwnedList(list).errors, []);
   assert.deepEqual(list.approvals[0]!.origin, ORIGIN);
+});
+
+test('the contract (question cards): questions exactly when the card may be answered, only on a question, one to eight, each option a label and a note', () => {
+  const card = (over: Record<string, unknown>) => {
+    const l = listWith(null, false);
+    l.approvals[0] = { ...l.approvals[0]!, kind: 'question', risk: 'other', high: false, canAccept: false, ...over } as any;
+    return validateOwnedList(l).errors;
+  };
+  const q = { header: 'Issues', question: 'File the bugs?', options: [{ label: 'All', description: '' }], other: true };
+  assert.deepEqual(card({ canText: true, questions: [q] }), []);
+  assert.deepEqual(card({ canText: false, questions: null }), []);
+  assert.ok(card({ canText: true, questions: null }).some((e) => e.includes('lists no questions')));
+  assert.ok(card({ canText: false, questions: [q] }).some((e) => e.includes('only the refusal')));
+  assert.ok(card({ canText: true, questions: [] }).some((e) => e.includes('0 questions')));
+  assert.ok(card({ canText: true, questions: Array.from({ length: 9 }, () => q) }).some((e) => e.includes('9 questions')));
+  assert.ok(card({ canText: true, questions: [{ ...q, options: [{ label: 'All' }] }] }).some((e) => e.includes('missing description')));
+  assert.ok(card({ canText: true, questions: [{ ...q, question: 'a\u202eb' }] }).some((e) => e.includes('control or bidi')));
+  assert.ok(card({ kind: 'command', canText: true, questions: [q] }).some((e) => e.includes('only a question card')));
 });

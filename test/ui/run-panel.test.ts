@@ -361,7 +361,7 @@ async function boot(o: { tag: string; narrow?: boolean; stored?: string | null; 
   const list: Json = {
     v: 1, kind: 'owned-list', rev: 3, enabled: true, disabledWhy: null, brakeWhy: null, harnesses: { codex: true, claude: false }, limits: { maxOwned: 4, active: 3 }, requests: [],
     owned: [owned(ID.a, 'alpha'), owned(ID.b, 'bravo', { state: 'idle', waiting: AP }), owned(ID.c, 'charlie', { state: 'idle' })],
-    approvals: [{ approvalId: AP, ownedId: ID.b, kind: 'command', title: 'req', preview: 'command: npm test', tooLong: false, redactions: 0, digest: '2'.repeat(64), risk: 'shell', high: false, tainted: false, canAccept: true, canText: false, deadline: OBSERVED + 20 * MIN, rev: 1 }],
+    approvals: [{ approvalId: AP, ownedId: ID.b, kind: 'command', title: 'req', preview: 'command: npm test', tooLong: false, redactions: 0, digest: '2'.repeat(64), risk: 'shell', high: false, tainted: false, canAccept: true, canText: false, questions: null, deadline: OBSERVED + 20 * MIN, rev: 1 }],
   };
   const loc = { hash: '', href: '', pathname: '/', search: '', replace(u: string) { this.hash = u.slice(u.indexOf('#')); } };
   const win = {};

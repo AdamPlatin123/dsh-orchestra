@@ -474,9 +474,10 @@ test('what the browser loads for / stays within its own budget, all of it embedd
   // (2026-11-05, 112 and 289); last the running panel, its capsule, cards and a worker's page (2026-11-05, some 18.5 KB),
   // then its review's fixes: one rule for its flags, a list apart for failed sub-agents, what the limits left out, the
   // drawer's focus kept in (2026-11-05, 122 to 128 and 310 to 316: some 4 KB, most of it the comments that say why);
-  // then 改派 on a request card, its dialog and the code it shares with the old page (merged 2026-11-07, 316 to 321).
-  assert.ok(own <= 128 * 1024, `the home page's own files are ${own} bytes`);
-  assert.ok(total <= 321 * 1024, `the home page loads ${total} bytes`);
+  // then 改派 on a request card, its dialog and the code it shares with the old page (merged 2026-11-07, 316 to 321);
+  // then a question card answered one pick a question, its dialog and its styles (2026-11-08, 128 to 131 and 321 to 331).
+  assert.ok(own <= 131 * 1024, `the home page's own files are ${own} bytes`);
+  assert.ok(total <= 331 * 1024, `the home page loads ${total} bytes`);
 });
 
 const OBSERVED = towerFromStage(busyStage()).meta.observedAt;
@@ -489,7 +490,7 @@ const member = (i: number, over: Partial<OwnedMember> = {}): OwnedMember => ({ t
 const seat = (ownedId: string, title: string, over: Partial<OwnedSeat> = {}): OwnedSeat => ({ ownedId, harness: 'codex', title, state: 'running', endReason: null, lastAt: OBSERVED, waiting: null, ...over });
 const approval = (id: string, ownedId: string, over: Json) => ({
   approvalId: id, ownedId, kind: 'command', title: 'req', preview: 'command: npm test', tooLong: false, redactions: 0, digest: id.slice(0, 1).repeat(64),
-  risk: 'shell', high: true, tainted: false, canAccept: true, canText: false, deadline: OBSERVED + 20 * MIN, rev: 1, ...over,
+  risk: 'shell', high: true, tainted: false, canAccept: true, canText: false, questions: null, deadline: OBSERVED + 20 * MIN, rev: 1, ...over,
 });
 
 test('the page boots: worker, talk and cards from the fetched data; only a person drives, by the old page\'s rules', async () => {

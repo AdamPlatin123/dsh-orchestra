@@ -51,7 +51,7 @@ test('tower.html: an ARIA tree, a polite live region, an alert, and every templa
   assert.equal(doc.getElementById('alert')!.getAttribute('role'), 'alert');
   const view = read('ui/view.js') + read('ui/owned.js');
   const named = [...new Set([...view.matchAll(/tpl: '(tpl-[a-z]+)'/g)].map((m) => m[1]!))].sort();
-  assert.deepEqual(named, ['tpl-arow', 'tpl-btn', 'tpl-cand', 'tpl-card', 'tpl-ev', 'tpl-group', 'tpl-kv', 'tpl-msg', 'tpl-node', 'tpl-opt', 'tpl-pin', 'tpl-proj', 'tpl-req', 'tpl-rule', 'tpl-src', 'tpl-tool']);
+  assert.deepEqual(named, ['tpl-arow', 'tpl-btn', 'tpl-cand', 'tpl-card', 'tpl-ev', 'tpl-group', 'tpl-kv', 'tpl-msg', 'tpl-node', 'tpl-opt', 'tpl-pin', 'tpl-proj', 'tpl-qa', 'tpl-qopt', 'tpl-req', 'tpl-rule', 'tpl-src', 'tpl-tool']);
   for (const id of named) assert.ok(doc.getElementById(id)?.content?.firstElementChild, `no <template id=${id}>`);
   for (const id of ['tpl-node', 'tpl-proj', 'tpl-group']) {
     const li = doc.getElementById(id)!.content!.firstElementChild!;
@@ -246,8 +246,9 @@ test('what the browser loads for /tower stays within budget: its ui/ files and t
   // Page 242 KiB (2026-11-05): the home page's running panel added its texts to shared/strings.js and its kept choice to
   // ui/prefs.js, both of which this page loads too (some 1.6 KB; it went 1.1 KB over 240). Then 248 for 改派 on a
   // request card, its dialog and what it shares with the home page (merged 2026-11-07; on its own branch it went 240 to 247).
+  // Then 257 for a question card answered one pick a question: its dialog, styles and texts here too (2026-11-08, some 9 KB).
   assert.ok(uiBytes <= 200 * 1024, `ui/ is ${uiBytes} bytes`);
-  assert.ok(uiBytes + bytes(shared) <= 248 * 1024, `the page loads ${uiBytes + bytes(shared)} bytes`);
+  assert.ok(uiBytes + bytes(shared) <= 257 * 1024, `the page loads ${uiBytes + bytes(shared)} bytes`);
 });
 
 test('the detail is positioned: its .sr live lines stay in its own scroll and do not stretch the page past the window', () => {

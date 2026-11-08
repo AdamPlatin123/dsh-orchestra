@@ -352,6 +352,28 @@ button.pin-go:hover { background: var(--sunk); }
 .dlg-p { color: var(--ink-2); }
 .dlg-in { min-height: 36px; margin-top: 4px; }
 .dlg .acts { margin-top: 12px; }
+/* 回答: a question card's dialog. Options are buttons (aria-pressed), a ring that fills for the pick; two to four short ones side by side. */
+#qa-dlg { max-height: calc(100dvh - 32px); overflow-y: auto; }
+.qa-list { margin-top: 8px; padding: 0; list-style: none; }
+.qa + .qa { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.qa-h { font-size: 12.5px; font-weight: 600; color: var(--ink-3); }
+.qa-h:empty { display: none; }
+.qa-q { margin-top: 2px; font-weight: 600; overflow-wrap: anywhere; }
+.qa-opts { display: grid; gap: 4px; margin-top: 6px; }
+.qa-opts:empty { display: none; }
+.qa-opt { display: grid; grid-template-columns: 16px 1fr; gap: 2px 8px; min-height: 36px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: none; color: var(--ink); font: inherit; text-align: left; }
+.qa-opt::before { content: ''; grid-row: 1 / span 2; width: 14px; height: 14px; margin-top: 2px; box-sizing: border-box; border: 1.5px solid var(--ink-3); border-radius: 50%; }
+.qa-opt:hover { background: var(--sunk); }
+.qa-opt[aria-pressed=true] { border-color: var(--act); background: var(--act-soft); }
+.qa-opt[aria-pressed=true]::before { border: 4px solid var(--act); }
+.qa-l, .qa-d { grid-column: 2; overflow-wrap: anywhere; }
+.qa-d { font-size: 12.5px; color: var(--ink-3); }
+.qa-d:empty { display: none; }
+.qa-seg { display: flex; flex-wrap: wrap; gap: 2px; width: fit-content; max-width: 100%; padding: 2px; border-radius: 8px; background: var(--sunk); }
+.qa-seg .qa-opt { display: block; border-color: transparent; }
+.qa-seg .qa-opt::before { content: none; }
+.qa-seg .qa-opt[aria-pressed=true] { border-color: var(--act); background: var(--panel); font-weight: 600; }
+.qa-in { margin-top: 6px; }
 .route-card { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--line); border-left: 3px solid var(--act); border-radius: 6px; background: var(--bg); }
 .route-card h3 { font-size: 13.5px; }
 .route-card[data-stale="1"] { border-left-color: var(--ink-3); }

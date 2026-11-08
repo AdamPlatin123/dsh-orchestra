@@ -146,6 +146,24 @@ async function runTurn(turnId: string, n: number, text: string): Promise<void> {
       endTurn(turnId);
       return;
     }
+    case 'choose': {
+      const r = await ask('item/tool/requestUserInput', {
+        threadId: THREAD, turnId, itemId: `q_${n}`, isBlocking: true, questions: [
+          { id: 'issues', header: 'Issues', question: 'File the bugs?', isOther: false, isSecret: false, options: [{ label: 'All', description: 'recommended' }, { label: 'None', description: '' }, { label: 'Key ghp_0123456789abcdefghijABCDEFGHIJ', description: '' }] },
+          { id: 'bots', header: 'Bots', question: 'Migrate them?', isOther: true, isSecret: false, options: [{ label: 'No', description: '' }] },
+        ],
+      });
+      say(turnId, `you chose ${JSON.stringify(r?.answers ?? null)}`, n);
+      endTurn(turnId);
+      return;
+    }
+    case 'ask-secret': {
+      await ask('item/tool/requestUserInput', {
+        threadId: THREAD, turnId, itemId: `q_${n}`, isBlocking: true, questions: [{ id: 'pw', header: 'Password', question: 'Your password?', options: null, isOther: false, isSecret: true }],
+      });
+      endTurn(turnId);
+      return;
+    }
     case 'elicit': {
       await ask('mcpServer/elicitation/request', { threadId: THREAD, turnId, serverName: 'forms', mode: 'form', message: 'Fill this in', requestedSchema: { type: 'object', properties: {} } });
       endTurn(turnId);

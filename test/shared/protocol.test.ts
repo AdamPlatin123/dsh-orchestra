@@ -27,8 +27,8 @@ test('the enums are the frozen sets of UI design 一, each unique and frozen', (
     'seen', 'snooze', 'acted', 'remind', 'brake', 'roots-add', 'roots-confirm', 'protect-add', 'protect-remove', 'dsh-connect', 'self-rating',
     // alpha 0.2's owned sessions (slice design §2.7): new, message, interrupt, end, retry, allow, deny, and the two imports
     'owned-new', 'owned-message', 'owned-interrupt', 'owned-end', 'owned-brake', 'owned-retry', 'approval-allow', 'approval-deny', 'import-claude', 'import-dsh',
-    // seat: you reject an agent request (its dispatch is owned-new with the requestId); and a session's dispatch permission
-    'request-reject', 'dispatch-grant',
+    // seat: you reject an agent request (its dispatch is owned-new with the requestId); a session's dispatch permission; a question card's answer
+    'request-reject', 'dispatch-grant', 'approval-answer',
   ]);
   assert.deepEqual(Object.keys(HUMAN_VERB_ROUTES), [...HUMAN_VERBS], 'every human verb has its route, in the same order');
   assert.ok(Object.values(HUMAN_VERB_ROUTES).every((r) => /^\/api\/[a-z/:-]+$/.test(r)));

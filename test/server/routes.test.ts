@@ -294,7 +294,7 @@ test('owned sessions: every route needs the pairing cookie; all but the unlock p
     // seat: you reject an agent request on this page (its dispatch is owned-new with the requestId).
     'POST /api/agent-requests/:id/reject',
     // A person sets a session's dispatch permission (src/route/dispatch.ts).
-    'POST /api/owned/:id/dispatch-grant',
+    'POST /api/owned/:id/dispatch-grant', 'POST /api/approvals/:id/answer',
   ]);
   for (const r of ownedPaths) assert.equal(r.auth, r.path.startsWith('/api/owned/unlock') ? 'cookie' : 'unlocked', r.path);
   assert.ok(ROUTES.every((r) => (r.auth === 'cookie' || r.auth === 'unlocked') === ownedPaths.includes(r)), 'no M0 route takes the new auth');

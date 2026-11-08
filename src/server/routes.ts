@@ -10,6 +10,7 @@ import { ownFields } from '../runtime/own.ts';
 import { COUNT_NAMES } from '../model/source-report.ts';
 import { DIGEST_RE, ERROR_CODE_RE, EVENT_KINDS, GRANT_LEVELS } from '../store/records.ts';
 import { OWNED_MODEL_RE } from '../owned/models.ts';
+import { QUESTION_LIMITS } from '../owned/approvals.ts';
 import { MAX_CANDIDATES, ROUTE_HARNESSES, ROUTER_STATES, RULE_IDS, TASK_CLASSES } from '../route/rules.ts';
 import { ROUTER_WHY } from '../route/router-model.ts';
 
@@ -396,6 +397,12 @@ export const ROUTES: readonly Route[] = Object.freeze([
   // You set a session's dispatch permission (src/route/dispatch.ts; D8: a person, this page). 你不在也派 is no level here:
   // r4 D20 does not allow it, so the shape refuses it. A session that ended is owned-ended.
   owned('dispatch-grant', 'owned', { level: en(GRANT_LEVELS) }, accepted({ level: en(GRANT_LEVELS) }), ['owned-ended']),
+  // A question card's answer: one pick a question, in their order: an option by its place in the list, or a text. Picks that
+  // do not fit the questions the card drew are declined as a wrong digest is (digest-mismatch), the same checks as an allow.
+  owned('approval-answer', 'approval', {
+    digest: re(DIGEST_RE, 'digest'), rev: count,
+    answers: arr(obj({ option: int(0, QUESTION_LIMITS.options - 1), text: text(QUESTION_LIMITS.textCp, 'message') }, ['option', 'text']), QUESTION_LIMITS.questions, 1),
+  }, accepted(), ['approval-gone', 'digest-mismatch', 'stale-view']),
 ].map((r) => Object.freeze(r)));
 
 /** The route of `method path` (a pattern as the table writes it), or undefined. */

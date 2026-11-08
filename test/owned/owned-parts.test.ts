@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Answer, AnswerCause, ApprovalInput } from '../../src/owned/approvals.ts';
-import { APPROVAL_LIMITS, Approvals } from '../../src/owned/approvals.ts';
+import { APPROVAL_LIMITS, Approvals, QUESTION_LIMITS } from '../../src/owned/approvals.ts';
+import { canonicalDigest } from '../../src/store/canonical-json.ts';
 import { GATEWAY_RE, OWNED_DIRS, codexConfigToml, writeCodexHome } from '../../src/owned/codex-home.ts';
 import { FEED_LIMITS, Feed } from '../../src/owned/feed.ts';
 import { DEFAULT_CODEX_MODEL, isOwnedModel } from '../../src/owned/models.ts';
@@ -53,10 +54,49 @@ test('approvals: a preview past 16 KiB is cut and offers only the refusal; a hid
   assert.equal(add({ risk: 'write', redactions: 1 }).high, true);
   assert.equal(add({ risk: 'net' }).high, true);
   assert.equal(add({ kind: 'permissions', risk: 'write' }).high, true);
-  const question = add({ kind: 'question', canAccept: false, canText: true });
-  assert.equal(q.answerText(question.approvalId, 'blue', { digest: question.digest, rev: q.rev }), 'ok');
+  const question = add({ kind: 'question', canAccept: false, canText: true, questions: [{ header: 'Colour', question: 'Which?', options: [], other: false }] });
+  assert.equal(q.answer(question.approvalId, [{ text: 'blue' }], { digest: question.digest, rev: q.rev }), 'ok');
   const noText = add({ canText: false });
-  assert.equal(q.answerText(noText.approvalId, 'x', { digest: noText.digest, rev: q.rev }), 'digest-mismatch');
+  assert.equal(q.answer(noText.approvalId, [{ text: 'x' }], { digest: noText.digest, rev: q.rev }), 'digest-mismatch');
+});
+
+test('approvals: a question card is answered one pick a question, an option by its place or a text where it takes one; picks that do not fit are declined as a mismatch', () => {
+  const { q, add, answered } = queue();
+  const questions = [
+    { header: 'Issues', question: 'File the bugs?', options: [{ label: 'All', description: '' }, { label: 'None', description: 'keep them private' }], other: false },
+    { header: 'Bots', question: 'Migrate?', options: [{ label: 'No', description: '' }], other: true },
+    { header: 'Name', question: 'What name?', options: [], other: false },
+  ];
+  const card = () => add({ kind: 'question', risk: 'other', canAccept: false, canText: true, questions });
+  const seen = (a: { digest: string }) => ({ digest: a.digest, rev: q.rev });
+  const a = card();
+  assert.deepEqual([a.canText, a.questions?.length], [true, 3]);
+  assert.equal(q.answer(a.approvalId, [{ option: 1 }, { text: 'ask me' }, { text: 'orchestra' }], seen(a)), 'ok');
+  assert.deepEqual(answered.at(-1)![1], { decision: 'answer', picks: [{ option: 1 }, { text: 'ask me' }, { text: 'orchestra' }] });
+  for (const bad of [
+    [{ option: 0 }, { option: 0 }], // one short
+    [{ option: 2 }, { option: 0 }, { text: 'x' }], // no such option
+    [{ text: 'mine' }, { option: 0 }, { text: 'x' }], // a text where the question takes none
+    [{ option: 0 }, { option: 0 }, { option: 0 }], // an option where it has none
+    [{ option: 0 }, { option: 0 }, { text: '  ' }], // an empty text
+    [{ option: 0, text: 'x' }, { option: 0 }, { text: 'x' }], // two answers to one question
+    'All',
+  ]) {
+    const b = card();
+    assert.equal(q.answer(b.approvalId, bad, seen(b)), 'digest-mismatch', JSON.stringify(bad));
+    assert.deepEqual(answered.at(-1)!.slice(1), [{ decision: 'decline' }, 'mismatch']);
+  }
+  const c = card();
+  assert.equal(q.answer(c.approvalId, [{ option: 0 }, { option: 0 }, { text: 'x' }], { digest: c.digest, rev: q.rev - 1 }), 'stale-view');
+  assert.equal(q.answer(c.approvalId, [{ option: 0 }, { option: 0 }, { text: 'x' }], { digest: 'f'.repeat(64), rev: q.rev }), 'digest-mismatch');
+  // The questions are in the digest: a pick is of the list the page drew.
+  assert.equal(c.digest, canonicalDigest({ approvalId: c.approvalId, kind: c.kind, title: c.title, preview: c.preview, questions }));
+  // canText without questions, past the limits, or on a card cut short: only the refusal.
+  assert.deepEqual([add({ kind: 'question', canText: true }).canText, add({ kind: 'question', canText: true, questions: [] }).canText], [false, false]);
+  const many = Array.from({ length: QUESTION_LIMITS.questions + 1 }, () => questions[2]!);
+  assert.equal(add({ kind: 'question', canText: true, questions: many }).questions, null);
+  const cut = add({ kind: 'question', canText: true, questions, preview: 'x'.repeat(OWNED_TEXT_LIMITS.previewBytes + 1) });
+  assert.deepEqual([cut.canText, cut.questions], [false, null]);
 });
 
 test('approvals: the deadline (Q4: 30 minutes) declines with cause clock; a session\'s stop or end declines only its own; a gone child\'s are dropped unanswered', () => {

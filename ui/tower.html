@@ -148,10 +148,22 @@
   <p class="acts"><button type="button" class="btn" data-act="re-go" data-slot="reGo"></button><button type="button" class="btn" data-act="close" data-t="dlg.cancel"></button></p>
 </dialog>
 
+<dialog id="qa-dlg" class="dlg" aria-labelledby="qa-h">
+  <h2 id="qa-h" tabindex="-1" data-t="qa.title"></h2>
+  <p class="dlg-p" data-slot="qaFrom"></p>
+  <p class="dlg-l" data-slot="qaWhat"></p>
+  <ol class="qa-list" data-slot="qaList"></ol>
+  <p class="dlg-p" data-slot="qaNote"></p>
+  <p class="dlg-msg" data-slot="msg" role="status"></p>
+  <p class="acts"><button type="button" class="btn" data-act="qa-go" data-slot="qaGo"></button><button type="button" class="btn" data-act="close" data-t="dlg.cancel"></button></p>
+</dialog>
+
 <template id="tpl-btn"><button type="button" class="btn"></button></template>
 <template id="tpl-opt"><option></option></template>
 <template id="tpl-cand"><li class="cand"><button type="button" class="cand-b" data-act="pick" aria-pressed="false" data-slot="b"><span class="cand-rank" data-slot="rank"></span><span class="cand-hm" data-slot="hm"></span><span class="cand-src" data-slot="src"></span><span class="cand-why" data-slot="why"></span></button></li></template>
 <template id="tpl-card"><li class="card" data-waiting="1"><p class="card-h"><span data-slot="kind"></span><span data-slot="left"></span></p><p class="card-t" data-slot="title"></p><pre class="pv" data-slot="pv"></pre><p class="card-note" data-slot="note"></p><p class="acts" data-slot="acts"></p></li></template>
+<template id="tpl-qa"><li class="qa"><p class="qa-h" data-slot="h"></p><p class="qa-q" data-slot="q"></p><div class="qa-opts" role="group" data-slot="opts"></div><input class="dlg-in qa-in" type="text" autocomplete="off" data-slot="text"></li></template>
+<template id="tpl-qopt"><button type="button" class="qa-opt" data-act="qa-pick" aria-pressed="false"><span class="qa-l" data-slot="l"></span><span class="qa-d" data-slot="d"></span></button></template>
 <template id="tpl-msg"><li class="msg"><span class="msg-who" data-slot="who"></span><span class="msg-tx" data-slot="tx"></span></li></template>
 <template id="tpl-tool"><li class="msg"><details><summary data-slot="sum"></summary><pre class="pv" data-slot="body"></pre></details></li></template>
 <template id="tpl-src"><span class="src"><span class="sdot" aria-hidden="true"></span><span class="src-h" data-slot="h" aria-hidden="true"></span><span class="sr" data-slot="sr"></span></span></template>

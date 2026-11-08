@@ -93,6 +93,13 @@ export const OWNED_BOUNDS = frozen({
   roots: 16,
   /** The router model's reason for a model, in UTF-8 bytes (routes.ts SUGGEST_REPLY's 200 code points, at most 4 bytes each). */
   reasonBytes: 800,
+  /** A question card (src/owned/approvals.ts): how many questions, options to each, and each text's UTF-8 bytes as shown. */
+  questions: 8,
+  options: 16,
+  questionHeadBytes: 200,
+  questionBytes: 2048,
+  optionLabelBytes: 200,
+  optionNoteBytes: 1024,
 });
 
 /**
@@ -214,8 +221,12 @@ export function holdsControl(s) {
  *   fromDesk: the front desk asked; such a request is tainted always, as the desk read what others wrote.
  * @typedef {{
  *   approvalId: string, ownedId: string, kind: string, title: string, preview: string, tooLong: boolean, redactions: number,
- *   digest: string, risk: string, high: boolean, tainted: boolean, origin: ApprovalOrigin | null, rev: number, canAccept: boolean, canText: boolean, deadline: number,
+ *   digest: string, risk: string, high: boolean, tainted: boolean, origin: ApprovalOrigin | null, rev: number, canAccept: boolean, canText: boolean,
+ *   questions: ApprovalQuestion[] | null, deadline: number,
  * }} ApprovalEntry
+ *   questions: a question card's questions, redacted, as the page draws them (a short head, the question, the options
+ *   and whether a text of your own may stand in for them; no options: a text answers it). There exactly when canText:
+ *   the card is answered one pick a question (POST /api/approvals/:id/answer); without them it offers only the refusal.
  *   high: r4 §10.9's high risk (a shell, the network, a protected path or a write outside the work dir,
  *   a grant, a hidden secret): the page asks to hold or type before it sends an allow.
  *   tainted: r4 §8.5, the session runs a seat request (an unbound sender) or the front desk's order: the card has a red
@@ -415,7 +426,7 @@ export function validateOwnedList(x) {
   const ids = new Set();
   c.arr(s.approvals, '$.approvals').forEach((e, i) => {
     const at = `$.approvals[${i}]`;
-    const a = c.obj(e, at, ['approvalId', 'ownedId', 'kind', 'title', 'preview', 'tooLong', 'redactions', 'digest', 'risk', 'high', 'tainted', 'origin', 'rev', 'canAccept', 'canText', 'deadline']);
+    const a = c.obj(e, at, ['approvalId', 'ownedId', 'kind', 'title', 'preview', 'tooLong', 'redactions', 'digest', 'risk', 'high', 'tainted', 'origin', 'rev', 'canAccept', 'canText', 'questions', 'deadline']);
     if (a === null) return;
     c.re(a.approvalId, `${at}.approvalId`, APPROVAL_ID_RE, 'approval id');
     if (ids.has(a.approvalId)) c.bad(`${at}.approvalId`, `${String(a.approvalId)} listed twice`);
@@ -444,6 +455,7 @@ export function validateOwnedList(x) {
     c.bool(a.canText, `${at}.canText`);
     // What the page cannot show whole is never allowed (slice design §2.6).
     if (a.tooLong === true && (a.canAccept === true || a.canText === true)) c.bad(`${at}.canAccept`, 'a preview cut short offers only the refusal');
+    checkQuestions(c, a, at);
     // r4 §10.9: a shell, the network and a protected path are high risk whatever else holds.
     if ((a.risk === 'shell' || a.risk === 'net' || a.risk === 'protected') && a.high !== true) c.bad(`${at}.high`, `${String(a.risk)} is high risk`);
     if (typeof a.redactions === 'number' && a.redactions > 0 && a.high !== true) c.bad(`${at}.high`, 'a hidden secret is high risk');
@@ -513,6 +525,40 @@ function checkOrigin(c, v, at) {
     // characters) never reaches a label as itself: one that did is refused, not drawn (r4 §5.3 rendering rule 2).
     if (typeof o.label === 'string' && FORMAT.test(o.label)) c.bad(`${at}.label`, 'holds an invisible format character');
   }
+}
+
+/**
+ * A question card's questions: null exactly when it offers only the refusal (canText false), else one to
+ * OWNED_BOUNDS.questions of them, each with its head, the question, up to OWNED_BOUNDS.options options and whether a
+ * text of your own may stand in for them. Only a question card has them.
+ * @param {Checker} c @param {Record<string, unknown>} a @param {string} at
+ */
+function checkQuestions(c, a, at) {
+  const v = a.questions;
+  if (v === null) {
+    if (a.canText === true) c.bad(`${at}.questions`, 'a card that may be answered lists no questions');
+    return;
+  }
+  if (a.kind !== 'question') c.bad(`${at}.questions`, 'only a question card has questions');
+  if (a.canText !== true) c.bad(`${at}.questions`, 'questions on a card that offers only the refusal');
+  const qs = c.arr(v, `${at}.questions`);
+  if (Array.isArray(v) && (qs.length === 0 || qs.length > OWNED_BOUNDS.questions)) c.bad(`${at}.questions`, `${qs.length} questions, 1 to ${OWNED_BOUNDS.questions}`);
+  qs.forEach((e, i) => {
+    const qa = `${at}.questions[${i}]`;
+    const q = c.obj(e, qa, ['header', 'question', 'options', 'other']);
+    if (q === null) return;
+    c.text(q.header, `${qa}.header`, OWNED_BOUNDS.questionHeadBytes);
+    c.text(q.question, `${qa}.question`, OWNED_BOUNDS.questionBytes);
+    c.bool(q.other, `${qa}.other`);
+    const os = c.arr(q.options, `${qa}.options`);
+    if (os.length > OWNED_BOUNDS.options) c.bad(`${qa}.options`, `${os.length} options, at most ${OWNED_BOUNDS.options}`);
+    os.forEach((oe, j) => {
+      const o = c.obj(oe, `${qa}.options[${j}]`, ['label', 'description']);
+      if (o === null) return;
+      c.text(o.label, `${qa}.options[${j}].label`, OWNED_BOUNDS.optionLabelBytes);
+      c.text(o.description, `${qa}.options[${j}].description`, OWNED_BOUNDS.optionNoteBytes);
+    });
+  });
 }
 
 // One line: no CR, LF, line separator or paragraph separator.
