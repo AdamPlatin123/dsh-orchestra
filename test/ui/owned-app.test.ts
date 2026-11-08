@@ -715,6 +715,12 @@ test('owned descriptors: no allow for a cut request or a native wait, words for 
   const c = describeChat(f);
   assert.equal(c.kids.length, 2);
   assert.ok(c.note.includes(TOWER_TEXT['chat.clipped']!), 'T1: what the daemon no longer holds is said');
+  // A question's answer says what was answered; an answer without its words (an older feed) says only that you answered.
+  const said = describeChat({ to: 2, clipped: false, events: [ev(1, 'answer', 'q', 'answered', false, 'Issue: 先建前两个\nBot: 先问我再迁移'), ev(2, 'answer', 'r', 'answered', false, null)] });
+  assert.deepEqual(said.kids.map((k: any) => k.slots.tx.text), ['你回答了：\nIssue: 先建前两个\nBot: 先问我再迁移', TOWER_TEXT['chat.answered']]);
+  // A question waits to be answered, not allowed: its line says so.
+  const asks = describeChat({ to: 2, clipped: false, events: [ev(1, 'ask', 'q', 'question', false, 'Issue / Bot'), ev(2, 'ask', 'c', 'command', false, 'npm test')] });
+  assert.deepEqual(asks.kids.map((k: any) => k.slots.tx.text), ['等你回答：Issue / Bot', '等你审批：npm test']);
 });
 
 test("owned descriptors (r4 §8.5 review fix): a tainted session's card has the red bar and its source; its high risk is typed only, no hold", () => {

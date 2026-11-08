@@ -150,8 +150,9 @@ export function describeChat(feed, over = false, handed = false) {
     } else if (e.kind === 'text' || e.kind === 'result') {
       msg(t('chat.agent'), e.live ? tx + t('chat.live') : tx, 'agent');
       if (e.kind === 'text' && e.ref !== null && !e.live) lastText = { ref: e.ref, node: kids[kids.length - 1] };
-    } else if (e.kind === 'ask') msg(t('icon.approval'), t('chat.ask', { t: tx }), 'ask');
-    else if (e.kind === 'answer') msg(t('chat.you'), tk('chat', e.state, 'chat.answered'), 'answer');
+    } else if (e.kind === 'ask') msg(t('icon.approval'), t(e.state === 'question' ? 'chat.askQuestion' : 'chat.ask', { t: tx }), 'ask');
+    // A question's answer says what you answered (one line a question), as the feed holds it.
+    else if (e.kind === 'answer') msg(t('chat.you'), e.state === 'answered' && tx !== '' ? t('chat.answeredWith', { t: tx }) : tk('chat', e.state, 'chat.answered'), 'answer');
     // An automatic refusal says its reason; one this page has no words for says its code, never "timed out" (T1).
     else if (e.kind === 'auto-denied') msg('', tk('chat', e.state, 'chat.autoOther', { t: tx }), 'auto');
     else if (e.kind === 'lifecycle') msg('', join([tk('life', over && e.state === 'daemon-restart' ? 'daemon-restart-over' : e.state, 'chat.life'), tx]), 'life');

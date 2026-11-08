@@ -1406,7 +1406,8 @@ function run(opts: CodexSessionOptions, pipe: ChildPipe): CodexSession {
       options: Array.isArray(q.options) ? q.options.map(obj).map((o) => ({ label: str(o.label) ?? '', description: str(o.description) ?? '' })) : [],
     }));
     return {
-      kind: 'question', title: str(one?.question) ?? `${questions.length} questions`, preview: lines.join('\n'), risk: 'other', canAccept: false,
+      // Several questions: their heads (the agent's words) name the card, else how many there are.
+      kind: 'question', title: str(one?.question) ?? (asked.map((q) => q.header || q.question).filter(Boolean).join(' / ') || `${questions.length} questions`), preview: lines.join('\n'), risk: 'other', canAccept: false,
       canText: answerable, ...(answerable ? { questions: asked } : {}), refuse: null,
       reply: (a) => (a.decision === 'answer' && answerable
         ? { answers: Object.fromEntries(a.picks.map((x, i) => [ids[i]!, { answers: ['option' in x ? asked[i]!.options[x.option]!.label : x.text] }])) }

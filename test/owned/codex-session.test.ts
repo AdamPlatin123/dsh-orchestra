@@ -391,6 +391,7 @@ test('approvals: a question card of several questions goes back one answer an id
     s.send('choose', U(1));
     const q = await next();
     assert.deepEqual([q.kind, q.canAccept, q.canText, q.questions?.length], ['question', false, true, 2]);
+    assert.equal(q.title, 'Issues / Bots', 'several questions: their heads name the card');
     const [issues, bots] = q.questions!;
     assert.deepEqual(issues!.options.map((o) => o.label).slice(0, 2), ['All', 'None']);
     assert.ok(!issues!.options[2]!.label.includes('ghp_0123456789'), 'the card shows a secret in a label redacted');
