@@ -78,6 +78,7 @@ test('--owned with codex.exe in place: the private CODEX_HOME, the work root, an
     assert.ok(toml.startsWith('model = "codex/gpt-6.1-sol"\nmodel_provider = "magpie"\napproval_policy = "on-request"\nsandbox_mode = "workspace-write"\n'), toml);
     assert.ok(toml.includes('[model_providers.magpie]\nname = "magpie"\nbase_url = "http://127.0.0.1:3425/v1"\nwire_api = "responses"\n'), toml);
     assert.ok(toml.includes('[skills]\ninclude_instructions = false\n'), 'the user\'s ~/.agents/skills stay out of the prompt');
+    assert.ok(toml.includes('[features]\ndefault_mode_request_user_input = true\n'), 'the worker can ask a question card outside plan mode');
     assert.ok(fs.statSync(path.join(w.home, 'work')).isDirectory());
     const codexSpecs = w.specs.filter((s) => s.rules.includes('codex-app-server'));
     assert.equal(codexSpecs.length, 1);

@@ -175,6 +175,8 @@ test('codex-home: config.toml names the magpie provider on loopback, on-request 
     '[model_providers.magpie]', 'name = "magpie"', 'base_url = "http://127.0.0.1:3425/v1"', 'wire_api = "responses"', '',
     // Measured on codex-cli 0.165.0: without these the private home still lists ~/.agents/skills to the model.
     '[skills]', 'include_instructions = false', '', '[skills.bundled]', 'enabled = false', '',
+    // Measured on codex-cli 0.165.0: without it request_user_input is offered in plan mode only.
+    '[features]', 'default_mode_request_user_input = true', '',
   ].join('\n'));
   assert.throws(() => codexConfigToml({ model: 'gpt-5', gatewayBaseUrl: 'http://127.0.0.1:3425/v1' }), /outside the owned list/);
   for (const url of ['http://example.com/v1', 'https://127.0.0.1:3425/v1', 'http://127.0.0.1:3425', 'http://localhost:3425/v1', 'http://127.0.0.1:3425/v1"\nx = "y']) {

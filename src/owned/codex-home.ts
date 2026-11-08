@@ -34,6 +34,13 @@ const win = path.win32;
 // sub-agent there may ask less than its parent, so the feed says so (members-untrusted) and counts what ran unasked.
 // spawn_agent takes a model of its own, which does not pass isOwnedModel; in the runs each inherited its
 // parent's, and a change of model was not measured: one outside the list is said, not stopped.
+//
+// Questions (measured on codex-cli 0.165.0, 2026-11-08): request_user_input is offered only in plan mode;
+// in the default mode the model answered that the tool was not available, so the question card (approvals.ts
+// questions) could not come up. features.default_mode_request_user_input = true offers it there too, and in
+// two live runs the model asked two questions with it and went on with the answers. `codex features list`
+// calls that switch under development; a later codex may rename or drop it, and then the model asks in plain
+// text again. The user chose it on 2026-11-08, knowing a worker may stop to ask more often.
 
 export const OWNED_DIRS = frozen({ codexHome: 'codex-home', work: 'work' });
 
@@ -62,6 +69,9 @@ export function codexConfigToml(c: CodexConfig): string {
     '',
     '[skills.bundled]',
     'enabled = false',
+    '',
+    '[features]',
+    'default_mode_request_user_input = true',
     '',
   ].join('\n');
 }

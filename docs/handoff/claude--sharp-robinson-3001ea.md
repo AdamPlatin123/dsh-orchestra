@@ -5,7 +5,7 @@
 - When: 2026-11-08
 - Machine: 550W备份1号机
 - Branch: claude/sharp-robinson-3001ea（从 `claude/orchestra-app` 的 ffd7daf 切出）
-- Commit: f7b5866（之前 54142d7）
+- Commit: 本交接所在的提交（之前 5b3a87e、f7b5866、54142d7）
 - Pushed: no（用户还没定：合进 `claude/orchestra-app`（应能快进），还是推远端）
 - Uncommitted on that machine: none
 
@@ -18,6 +18,7 @@
 - 只能拒绝的情况和以前一样：有一题是要密码那类秘密（isSecret）、有一题没有 id、id 重复、超过 8 题、某题超过 16 个选项、或 preview 太长。
 - 契约：`shared/protocol.js` 的 HUMAN_VERBS 末尾加了 `approval-answer`，journal 的 `human` / `human.result` 的 verb 枚举跟着扩大（只增不减，旧 journal 照样能重放；但旧版 orchestrad 读到新 verb 会拒绝启动）。`shared/owned-contract.js` 的审批项多了 `questions` 字段，并新增 `checkQuestions`：questions 不为空当且仅当 canText。冻结测试 `test/repo/contract-freeze.test.ts` 已更新，加了说明段。
 - 页面（`/` 和 `/tower` 两页）：问题卡和等你栏上的按钮是「回答…」，从来不出现「允许」。点开是 `qa-dlg` 对话框，每题一组按钮（`aria-pressed`，选中时圆圈填满）；2 到 4 个短选项且都没有说明时并排显示；能自己写的题有一行输入框。不替你预选任何一项；每题都有答案之前「提交回答」是灰的。答完后对话里显示「你回答了：」加每题一行。题目不止一题时，卡片标题是各题小标题用 / 连起来。（`ui/owned.js` 的 `describeAnswer`、`ui/drive.js` 的 `answerOpen`/`answerPick`/`answerTyped`/`answerGo`、两页 html 和 css、`shared/strings.js` 的 `qa.*`。）
+- 提问开关（用户 2026-11-08 选「打开它」）：`src/owned/codex-home.ts` 的 `codexConfigToml` 现在写 `[features] default_mode_request_user_input = true`，文首注释记了测量结果和这是 Codex 标「开发中」的开关。`test/owned/owned-parts.test.ts` 和 `test/owned/owned-wiring.test.ts` 的 config.toml 断言已补。验证：全量 1807 条，1804 过，0 失败；测试 profile 实走一次，没手动改配置，生成的 config.toml 已带开关，worker 用 request_user_input 问了两题，选一项、自己写一项后，worker 复述「这个小项目叫“星屿”，页面主色使用橙色。」。走完实例已停、无残留进程、7483 端口已释放、测试目录已删。
 - 页面体积上限：首页自有文件 128→131 KiB，首页总量 321→331 KiB，tower 页 248→257 KiB，原因写在两条测试的注释里。
 - 验证：
   - 全量 `node --test "test/**/*.test.ts"`（node 用主检出目录的 `.tools/node24/node.exe`，普通权限）：1807 条，1804 过，0 失败，1 跳过，2 todo。合并改派后的基线是 1803 条，1800 过。
@@ -25,7 +26,7 @@
   - 测试 profile 真模型实走（内置浏览器，1280 宽，codex/gpt-6.1-sol 经 magpie）：两次都是 worker 用 request_user_input 问两题，在对话框里选一项、自己写一项，提交后 worker 复述的内容和答案一致（「项目叫 Baton，主题用绿色。」）。走完测试实例已停，没有残留 procguard 或 codex 进程，7483 端口已释放，测试目录已删。
 
 ## Unverified（做了但没验证，或验证没过）
-- **默认配置下真 Codex 基本问不了。** codex-cli 0.165.0 里 `request_user_input` 只在 plan 模式下可用；默认模式要打开 `default_mode_request_user_input` 这个开关（`codex features list` 显示是 under development，默认关）。Orchestra 写的 `config.toml`（`src/owned/codex-home.ts` 的 `codexConfigToml`）没开它。上面的实走是我只在测试目录的 config.toml 里手动加了这个开关才走通的，代码里没改。不开的话，worker 会回「当前模式无法调用 request_user_input」。
+- 提问开关 `default_mode_request_user_input` 在 codex-cli 0.165.0 里标着 under development。升级 Codex 后它可能改名或消失，那时 worker 会退回到用普通文字提问，问题卡不再出现。升级后要重新实走一次。开着它之后 worker 是不是明显更常停下来问，还没在真实任务里观察过。
 - Codex 要求每题都有选项，不接受只能自己写的题（实走时 worker 说「request_user_input 要求每题都有选项」）。所以「没有选项、只给输入框」这条路径只有假 Codex 的测试覆盖。
 - 实走时有一次模型没用工具，直接用普通文字提问。这取决于模型自己，Orchestra 管不了。
 - 页面没在手机宽度和亮色主题下看过；屏幕阅读器没试过。
@@ -33,10 +34,9 @@
 - Claude 自有会话的提问（AskUserQuestion）没做，Claude 那边仍然只能拒绝。
 
 ## Next（按优先级，每条可独立执行）
-1. 请用户决定这条分支的去向：合进 `claude/orchestra-app`（它停在 ffd7daf，这里是在它上面的 2 个提交 + 本交接，可以快进），还是推远端。
-2. 请用户决定要不要在自有 Codex 会话里打开 `default_mode_request_user_input`。如果要：在 `src/owned/codex-home.ts` 的 `codexConfigToml` 里加 `[features] default_mode_request_user_input = true`，补 `test/owned/owned-parts.test.ts` 里 config.toml 的断言，在测试 profile 里派一个 worker 让它提问，看问题卡出不出现。注意这是 Codex 标着「开发中」的开关，而且会让 worker 更常停下来问你（用户的排序里「少打断」排第一）。
-3. 第二片：Claude 的 AskUserQuestion 也做成问题卡。从 `src/owned/claude-session.ts` 第 783 行附近开始（现在固定 `canText: false`），对照 `src/owned/codex-session.ts` 的 `askQuestion` 填 `questions`、实现回答回写。
-4. 批量审批（截图里那排「批准」开关）：要用户先拍板，见 Open questions。
+1. 请用户决定这条分支的去向：合进 `claude/orchestra-app`（它停在 ffd7daf，这条分支在它之上，可以快进），还是推远端。
+2. 第二片：Claude 的 AskUserQuestion 也做成问题卡。从 `src/owned/claude-session.ts` 第 783 行附近开始（现在固定 `canText: false`），对照 `src/owned/codex-session.ts` 的 `askQuestion` 填 `questions`、实现回答回写。
+3. 批量审批（截图里那排「批准」开关）：要用户先拍板，见 Open questions。
 
 ## Do not touch
 - 主检出目录里 `docs/specs/2026-10-27-dsh-orchestra-design-r4.md` 的未提交改动：用户本人的第七批改动。
