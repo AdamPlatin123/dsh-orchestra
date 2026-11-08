@@ -6,7 +6,7 @@
 - Machine: 550W备份1号机
 - Branch: claude/orchestra-app（从 `claude/alpha-0.2-interactive` 的 76807ec 切出）
 - Commit: 随本文件一起提交，上一提交 8d2697c（合并改派分支 `claude/serene-merkle-3ac513`），再往前 b05f921、8d858ee 交接，c2b2a23（running 界面，从 `claude/running-panel` 快进合入），8eb2215 交接、6ef515a（总台复核修复）。再往前 73237b5 总台、bcb7bd3 Claude 子代理和派活权限、 05ad22c 派发行和拉线、 8b2e8fb 新首页和停止、 580143a Codex 子代理、 2a67fbf 第三轮方案、 88194f3 第二轮方案、 ad4c923 页面评审修正、eb8d621 来源链复核修正，之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
-- Pushed: 到 b05f921 为止在 origin（2026-11-06 推的）；8d2697c 和本交接提交还没推
+- Pushed: yes（2026-11-07 推到 origin/claude/orchestra-app，到 b1b01e8 为止；本行的更正提交随后一起推）
 - Uncommitted on that machine: `.claude/launch.json`（未跟踪，本机某次会话的预览配置，不要提交）。主检出目录里 r4 规格有用户本人的未提交改动，见 Do not touch。
 
 ## Goal
@@ -91,7 +91,7 @@
 ## Next（按优先级，每条可独立执行）
 1. 真实 profile 启动检查（只能由用户本人做）— 先关掉 2026-11-01 从 `.claude\worktrees\m0-thin-slice-e9066d\orchestra.cmd --peek-port 7470` 起的旧 orchestrad（M0 旧代码，真实 profile，2026-11-03 还在跑并占着 7470 端口；不关的话新实例起不来，浏览器打开的也是旧页面）。然后在普通（非管理员）cmd 里双击或运行仓库根的 `start-orchestra.cmd`（worktree 里先设 `ORCHESTRA_NODE` 指向主检出目录的 `.tools\node24\node.exe`）。验收：控制台打印配对码、`procguard on`、两家 `owned … sessions on`、`working (real profile …)`；浏览器自动打开 `http://orchestra.localhost:7470/`；配对后塔表有数据、顶栏数字等于点开后的行数；派一个 Codex 会话「只回复 ok，不用工具」到空闲后结束；Ctrl+C 后任务管理器里没有 codex.exe、procguard.exe。结果记进本文件。
 2. 用户决定 r4 要不要跟着改：A17（agent 只能请求新建，由你批准）、§9.5 和 Q11（自动派活要过门槛）已被用户的话取代，见计划「派活权限」一节。总台还没做，今天没有总台；规划归 worker 已定，见 `round2/BRIEF.md` 第 1.2 节。
-3. 决定 push / 合并（只能由用户本人做）— 8d2697c（改派合并）起的提交只在这台机器上，之前的在 origin；`hosts/claude/node_modules` 也只在这个 worktree。要推远端或合进主线，由用户定目标分支。
+3. 决定 push / 合并（只能由用户本人做）— 已推到 origin；`hosts/claude/node_modules` 也只在这个 worktree。要推远端或合进主线，由用户定目标分支。
 
 ## Do not touch
 - 主检出目录里 `docs/specs/2026-10-27-dsh-orchestra-design-r4.md` 的未提交改动：用户本人的第七批改动。本分支只读引用它，不改、不提交、不覆盖。
