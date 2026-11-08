@@ -160,7 +160,7 @@ test('an order: six things, 未知 for what nobody said (T1); waiting it has the
   assert.ok(o.slots.who.text.includes('zcode/GLM-5.3'));
   assert.ok(o.slots.now.text.includes(fill('front.now.pending', { t: '1分00秒' }).slice(0, 5)));
   assert.ok(o.slots.now.text.includes(TOWER_TEXT['askwhy.away']!));
-  assert.deepEqual(o.slots.acts.kids.map((b: Json) => [b.data.act, b.data.req]), [['req-no', R], ['req-go', R]]);
+  assert.deepEqual(o.slots.acts.kids.map((b: Json) => [b.data.act, b.data.req]), [['req-no', R], ['req-go', R], ['req-re', R]]);
   assert.equal(o.slots.how.text, '');
 });
 

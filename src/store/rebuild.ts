@@ -244,6 +244,10 @@ function applyRecord(c: Ctx): void {
       // Where a session a person started works, when in a project root: an event row beside its human records.
       eventRow(c, { actionId: str(b.actionId) }, false);
       return;
+    case 'request-reassign':
+      // A person dispatched an agent request on another harness or model than it asked for: an event row beside its human records.
+      eventRow(c, { actionId: str(b.actionId) }, false);
+      return;
     case 'dispatch-grant':
       // A person set a session's dispatch permission: an event row beside its human records.
       eventRow(c, { actionId: str(b.actionId) }, false);

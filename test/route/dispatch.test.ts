@@ -93,6 +93,34 @@ test('派前问你: a card with the session as requester; nothing starts; your �
   assert.deepEqual(fx.records, [], 'a person\'s dispatch is written by owned-new, as `human`, never here');
 });
 
+test('派前问你, then 改派: the worker reads what really runs it, the harness and model you picked, and that you moved it', async () => {
+  const fx = fixture();
+  const c = fx.d.call(W, CALL, fx.say);
+  const [r] = pendingOf(fx);
+  assert.ok(r !== undefined);
+  assert.equal(r.harness, 'codex');
+  fx.sessions.set('c'.repeat(20), { title: 'child', tainted: false, over: false });
+  assert.ok(fx.requests.bind(r.requestId, 'c'.repeat(20), { harness: 'claude', model: 'zcode/GLM-5.3-Flash' }));
+  const reply = await c.reply;
+  assert.equal(reply.ok, true);
+  assert.equal(reply.text, `Dispatched: a new claude worker, session ${'c'.repeat(20)}, on zcode/GLM-5.3-Flash. The person sent it to claude instead of the codex you asked for. Its result does not come back to you; the person sees it.`);
+  // The same harness on another model than the one it named is a 改派 too (request-reassign is written for it): the reply says so.
+  const same = fixture();
+  const c2 = same.d.call(W, CALL, same.say);
+  const [r2] = pendingOf(same);
+  assert.equal(r2!.model, 'zcode/GLM-5.3');
+  same.sessions.set('d'.repeat(20), { title: 'child', tainted: false, over: false });
+  assert.ok(same.requests.bind(r2!.requestId, 'd'.repeat(20), { harness: 'codex', model: 'codex/gpt-6.1-sol' }));
+  assert.match((await c2.reply).text, /on codex\/gpt-6\.1-sol\. The person sent it to codex\/gpt-6\.1-sol instead of the zcode\/GLM-5\.3 you asked for\./);
+  // As the card asked: nothing about a move.
+  const as = fixture();
+  const c3 = as.d.call(W, CALL, as.say);
+  const [r3] = pendingOf(as);
+  as.sessions.set('e'.repeat(20), { title: 'child', tainted: false, over: false });
+  assert.ok(as.requests.bind(r3!.requestId, 'e'.repeat(20), { harness: 'codex', model: 'zcode/GLM-5.3' }));
+  assert.doesNotMatch((await c3.reply).text, /instead of/);
+});
+
 test('派前问你: 拒绝 and time up are refusals the worker reads; a stop takes the card back; what went out stays', async () => {
   const fx = fixture();
   const no = fx.d.call(W, CALL, fx.say);

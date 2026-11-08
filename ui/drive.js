@@ -7,7 +7,7 @@
 import { getFeed, getOwned, getSession, oneAtATime, post } from './api.js';
 import { after, fmtClock, nowMono } from './clock.js';
 import {
-  HOLD_MS, SETTLE_MS, brakeWhyText, closedTo, deskOf, modelsOf, atBottom, chatNews, describeAskPins, describeDesk, describeNew, describeOwned, describeOwnedDock, describeRequestPins, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError,
+  HOLD_MS, SETTLE_MS, brakeWhyText, closedTo, deskOf, modelsOf, atBottom, chatNews, describeAskPins, describeDesk, describeNew, describeReassign, describeOwned, describeOwnedDock, describeRequestPins, errText, isFeed, isOwnedList, isSuggestion, mergeFeed, msgError,
   allowHow, notifyRequestText, notifyText, ownedIdOf, pinExtra, pinWhole, requestModel, whyText, withQueued, withRequests,
 } from './owned.js';
 import { getCsrf, setCsrf, setTheme } from './prefs.js';
@@ -72,6 +72,7 @@ export const driveState = () => ({
   asking: false,
   // Bumped when a dispatch or a closed dialog makes a suggestion still out void: its reply is dropped.
   deskTok: 0,
+  /** 改派: the request whose dialog is open (null: none). @type {string | null} */ re: null,
 });
 
 /**
@@ -116,7 +117,11 @@ export function makeDrive(state, dom, host) {
       enabled: state.owned?.enabled !== false, maxOwned: state.owned?.limits?.maxOwned,
     };
     dom.paintId('new-dlg', { slots: { ...describeNew(state.owned, nowDesk.harness, state.busy, val('nw-cwd')), ...describeDesk(state.desk, nowDesk) } });
+    if (state.re !== null) dom.paintId('re-dlg', { slots: describeReassign(state.owned, pendingReq(state.re), val('re-harness') || 'codex', state.busy) });
   }
+
+  /** The agent request `id` while it still waits for you, or null. @param {string} id */
+  const pendingReq = (id) => state.owned?.requests?.find((/** @type {any} */ x) => x.requestId === id && x.state === 'pending') ?? null;
 
   /**
    * The bar or queue moved: allows are void for SETTLE_MS (r4 §10.9), a hold lets go.
@@ -453,6 +458,40 @@ export function makeDrive(state, dom, host) {
     if (a?.ok) void host.poll();
   }
 
+  /**
+   * 改派: the dialog for a waiting request, its harness and the model 派出 would take picked to begin with (the card's).
+   * @param {HTMLElement} el
+   */
+  function reassignOpen(el) {
+    const r = pendingReq(el.dataset.req ?? '');
+    if (r === null) return;
+    state.re = r.requestId;
+    dlgSay('re-dlg', '');
+    setVal('re-harness', r.harness);
+    host.render();
+    setVal('re-model', requestModel(r).model);
+    openDlg('re-dlg', 're-harness');
+  }
+
+  /** 改派's 派出: owned-new with the requestId and the card's text, on the harness and model picked; the server checks them as any dispatch. */
+  async function reassignGo() {
+    const r = state.re === null ? null : pendingReq(state.re);
+    if (r === null) return dlgSay('re-dlg', t('re.gone'));
+    if (settling()) return dlgSay('re-dlg', t('appr.settling'));
+    const harness = val('re-harness') === 'claude' ? 'claude' : 'codex';
+    const model = val('re-model') || modelsOf(harness)[0];
+    const routeId = r.suggestion?.routeId ?? null;
+    const a = await op('owned/new', { text: r.text, harness, model, requestId: r.requestId, ...(routeId === null ? {} : { routeId }) });
+    // Closed while it was out: why it was refused goes to the page's note, not to a dialog nobody sees.
+    const open = /** @type {any} */ (dom.byId('re-dlg')).open === true;
+    if (a?.ok !== true) return a === null ? undefined : open ? dlgSay('re-dlg', errText(a.code)) : say(errText(a.code));
+    if (open) closeDlg('re-dlg');
+    say(t('re.sent'));
+    void host.poll();
+    const id = a.body?.ownedId;
+    if (/^[0-9a-f]{20}$/.test(id)) host.openNode(`n:${id}`);
+  }
+
   /** seat: 拒绝 an agent request (always taken while it waits). @param {HTMLElement} el */
   async function requestNo(el) {
     const id = el.dataset.req ?? '';
@@ -625,6 +664,8 @@ export function makeDrive(state, dom, host) {
     }
     if (a === 'req-go') return void requestGo(t0), true;
     if (a === 'req-no') return void requestNo(t0), true;
+    if (a === 'req-re') return reassignOpen(t0), true;
+    if (a === 're-go') return void reassignGo(), true;
     if (a === 'grant') return void setGrant(t0), true;
     if (a === 'stop-worker') return void stopWorker(t0), true;
     if (a === 'theme') {
@@ -662,16 +703,20 @@ export function makeDrive(state, dom, host) {
     // Typing holds the recipient (research §1.5).
     // The dispatch dialog's model list follows its harness at once.
     document.addEventListener('change', (e) => {
-      if (!(e.target instanceof Element) || (e.target.id !== 'nw-harness' && e.target.id !== 'nw-model' && e.target.id !== 'nw-cwd')) return;
+      if (!(e.target instanceof Element) || !['nw-harness', 'nw-model', 'nw-cwd', 're-harness', 're-model'].includes(e.target.id)) return;
       // A new harness redraws its model list first, so the card reads the model the select really shows (as pick() does).
-      // A new work dir redraws its note at once (what a session there may do).
-      if (e.target.id === 'nw-harness' || e.target.id === 'nw-cwd') host.render();
+      // A new work dir redraws its note at once (what a session there may do); 改派's where-line follows its harness.
+      if (e.target.id === 'nw-harness' || e.target.id === 'nw-cwd' || e.target.id === 're-harness') host.render();
+      // 改派 back on the card's harness: its model again, not the list's first.
+      const back = e.target.id === 're-harness' && state.re !== null ? pendingReq(state.re) : null;
+      if (back !== null && back.harness === val('re-harness')) setVal('re-model', requestModel(back).model);
       schedule();
     });
     // A closed dispatch dialog drops the suggestion still out (its reply would change nothing on screen).
     dom.byId('new-dlg')?.addEventListener('close', () => {
       if (state.asking) state.deskTok++;
     });
+    dom.byId('re-dlg')?.addEventListener('close', () => { state.re = null; });
     document.addEventListener('input', (e) => {
       // An edited sentence makes the card stale at once.
       if (e.target instanceof Element && e.target.id === 'nw-text') return schedule();

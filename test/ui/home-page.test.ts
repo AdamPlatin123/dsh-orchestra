@@ -473,9 +473,10 @@ test('what the browser loads for / stays within its own budget, all of it embedd
   // Widened with each thing the page took on: the front desk's tile, talk and orders, and what it says per harness
   // (2026-11-05, 112 and 289); last the running panel, its capsule, cards and a worker's page (2026-11-05, some 18.5 KB),
   // then its review's fixes: one rule for its flags, a list apart for failed sub-agents, what the limits left out, the
-  // drawer's focus kept in (2026-11-05, 122 to 128 and 310 to 316: some 4 KB, most of it the comments that say why).
+  // drawer's focus kept in (2026-11-05, 122 to 128 and 310 to 316: some 4 KB, most of it the comments that say why);
+  // then 改派 on a request card, its dialog and the code it shares with the old page (merged 2026-11-07, 316 to 321).
   assert.ok(own <= 128 * 1024, `the home page's own files are ${own} bytes`);
-  assert.ok(total <= 316 * 1024, `the home page loads ${total} bytes`);
+  assert.ok(total <= 321 * 1024, `the home page loads ${total} bytes`);
 });
 
 const OBSERVED = towerFromStage(busyStage()).meta.observedAt;

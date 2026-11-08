@@ -132,6 +132,22 @@
   <p class="acts"><button type="button" class="btn" data-act="dispatch" data-slot="go"></button><button type="button" class="btn" data-act="close" data-t="dlg.cancel"></button></p>
 </dialog>
 
+<dialog id="re-dlg" class="dlg" aria-labelledby="re-h">
+  <h2 id="re-h" data-t="re.title"></h2>
+  <p class="dlg-l" data-t="re.text"></p>
+  <pre class="pv req-pv" data-slot="reWhat"></pre>
+  <p class="dlg-p" data-slot="reAsked"></p>
+  <label class="dlg-l" for="re-harness" data-t="new.harness"></label>
+  <select id="re-harness" class="dlg-in"><option value="codex" data-slot="reCodex" data-t="harness.codex"></option><option value="claude" data-slot="reClaude" data-t="harness.claude"></option></select>
+  <p class="dlg-p" data-slot="reWhy"></p>
+  <label class="dlg-l" for="re-model" data-t="new.model"></label>
+  <select id="re-model" class="dlg-in" data-slot="reModel"></select>
+  <p class="dlg-p" data-slot="reWhere"></p>
+  <p class="dlg-p" data-slot="reNote"></p>
+  <p class="dlg-msg" data-slot="msg" role="status"></p>
+  <p class="acts"><button type="button" class="btn" data-act="re-go" data-slot="reGo"></button><button type="button" class="btn" data-act="close" data-t="dlg.cancel"></button></p>
+</dialog>
+
 <template id="tpl-btn"><button type="button" class="btn"></button></template>
 <template id="tpl-opt"><option></option></template>
 <template id="tpl-cand"><li class="cand"><button type="button" class="cand-b" data-act="pick" aria-pressed="false" data-slot="b"><span class="cand-rank" data-slot="rank"></span><span class="cand-hm" data-slot="hm"></span><span class="cand-src" data-slot="src"></span><span class="cand-why" data-slot="why"></span></button></li></template>

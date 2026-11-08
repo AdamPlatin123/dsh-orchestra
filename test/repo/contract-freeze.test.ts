@@ -48,6 +48,9 @@ import { mustOpen, storeFixture } from '../helpers/store.ts';
 // started works when that is a project root: the sha256 of its cwd and root, and the agent request it runs),
 // in the batch of owned-new's human records, so a seat dispatch is bound to the runIn its card showed (the
 // request body does not hold it). A new kind, no new field of an old one: an older journal still replays.
+// 改派 (orchestra app plan 请求卡改派) changes it on purpose once more: owned-new with a requestId takes any harness and
+// model (request-mismatch now means the text alone), and the journal's `request-reassign` kind says from what to what,
+// in the batch of owned-new's human records. A new kind, no new field of an old one: an older journal still replays.
 
 const PROTOCOL = {
   "ACK_PHASES": ["dispatched","shown","error"],
@@ -191,6 +194,7 @@ const JOURNAL_BODIES = {
   "protect": {"op":"enum:add|remove","pid":"int[1,4294967295]","createTime":"createTime","reason":"enum:tuning|config"},
   "recovered": {"bytesCut":"int[1,max]"},
   "reminder": {"reminderId":"id","dueWall":"int[0,max]","snippetRef":{"nullable":"id"},"projectId":{"nullable":"id"}},
+  "request-reassign": {"actionId":"uuid","requestId":"id","ownedId":"id","from":"enum:codex|claude","fromModel":{"nullable":"model"},"to":"enum:codex|claude","toModel":"model"},
   "route": {"decisionId":"digest","actionId":"uuid","routeId":{"nullable":"id"},"ownedId":"id","taskClass":"enum:named|code|question|general","rules":{"array":"enum:named-model|named-harness|code-or-command|short-question|fallback","min":1,"max":5},"candidates":{"array":{"harness":"enum:codex|claude","model":"model","source":"enum:rule|model","rule":{"nullable":"enum:named-model|named-harness|code-or-command|short-question|fallback"}},"min":0,"max":3},"chosen":{"harness":"enum:codex|claude","model":"model"},"pick":{"nullable":"int[0,2]"},"reason":"enum:named-model|named-harness|code-or-command|short-question|fallback|router-model|manual|worker","router":"enum:answered|no-answer|skipped|off|not-asked","routerModel":{"nullable":"model"},"routerWhy":{"nullable":"enum:timeout|network|too-big|http-error|bad-json|bad-shape|model-not-allowed|harness-off|harness-excluded|busy|nothing-usable"},"mode":"enum:manual|auto"},
   "snooze": {"itemId":"id","untilWall":"int[0,max]"},
   "transition": {"entity":"enum:inbox_item|reminder","id":"id","from":"enum:none|open|seen|snoozed|acted|auto-cleared|expired|none|pending|fired|cancelled","to":"enum:none|open|seen|snoozed|acted|auto-cleared|expired|none|pending|fired|cancelled","cause":{"tag":"kind","cases":{"source":{"partRef":"id","srcSeq":"int[0,max]"},"human":{"actionId":"uuid"},"clock":{"timerId":"timerId"}}}},
@@ -198,7 +202,7 @@ const JOURNAL_BODIES = {
 
 const JOURNAL = {
   "lineKeys": ["body","bootId","digest","hash","jseq","kind","obsMono","obsWall","prevHash"],
-  "kinds": ["agent-request","auto","brake.plan","clock","command","commit","dispatch-grant","event","front-desk","human","human.result","item","judgment","notified","owned-cwd","part","part.cursor","project","protect","recovered","reminder","route","snooze","transition"],
+  "kinds": ["agent-request","auto","brake.plan","clock","command","commit","dispatch-grant","event","front-desk","human","human.result","item","judgment","notified","owned-cwd","part","part.cursor","project","protect","recovered","reminder","request-reassign","route","snooze","transition"],
   "journalKinds": ["commit","recovered"],
   "migrations": [{"name":"0001-m0","setVersion":"PRAGMA user_version = 1","sha256":"0f6114b92429bad59918a674a3280f7ab6082a6aa1195ac518606ef09f3ae06d"}],
 };
