@@ -2,10 +2,10 @@
 
 ## Facts
 - Owner: AdamPlatin123
-- When: 2026-11-08（问题卡快进合入之后）
+- When: 2026-11-08（前端原地重构快进合入之后）
 - Machine: 550W备份1号机
 - Branch: claude/orchestra-app（从 `claude/alpha-0.2-interactive` 的 76807ec 切出）
-- Commit: 随本文件一起提交。之前是从 `claude/sharp-robinson-3001ea` 快进合入的问题卡：54142d7、f7b5866、5b3a87e 交接、99c6423 提问开关；再往前 ffd7daf、b1b01e8 交接，8d2697c（合并改派分支 `claude/serene-merkle-3ac513`），再往前 b05f921、8d858ee 交接，c2b2a23（running 界面，从 `claude/running-panel` 快进合入），8eb2215 交接、6ef515a（总台复核修复）。再往前 73237b5 总台、bcb7bd3 Claude 子代理和派活权限、 05ad22c 派发行和拉线、 8b2e8fb 新首页和停止、 580143a Codex 子代理、 2a67fbf 第三轮方案、 88194f3 第二轮方案、 ad4c923 页面评审修正、eb8d621 来源链复核修正，之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
+- Commit: 随本文件一起提交。之前是从 `claude/sharp-robinson-3001ea` 快进合入的前端原地重构：88d6944 删旧页面、4842f6f 配一次就记住、813038a 拆 drive.js、498b688 交接；再往前是同一分支快进合入的问题卡：54142d7、f7b5866、5b3a87e 交接、99c6423 提问开关；再往前 ffd7daf、b1b01e8 交接，8d2697c（合并改派分支 `claude/serene-merkle-3ac513`），再往前 b05f921、8d858ee 交接，c2b2a23（running 界面，从 `claude/running-panel` 快进合入），8eb2215 交接、6ef515a（总台复核修复）。再往前 73237b5 总台、bcb7bd3 Claude 子代理和派活权限、 05ad22c 派发行和拉线、 8b2e8fb 新首页和停止、 580143a Codex 子代理、 2a67fbf 第三轮方案、 88194f3 第二轮方案、 ad4c923 页面评审修正、eb8d621 来源链复核修正，之前依次是 d5b40e1 审批卡来源链、02c5492 交接、a21aebd 等你栏来源不可信卡、ad961bd seat 项目根卡片文案、371509b seat 项目根实跑记录、e9dac45 交接、0e32a82 复核修正、d212b86 seat 会话按来源不可信启动、18d5a03 live-smoke `--daemon-kill`、0d8b701 交接。更早一份交接写在 99deb75（Commit 记为 4d7387e），之后依次是：461ac11 seat 去重、8bc1bd9 宽屏底栏、e483824 窄屏自有框、73bad96 后台标题和 seat 去重复核、7f71981 日常使用文档和启动脚本、75e2942 项目根、e850a20 项目根复核修正、a3cf458 quickstart 补项目根
 - Pushed: yes（2026-11-08 连同本文件所在提交一起推到 origin/claude/orchestra-app）
 - Uncommitted on that machine: `.claude/launch.json`（未跟踪，本机某次会话的预览配置，不要提交）。主检出目录里 r4 规格有用户本人的未提交改动，见 Do not touch。
 
@@ -13,6 +13,11 @@
 用户 2026-11-02 的目标：把 Orchestra 做到「应用整体可用」。一个守护进程 orchestrad，首页是塔表（你 → agent → subagent 的跨项目树），能只读观察 Claude、DSH、Codex 三家的会话；能经本机模型网关 magpie（`http://127.0.0.1:3425`，不要密钥）开 Orchestra 自己拥有的 Codex 和 Claude 会话（下称「自有会话」），在页面上对话、审批、停下；有一个派活台，先跑规则、再问路由模型，给出「派给谁」的建议卡片，由人点「派出」；DSH 会话可以经 seat 请求派自有会话，由人在配对页派出或拒绝。总计划见 `docs/plans/2026-11-02-orchestra-app-plan.md`，给主人看的上手指南见 `docs/quickstart.md`，启动脚本 `start-orchestra.cmd`。
 
 ## Done（已完成且已验证）
+- 前端原地重构（2026-11-08 快进合入，来自 `claude/sharp-robinson-3001ea`；那段工作的交接移到了 `docs/handoff/archive/claude--sharp-robinson-3001ea-refactor.md`，细节和未验证项都在那里）。用户选了不引框架、不加构建步骤：
+  - 旧页面 `/tower` 删了，`GET /tower` 301 到 `/`；`/api/tower` 保留（首页在轮询它）。
+  - 8 位码改成「配一次就记住」：一个浏览器输一次码，`POST /api/pair` 一次换到 cookie 和操作令牌；解锁码和解锁接口都删了。最多记 16 个浏览器、每个 90 天，存在 `ORCHESTRA_HOME\pairings.json`，只存哈希；一个都没记住时启动才打印码。页面上可以「忘掉这台浏览器」。
+  - `ui/drive.js` 847→240 行，其余拆进 7 个模块，五个对话框共用一个 `dialog()` 帮手；测试样例改由 `test/helpers/owned-fixture.ts` 统一产出。
+  - 全量 1797 条，1794 过，0 失败，1 跳过，2 todo；测试 profile 在内置浏览器里走过配对、重启后仍已配对、派活台、旧令牌失效自动清掉、忘掉这台浏览器。
 - 问题卡（2026-11-08 快进合入，来自 `claude/sharp-robinson-3001ea`；那条分支的交接移到了 `docs/handoff/archive/claude--sharp-robinson-3001ea.md`，细节和未验证项都在那里）：Codex 用 `request_user_input` 提问时，卡片上是「回答…」，对话框里每题选一项或自己写一句，经新人类动作 `approval-answer`（`POST /api/approvals/:id/answer`，检查和「允许」一样）回给 Codex。自有 Codex 会话的 config.toml 现在打开 `default_mode_request_user_input`，不在 plan 模式也能问（用户 2026-11-08 选的，这是 Codex 标「开发中」的开关）。页面体积上限：首页总量 321→331 KiB，tower 页 248→257 KiB。全量 1807 条，1804 过，0 失败；测试 profile 真模型走过三次，最后一次没手动改配置。
 - 改派（2026-11-07 合入，8d2697c，合并提交，来自 `claude/serene-merkle-3ac513`；那条分支的交接移到了 `docs/handoff/archive/claude--serene-merkle-3ac513.md`，功能说明和未验证项都在那里）：请求卡上「改派…」，人可以把 worker、总台或 DSH seat 发来的派活请求换成另一家或另一个模型再派出；journal 新 kind `request-reassign`。冲突三处：两页的体积上限（首页总量 316→321 KiB，实测 328200 字节；tower 页 242→248 KiB，实测 253381 字节）和生成文件 `src/server/ui-assets.ts`（用 `scripts/embed-ui.ts` 重新生成）。合并后全量 `node --test "test/**/*.test.ts"`（普通权限）：1803 条，1800 过，0 失败，1 跳过，2 todo。合并后没有在页面上走过。
 - running 界面（2026-11-06，c2b2a23，从 `claude/running-panel` 快进合入；那条分支的交接移到了 `docs/handoff/archive/claude--running-panel.md`，细节和未验证项都在那里）：首页底部「正在做」胶囊，点开右栏（宽屏默认收起，窄屏是抽屉），一个正在做的 worker 一张卡，再点进细节页（只看不动）。全量 1799 条，1796 过，0 失败；测试 profile 实走过一次。
@@ -69,6 +74,7 @@
 - 总台（`src/route/front-desk.ts`、`ui/front.js`）：全局最多一个的特殊 Claude 会话，人点开启，工具只有 `mcp__orchestra__status` 和 `mcp__orchestra__dispatch`，多一个就 safety-stop。全量 1767 项，通过 1764，失败 0，跳过 1，待办 2；`live-smoke --router` 跑了 2 次，退出码 0。
 
 ## Unverified（做了但没验证，或验证没过）
+- 前端原地重构：`scripts/live-smoke.ts`、`live-route.ts`、`tower-demo.ts` 已改成新配对流程，只过了 `node --check`，没实际跑；真实 profile 没用新配对启动过；改派、问题卡、审批按住、刹车拆分后只有假 DOM 测试；cookie 和令牌存在浏览器资料目录里，同一用户下有意翻浏览器文件的进程能拿到（选「记住」接受的代价）；删旧页面后首页没有「关于数据」、「你」行的最近派活、整棵树的交互、会话行的工作目录名，补不补由用户定；`docs/quickstart.md` §3.1、§3.2、第 6 节第 2 条还在写旧页面。见 `docs/handoff/archive/claude--sharp-robinson-3001ea-refactor.md`。
 - 问题卡：升级 Codex 后提问开关可能改名或消失，要重新实走；开着它 worker 是否明显更常停下来问没在真实任务里看过；只有输入框的题只在假 Codex 里测过；手机宽度和亮色主题没看过；Claude 会话的提问仍只能拒绝。见 `docs/handoff/archive/claude--sharp-robinson-3001ea.md`。
 - 改派：合并后的页面没走过；分支上留下的未验证项（真模型下 worker 收到的改派回复、换回原来那家时模型复原、派出途中关对话框的提示、改派被拒的几种情况、真 DSH 的改派、手机宽度和亮色主题）原样没动，见 `docs/handoff/archive/claude--serene-merkle-3ac513.md`。
 - 总台：复核 9 条真问题和走查 7 处都修了（9fa20c7..6ef515a），测试 profile 上真模型走过开启、问进展、派单、拒绝、结束。总台派出的 worker 一律按受污染跑；只读观察的会话不发标题；自有会话的标题和等你摘要会经 magpie 发给模型提供方，页面写明。残余：派出后 DSH 请求的第一句仍以标题回到总台；Codex worker 批准之后的路径没走；回报不主动来，只取第一个非空行；派单只在内存里；规划 worker 这个角色还没做。
@@ -91,9 +97,11 @@
 - 没做的：计划阶段 7（DSH 只读插件）；0.2 设计的导入（`ImportStager` 没有调用方）；r4 §9.2 的 router-core；M0 的全局刹车 `/api/brake/plan`、`/api/brake/execute` 仍没有处理函数；没有设置页（Q5a 要求的 Tuning 页也没有）。
 
 ## Next（按优先级，每条可独立执行）
-1. 真实 profile 启动检查（只能由用户本人做）— 先关掉 2026-11-01 从 `.claude\worktrees\m0-thin-slice-e9066d\orchestra.cmd --peek-port 7470` 起的旧 orchestrad（M0 旧代码，真实 profile，2026-11-03 还在跑并占着 7470 端口；不关的话新实例起不来，浏览器打开的也是旧页面）。然后在普通（非管理员）cmd 里双击或运行仓库根的 `start-orchestra.cmd`（worktree 里先设 `ORCHESTRA_NODE` 指向主检出目录的 `.tools\node24\node.exe`）。验收：控制台打印配对码、`procguard on`、两家 `owned … sessions on`、`working (real profile …)`；浏览器自动打开 `http://orchestra.localhost:7470/`；配对后塔表有数据、顶栏数字等于点开后的行数；派一个 Codex 会话「只回复 ok，不用工具」到空闲后结束；Ctrl+C 后任务管理器里没有 codex.exe、procguard.exe。结果记进本文件。
-2. 用户决定 r4 要不要跟着改：A17（agent 只能请求新建，由你批准）、§9.5 和 Q11（自动派活要过门槛）已被用户的话取代，见计划「派活权限」一节。总台还没做，今天没有总台；规划归 worker 已定，见 `round2/BRIEF.md` 第 1.2 节。
-3. 决定 push / 合并（只能由用户本人做）— 已推到 origin；`hosts/claude/node_modules` 也只在这个 worktree。要推远端或合进主线，由用户定目标分支。
+1. 真实 profile 启动检查（只能由用户本人做）— 先关掉 2026-11-01 从 `.claude\worktrees\m0-thin-slice-e9066d\orchestra.cmd --peek-port 7470` 起的旧 orchestrad（M0 旧代码，真实 profile，2026-11-03 还在跑并占着 7470 端口；不关的话新实例起不来，浏览器打开的也是旧页面）。然后在普通（非管理员）cmd 里双击或运行仓库根的 `start-orchestra.cmd`（worktree 里先设 `ORCHESTRA_NODE` 指向主检出目录的 `.tools\node24\node.exe`）。验收：第一次启动控制台打印配对码（配过以后重启应改为打印「N browser(s) remembered as paired」）、`procguard on`、两家 `owned … sessions on`、`working (real profile …)`；浏览器自动打开 `http://orchestra.localhost:7470/`，页面自己弹出配对框；配对后首页有数据；派一个 Codex 会话「只回复 ok，不用工具」到空闲后结束；Ctrl+C 后任务管理器里没有 codex.exe、procguard.exe。结果记进本文件。
+2. 在测试 profile、普通权限控制台跑 `node scripts/live-smoke.ts --harness codex`，确认新配对流程下脚本能走通（退出码 0、leftover 0）。
+3. 按首页重写 `docs/quickstart.md` 的 §3.1、§3.2 和第 6 节第 2 条（还在写旧页面的塔表、计数筛选、关于数据、「你」行，以及解锁码）。
+4. 用户决定 r4 要不要跟着改：A17（agent 只能请求新建，由你批准）、§9.5 和 Q11（自动派活要过门槛）已被用户的话取代，见计划「派活权限」一节。总台还没做，今天没有总台；规划归 worker 已定，见 `round2/BRIEF.md` 第 1.2 节。
+5. 决定 push / 合并（只能由用户本人做）— 已推到 origin；`hosts/claude/node_modules` 也只在这个 worktree。要推远端或合进主线，由用户定目标分支。
 
 ## Do not touch
 - 主检出目录里 `docs/specs/2026-10-27-dsh-orchestra-design-r4.md` 的未提交改动：用户本人的第七批改动。本分支只读引用它，不改、不提交、不覆盖。
